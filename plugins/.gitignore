@@ -1,0 +1,7 @@
+# Python bytecode generated when validating or running plugin adapters.
+__pycache__/
+*.py[cod]
+
+# Editor and macOS metadata.
+.DS_Store
+*.swp

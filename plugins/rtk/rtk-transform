@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""jcode pre_tool_transform adapter for RTK.
+
+Reads one tool-input JSON object from stdin. For Bash calls, asks RTK whether
+it can rewrite `command`; outputs replacement tool-input JSON only when it can.
+Empty output means jcode must retain the original input.
+"""
+import json
+import os
+import subprocess
+import sys
+
+try:
+    tool_input = json.load(sys.stdin)
+except (json.JSONDecodeError, OSError):
+    sys.exit(0)
+
+if os.environ.get("JCODE_HOOK_TOOL_NAME") != "bash":
+    sys.exit(0)
+command = tool_input.get("command")
+if not isinstance(command, str) or not command:
+    sys.exit(0)
+
+try:
+    result = subprocess.run(
+        ["rtk", "rewrite", command],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=0.4,
+        check=False,
+    )
+except (OSError, subprocess.SubprocessError):
+    sys.exit(0)
+
+# Match RTK's OpenCode hook: it uses zx's `.nothrow()` and accepts a
+# non-empty rewrite regardless of the child process exit status.
+rewritten = result.stdout.strip()
+if rewritten and rewritten != command:
+    tool_input["command"] = rewritten
+    json.dump(tool_input, sys.stdout, separators=(",", ":"))
