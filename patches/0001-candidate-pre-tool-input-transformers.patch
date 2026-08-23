@@ -30,7 +30,7 @@ original input on invalid output, nonzero exit, spawn failure, empty output, or
 timeout, and keep existing gate timeout/failure behavior.
 
 Validation:
-cargo test -p jcode-base tool_transformer
+scripts/cargo_exec.sh test -p jcode-base tool_transformer
 ---
  crates/jcode-app-core/src/tool/mod.rs         |  16 +-
  crates/jcode-base/src/config.rs               |   2 +
