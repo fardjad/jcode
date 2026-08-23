@@ -31,6 +31,10 @@ def validate_file(root: Path, patch: Patch) -> None:
     _, body_separator, _ = header_body.partition("\n\n")
     require(bool(body_separator), f"missing patch body section: {relative}")
     positions = [header_body.find(section) for section in SECTIONS]
+    require(all(header_body.count(section) == 1 for section in SECTIONS),
+            f"duplicate or missing patch body section: {relative}")
+    for header in ("X-Jcode-Patch-Intent:", "X-Jcode-Patch-Kind:", "X-Jcode-Patch-Depends-On:"):
+        require(header_body.count(header) == 1, f"duplicate or missing {header}: {relative}")
     require(all(position >= 0 for position in positions) and positions == sorted(positions),
             f"missing or out-of-order patch body section: {relative}")
     for index, (start, end) in enumerate(zip(positions, positions[1:] + [len(header_body)])):

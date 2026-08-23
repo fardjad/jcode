@@ -5,32 +5,57 @@ help:
 
   just --list --justfile "$(git rev-parse --show-toplevel)/justfile"
 
-validate:
+# Validate catalog patch metadata and synthetic application.
+validate-patch-files:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
   python3 "$repo_root/scripts/validate_patches.py"
 
-apply:
+_bootstrap-nextest:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/bootstrap_nextest.py"
+
+# Create/reset persistent patched copy from local master.
+create-patched-copy:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  base=$(git rev-parse --verify master^{commit}) || {
+    printf 'local master missing; run just sync first\n' >&2
+    exit 1
+  }
+  worktree="$repo_root/.patched-jcode"
+
+  python3 "$repo_root/scripts/validate_patches.py"
+  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create patched-jcode "$base" --path "$worktree")
+  trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
+
+  python3 "$repo_root/scripts/apply_patches.py" "$worktree"
+
+  trap - ERR
+  printf 'patches applied; worktree retained: %s\n' "$worktree"
+
+# Refresh patched copy, then install its fast release build.
+install-patched-version:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
   worktree="$repo_root/.patched-jcode"
+  just --justfile "$repo_root/justfile" create-patched-copy
+  (
+    cd "$worktree"
+    ./scripts/install_release.sh --fast
+  )
 
-  python3 "$repo_root/scripts/validate_patches.py"
-  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create patched-jcode master --path "$worktree")
-  trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
-
-  python3 "$repo_root/scripts/apply_patches.py" "$worktree"
-  python3 "$repo_root/scripts/validate_patch_commands.py" "$worktree"
-  just --justfile "$repo_root/justfile" _fast-test "$worktree"
-
-  trap - ERR
-  printf 'all patches passed; worktree retained: %s\n' "$worktree"
-
-test patch:
+# Apply one patch in a clean worktree and run its validation/tests.
+test-patch-file patch:
   #!/usr/bin/env bash
   set -euo pipefail
 
@@ -44,12 +69,14 @@ test patch:
 
   python3 "$repo_root/scripts/apply_patches.py" "$worktree" "$patch_name"
   python3 "$repo_root/scripts/validate_patch_commands.py" "$worktree" "$patch_name"
-  just --justfile "$repo_root/justfile" _fast-test "$worktree"
+  base=$(git rev-parse master^{commit})
+  just --justfile "$repo_root/justfile" _fast-test "$worktree" "$base"
 
   trap - ERR
   printf 'patch passed; worktree retained: %s\n' "$worktree"
 
-candidate patch:
+# Create an upstream-candidate branch from one candidate patch.
+create-upstream-candidate-branch-from patch:
   #!/usr/bin/env bash
   set -euo pipefail
 
@@ -73,6 +100,7 @@ candidate patch:
   trap - ERR
   printf 'candidate ready: %s\n' "$branch"
 
+# Sync local master from upstream, learn exclusions, and create patched copy.
 sync release="master":
   #!/usr/bin/env bash
   set -euo pipefail
@@ -111,26 +139,52 @@ sync release="master":
   git branch -f master "$selected_base"
 
   upstream_worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create sync-upstream master)
-  if ! just --justfile "$repo_root/justfile" _fast-test "$upstream_worktree"; then
+  if ! just --justfile "$repo_root/justfile" _learn-tests "$upstream_worktree" "$selected_base"; then
     printf 'clean upstream fast tests failed; worktree retained: %s\n' "$upstream_worktree" >&2
     exit 1
   fi
   python3 "$repo_root/scripts/patch_worktree.py" cleanup sync-upstream --path "$upstream_worktree"
-  just --justfile "$repo_root/justfile" apply
+  just --justfile "$repo_root/justfile" create-patched-copy
 
-# Run fast suite with v0.79.1 upstream compatibility exclusions; remove when fixed upstream.
-_fast-test worktree:
+# Push catalog, synchronized upstream base, and candidate branches to origin.
+push:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  worktree_path="{{worktree}}"
-  [[ "$worktree_path" = /* ]] || worktree_path="$repo_root/$worktree_path"
+  current_branch=$(git branch --show-current)
+  if [[ "$current_branch" != "personalized" ]]; then
+    printf 'push must run on personalized; current branch: %s\n' "$current_branch" >&2
+    exit 1
+  fi
+  git show-ref --verify --quiet refs/heads/master || {
+    printf 'local master missing; run just sync first\n' >&2
+    exit 1
+  }
 
-  (cd "$worktree_path" && scripts/test_fast.sh -- \
-    --skip auto_poke_followup_targets_below_threshold_todos \
-    --skip cli_auth_status_doctor_and_login_lifecycle_uses_fresh_sandbox \
-    --skip auth_integration_registry_matches_cli_choice_runtime_wiring \
-    --skip login_provider_choice_table_round_trips_catalog_providers \
-    --skip auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_blocking \
-    --skip test_init_provider_jcode_delegates_runtime_profile_to_wrapper)
+  refs=(
+    refs/heads/personalized:refs/heads/personalized
+    refs/heads/master:refs/heads/master
+  )
+  while IFS= read -r ref; do
+    branch=${ref#refs/heads/}
+    refs+=("$ref:refs/heads/$branch")
+  done < <(git for-each-ref --format='%(refname)' refs/heads/upstream-candidate/)
+
+  git -C "$repo_root" push origin "${refs[@]}"
+
+# Learn clean-upstream compatibility failures into ignored, base-specific state.
+_learn-tests worktree base:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/run_nextest.py" learn "{{worktree}}" --base "{{base}}"
+
+# Run compatibility suite using learned exclusions for base.
+_fast-test worktree base:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/run_nextest.py" test "{{worktree}}" --base "{{base}}"

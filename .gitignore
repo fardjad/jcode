@@ -1,1 +1,4 @@
 .patched-jcode/
+__pycache__/
+.tools/
+.tools/nextest/exclusions/

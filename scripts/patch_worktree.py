@@ -15,16 +15,44 @@ def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-"
     if not name or Path(name).name != name or ".." in name:
         raise CatalogError(f"invalid worktree name: {name}")
     path = destination or worktree_path(root, name, prefix)
+    path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
+        root = root.resolve()
+        if path == root:
+            raise CatalogError(f"refusing to reuse catalog checkout: {path}")
         try:
             git("rev-parse", "--is-inside-work-tree", cwd=path, quiet=True)
         except CatalogError as error:
             raise CatalogError(f"worktree path exists and is invalid: {path}") from error
+        try:
+            top_level = Path(git("rev-parse", "--show-toplevel", cwd=path)).resolve()
+            common_dir = Path(git("rev-parse", "--git-common-dir", cwd=path))
+            catalog_common_dir = Path(git("rev-parse", "--git-common-dir", cwd=root))
+            if not common_dir.is_absolute():
+                common_dir = path / common_dir
+            if not catalog_common_dir.is_absolute():
+                catalog_common_dir = root / catalog_common_dir
+            common_dir = common_dir.resolve()
+            catalog_common_dir = catalog_common_dir.resolve()
+        except CatalogError as error:
+            raise CatalogError(f"existing path is not a valid Git worktree: {path}") from error
+        if top_level != path:
+            raise CatalogError(f"worktree destination is not its top level: {path}")
+        if common_dir != catalog_common_dir:
+            raise CatalogError(f"worktree has different Git common dir: {path}")
+        registered = {
+            Path(line.removeprefix("worktree ")).resolve()
+            for line in git("worktree", "list", "--porcelain", cwd=root).splitlines()
+            if line.startswith("worktree ")
+        }
+        if path not in registered:
+            raise CatalogError(f"path is not a registered Git worktree: {path}")
         if git("status", "--porcelain", cwd=path):
             raise CatalogError(f"existing worktree is dirty: {path}")
         print(f"reusing worktree {path}", file=sys.stderr)
-        git("reset", "--hard", revision, cwd=path)
+        resolved_revision = git("rev-parse", f"{revision}^{{commit}}", cwd=root)
+        git("checkout", "--detach", resolved_revision, cwd=path)
     else:
         git("worktree", "add", "--detach", str(path), revision)
     print(path)

@@ -1,0 +1,7 @@
+[profile.compat]
+fail-fast = false
+
+[profile.compat.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
