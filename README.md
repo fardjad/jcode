@@ -8,6 +8,40 @@ The goal is to make upstream updates routine: sync to the latest jcode release
 or a chosen version, then use AI assistance to carry personal patches forward
 when upstream changes affect them.
 
+## Install a patched release
+
+**macOS or Linux**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fardjad/jcode/personalized/install.sh | bash
+```
+
+**Windows PowerShell**
+
+```powershell
+irm https://raw.githubusercontent.com/fardjad/jcode/personalized/install.ps1 | iex
+```
+
+<details>
+<summary>Advanced installation options</summary>
+
+Download the installer to choose a specific release version or pass installer
+flags such as a custom installation directory.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/fardjad/jcode/personalized/install.sh
+bash install.sh vX.Y.Z
+# JCODE_INSTALL_DIR="$HOME/bin" bash install.sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/fardjad/jcode/personalized/install.ps1 -OutFile install.ps1
+.\install.ps1 vX.Y.Z
+.\install.ps1 -InstallDir "$HOME\bin"
+```
+
+</details>
+
 ## Repository structure
 
 - [`patches/`](patches/) contains the ordered source changes applied to jcode.
