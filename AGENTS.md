@@ -23,8 +23,10 @@ just sync vX.Y.Z             # selected upstream release tag
 ```
 
 `just create-patched-copy` creates or resets persistent `.patched-jcode` from
-local `master`
-and applies every patch. Use `just test-patch-file <patch-file>` for declared
+local `master`. If local `master` does not exist, it initializes it from
+configured `upstream/master`; later runs retain that base. Use `just sync` to
+refresh it and run clean-upstream compatibility learning. It then applies every
+patch. Use `just test-patch-file <patch-file>` for declared
 validation
 commands and compatibility tests. Test and candidate workflows start clean
 worktrees from `master`. Failures retain worktrees and print cleanup commands.

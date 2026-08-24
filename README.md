@@ -45,6 +45,11 @@ just create-upstream-candidate-branch-from 0001-candidate-example.patch
 
 ```
 
+On its first run, `just create-patched-copy` (and therefore
+`just install-patched-version`) initializes local `master` from
+`upstream/master`. Later runs retain that selected base. Run `just sync` when
+you want to refresh it or perform clean-upstream compatibility learning.
+
 `just sync` and `just create-patched-copy` retain failed worktrees for
 inspection. They never
 push remotes. The generated `.patched-jcode/` directory is ignored.

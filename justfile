@@ -26,10 +26,16 @@ create-patched-copy:
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  base=$(git rev-parse --verify master^{commit}) || {
-    printf 'local master missing; run just sync first\n' >&2
-    exit 1
-  }
+  if ! git show-ref --verify --quiet refs/heads/master; then
+    git remote get-url upstream >/dev/null 2>&1 || {
+      printf 'local master missing and upstream remote is not configured\n' >&2
+      exit 1
+    }
+    printf 'initializing local master from upstream/master\n'
+    git fetch upstream master
+    git branch master FETCH_HEAD
+  fi
+  base=$(git rev-parse --verify master^{commit})
   worktree="$repo_root/.patched-jcode"
 
   python3 "$repo_root/scripts/validate_patches.py"
