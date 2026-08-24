@@ -1,71 +1,95 @@
 # jcode personalizations
 
-This is my personal catalog for changes applied on top of
-[jcode](https://github.com/1jehuang/jcode). It has its own orphan history and
-does not contain jcode source code.
+This repository is a soft fork of [jcode](https://github.com/1jehuang/jcode).
+It keeps personal changes as patches on top of upstream instead of maintaining a
+separate copy of jcode's source.
 
-[`master`](https://github.com/fardjad/jcode/tree/master) holds the selected
-upstream jcode base. This branch holds only the
-personalization catalog. Applying the catalog creates `.patched-jcode/`: a
-generated worktree containing `master` plus the selected source patches.
+The goal is to make upstream updates routine: sync to the latest jcode release
+or a chosen version, then use AI assistance to carry personal patches forward
+when upstream changes affect them.
 
-## Contents
+## Repository structure
 
-- [`patches/`](patches/) contains ordered mail patches for personal source changes. Patches
-  declare their purpose, dependencies, update guidance, and focused validation.
-- [`plugins/`](plugins/) contains personal plugins and their documentation. Plugins are
-  catalog content, not source patches; install or configure them separately.
-- [`scripts/`](scripts/) contains small Python primitives used by the workflow.
-- [`justfile`](justfile) composes those primitives into normal workflows.
-- [`nextest.toml`](nextest.toml) defines compatibility JUnit reporting.
-- [`AGENTS.md`](AGENTS.md) defines catalog conventions for human and agent maintenance.
+- [`patches/`](patches/) contains the ordered source changes applied to jcode.
+- [`plugins/`](plugins/) contains personal plugins kept separately from source
+  patches.
 
-## Common workflow
+The generated `.patched-jcode/` directory is your local, fully patched jcode
+checkout. It is not committed.
 
-Run `just help` to list available commands.
+## Patch conventions
+
+Personal changes use `personal-` in their patch filename. They are for behavior
+that you want to keep in this soft fork.
+
+Potential upstream contributions use `candidate-` in their patch filename and
+have the `upstream-candidate` kind. Keep them focused and suitable for
+submitting to jcode independently of personal changes.
+
+## Workflows
+
+Run `just help` to see every command.
+
+### 1. Sync jcode and carry patches forward
+
+Sync to the latest upstream `master`:
 
 ```bash
-# Select and validate current upstream master, then apply personal patches.
 just sync
-
-# Use a stable upstream release instead.
-just sync vX.Y.Z
-
-# Apply catalog patches to .patched-jcode.
-just create-patched-copy
-
-# Refresh patched copy, then install its fast release build.
-just install-patched-version
-
-# Validate catalog metadata and patch applicability without the full workflow.
-just validate-patch-files
-
-# Create or verify an upstream-candidate branch from a candidate patch.
-just create-upstream-candidate-branch-from 0001-candidate-example.patch
-
 ```
 
-On its first run, `just create-patched-copy` (and therefore
-`just install-patched-version`) initializes local `master` from
-`upstream/master`. Later runs retain that selected base. Run `just sync` when
-you want to refresh it or perform clean-upstream compatibility learning.
+Or sync to a specific upstream release tag:
 
-`just sync` and `just create-patched-copy` retain failed worktrees for
-inspection. They never
-push remotes. The generated `.patched-jcode/` directory is ignored.
+```bash
+just sync vX.Y.Z
+```
 
-Compatibility tests pin cargo-nextest `0.9.143`; cache lives under
-`.tools/nextest/<version>/<target>/`. Clean upstream runs learn failed test
-names into ignored, base-specific JSON at
-`.tools/nextest/exclusions/<base-commit>.json`. Patched runs load exclusions
-only for matching base and pin, using exact `test(=...)` filters; patched
-failures remain failures. Each run writes JUnit report to
-`<materialized-worktree>/target/nextest/compat/junit.xml`. Remove
-`.tools/nextest/exclusions/` to reset learned state.
+This refreshes the local upstream base and rebuilds `.patched-jcode/` with your
+patches. If upstream changes conflict with a patch, use AI assistance to update
+the affected patch, then run the command again.
 
-## Patch maintenance
+When you are happy with the synchronized catalog, push both the catalog and
+selected upstream base:
 
-Patch files are the source of truth for source-level customizations. When an
-upstream change causes a patch conflict or test failure, update the affected
-patch and its repair brief, then rerun the relevant `just` workflow. Do not edit
-jcode source directly in this catalog checkout.
+```bash
+just push
+```
+
+### 2. Install the patched version
+
+Build and install the current patched jcode:
+
+```bash
+just install-patched-version
+```
+
+This refreshes `.patched-jcode/`, builds it, and installs the resulting jcode
+version locally.
+
+### 3. Validate and test patches
+
+Validate the patch catalog and ensure the patches apply:
+
+```bash
+just validate-patch-files
+```
+
+Test one patch and its declared validation command:
+
+```bash
+just test-patch-file patches/1001-personal-release-installer-path-opt-in.patch
+```
+
+Use this after changing a patch, and before relying on it after an upstream
+sync.
+
+### 4. Prepare an upstream contribution
+
+Create a branch from a candidate patch:
+
+```bash
+just create-upstream-candidate-branch-from patches/0001-candidate-pre-tool-input-transformers.patch
+```
+
+Review the created branch, then use it to open an upstream contribution. Keep
+candidate patches independent from personal-only patches whenever possible.
