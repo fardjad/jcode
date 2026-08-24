@@ -45,20 +45,22 @@ scripts/cargo_exec.sh test -p jcode-provider-openrouter-runtime eu_openrouter --
  .../src/openrouter_provider_impl.rs                | 33 ++++++++--
  .../src/openrouter_tests.rs                        | 39 ++++++++++++
  crates/jcode-provider-openrouter/src/lib.rs        | 51 ++++++++++++++-
- crates/jcode-tui/src/tui/app/auth.rs               | 27 +++++++-
+ crates/jcode-tui/src/tui/app/auth.rs               | 28 +++++++-
  .../jcode-tui/src/tui/app/auth_account_commands.rs | 52 +++++++++++++---
  crates/jcode-tui/src/tui/app/auth_tests.rs         | 21 +++++++
  crates/jcode-tui/src/tui/app/inline_interactive.rs |  4 +-
  .../src/tui/app/inline_interactive/helpers.rs      |  1 +
+ .../src/tui/app/inline_interactive/openers.rs      |  3 +-
  .../app/inline_interactive_placeholder_routes.rs   |  3 +-
  .../src/tui/app/onboarding_flow_control.rs         | 12 +++-
  crates/jcode-tui/src/tui/app/remote.rs             |  5 ++
- .../src/tui/app/state_ui_input_helpers.rs          | 25 +++++---
+ .../src/tui/app/state_ui_input_helpers.rs          | 26 +++++---
+ .../app/tests/state_model_poke_02/part_02.rs       |  4 +-
  crates/jcode-tui/src/tui/ui_header.rs              | 10 +++
  src/cli/login.rs                                   | 26 +++++++-
  src/cli/provider_init.rs                           | 29 +++++++++
  src/cli/startup.rs                                 |  3 +
- 32 files changed, 570 insertions(+), 65 deletions(-)
+ 34 files changed, 577 insertions(+), 69 deletions(-)
 
 diff --git a/crates/jcode-base/src/auth/lifecycle.rs b/crates/jcode-base/src/auth/lifecycle.rs
 index 3372e40fb..40f523bbe 100644
@@ -1161,9 +1163,16 @@ index 2066a48c4..6c818fe35 100644
      let path = endpoints_cache_path(model);
      let modified_at = disk_cache_modified_at(&path);
 diff --git a/crates/jcode-tui/src/tui/app/auth.rs b/crates/jcode-tui/src/tui/app/auth.rs
-index 0f2768119..0533cd065 100644
+index 0f2768119..deb8d8434 100644
 --- a/crates/jcode-tui/src/tui/app/auth.rs
 +++ b/crates/jcode-tui/src/tui/app/auth.rs
+@@ -1,5 +1,5 @@
+ #[path = "auth_account_commands.rs"]
+-mod auth_account_commands;
++pub(super) mod auth_account_commands;
+ #[path = "auth_account_picker.rs"]
+ mod auth_account_picker;
+ #[path = "auth_types.rs"]
 @@ -207,7 +207,7 @@ impl App {
              crate::auth::AuthState::Expired => "needs attention",
              crate::auth::AuthState::NotConfigured => "not configured",
@@ -1377,6 +1386,19 @@ index 36928c198..d52bdffa4 100644
          _ => bare_name,
      }
  }
+diff --git a/crates/jcode-tui/src/tui/app/inline_interactive/openers.rs b/crates/jcode-tui/src/tui/app/inline_interactive/openers.rs
+index 2e02954a5..cc13c15ea 100644
+--- a/crates/jcode-tui/src/tui/app/inline_interactive/openers.rs
++++ b/crates/jcode-tui/src/tui/app/inline_interactive/openers.rs
+@@ -76,6 +76,7 @@ impl App {
+     fn open_auth_provider_picker_inline(&mut self, logout: bool) {
+         let status = crate::auth::AuthStatus::check_fast();
+-        let providers = crate::provider_catalog::tui_login_providers();
++        let providers =
++            crate::tui::app::auth::auth_account_commands::tui_login_providers_with_eu();
+         let mut models = providers
+             .into_iter()
+             .filter(|provider| {
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs b/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs
 index 9c16a3b93..1ae780bfe 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs
@@ -1438,7 +1460,7 @@ index 590727f75..72ff8d7df 100644
      // ("azure"); keep the dedicated mapping used across the auth lifecycle.
      if provider.eq_ignore_ascii_case("azure")
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index 26871453b..d272390f6 100644
+index 26871453b..96bdc5a83 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 @@ -473,21 +473,32 @@ impl App {
@@ -1481,6 +1503,27 @@ index 26871453b..d272390f6 100644
              for provider in self.provider.available_providers_for_model(model) {
                  push_unique(
                      &mut seen,
+@@ -831,7 +842,7 @@ impl App {
+                 suggestions.push(("/auth doctor".into(), "Diagnose provider auth issues"));
+             }
+             suggestions.extend(
+-                crate::provider_catalog::tui_login_providers()
++                super::auth::auth_account_commands::tui_login_providers_with_eu()
+                     .iter()
+                     .map(|provider| (format!("{} {}", base, provider.id), provider.menu_detail)),
+             );
+diff --git a/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_02.rs b/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_02.rs
+index 3eb86eee2..adc33fa93 100644
+--- a/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_02.rs
++++ b/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_02.rs
+@@ -179,4 +179,6 @@ fn test_login_command_suggestions_follow_provider_catalog() {
+-    for provider in crate::provider_catalog::tui_login_providers() {
++    for provider in
++        crate::tui::app::auth::auth_account_commands::tui_login_providers_with_eu()
++    {
+         assert!(
+             suggestions
+                 .iter()
 diff --git a/crates/jcode-tui/src/tui/ui_header.rs b/crates/jcode-tui/src/tui/ui_header.rs
 index 6af069161..8c7044e8e 100644
 --- a/crates/jcode-tui/src/tui/ui_header.rs

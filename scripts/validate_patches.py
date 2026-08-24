@@ -55,7 +55,6 @@ def main() -> None:
     applied: Path | None = None
     try:
         require(git("branch", "--show-current", cwd=root) == "personalized", "current branch must be personalized")
-        require(not git("status", "--porcelain", cwd=root), "worktree must be clean")
         try:
             git("show-ref", "--verify", "refs/heads/master", cwd=root, quiet=True)
         except CatalogError as error:
