@@ -2,35 +2,43 @@ From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Mon, 24 Aug 2026 00:00:00 +0200
 Subject: [PATCH] feat: add OpenRouter EU provider
-X-Jcode-Patch-Intent: add first-class OpenRouter EU provider
+X-Jcode-Patch-Intent: add EU OpenRouter provider with accurate cost accounting
 X-Jcode-Patch-Kind: personal-provider
 X-Jcode-Patch-Depends-On: none
 
 Patch intent:
-Add openrouter-eu with EU endpoint, isolated credentials, autocomplete, and
-TUI visibility.
+Add openrouter-eu with an EU endpoint, isolated credentials and caches,
+autocomplete, TUI visibility, and pricing lookup that uses EU catalog and
+endpoint cache rates.
 
 Why it exists:
 Routes EU OpenRouter traffic through eu.openrouter.ai while preserving separate
-identity and credentials.
+identity and credentials. Its distinct cache namespace must also be used for
+pricing: otherwise Jcode cannot find the EU model rates and falls back to the
+generic $15/M input and $60/M output estimates, substantially overstating EU
+API-key spend. This includes BYOK inference, but is not limited to it.
 
 Upstream integration points:
-Provider core, runtime, catalog, selection, auth, session, CLI, autocomplete,
-and TUI.
+Provider core, runtime, isolated cache namespaces, pricing resolution,
+catalog, selection, auth, session, CLI, autocomplete, and TUI.
 
 Update guidance:
-Preserve typed EU identity, separate credentials, /auth parsing, model switching,
-and visibility.
+Preserve typed EU identity, separate credentials, isolated model and endpoint
+caches, and EU-specific pricing lookup. Never use the standard OpenRouter cache
+or generic fallback rates when a priced EU cache entry exists. Preserve /auth
+parsing, model switching, and visibility.
 
 Validation:
+scripts/cargo_exec.sh test -p jcode-base openrouter_eu_pricing_uses_its_isolated_catalog_cache --lib
 scripts/cargo_exec.sh test -p jcode-provider-openrouter-runtime eu_openrouter --lib
 ---
-
  crates/jcode-base/src/auth/lifecycle.rs            |  6 ++
  crates/jcode-base/src/provider/activation.rs       | 23 ++++++-
  crates/jcode-base/src/provider/catalog_routes.rs   | 36 +++++++++++
  crates/jcode-base/src/provider/external.rs         |  1 +
  crates/jcode-base/src/provider/mod.rs              | 72 ++++++++++++++++++++--
+ crates/jcode-base/src/provider/openrouter.rs       |  6 +-
+ crates/jcode-base/src/provider/pricing.rs          | 44 +++++++++++--
  crates/jcode-base/src/provider/selection.rs        | 25 +++++++-
  crates/jcode-base/src/provider/startup.rs          | 18 +++++-
  crates/jcode-base/src/provider/tests.rs            |  3 +
@@ -44,8 +52,8 @@ scripts/cargo_exec.sh test -p jcode-provider-openrouter-runtime eu_openrouter --
  .../jcode-provider-openrouter-runtime/src/lib.rs   | 62 ++++++++++++-------
  .../src/openrouter_provider_impl.rs                | 33 ++++++++--
  .../src/openrouter_tests.rs                        | 39 ++++++++++++
- crates/jcode-provider-openrouter/src/lib.rs        | 51 ++++++++++++++-
- crates/jcode-tui/src/tui/app/auth.rs               | 28 +++++++-
+ crates/jcode-provider-openrouter/src/lib.rs        | 64 +++++++++++++++++--
+ crates/jcode-tui/src/tui/app/auth.rs               | 29 ++++++++-
  .../jcode-tui/src/tui/app/auth_account_commands.rs | 52 +++++++++++++---
  crates/jcode-tui/src/tui/app/auth_tests.rs         | 21 +++++++
  crates/jcode-tui/src/tui/app/inline_interactive.rs |  4 +-
@@ -54,20 +62,20 @@ scripts/cargo_exec.sh test -p jcode-provider-openrouter-runtime eu_openrouter --
  .../app/inline_interactive_placeholder_routes.rs   |  3 +-
  .../src/tui/app/onboarding_flow_control.rs         | 12 +++-
  crates/jcode-tui/src/tui/app/remote.rs             |  5 ++
- .../src/tui/app/state_ui_input_helpers.rs          | 26 +++++---
- .../app/tests/state_model_poke_02/part_02.rs       |  4 +-
+ .../src/tui/app/state_ui_input_helpers.rs          | 27 +++++---
+ .../tui/app/tests/state_model_poke_02/part_02.rs   |  4 +-
  crates/jcode-tui/src/tui/ui_header.rs              | 10 +++
  src/cli/login.rs                                   | 26 +++++++-
  src/cli/provider_init.rs                           | 29 +++++++++
  src/cli/startup.rs                                 |  3 +
- 34 files changed, 577 insertions(+), 69 deletions(-)
+ 36 files changed, 632 insertions(+), 77 deletions(-)
 
 diff --git a/crates/jcode-base/src/auth/lifecycle.rs b/crates/jcode-base/src/auth/lifecycle.rs
 index 3372e40fb..40f523bbe 100644
 --- a/crates/jcode-base/src/auth/lifecycle.rs
 +++ b/crates/jcode-base/src/auth/lifecycle.rs
 @@ -833,6 +833,9 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
- 
+
  pub fn normalized_auth_provider_id(provider_hint: Option<&str>) -> Option<&'static str> {
      let provider = provider_hint?.trim();
 +    if provider.eq_ignore_ascii_case("openrouter-eu") {
@@ -131,7 +139,7 @@ index 070054b77..1647af6c7 100644
 @@ -159,6 +162,15 @@ impl ProviderActivation {
              .with_model_hint("JCODE_OPENROUTER_MODEL", model)
      }
- 
+
 +    pub fn openrouter_eu(model: Option<String>) -> Self {
 +        let activation = Self::initial(RuntimeProviderId::OpenRouterEu, ActiveProvider::OpenRouter);
 +        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
@@ -161,7 +169,7 @@ index 070054b77..1647af6c7 100644
 @@ -200,6 +217,10 @@ impl ProviderActivation {
              RuntimeSelection::Unchanged => {}
          }
- 
+
 +        if self.runtime_id == RuntimeProviderId::OpenRouterEu {
 +            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openrouter-eu");
 +        }
@@ -176,7 +184,7 @@ index 90bb8d384..f795367b9 100644
 @@ -14,6 +14,25 @@ use super::{
      openrouter_catalog_model_id, provider_for_model, standard_openrouter_profile_configured,
  };
- 
+
 +fn configured_eu_openrouter_routes() -> Vec<ModelRoute> {
 +    let Some(cache) = jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter-eu") else {
 +        return Vec::new();
@@ -199,10 +207,10 @@ index 90bb8d384..f795367b9 100644
  /// Build the fast local route snapshot used by the TUI model picker while the
  /// full provider catalog is hydrating.
  ///
-@@ -259,6 +278,23 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
+@@ -259,6 +278,24 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
          append_openrouter_alternative_routes(&mut routes, &mut openrouter_stats);
      }
- 
+
 +    let active_is_eu = provider
 +        .openrouter_provider()
 +        .is_some_and(|runtime| runtime.display_name().eq_ignore_ascii_case("OpenRouter EU"));
@@ -211,6 +219,7 @@ index 90bb8d384..f795367b9 100644
 +            if route.api_method == "openrouter" {
 +                route.api_method = "openrouter-eu".to_string();
 +                route.provider = "OpenRouter EU".to_string();
++                route.cheapness = cheapness_for_route(&route.model, &route.provider, "openrouter-eu");
 +            }
 +        }
 +        // EU and standard OpenRouter share credentials but have independent
@@ -260,7 +269,7 @@ index a4696a769..7f38143d6 100644
 +            runtime_identity,
          )
      }
- 
+
 @@ -1398,9 +1403,24 @@ impl MultiProvider {
                  .map(|pin| format!("{model}@{pin}"))
                  .unwrap_or(model)
@@ -304,7 +313,7 @@ index a4696a769..7f38143d6 100644
 @@ -2003,6 +2029,36 @@ impl Provider for MultiProvider {
              return self.set_model_on_openai_compatible_profile(profile, target_model);
          }
- 
+
 +        if let Some(target_model) = requested_model.strip_prefix("openrouter-eu:") {
 +            let target_model = target_model.trim();
 +            if target_model.is_empty() {
@@ -355,6 +364,125 @@ index a4696a769..7f38143d6 100644
          } else {
              None
          };
+diff --git a/crates/jcode-base/src/provider/openrouter.rs b/crates/jcode-base/src/provider/openrouter.rs
+index b229ba712..01e1cdb55 100644
+--- a/crates/jcode-base/src/provider/openrouter.rs
++++ b/crates/jcode-base/src/provider/openrouter.rs
+@@ -20,8 +20,10 @@ use crate::provider_catalog::{
+ };
+ pub use jcode_provider_openrouter::{
+     EndpointInfo, ModelInfo, ModelPricing, ModelTimestampIndex, ProviderRouting,
+-    all_model_timestamps, load_endpoints_disk_cache_public, load_model_pricing_disk_cache_public,
+-    load_model_timestamp_index, model_created_timestamp, model_created_timestamp_from_index,
++    all_model_timestamps, load_endpoints_disk_cache_public,
++    load_endpoints_disk_cache_public_for_namespace, load_model_pricing_disk_cache_for_namespace,
++    load_model_pricing_disk_cache_public, load_model_timestamp_index, model_created_timestamp,
++    model_created_timestamp_from_index,
+ };
+
+ /// Whether the standard OpenRouter public catalog (disk cache) lists a model.
+diff --git a/crates/jcode-base/src/provider/pricing.rs b/crates/jcode-base/src/provider/pricing.rs
+index 1ad7362c8..57ef098b5 100644
+--- a/crates/jcode-base/src/provider/pricing.rs
++++ b/crates/jcode-base/src/provider/pricing.rs
+@@ -132,10 +132,11 @@ pub(crate) fn openrouter_pricing_from_model_pricing(
+ }
+
+ pub(crate) fn openrouter_route_pricing(
++    namespace: &str,
+     model: &str,
+     provider: &str,
+ ) -> Option<RouteCheapnessEstimate> {
+-    let cache = openrouter::load_endpoints_disk_cache_public(model);
++    let cache = openrouter::load_endpoints_disk_cache_public_for_namespace(namespace, model);
+     if let Some((endpoints, _)) = cache.as_ref() {
+         if provider == "auto"
+             && let Some(best) = endpoints.first()
+@@ -160,7 +161,7 @@ pub(crate) fn openrouter_route_pricing(
+         }
+     }
+
+-    openrouter::load_model_pricing_disk_cache_public(model).and_then(|pricing| {
++    openrouter::load_model_pricing_disk_cache_for_namespace(namespace, model).and_then(|pricing| {
+         openrouter_pricing_from_model_pricing(
+             &pricing,
+             RouteCostSource::OpenRouterCatalog,
+@@ -212,8 +213,8 @@ pub fn metered_pricing_for_source_with_tier(
+
+     // 2. OpenRouter's own caches carry per-endpoint pricing, which is more
+     // precise than any catalog average for the route actually used.
+-    if source_key == "openrouter"
+-        && let Some(estimate) = openrouter_route_pricing(model, "auto")
++    if matches!(source_key, "openrouter" | "openrouter-eu")
++        && let Some(estimate) = openrouter_route_pricing(source_key, model, "auto")
+     {
+         return Some(estimate);
+     }
+@@ -278,16 +279,16 @@ pub(crate) fn cheapness_for_route(
+     match api_method {
+         "copilot" => Some(copilot_pricing(model)),
+-        "openrouter" => {
++        "openrouter" | "openrouter-eu" => {
+             let model_id = if model.contains('/') {
+                 model.to_string()
+             } else if provider_for_model(model) == Some("claude") {
+                 format!("anthropic/{}", model)
+             } else if ALL_OPENAI_MODELS.contains(&model) {
+                 format!("openai/{}", model)
+             } else {
+                 model.to_string()
+             };
+-            openrouter_route_pricing(&model_id, provider)
+-                .or_else(|| metered_pricing_for_source("openrouter", &model_id))
++            openrouter_route_pricing(api_method, &model_id, provider)
++                .or_else(|| metered_pricing_for_source(api_method, &model_id))
+         }
+         _ => None,
+@@ -367,6 +368,44 @@ mod tests {
+         assert_eq!(estimate.cache_read_price_per_mtok_micros, Some(250_000));
+     }
+
++    #[test]
++    fn openrouter_eu_pricing_uses_its_isolated_catalog_cache() {
++        with_clean_provider_test_env(|| {
++            let model = jcode_provider_openrouter::ModelInfo {
++                id: "openai/gpt-5.6-terra".to_string(),
++                name: "OpenAI: GPT-5.6 Terra".to_string(),
++                context_length: Some(1_050_000),
++                pricing: openrouter::ModelPricing {
++                    prompt: Some("0.0000022".to_string()),
++                    completion: Some("0.0000132".to_string()),
++                    input_cache_read: Some("0.00000022".to_string()),
++                    input_cache_write: None,
++                },
++                created: None,
++            };
++            jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
++                "openrouter-eu",
++                &[model],
++                Some("https://eu.openrouter.ai/api/v1"),
++            );
++
++            let estimate = metered_pricing_for_source("openrouter-eu", "openai/gpt-5.6-terra")
++                .expect("priced model from the EU cache");
++            assert!(matches!(
++                estimate.source,
++                RouteCostSource::OpenRouterEndpoint | RouteCostSource::OpenRouterCatalog
++            ));
++            assert_eq!(estimate.input_price_per_mtok_micros, Some(2_200_000));
++            assert_eq!(estimate.output_price_per_mtok_micros, Some(13_200_000));
++            assert_eq!(estimate.cache_read_price_per_mtok_micros, Some(220_000));
++
++            let route_estimate =
++                cheapness_for_route("openai/gpt-5.6-terra", "auto", "openrouter-eu")
++                    .expect("EU route uses the EU cache");
++            assert_eq!(route_estimate.input_price_per_mtok_micros, Some(2_200_000));
++        });
++    }
++
+     #[test]
+     fn cheapness_for_openai_route_falls_back_to_subscription_for_unpriced_api_key_models() {
+         with_clean_provider_test_env(|| {
 diff --git a/crates/jcode-base/src/provider/selection.rs b/crates/jcode-base/src/provider/selection.rs
 index d9cddddeb..82d62df6d 100644
 --- a/crates/jcode-base/src/provider/selection.rs
@@ -390,7 +518,7 @@ index d9cddddeb..82d62df6d 100644
 +            ModelRouteApiMethod::OpenRouterEu => format!("openrouter-eu:{}", bare_name),
              _ => bare_name.to_string(),
          };
- 
+
 @@ -194,6 +198,7 @@ impl MultiProvider {
                  Some("antigravity".to_string())
              }
@@ -418,7 +546,7 @@ index d9cddddeb..82d62df6d 100644
              "antigravity" => "antigravity",
 @@ -424,7 +430,7 @@ impl MultiProvider {
          let provider_key = Self::canonical_session_provider_key(provider_key);
- 
+
          match provider_key {
 -            "copilot" | "antigravity" | "gemini" | "cursor" | "bedrock" | "openrouter" => {
 +            "copilot" | "antigravity" | "gemini" | "cursor" | "bedrock" | "openrouter" | "openrouter-eu" => {
@@ -436,7 +564,7 @@ index d9cddddeb..82d62df6d 100644
 @@ -495,6 +502,10 @@ impl MultiProvider {
              return None;
          }
- 
+
 +        if trimmed.eq_ignore_ascii_case("openrouter-eu") {
 +            return Some(ConfigProviderSelection::OpenRouterEu);
 +        }
@@ -447,7 +575,7 @@ index d9cddddeb..82d62df6d 100644
 @@ -533,6 +544,16 @@ impl MultiProvider {
  mod tests {
      use super::*;
- 
+
 +    #[test]
 +    fn openrouter_eu_is_first_class_default_selection() {
 +        let cfg = crate::config::Config::default();
@@ -477,7 +605,7 @@ index a8fdd3653..b42daed74 100644
 +        } else {
 +            openrouter::has_credentials()
 +        };
- 
+
          let use_claude_cli = std::env::var("JCODE_USE_CLAUDE_CLI")
              .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 @@ -228,7 +234,12 @@ impl MultiProvider {
@@ -558,7 +686,7 @@ index 161979294..337c677aa 100644
 +++ b/crates/jcode-base/src/provider_catalog.rs
 @@ -293,6 +293,9 @@ pub fn active_openai_compatible_display_name() -> Option<String> {
  }
- 
+
  pub fn runtime_provider_display_name(provider_name: &str) -> String {
 +    if provider_name.eq_ignore_ascii_case("openrouter-eu") {
 +        return "OpenRouter EU".to_string();
@@ -632,12 +760,12 @@ index 054024402..4c0f24914 100644
              "cursor" => Self::Cursor,
 @@ -931,7 +937,7 @@ impl ModelRouteApiMethod {
      }
- 
+
      pub fn is_openrouter(&self) -> bool {
 -        matches!(self, Self::OpenRouter)
 +        matches!(self, Self::OpenRouter | Self::OpenRouterEu)
      }
- 
+
      pub fn is_copilot(&self) -> bool {
 @@ -967,6 +973,7 @@ impl ModelRouteApiMethod {
                  "api key".to_string()
@@ -650,7 +778,7 @@ index 054024402..4c0f24914 100644
 @@ -1609,6 +1616,22 @@ mod tests {
          );
      }
- 
+
 +    #[test]
 +    fn runtime_key_and_route_selection_preserve_openrouter_eu_identity() {
 +        let method = ModelRouteApiMethod::parse("openrouter-eu");
@@ -750,7 +878,7 @@ index 11c89394a..800f8116e 100644
  use models_catalog_parse::parse_openai_compatible_models_response;
  use reqwest::Client;
 @@ -54,8 +53,11 @@ const RETRY_BASE_DELAY_MS: u64 = 1000;
- 
+
  /// OpenRouter API base URL
  const DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
 +const EU_API_BASE: &str = "https://eu.openrouter.ai/api/v1";
@@ -768,7 +896,7 @@ index 11c89394a..800f8116e 100644
 -        send_openrouter_headers && profile_id.is_none_or(|id| id.eq_ignore_ascii_case("openrouter"))
 +        send_openrouter_headers && profile_id.is_none_or(|id| id.eq_ignore_ascii_case("openrouter") || id.eq_ignore_ascii_case("openrouter-eu"))
      }
- 
+
      fn normalize_reasoning_effort(raw: &str) -> Option<String> {
 @@ -1173,6 +1175,9 @@ impl OpenRouterProvider {
      /// after a runtime `/model` switch to a different OpenAI-compatible profile
@@ -793,7 +921,7 @@ index 11c89394a..800f8116e 100644
 @@ -1577,15 +1585,15 @@ impl OpenRouterProvider {
          })
      }
- 
+
 -    pub fn new_openrouter_api_key_runtime() -> Result<Self> {
 -        let api_key = load_api_key_from_env_or_config(DEFAULT_API_KEY_NAME, DEFAULT_ENV_FILE)
 +    fn new_official_api_key_runtime(api_base: &str, cache_namespace: &str, key_name: &str, env_file: &str) -> Result<Self> {
@@ -836,7 +964,7 @@ index 11c89394a..800f8116e 100644
 @@ -1618,6 +1626,14 @@ impl OpenRouterProvider {
          })
      }
- 
+
 +    pub fn new_openrouter_api_key_runtime() -> Result<Self> {
 +        Self::new_official_api_key_runtime(DEFAULT_API_BASE, "openrouter", DEFAULT_API_KEY_NAME, DEFAULT_ENV_FILE)
 +    }
@@ -850,7 +978,7 @@ index 11c89394a..800f8116e 100644
      ) -> Result<Self> {
 @@ -2071,7 +2087,7 @@ impl OpenRouterProvider {
          }
- 
+
          let ranked = {
 -            let mut endpoints = load_endpoints_disk_cache(model).or_else(|| {
 +            let mut endpoints = self.load_endpoints_disk_cache(model).or_else(|| {
@@ -859,7 +987,7 @@ index 11c89394a..800f8116e 100644
              });
 @@ -2154,7 +2170,7 @@ impl OpenRouterProvider {
          }
- 
+
          // Fall back to ranked endpoint data
 -        let endpoints = load_endpoints_disk_cache(&model).or_else(|| {
 +        let endpoints = self.load_endpoints_disk_cache(&model).or_else(|| {
@@ -867,9 +995,9 @@ index 11c89394a..800f8116e 100644
                  .try_read()
                  .ok()?
 @@ -2185,7 +2201,7 @@ impl OpenRouterProvider {
- 
+
          let mut providers: Vec<String> = Vec::new();
- 
+
 -        if let Some(endpoints) = load_endpoints_disk_cache(model) {
 +        if let Some(endpoints) = self.load_endpoints_disk_cache(model) {
              providers.extend(endpoints.into_iter().map(|e| e.provider_name));
@@ -886,7 +1014,7 @@ index 11c89394a..800f8116e 100644
                  Some(age),
 @@ -2222,8 +2238,8 @@ impl OpenRouterProvider {
          }
- 
+
          // Try endpoints disk cache first (has pricing, uptime, cache info)
 -        if let Some(endpoints) = load_endpoints_disk_cache(model) {
 -            if let Some((_, age)) = load_endpoints_disk_cache_public(model) {
@@ -897,7 +1025,7 @@ index 11c89394a..800f8116e 100644
                      Some(age),
 @@ -2291,7 +2307,7 @@ impl OpenRouterProvider {
      }
- 
+
      fn cached_endpoints_fingerprint(&self, model: &str) -> String {
 -        if let Some(endpoints) = load_endpoints_disk_cache(model) {
 +        if let Some(endpoints) = self.load_endpoints_disk_cache(model) {
@@ -906,7 +1034,7 @@ index 11c89394a..800f8116e 100644
          if let Ok(cache) = self.endpoints_cache.try_read()
 @@ -2465,7 +2481,7 @@ impl OpenRouterProvider {
          }
- 
+
          // Check disk cache
 -        if let Some(endpoints) = load_endpoints_disk_cache(model) {
 +        if let Some(endpoints) = self.load_endpoints_disk_cache(model) {
@@ -915,25 +1043,25 @@ index 11c89394a..800f8116e 100644
              return Ok(endpoints);
 @@ -2505,7 +2521,7 @@ impl OpenRouterProvider {
          let endpoints = resp.data.endpoints;
- 
+
          // Save to disk cache
 -        save_endpoints_disk_cache(model, &endpoints);
 +        self.save_endpoints_disk_cache(model, &endpoints);
- 
+
          // Update in-memory cache
          {
 @@ -2558,7 +2574,7 @@ impl OpenRouterProvider {
              .context("Failed to parse endpoints response")?;
- 
+
          let endpoints = resp.data.endpoints;
 -        save_endpoints_disk_cache(model, &endpoints);
 +        self.save_endpoints_disk_cache(model, &endpoints);
- 
+
          let mut cache = self.endpoints_cache.write().await;
          cache.insert(model.to_string(), (now, endpoints.clone()));
 @@ -2636,7 +2652,7 @@ impl OpenRouterProvider {
          }
- 
+
          // Check per-provider endpoint data (any provider supporting cache is enough)
 -        let endpoints = load_endpoints_disk_cache(model_id).or_else(|| {
 +        let endpoints = self.load_endpoints_disk_cache(model_id).or_else(|| {
@@ -967,7 +1095,7 @@ index 2094bdab4..3fce6aba6 100644
          let static_model_ids: HashSet<String> = self.static_models.iter().cloned().collect();
 -        let is_direct_profile = self.profile_id.is_some();
 +        let is_direct_profile = self.profile_id.as_deref().is_some_and(|id| id != "openrouter-eu");
- 
+
          self.available_models_display()
              .into_iter()
 @@ -647,7 +648,7 @@ impl Provider for OpenRouterProvider {
@@ -981,7 +1109,7 @@ index 2094bdab4..3fce6aba6 100644
          }
 @@ -677,7 +678,7 @@ impl Provider for OpenRouterProvider {
              }
- 
+
              for model in refreshed_models.iter().map(|info| info.id.clone()) {
 -                if load_endpoints_disk_cache_public(&model).is_some() {
 +                if self.load_endpoints_disk_cache_public(&model).is_some() {
@@ -997,7 +1125,7 @@ index 2094bdab4..3fce6aba6 100644
              .then(|| self.profile_id.clone())
              .flatten()
      }
- 
+
 +    fn endpoint_cache_namespace(&self) -> String {
 +        self.foreground_cache_namespace()
 +            .unwrap_or_else(|| if self.api_base.trim_end_matches('/') == "https://eu.openrouter.ai/api/v1" { "openrouter-eu".to_string() } else { "openrouter".to_string() })
@@ -1035,7 +1163,7 @@ index 962270ddd..ac64983f0 100644
 @@ -2580,6 +2580,45 @@ fn non_subscription_runtimes_keep_existing_display_and_route_identity() {
      );
  }
- 
+
 +#[test]
 +fn eu_openrouter_runtime_reuses_key_with_distinct_endpoint_and_cache_namespace() {
 +    let _lock = ENV_LOCK.lock();
@@ -1079,30 +1207,50 @@ index 962270ddd..ac64983f0 100644
  fn custom_endpoint_using_jcode_key_name_is_not_a_subscription_runtime() {
      let _lock = ENV_LOCK.lock();
 diff --git a/crates/jcode-provider-openrouter/src/lib.rs b/crates/jcode-provider-openrouter/src/lib.rs
-index 2066a48c4..6c818fe35 100644
+index 2066a48c4..517eeeaa2 100644
 --- a/crates/jcode-provider-openrouter/src/lib.rs
 +++ b/crates/jcode-provider-openrouter/src/lib.rs
 @@ -3,7 +3,7 @@ pub mod stream;
- 
+
  use serde::{Deserialize, Serialize};
  use std::collections::HashMap;
 -use std::path::PathBuf;
 +use std::path::{Path, PathBuf};
  use std::sync::{LazyLock, Mutex};
  use std::time::{Instant, SystemTime};
- 
+
 @@ -363,7 +363,7 @@ fn cache_path() -> PathBuf {
      cache_path_for_namespace(&configured_cache_namespace())
  }
- 
+
 -fn disk_cache_modified_at(path: &PathBuf) -> Option<SystemTime> {
 +fn disk_cache_modified_at(path: &Path) -> Option<SystemTime> {
      std::fs::metadata(path).ok()?.modified().ok()
  }
- 
-@@ -552,8 +552,11 @@ fn save_disk_cache_with_source_to_path(
+
+@@ -417,7 +417,18 @@ pub fn load_disk_cache() -> Option<Vec<ModelInfo>> {
  }
- 
+
+ pub fn load_model_pricing_disk_cache_public(model_id: &str) -> Option<ModelPricing> {
+-    load_disk_cache()?
++    load_model_pricing_disk_cache_for_namespace(&configured_cache_namespace(), model_id)
++}
++
++/// Read model pricing from one explicit OpenRouter cache namespace. This keeps
++/// independently configured OpenRouter instances, such as OpenRouter EU,
++/// isolated while allowing callers outside the active runtime to price them.
++pub fn load_model_pricing_disk_cache_for_namespace(
++    namespace: &str,
++    model_id: &str,
++) -> Option<ModelPricing> {
++    load_disk_cache_entry_for_namespace(namespace)?
++        .models
+         .into_iter()
+         .find(|model| model.id == model_id)
+         .map(|model| model.pricing)
+@@ -552,8 +563,11 @@ fn save_disk_cache_with_source_to_path(
+ }
+
  fn endpoints_cache_path(model: &str) -> PathBuf {
 +    endpoints_cache_path_for_namespace(&configured_cache_namespace(), model)
 +}
@@ -1113,10 +1261,10 @@ index 2066a48c4..6c818fe35 100644
      dirs::home_dir()
          .unwrap_or_else(|| PathBuf::from("."))
          .join(".jcode")
-@@ -561,6 +564,48 @@ fn endpoints_cache_path(model: &str) -> PathBuf {
+@@ -561,6 +575,48 @@ fn endpoints_cache_path(model: &str) -> PathBuf {
          .join(format!("{}_endpoints_{}.json", namespace, safe_name))
  }
- 
+
 +pub fn load_endpoints_disk_cache_public_for_namespace(
 +    namespace: &str,
 +    model: &str,
@@ -1185,7 +1333,7 @@ index 0f2768119..deb8d8434 100644
 @@ -251,6 +251,12 @@ impl App {
          self.push_display_message(DisplayMessage::system(message));
      }
- 
+
 +    pub(crate) fn auth_status_menu_providers() -> Vec<crate::provider_catalog::LoginProviderDescriptor> {
 +        let mut providers = crate::provider_catalog::auth_status_login_providers();
 +        providers.push(self::auth_account_commands::openrouter_eu_descriptor());
@@ -1211,7 +1359,7 @@ index 0f2768119..deb8d8434 100644
 @@ -1488,6 +1498,19 @@ impl App {
          );
      }
- 
+
 +    fn start_openrouter_eu_login(&mut self) {
 +        self.start_api_key_login(
 +            "OpenRouter EU",
@@ -1265,7 +1413,7 @@ index 1f03123a4..3d08e8007 100644
 +    }
      crate::provider_catalog::resolve_login_provider(input)
  }
- 
+
 +pub(crate) fn openrouter_eu_descriptor() -> crate::provider_catalog::LoginProviderDescriptor {
 +    crate::provider_catalog::LoginProviderDescriptor {
 +        id: "openrouter-eu",
@@ -1327,7 +1475,7 @@ index f8bcc8374..d33446757 100644
 @@ -3,6 +3,27 @@ use super::{
      save_tui_openai_compatible_key,
  };
- 
+
 +#[test]
 +fn auth_status_menu_includes_openrouter_eu() {
 +    let providers = App::auth_status_menu_providers();
@@ -1390,7 +1538,8 @@ diff --git a/crates/jcode-tui/src/tui/app/inline_interactive/openers.rs b/crates
 index 2e02954a5..cc13c15ea 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive/openers.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive/openers.rs
-@@ -76,6 +76,7 @@ impl App {
+@@ -75,7 +75,8 @@ impl App {
+
      fn open_auth_provider_picker_inline(&mut self, logout: bool) {
          let status = crate::auth::AuthStatus::check_fast();
 -        let providers = crate::provider_catalog::tui_login_providers();
@@ -1465,7 +1614,7 @@ index 26871453b..96bdc5a83 100644
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 @@ -473,21 +473,32 @@ impl App {
              };
- 
+
              for route in routes {
 -                if route.model == model && route.api_method == "openrouter" {
 +                if route.model == model
@@ -1516,7 +1665,10 @@ diff --git a/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_02.rs b
 index 3eb86eee2..adc33fa93 100644
 --- a/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_02.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_02.rs
-@@ -179,4 +179,6 @@ fn test_login_command_suggestions_follow_provider_catalog() {
+@@ -175,7 +175,9 @@ fn test_login_command_suggestions_follow_provider_catalog() {
+     let app = create_test_app();
+     let suggestions = app.get_suggestions_for("/login ");
+
 -    for provider in crate::provider_catalog::tui_login_providers() {
 +    for provider in
 +        crate::tui::app::auth::auth_account_commands::tui_login_providers_with_eu()
@@ -1541,7 +1693,7 @@ index 6af069161..8c7044e8e 100644
 +    } else {
 +        AuthState::NotConfigured
 +    };
- 
+
      vec![
          (anthropic_label, auth.anthropic.state),
          ("openrouter".to_string(), auth.openrouter),
@@ -1589,7 +1741,7 @@ index c523261c3..6885bfb4b 100644
 @@ -631,6 +641,20 @@ fn login_openrouter_flow() -> Result<()> {
      Ok(())
  }
- 
+
 +fn login_openrouter_eu_flow() -> Result<()> {
 +    eprintln!("Setting up OpenRouter EU...");
 +    eprintln!("Get your API key from: https://openrouter.ai/keys\n");
@@ -1614,7 +1766,7 @@ index b962a276a..21fbddce3 100644
 @@ -16,6 +16,25 @@ use crate::tool;
  use super::login::run_login_provider;
  use super::output;
- 
+
 +pub const OPENROUTER_EU_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
 +    id: "openrouter-eu",
 +    display_name: "OpenRouter EU",
