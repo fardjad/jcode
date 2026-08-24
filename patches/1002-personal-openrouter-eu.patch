@@ -1,54 +1,64 @@
-From 79dc5dcb8563b4d85e6ddc20bb3444b00ac8f309 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Sun, 23 Aug 2026 15:12:21 +0200
+Date: Mon, 24 Aug 2026 00:00:00 +0200
 Subject: [PATCH] feat: add OpenRouter EU provider
 X-Jcode-Patch-Intent: add first-class OpenRouter EU provider
 X-Jcode-Patch-Kind: personal-provider
 X-Jcode-Patch-Depends-On: none
 
 Patch intent:
-Add openrouter-eu with EU endpoint, isolated credentials, /auth support, and model switching.
+Add openrouter-eu with EU endpoint, isolated credentials, autocomplete, and
+TUI visibility.
 
 Why it exists:
-Routes EU OpenRouter traffic through eu.openrouter.ai using OPENROUTER_EU_API_KEY.
+Routes EU OpenRouter traffic through eu.openrouter.ai while preserving separate
+identity and credentials.
 
 Upstream integration points:
-Provider core, runtime, catalog, selection, auth, session, CLI, and TUI retain EU identity.
+Provider core, runtime, catalog, selection, auth, session, CLI, autocomplete,
+and TUI.
 
 Update guidance:
-Preserve typed EU identity, separate credentials, /auth parser, model switching, and effort support.
+Preserve typed EU identity, separate credentials, /auth parsing, model switching,
+and visibility.
 
 Validation:
 scripts/cargo_exec.sh test -p jcode-provider-openrouter-runtime eu_openrouter --lib
 ---
- crates/jcode-base/src/auth/lifecycle.rs       |  6 ++
- crates/jcode-base/src/provider/activation.rs  | 23 +++++-
- .../jcode-base/src/provider/catalog_routes.rs | 36 ++++++++++
- crates/jcode-base/src/provider/external.rs    |  1 +
- crates/jcode-base/src/provider/mod.rs         | 72 +++++++++++++++++--
- crates/jcode-base/src/provider/selection.rs   | 25 ++++++-
- crates/jcode-base/src/provider/startup.rs     | 18 ++++-
- crates/jcode-base/src/provider/tests.rs       |  3 +
- .../tests/issue_534_profile_preservation.rs   |  1 +
- crates/jcode-base/src/provider_activity.rs    |  4 ++
- crates/jcode-base/src/provider_catalog.rs     |  3 +
- crates/jcode-base/src/session.rs              |  1 +
- crates/jcode-provider-core/src/lib.rs         | 25 ++++++-
- crates/jcode-provider-core/src/selection.rs   | 13 +++-
- .../src/lib.rs                                | 62 ++++++++++------
- .../src/openrouter_provider_impl.rs           | 33 +++++++--
- .../src/openrouter_tests.rs                   | 39 ++++++++++
- crates/jcode-provider-openrouter/src/lib.rs   | 51 ++++++++++++-
- crates/jcode-tui/src/tui/app/auth.rs          | 27 ++++++-
- .../src/tui/app/auth_account_commands.rs      | 52 ++++++++++++--
- crates/jcode-tui/src/tui/app/auth_tests.rs    | 21 ++++++
- .../src/tui/app/inline_interactive.rs         |  3 +-
- .../src/tui/app/inline_interactive/helpers.rs |  1 +
- .../inline_interactive_placeholder_routes.rs  |  3 +-
- src/cli/login.rs                              | 26 ++++++-
- src/cli/provider_init.rs                      | 29 ++++++++
- src/cli/startup.rs                            |  3 +
- 27 files changed, 524 insertions(+), 57 deletions(-)
+
+ crates/jcode-base/src/auth/lifecycle.rs            |  6 ++
+ crates/jcode-base/src/provider/activation.rs       | 23 ++++++-
+ crates/jcode-base/src/provider/catalog_routes.rs   | 36 +++++++++++
+ crates/jcode-base/src/provider/external.rs         |  1 +
+ crates/jcode-base/src/provider/mod.rs              | 72 ++++++++++++++++++++--
+ crates/jcode-base/src/provider/selection.rs        | 25 +++++++-
+ crates/jcode-base/src/provider/startup.rs          | 18 +++++-
+ crates/jcode-base/src/provider/tests.rs            |  3 +
+ .../tests/issue_534_profile_preservation.rs        |  1 +
+ crates/jcode-base/src/provider_activity.rs         |  4 ++
+ crates/jcode-base/src/provider_catalog.rs          |  3 +
+ crates/jcode-base/src/session.rs                   |  1 +
+ crates/jcode-provider-core/src/lib.rs              | 25 +++++++-
+ crates/jcode-provider-core/src/models.rs           |  1 +
+ crates/jcode-provider-core/src/selection.rs        | 13 +++-
+ .../jcode-provider-openrouter-runtime/src/lib.rs   | 62 ++++++++++++-------
+ .../src/openrouter_provider_impl.rs                | 33 ++++++++--
+ .../src/openrouter_tests.rs                        | 39 ++++++++++++
+ crates/jcode-provider-openrouter/src/lib.rs        | 51 ++++++++++++++-
+ crates/jcode-tui/src/tui/app/auth.rs               | 27 +++++++-
+ .../jcode-tui/src/tui/app/auth_account_commands.rs | 52 +++++++++++++---
+ crates/jcode-tui/src/tui/app/auth_tests.rs         | 21 +++++++
+ crates/jcode-tui/src/tui/app/inline_interactive.rs |  4 +-
+ .../src/tui/app/inline_interactive/helpers.rs      |  1 +
+ .../app/inline_interactive_placeholder_routes.rs   |  3 +-
+ .../src/tui/app/onboarding_flow_control.rs         | 12 +++-
+ crates/jcode-tui/src/tui/app/remote.rs             |  5 ++
+ .../src/tui/app/state_ui_input_helpers.rs          | 25 +++++---
+ crates/jcode-tui/src/tui/ui_header.rs              | 10 +++
+ src/cli/login.rs                                   | 26 +++++++-
+ src/cli/provider_init.rs                           | 29 +++++++++
+ src/cli/startup.rs                                 |  3 +
+ 32 files changed, 570 insertions(+), 65 deletions(-)
 
 diff --git a/crates/jcode-base/src/auth/lifecycle.rs b/crates/jcode-base/src/auth/lifecycle.rs
 index 3372e40fb..40f523bbe 100644
@@ -658,6 +668,18 @@ index 054024402..4c0f24914 100644
      #[test]
      fn route_selection_preserves_runtime_identity_from_model_route() {
          let selection = RouteSelection::from_model_route(&ModelRoute {
+diff --git a/crates/jcode-provider-core/src/models.rs b/crates/jcode-provider-core/src/models.rs
+index 011fbb4f2..90bbec32d 100644
+--- a/crates/jcode-provider-core/src/models.rs
++++ b/crates/jcode-provider-core/src/models.rs
+@@ -130,6 +130,7 @@ pub fn provider_key_from_hint(provider_hint: Option<&str>) -> Option<&'static st
+         "anthropic" | "claude" => Some("claude"),
+         "openai" => Some("openai"),
+         "openrouter" => Some("openrouter"),
++        "openrouter-eu" | "eu-openrouter" => Some("openrouter-eu"),
+         "copilot" | "github copilot" => Some("copilot"),
+         "antigravity" => Some("antigravity"),
+         "gemini" | "google gemini" => Some("gemini"),
 diff --git a/crates/jcode-provider-core/src/selection.rs b/crates/jcode-provider-core/src/selection.rs
 index 6a7431a69..0f8e7ca44 100644
 --- a/crates/jcode-provider-core/src/selection.rs
@@ -1322,10 +1344,18 @@ index f8bcc8374..d33446757 100644
      let _env_guard = crate::storage::lock_test_env();
      let temp = tempfile::tempdir().expect("tempdir");
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index a0ddb4c72..2001c56c2 100644
+index a0ddb4c72..c1c1c15af 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-@@ -1570,7 +1570,8 @@ impl App {
+@@ -461,6 +461,7 @@ fn model_picker_provider_hint_from_model_spec(model_spec: &str) -> Option<(&str,
+             | "antigravity"
+             | "bedrock"
+             | "openrouter"
++            | "openrouter-eu"
+             | "gemini"
+     ) || crate::provider_catalog::openai_compatible_profile_by_id(provider_hint).is_some()
+     {
+@@ -1570,7 +1571,8 @@ impl App {
                  | crate::provider::ModelRouteApiMethod::OpenAiCompatible { .. } => 1,
                  crate::provider::ModelRouteApiMethod::Cursor => 2,
                  crate::provider::ModelRouteApiMethod::Copilot => 3,
@@ -1361,6 +1391,121 @@ index 9c16a3b93..1ae780bfe 100644
          // Named OpenAI-compatible profiles expose effort through `/effort`.
          // Expanding them here creates one duplicate picker row per effort.
          Method::OpenAiCompatible { .. } => false,
+diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
+index 10946dab2..65aad3fb2 100644
+--- a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
++++ b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
+@@ -1417,7 +1417,16 @@ impl App {
+         use crate::auth::AuthState;
+         let status = crate::auth::AuthStatus::check_fast();
+         // (display name, provider-key, state)
+-        let providers: [(&str, &str, AuthState); 8] = [
++        let eu_state = if crate::provider_catalog::load_api_key_from_env_or_config(
++            "OPENROUTER_EU_API_KEY",
++            "openrouter-eu.env",
++        )
++        .is_some() {
++            AuthState::Available
++        } else {
++            AuthState::NotConfigured
++        };
++        let providers: [(&str, &str, AuthState); 9] = [
+             ("Anthropic (Claude)", "anthropic", status.anthropic.state),
+             ("OpenAI", "openai", status.openai),
+             ("Jcode subscription", "jcode", status.jcode),
+@@ -1425,6 +1434,7 @@ impl App {
+             ("GitHub Copilot", "copilot", status.copilot),
+             ("Cursor", "cursor", status.cursor),
+             ("OpenRouter", "openrouter", status.openrouter),
++            ("OpenRouter EU", "openrouter-eu", eu_state),
+             ("Antigravity", "antigravity", status.antigravity),
+         ];
+         // Normalize the default provider's key so aliases like "claude" map to
+diff --git a/crates/jcode-tui/src/tui/app/remote.rs b/crates/jcode-tui/src/tui/app/remote.rs
+index 590727f75..72ff8d7df 100644
+--- a/crates/jcode-tui/src/tui/app/remote.rs
++++ b/crates/jcode-tui/src/tui/app/remote.rs
+@@ -678,6 +678,11 @@ pub(super) async fn handle_bus_event(
+ /// after an Anthropic API-key login) and skipping the post-login model switch.
+ fn auth_provider_hint_for_login_provider(provider: &str) -> Option<&'static str> {
+     let provider = provider.trim();
++    if provider.eq_ignore_ascii_case("openrouter-eu")
++        || provider.eq_ignore_ascii_case("eu-openrouter")
++    {
++        return Some("openrouter-eu");
++    }
+     // Azure's runtime id ("azure-openai") differs from its login descriptor id
+     // ("azure"); keep the dedicated mapping used across the auth lifecycle.
+     if provider.eq_ignore_ascii_case("azure")
+diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
+index 26871453b..d272390f6 100644
+--- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
++++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
+@@ -473,21 +473,32 @@ impl App {
+             };
+ 
+             for route in routes {
+-                if route.model == model && route.api_method == "openrouter" {
++                if route.model == model
++                    && matches!(route.api_method.as_str(), "openrouter" | "openrouter-eu")
++                {
+                     let help = if route.provider == "auto" {
+                         "Use automatic OpenRouter provider routing"
+                     } else {
+                         "Pin OpenRouter provider"
+                     };
+-                    push_unique(
+-                        &mut seen,
+-                        &mut suggestions,
+-                        format!("/model {}@{}", openrouter_model, route.provider),
+-                        help,
+-                    );
++                    push_unique(&mut seen, &mut suggestions, if route.api_method == "openrouter-eu" {
++                        format!("/model openrouter-eu:{model}")
++                    } else {
++                        format!("/model {}@{}", openrouter_model, route.provider)
++                    }, help);
+                 }
+             }
+         } else {
++            if self.provider.model_routes().iter().any(|route| {
++                route.model == model && route.api_method == "openrouter-eu"
++            }) {
++                push_unique(
++                    &mut seen,
++                    &mut suggestions,
++                    format!("/model openrouter-eu:{model}"),
++                    "Use OpenRouter EU routing",
++                );
++            }
+             for provider in self.provider.available_providers_for_model(model) {
+                 push_unique(
+                     &mut seen,
+diff --git a/crates/jcode-tui/src/tui/ui_header.rs b/crates/jcode-tui/src/tui/ui_header.rs
+index 6af069161..8c7044e8e 100644
+--- a/crates/jcode-tui/src/tui/ui_header.rs
++++ b/crates/jcode-tui/src/tui/ui_header.rs
+@@ -371,10 +371,20 @@ fn auth_full_specs(
+     } else {
+         provider_label("gemini", auth.gemini, None)
+     };
++    let openrouter_eu_state = if crate::provider_catalog::load_api_key_from_env_or_config(
++        "OPENROUTER_EU_API_KEY",
++        "openrouter-eu.env",
++    )
++    .is_some() {
++        AuthState::Available
++    } else {
++        AuthState::NotConfigured
++    };
+ 
+     vec![
+         (anthropic_label, auth.anthropic.state),
+         ("openrouter".to_string(), auth.openrouter),
++        ("OpenRouter EU".to_string(), openrouter_eu_state),
+         (openai_label, auth.openai),
+         (provider_label("cursor", auth.cursor, None), auth.cursor),
+         (provider_label("copilot", auth.copilot, None), auth.copilot),
 diff --git a/src/cli/login.rs b/src/cli/login.rs
 index c523261c3..6885bfb4b 100644
 --- a/src/cli/login.rs
@@ -1494,5 +1639,3 @@ index ee65bbab9..28c9a7cec 100644
              OpenRouterRuntimeSpec::CompatibleProfile(profile) => std::sync::Arc::new(
                  OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
              ),
--- 
-2.54.0

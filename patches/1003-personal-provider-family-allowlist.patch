@@ -1,37 +1,38 @@
-From 5943e52cec2bee678b1057fb5d257bba8906518f Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Sun, 23 Aug 2026 12:46:51 +0200
+Date: Mon, 24 Aug 2026 00:00:00 +0200
 Subject: [PATCH] feat: restrict provider families
 X-Jcode-Patch-Intent: provider-family model and completion allowlist
 X-Jcode-Patch-Kind: personal-provider-policy
 X-Jcode-Patch-Depends-On: 1002-personal-openrouter-eu.patch
 
 Patch intent:
-Add [provider].allowed_providers to hide disallowed provider-family models and
-block their use.
+Add provider-family allowlisting across catalogs, switching, completion, and
+fallback.
 
 Why it exists:
-Keeps sessions inside an explicit provider allowlist while preserving empty-list
+Keeps sessions inside explicit provider allowlists while preserving empty-list
 legacy behavior.
 
 Upstream integration points:
-Catalogs, model switching, completion, fallback, and endpoint details project
-provider-family policy.
+Catalogs, model switching, completion, fallback, endpoint details, and provider-
+family resolution.
 
 Update guidance:
-Keep route-family mapping exhaustive, including openrouter-eu as a distinct
+Keep route-family mapping exhaustive, including openrouter-eu as distinct
 family.
 
 Validation:
 scripts/cargo_exec.sh test -p jcode-base provider_route_ --lib
 ---
- .../jcode-base/src/provider/catalog_routes.rs |  69 +++++++-
- crates/jcode-base/src/provider/dispatch.rs    |  29 ++++
- crates/jcode-base/src/provider/jcode.rs       |  18 ++
- crates/jcode-base/src/provider/mod.rs         | 148 ++++++++++++++--
- crates/jcode-base/src/provider/tests.rs       | 164 ++++++++++++++++++
- crates/jcode-config-types/src/lib.rs          |   8 +-
- 6 files changed, 409 insertions(+), 27 deletions(-)
+
+ crates/jcode-base/src/provider/catalog_routes.rs |  69 +++++++--
+ crates/jcode-base/src/provider/dispatch.rs       |  29 ++++
+ crates/jcode-base/src/provider/jcode.rs          |  18 +++
+ crates/jcode-base/src/provider/mod.rs            | 151 +++++++++++++++++--
+ crates/jcode-base/src/provider/tests.rs          | 182 +++++++++++++++++++++++
+ crates/jcode-config-types/src/lib.rs             |   8 +-
+ 6 files changed, 430 insertions(+), 27 deletions(-)
 
 diff --git a/crates/jcode-base/src/provider/catalog_routes.rs b/crates/jcode-base/src/provider/catalog_routes.rs
 index f795367b9..729e43cf1 100644
@@ -298,10 +299,10 @@ index 9322be95c..d0d8a6d2b 100644
      }
  
 diff --git a/crates/jcode-base/src/provider/mod.rs b/crates/jcode-base/src/provider/mod.rs
-index 7f38143d6..d4419f7e7 100644
+index 7f38143d6..d0843e3b9 100644
 --- a/crates/jcode-base/src/provider/mod.rs
 +++ b/crates/jcode-base/src/provider/mod.rs
-@@ -445,7 +445,94 @@ pub fn bump_catalog_generation() {
+@@ -445,7 +445,97 @@ pub fn bump_catalog_generation() {
      CATALOG_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
  }
  
@@ -351,6 +352,9 @@ index 7f38143d6..d4419f7e7 100644
 +            return Some("openrouter".to_string());
 +        }
 +        let execution = self.active_openrouter_execution_provider()?;
++        if execution.display_name().eq_ignore_ascii_case("OpenRouter EU") {
++            return Some("openrouter-eu".to_string());
++        }
 +        let name = execution.name().to_ascii_lowercase();
 +        if name.contains("grok") {
 +            return Some("grok-build-acp".to_string());
@@ -396,7 +400,7 @@ index 7f38143d6..d4419f7e7 100644
      /// Drop this instance's route-catalog memo. Use for changes that are
      /// captured by [`Self::routes_memo_key`] (model/provider/profile switches):
      /// the shared memo stays valid because those instances key differently.
-@@ -553,7 +640,7 @@ impl MultiProvider {
+@@ -553,7 +643,7 @@ impl MultiProvider {
              && let Some(entry) = memo.as_ref()
              && fresh(entry)
          {
@@ -405,7 +409,7 @@ index 7f38143d6..d4419f7e7 100644
          }
  
          // Shared path: another instance with the same catalog-relevant state
-@@ -569,7 +656,7 @@ impl MultiProvider {
+@@ -569,7 +659,7 @@ impl MultiProvider {
              if let Ok(mut memo) = self.routes_memo.lock() {
                  *memo = Some(entry.clone());
              }
@@ -414,7 +418,7 @@ index 7f38143d6..d4419f7e7 100644
          };
          if let Some(entry) = try_shared() {
              return entry;
-@@ -586,6 +673,8 @@ impl MultiProvider {
+@@ -586,6 +676,8 @@ impl MultiProvider {
              return entry;
          }
  
@@ -423,7 +427,7 @@ index 7f38143d6..d4419f7e7 100644
          let routes = catalog_routes::multiprovider_model_routes(self);
          let entry = RoutesMemoEntry {
              built_at: std::time::Instant::now(),
-@@ -603,7 +692,7 @@ impl MultiProvider {
+@@ -603,7 +695,7 @@ impl MultiProvider {
              shared.retain(|_, existing| fresh(existing));
              shared.insert(shared_key, entry.clone());
          }
@@ -432,7 +436,7 @@ index 7f38143d6..d4419f7e7 100644
      }
  
      #[cfg(test)]
-@@ -618,6 +707,9 @@ impl MultiProvider {
+@@ -618,6 +710,9 @@ impl MultiProvider {
          mode: CompletionMode<'_>,
          resume_session_id: Option<&str>,
      ) -> Result<EventStream> {
@@ -442,7 +446,7 @@ index 7f38143d6..d4419f7e7 100644
          self.spawn_anthropic_catalog_refresh_if_needed();
          self.spawn_openai_catalog_refresh_if_needed();
  
-@@ -643,6 +735,18 @@ impl MultiProvider {
+@@ -643,6 +738,18 @@ impl MultiProvider {
              Self::estimate_request_input(messages, tools, mode);
  
          for candidate in sequence {
@@ -461,7 +465,7 @@ index 7f38143d6..d4419f7e7 100644
              let label = Self::provider_label(candidate);
              let key = Self::provider_key(candidate);
  
-@@ -705,22 +809,21 @@ impl MultiProvider {
+@@ -705,22 +812,21 @@ impl MultiProvider {
  
              let attempt = match mode {
                  CompletionMode::Unified { system } => {
@@ -494,7 +498,7 @@ index 7f38143d6..d4419f7e7 100644
                  }
              };
  
-@@ -2184,12 +2287,19 @@ impl Provider for MultiProvider {
+@@ -2184,12 +2290,19 @@ impl Provider for MultiProvider {
  
      fn available_models(&self) -> Vec<&'static str> {
          let mut models = Vec::new();
@@ -516,7 +520,7 @@ index 7f38143d6..d4419f7e7 100644
          match self.active_provider() {
              ActiveProvider::Claude => {
                  if let Some(anthropic) = self.anthropic_provider() {
-@@ -2236,6 +2346,9 @@ impl Provider for MultiProvider {
+@@ -2236,6 +2349,9 @@ impl Provider for MultiProvider {
      }
  
      fn available_providers_for_model(&self, model: &str) -> Vec<String> {
@@ -526,7 +530,7 @@ index 7f38143d6..d4419f7e7 100644
          if let Some(model) = openrouter_catalog_model_id(model)
              && let Some(openrouter) = self.openrouter_provider()
          {
-@@ -2245,6 +2358,9 @@ impl Provider for MultiProvider {
+@@ -2245,6 +2361,9 @@ impl Provider for MultiProvider {
      }
  
      fn provider_details_for_model(&self, model: &str) -> Vec<(String, String)> {
@@ -537,7 +541,7 @@ index 7f38143d6..d4419f7e7 100644
              && let Some(openrouter) = self.openrouter_provider()
          {
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index 8892628e1..be42ec522 100644
+index 8892628e1..704f97882 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
 @@ -1,6 +1,72 @@
@@ -671,7 +675,7 @@ index 8892628e1..be42ec522 100644
          }
      }
  
-@@ -854,6 +957,55 @@ impl StubExternalRuntime {
+@@ -854,6 +957,73 @@ impl StubExternalRuntime {
      }
  }
  
@@ -683,6 +687,7 @@ index 8892628e1..be42ec522 100644
 +
 +        for (name, expected) in [
 +            ("OpenRouter", "openrouter"),
++            ("OpenRouter EU", "openrouter-eu"),
 +            (crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME, "jcode-subscription"),
 +            ("Grok Build", "grok-build-acp"),
 +        ] {
@@ -692,6 +697,23 @@ index 8892628e1..be42ec522 100644
 +            );
 +            assert_eq!(provider.runtime_route_for_provider(ActiveProvider::OpenRouter).as_deref(), Some(expected));
 +        }
++    });
++}
++
++#[test]
++fn eu_runtime_exposes_model_switching_catalog() {
++    with_clean_provider_test_env(|| {
++        let mut provider = test_multi_provider_with_openai();
++        *provider.active.write().expect("active provider lock") = ActiveProvider::OpenRouter;
++        *provider.openrouter.write().expect("openrouter lock") = Some(
++            Arc::new(StubExternalRuntime::new(
++                "OpenRouter EU",
++                "OpenRouter EU",
++                "openrouter-eu",
++                ALL_OPENAI_MODELS,
++            )) as Arc<dyn Provider>,
++        );
++        assert!(!provider.available_models_for_switching().is_empty());
 +    });
 +}
 +
@@ -727,7 +749,7 @@ index 8892628e1..be42ec522 100644
  #[async_trait::async_trait]
  impl Provider for StubExternalRuntime {
      async fn complete(
-@@ -863,6 +1015,18 @@ impl Provider for StubExternalRuntime {
+@@ -863,6 +1033,18 @@ impl Provider for StubExternalRuntime {
          _system: &str,
          _resume_session_id: Option<&str>,
      ) -> anyhow::Result<EventStream> {
@@ -747,10 +769,10 @@ index 8892628e1..be42ec522 100644
      }
      fn name(&self) -> &'static str {
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 27ef850fd..ef5c4fc0d 100644
+index 2073ca059..28a0cd454 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1203,6 +1203,8 @@ pub struct ProviderConfig {
+@@ -1195,6 +1195,8 @@ pub struct ProviderConfig {
      pub default_model: Option<String>,
      /// Default provider to use (claude|openai|copilot|openrouter)
      pub default_provider: Option<String>,
@@ -759,7 +781,7 @@ index 27ef850fd..ef5c4fc0d 100644
      /// Reasoning effort for OpenAI Responses API (none|minimal|low|medium|high|xhigh|max)
      pub openai_reasoning_effort: Option<String>,
      /// Reasoning effort for Anthropic Messages API output_config (none|low|medium|high|xhigh; max aliases to strongest supported)
-@@ -1226,8 +1228,9 @@ pub struct ProviderConfig {
+@@ -1218,8 +1220,9 @@ pub struct ProviderConfig {
      /// "zero" means all requests are free (no premium requests consumed)
      pub copilot_premium: Option<String>,
      /// When set (non-empty), /model only lists routes from these providers.
@@ -771,7 +793,7 @@ index 27ef850fd..ef5c4fc0d 100644
      /// "openai-compatible:myprofile", ...), or openai-compatible profile ids
      /// ("myprofile"). The active model's routes always stay visible.
      pub model_picker_providers: Option<Vec<String>>,
-@@ -1249,6 +1252,7 @@ impl Default for ProviderConfig {
+@@ -1241,6 +1244,7 @@ impl Default for ProviderConfig {
          Self {
              default_model: None,
              default_provider: None,
@@ -779,5 +801,3 @@ index 27ef850fd..ef5c4fc0d 100644
              openai_reasoning_effort: Some("low".to_string()),
              anthropic_reasoning_effort: None,
              openai_transport: None,
--- 
-2.54.0
