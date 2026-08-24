@@ -23,7 +23,7 @@ def require(condition: bool, message: str) -> None:
 def validate_file(root: Path, patch: Patch) -> None:
     """Validate one discovered patch's body sections and metadata."""
     path = patch.path
-    relative = str(path.relative_to(root))
+    relative = path.relative_to(root).as_posix()
     require(git("ls-files", "--error-unmatch", relative, cwd=root, quiet=True) == relative, f"untracked {relative}")
     text = path.read_text()
     header_body, separator, _ = text.partition("\n---\n")
@@ -64,7 +64,7 @@ def main() -> None:
         for patch in ordered:
             validate_file(root, patch)
         tracked = set(git("ls-files", "patches/*", cwd=root).splitlines())
-        expected_files = {str(patch.path.relative_to(root)) for patch in ordered}
+        expected_files = {patch.path.relative_to(root).as_posix() for patch in ordered}
         require(tracked == expected_files, f"unexpected patch files: {' '.join(sorted(tracked - expected_files))}")
         temporary = Path(tempfile.mkdtemp(prefix="jcode-patch-validation."))
         applied = temporary / "applied"

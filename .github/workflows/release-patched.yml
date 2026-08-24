@@ -1,0 +1,232 @@
+name: Release patched Jcode
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: patched-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Determine patched release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Check out personalization catalog
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fetch selected upstream base
+        shell: bash
+        run: git fetch origin master:master
+
+      - name: Read version from selected source manifest
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 - <<'PY'
+          import tomllib
+          import subprocess
+
+          manifest = tomllib.loads(
+              subprocess.check_output(
+                  ['git', 'show', 'master:Cargo.toml'], text=True
+              )
+          )
+          print(manifest['package']['version'])
+          PY
+          )
+          case "$version" in
+            ''|*[!0-9A-Za-z.+-]*)
+              echo "Invalid package version: $version" >&2
+              exit 1
+              ;;
+          esac
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing patched Jcode as v$version"
+
+  build:
+    name: Build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    needs: prepare
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: jcode-linux-x86_64
+            archive: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: jcode-linux-aarch64
+            archive: tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: jcode-macos-x86_64
+            archive: tar.gz
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset: jcode-macos-aarch64
+            archive: tar.gz
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: jcode-windows-x86_64
+            archive: zip
+            msvc_arch: amd64
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            asset: jcode-windows-aarch64
+            archive: zip
+            msvc_arch: amd64_arm64
+            cargo_args: --no-default-features --features pdf
+
+    steps:
+      - name: Check out personalization catalog
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fetch selected upstream base
+        shell: bash
+        run: git fetch origin master:master
+
+      # git am creates local commits while materializing the patch catalog.
+      # GitHub-hosted runners have no default committer identity.
+      - name: Configure catalog patch committer
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure MSVC build environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Materialize patched source tree
+        shell: bash
+        run: just create-patched-copy
+
+      # Keep caches target-specific. The generated source tree is recreated
+      # each run, so cache only Cargo downloads and compiled dependencies.
+      - name: Cache Rust dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .patched-jcode/target
+          key: patched-release-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('.patched-jcode/Cargo.lock') }}
+          restore-keys: |
+            patched-release-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
+
+      - name: Build patched release binary
+        shell: pwsh
+        working-directory: .patched-jcode
+        run: |
+          $cargoArgs = @("build", "--locked", "--release", "--target", "${{ matrix.target }}")
+          $extraArgs = "${{ matrix.cargo_args }}"
+          if (-not [string]::IsNullOrWhiteSpace($extraArgs)) {
+            $cargoArgs += $extraArgs -split ' '
+          }
+          & cargo @cargoArgs
+        env:
+          JCODE_CI: "1"
+          JCODE_CI_BUILD: "1"
+          JCODE_RELEASE_BUILD: "1"
+          JCODE_BUILD_SEMVER: ${{ needs.prepare.outputs.tag }}
+
+      - name: Package Unix binary
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp ".patched-jcode/target/${{ matrix.target }}/release/jcode" \
+            "dist/${{ matrix.asset }}"
+          chmod +x "dist/${{ matrix.asset }}"
+          tar -C dist -czf "dist/${{ matrix.asset }}.tar.gz" \
+            "${{ matrix.asset }}"
+
+      - name: Package Windows binary
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item ".patched-jcode/target/${{ matrix.target }}/release/jcode.exe" `
+            "dist/${{ matrix.asset }}.exe"
+          Compress-Archive -Path "dist/${{ matrix.asset }}.exe" `
+            -DestinationPath "dist/${{ matrix.asset }}.zip" -Force
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    timeout-minutes: 15
+    steps:
+      - name: Download platform assets
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: jcode-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum jcode-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=("$TAG" --title "$TAG" --generate-notes)
+          if [ "$PRERELEASE" = true ]; then
+            args+=(--prerelease)
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "${args[@]}" artifacts/*
+          fi
