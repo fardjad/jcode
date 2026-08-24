@@ -1,4 +1,4 @@
-name: Release patched Jcode
+name: Release patched jcode
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ jobs:
               ;;
           esac
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing patched Jcode as v$version"
+          echo "Releasing patched jcode as v$version"
 
   build:
     name: Build ${{ matrix.asset }}

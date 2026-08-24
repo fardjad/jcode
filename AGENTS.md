@@ -1,5 +1,9 @@
 # jcode patch catalog
 
+Always spell the project name `jcode` in human-facing prose, workflow names,
+and labels. Preserve existing capitalization in code identifiers, environment
+variables, protocol values, patch metadata headers, and upstream source text.
+
 `personalized` is an orphan catalog branch. It contains only catalog files:
 `README.md`, `AGENTS.md`, `justfile`, `nextest.toml`, `.gitignore`, `patches/`,
 `scripts/`, and `plugins/`. Upstream source lives on local `master`; ordered

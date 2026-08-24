@@ -3,7 +3,7 @@
 These settings require catalog patches `1002-personal-openrouter-eu.patch` and
 `1003-personal-provider-family-allowlist.patch` to be applied.
 
-Jcode reads user configuration from `~/.jcode/config.toml`.
+jcode reads user configuration from `~/.jcode/config.toml`.
 
 ## OpenRouter EU
 
@@ -79,7 +79,7 @@ Important distinctions:
 - `openrouter` permits only standard OpenRouter.
 - `openrouter-eu` permits only OpenRouter EU.
 - `openai-compatible` permits named OpenAI-compatible profiles.
-- `jcode` permits Jcode subscription routes.
+- `jcode` permits jcode subscription routes.
 - `grok-build` permits Grok Build routes.
 
 For example, standard OpenRouter without EU:
