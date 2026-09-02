@@ -1,74 +1,92 @@
-From f1e10660f9bce88e20bb516ccbe9207e39325777 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Wed, 19 Aug 2026 05:44:42 +0200
-Subject: [PATCH] fix: make release installer PATH setup opt-in
-X-Jcode-Patch-Intent: release installer PATH opt-in
+Date: Tue, 1 Sep 2026 23:42:00 +0200
+Subject: [PATCH] fix: isolate release installer PATH opt-in
+X-Jcode-Patch-Intent: keep release installer shell PATH changes opt-in
 X-Jcode-Patch-Kind: personal-release-installer
 X-Jcode-Patch-Depends-On: none
 
 Patch intent:
-Make release-installer shell PATH mutation opt-in.
+Keep source release installation non-invasive by default, while supporting
+explicit persistent PATH configuration through either --configure-path or the
+stable JCODE_CONFIGURE_PATH automation interface.
 
 Why it exists:
-Prevents default installs from changing shell startup files while retaining
-explicit persistent PATH setup; non-goal is removing the PATH hint or installer
-modes.
+Installing a release must not silently edit shell startup files. Argument
+parsing, truthy environment handling, and the sole PATH mutation gate live in a
+focused helper so upstream installer changes conflict locally and visibly.
+Unknown options fail, --fast remains order-independent, and false environment
+values cannot override an explicit command-line opt-in. The helper is not a
+replacement for the existing configure_path implementation.
 
 Upstream integration points:
-scripts/install_release.sh parses --fast and --configure-path, selects release
-profile, and calls scripts/lib/configure_path.sh only when configure_path is
-enabled; scripts/test_install_release_metadata.sh stubs jcode_configure_path and
-records TEST_PATH_LOG to verify default and opt-in behavior. Independent of
-patches 0001 and 1001.
+scripts/install_release.sh sources scripts/lib/install_release_policy.sh before
+resolving the repository and delegates argument parsing and final PATH policy to
+it. scripts/test_install_release_policy.sh covers parsing, ordering, duplicates,
+unknown arguments, environment truthiness, and the no-source default invariant.
+scripts/test_install_release_metadata.sh retains end-to-end default and opt-in
+coverage, while README.md documents the stable user and automation contract.
 
 Update guidance:
-If installer argument parsing or configure_path.sh moves, preserve both flags,
-reject unknown arguments, keep default mode free of shell PATH mutation, and
-invoke configuration only for --configure-path.
+Preserve one policy gate before any shell startup mutation. Keep no arguments as
+opt-out, accept --fast and --configure-path in either order, reject unknown
+options, and treat only 1, true, yes, and on case-insensitively as environment
+opt-ins. Keep the focused policy test separate from broad installer fixtures so
+upstream metadata changes do not obscure policy regressions.
 
 Validation:
+bash scripts/test_install_release_policy.sh
 bash scripts/test_install_release_metadata.sh
 ---
- scripts/install_release.sh               | 36 ++++++++++++++++--------
- scripts/test_install_release_metadata.sh | 10 +++++--
- 2 files changed, 32 insertions(+), 14 deletions(-)
-
+diff --git a/README.md b/README.md
+index db18f389ccc6fece549a7d3c57d2465667485397..86e95a9609a10cc8cd0199817823ce85eb1c0203 100644
+--- a/README.md
++++ b/README.md
+@@ -897,6 +897,13 @@ Then symlink to your PATH:
+ scripts/install_release.sh
+ ```
+ 
++Source release installs do not modify shell startup files by default. Pass
++`--configure-path` to persist the launcher directory in `PATH`. Automation may
++instead set `JCODE_CONFIGURE_PATH=1`; the case-insensitive values `1`, `true`,
++`yes`, and `on` enable configuration, while an unset, empty, or any other value
++does not. Either opt-in enables configuration. `--fast` and `--configure-path`
++may be supplied in either order.
++
+ ### Uninstall
+ 
+ Removes installed binaries and the launcher but keeps your config, auth, and
 diff --git a/scripts/install_release.sh b/scripts/install_release.sh
-index 074874a5161e6a5f578de7c0a32f726eb08f7914..ea6110caa8fbc47e1cb5a13beb5556e08de825db 100755
+index 074874a5161e6a5f578de7c0a32f726eb08f7914..bdab7011a8e195134add3bb91c2b10e7f2ed1107 100755
 --- a/scripts/install_release.sh
 +++ b/scripts/install_release.sh
-@@ -12,15 +12,22 @@ set -euo pipefail
- repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+@@ -9,18 +9,16 @@
+ # - ~/.local/bin/jcode -> ~/.jcode/builds/current/jcode (launcher)
+ set -euo pipefail
+ 
+-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
++script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++# shellcheck source=scripts/lib/install_release_policy.sh
++. "$script_dir/lib/install_release_policy.sh"
  
  profile="${JCODE_RELEASE_PROFILE:-release-lto}"
 -if [[ "${1:-}" == "--fast" ]]; then
 -  profile="release"
-+configure_path=0
-+while [[ "$#" -gt 0 ]]; do
-+  case "$1" in
-+    --fast)
-+      profile="release"
-+      ;;
-+    --configure-path)
-+      configure_path=1
-+      ;;
-+    *)
-+      echo "Usage: $0 [--fast] [--configure-path]" >&2
-+      exit 1
-+      ;;
-+  esac
-   shift
+-  shift
 -fi
--
++configure_path=0
++install_release_program="$0"
++parse_install_release_args "$@"
+ 
 -if [[ "$#" -gt 0 ]]; then
 -  echo "Usage: $0 [--fast]" >&2
 -  exit 1
 -fi
-+done
++repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
  
  case "$profile" in
    release-lto)
-@@ -146,7 +153,12 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$install_dir"; then
+@@ -146,7 +144,6 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$install_dir"; then
    echo "Tip: add $install_dir to PATH if needed."
  fi
  
@@ -76,36 +94,87 @@ index 074874a5161e6a5f578de7c0a32f726eb08f7914..ea6110caa8fbc47e1cb5a13beb5556e0
 -# shellcheck source=scripts/lib/configure_path.sh
 -. "$(dirname "$0")/lib/configure_path.sh"
 -jcode_configure_path "$install_dir"
-+# Keep release installs non-invasive by default. Shell startup files are only
-+# changed when the caller explicitly asks for persistent PATH configuration.
-+if [[ "$configure_path" == "1" ]]; then
-+  # shellcheck source=scripts/lib/configure_path.sh
-+  . "$(dirname "$0")/lib/configure_path.sh"
-+  jcode_configure_path "$install_dir"
-+else
-+  echo "Skipped shell PATH configuration. Re-run with --configure-path to add $install_dir to future shells."
-+fi
++# Keep release installs non-invasive by default. Every persistent shell PATH
++# change passes through this explicit policy gate.
++jcode_maybe_configure_release_path "$install_dir" "$configure_path"
+diff --git a/scripts/lib/install_release_policy.sh b/scripts/lib/install_release_policy.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f7b18690a784de92cb961d2683ebab810a583c7
+--- /dev/null
++++ b/scripts/lib/install_release_policy.sh
+@@ -0,0 +1,49 @@
++#!/usr/bin/env bash
++
++usage() {
++  printf 'Usage: %s [--fast] [--configure-path]\n' "${install_release_program:-$0}"
++}
++
++parse_install_release_args() {
++  while [[ "$#" -gt 0 ]]; do
++    case "$1" in
++      --fast)
++        profile="release"
++        ;;
++      --configure-path)
++        configure_path=1
++        ;;
++      *)
++        usage >&2
++        return 1
++        ;;
++    esac
++    shift
++  done
++}
++
++# JCODE_CONFIGURE_PATH is truthy only for 1, true, yes, or on,
++# matched case-insensitively. Empty and all other values are false.
++jcode_release_path_env_is_truthy() {
++  case "${1:-}" in
++    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) return 0 ;;
++    *) return 1 ;;
++  esac
++}
++
++jcode_release_path_is_opted_in() {
++  [[ "${1:-0}" == "1" ]] || jcode_release_path_env_is_truthy "${JCODE_CONFIGURE_PATH:-}"
++}
++
++jcode_maybe_configure_release_path() {
++  local install_dir="$1"
++  local configure_path_from_args="${2:-0}"
++
++  if jcode_release_path_is_opted_in "$configure_path_from_args"; then
++    # shellcheck source=scripts/lib/configure_path.sh
++    . "$(dirname "${BASH_SOURCE[0]}")/configure_path.sh"
++    jcode_configure_path "$install_dir"
++  else
++    echo "Skipped shell PATH configuration. Re-run with --configure-path or set JCODE_CONFIGURE_PATH=1 to add $install_dir to future shells."
++  fi
++}
 diff --git a/scripts/test_install_release_metadata.sh b/scripts/test_install_release_metadata.sh
-index f5cfcc9ae01965c63963a272a9b3ecf36a763667..494b9a901756b63a95232714b290717252b153cd 100755
+index f5cfcc9ae01965c63963a272a9b3ecf36a763667..59a131fe72b4046657fe5113f8c48739d845388c 100755
 --- a/scripts/test_install_release_metadata.sh
 +++ b/scripts/test_install_release_metadata.sh
-@@ -6,7 +6,9 @@ trap 'rm -rf "$tmp"' EXIT
+@@ -6,7 +6,10 @@ trap 'rm -rf "$tmp"' EXIT
  fixture="$tmp/repo"; fake_bin="$tmp/bin"
  mkdir -p "$fixture/scripts/lib" "$fake_bin"
  cp "$repo_root/scripts/install_release.sh" "$fixture/scripts/"
 -printf '%s\n' 'jcode_configure_path() { :; }' > "$fixture/scripts/lib/configure_path.sh"
++cp "$repo_root/scripts/lib/install_release_policy.sh" "$fixture/scripts/lib/"
 +cat > "$fixture/scripts/lib/configure_path.sh" <<'EOF'
 +jcode_configure_path() { printf '%s\n' "$1" >> "${TEST_PATH_LOG:?}"; }
 +EOF
  printf '%s\n' '[workspace]' > "$fixture/Cargo.toml"
  cat > "$fake_bin/git" <<'EOF'
  #!/usr/bin/env bash
-@@ -34,11 +36,15 @@ EOF
+@@ -34,11 +37,16 @@ EOF
  chmod +x "$fake_bin/git" "$fake_bin/cargo"
  run_install() {
    HOME="$tmp/home" PATH="$fake_bin:/usr/bin:/bin" TEST_REPO="$fixture" JCODE_RELEASE_PROFILE=release \
 -    JCODE_INSTALL_DIR="$tmp/launcher" JCODE_SKIP_SERVER_RELOAD=1 "$fixture/scripts/install_release.sh"
-+    JCODE_INSTALL_DIR="$tmp/launcher" JCODE_SKIP_SERVER_RELOAD=1 TEST_PATH_LOG="$tmp/path-log" \
++    JCODE_INSTALL_DIR="$tmp/launcher" JCODE_SKIP_SERVER_RELOAD=1 JCODE_CONFIGURE_PATH=0 \
++    TEST_PATH_LOG="$tmp/path-log" \
 +    "$fixture/scripts/install_release.sh" "$@"
  }
  TEST_DIRTY=1 run_install >/dev/null
@@ -117,5 +186,88 @@ index f5cfcc9ae01965c63963a272a9b3ecf36a763667..494b9a901756b63a95232714b2907172
  rm -rf "$tmp/home" "$tmp/launcher"
  if TEST_BINARY_HASH=stale999 TEST_DIRTY=0 run_install >"$tmp/out" 2>"$tmp/err"; then
    echo "installer accepted a binary with stale metadata" >&2; exit 1
--- 
-2.55.0
+diff --git a/scripts/test_install_release_policy.sh b/scripts/test_install_release_policy.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..3a094f8528aa41bb4af72323df11c5181f863427
+--- /dev/null
++++ b/scripts/test_install_release_policy.sh
+@@ -0,0 +1,79 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++tmp="$(mktemp -d)"
++trap 'rm -rf "$tmp"' EXIT
++
++fixture="$tmp/scripts"
++mkdir -p "$fixture/lib"
++cp "$repo_root/scripts/lib/install_release_policy.sh" "$fixture/lib/"
++cat > "$fixture/lib/configure_path.sh" <<'EOF'
++printf 'sourced\n' >> "${TEST_SOURCE_LOG:?}"
++jcode_configure_path() { printf '%s\n' "$1" >> "${TEST_PATH_LOG:?}"; }
++EOF
++
++# shellcheck source=scripts/lib/install_release_policy.sh
++. "$fixture/lib/install_release_policy.sh"
++
++assert_args() {
++  local expected_profile="$1"
++  local expected_configure_path="$2"
++  shift 2
++  profile="release-lto"
++  configure_path=0
++  parse_install_release_args "$@"
++  test "$profile" = "$expected_profile"
++  test "$configure_path" = "$expected_configure_path"
++}
++
++assert_args release-lto 0
++assert_args release-lto 1 --configure-path
++assert_args release 0 --fast
++assert_args release 1 --fast --configure-path
++assert_args release 1 --configure-path --fast
++assert_args release 1 --configure-path --configure-path --fast --fast
++
++install_release_program="install_release.sh"
++if parse_install_release_args --unknown 2>"$tmp/usage"; then
++  echo "argument parser accepted an unknown option" >&2
++  exit 1
++fi
++test "$(cat "$tmp/usage")" = "Usage: install_release.sh [--fast] [--configure-path]"
++
++export TEST_SOURCE_LOG="$tmp/source-log"
++export TEST_PATH_LOG="$tmp/path-log"
++unset JCODE_CONFIGURE_PATH
++jcode_maybe_configure_release_path "$tmp/launcher" 0 >"$tmp/skipped"
++test ! -e "$TEST_SOURCE_LOG"
++test ! -e "$TEST_PATH_LOG"
++grep -Fq -- '--configure-path' "$tmp/skipped"
++grep -Fq 'JCODE_CONFIGURE_PATH=1' "$tmp/skipped"
++
++jcode_maybe_configure_release_path "$tmp/launcher" 1 >/dev/null
++test "$(cat "$TEST_SOURCE_LOG")" = sourced
++test "$(cat "$TEST_PATH_LOG")" = "$tmp/launcher"
++
++for value in 1 true TRUE TrUe yes YES YeS on ON On; do
++  : > "$TEST_SOURCE_LOG"
++  : > "$TEST_PATH_LOG"
++  JCODE_CONFIGURE_PATH="$value"
++  jcode_maybe_configure_release_path "$tmp/env-launcher" 0 >/dev/null
++  test "$(cat "$TEST_SOURCE_LOG")" = sourced
++  test "$(cat "$TEST_PATH_LOG")" = "$tmp/env-launcher"
++done
++
++for value in '' 0 false no off enabled random; do
++  rm -f "$TEST_SOURCE_LOG" "$TEST_PATH_LOG"
++  JCODE_CONFIGURE_PATH="$value"
++  jcode_maybe_configure_release_path "$tmp/env-launcher" 0 >/dev/null
++  test ! -e "$TEST_SOURCE_LOG"
++  test ! -e "$TEST_PATH_LOG"
++done
++
++# A false environment value cannot disable the explicit command-line opt-in.
++JCODE_CONFIGURE_PATH=0
++jcode_maybe_configure_release_path "$tmp/cli-launcher" 1 >/dev/null
++test "$(tail -n 1 "$TEST_PATH_LOG")" = "$tmp/cli-launcher"
++
++echo "install_release argument and PATH policy tests passed"
