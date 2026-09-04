@@ -1,0 +1,452 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Fri, 4 Sep 2026 07:01:31 +0200
+Subject: [PATCH] feat: configure session picker sorting
+
+X-Jcode-Patch-Intent: Let users choose how the /sessions picker orders sessions.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: none
+
+Patch intent:
+Add display.session_picker_sort with recent, created, and name modes. Apply it
+consistently to loaded sessions, filtered rows, saved sessions, and both picker
+caches.
+
+Why it exists:
+The picker defaulted to recent activity with no user-visible choice, while saved
+and server sections can make the effective ordering difficult to navigate.
+
+Upstream integration points:
+DisplayConfig defines the persisted setting. The session picker loading and
+filtering paths own ordering, and its memory and disk caches key cached results
+by the chosen mode.
+
+Update guidance:
+Preserve recent as the default and route every session list ordering path through
+the shared comparator. Update cache keys when adding a new sort-dependent view.
+
+Validation:
+cargo test -p jcode-config-types session_picker_sort_defaults_to_recent_and_accepts_named_orders --lib
+cargo test -p jcode-tui session_sort_orders_by_the_configured_field --lib
+cargo test -p jcode-tui cached_grouped_sessions_round_trip_from_disk --lib
+---
+ crates/jcode-base/src/config/default_file.rs  |  4 +
+ crates/jcode-config-types/src/display.rs      | 26 ++++++-
+ crates/jcode-config-types/src/lib.rs          | 13 ++++
+ .../src/tui/session_picker/filter.rs          | 40 ++++------
+ .../src/tui/session_picker/loading.rs         | 40 +++++++++-
+ .../src/tui/session_picker/loading_tests.rs   | 77 ++++++++++++++++++-
+ 6 files changed, 170 insertions(+), 30 deletions(-)
+
+diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
+index 8b090f00e..f4601ccd5 100644
+--- a/crates/jcode-base/src/config/default_file.rs
++++ b/crates/jcode-base/src/config/default_file.rs
+@@ -220,6 +220,10 @@ prompt_entry_animation = true
+ # (default: true). Set false to list only jcode's own sessions.
+ # external_sessions = true
+ 
++# Session ordering in the /resume picker: "recent" (last activity first,
++# default), "created" (newest first), or "name" (alphabetical).
++# session_picker_sort = "recent"
++
+ # Overscroll status line (model/provider/context info below the input):
+ #   "overscroll" - elastic reveal when scrolling past the bottom (default)
+ #   "on"         - always visible
+diff --git a/crates/jcode-config-types/src/display.rs b/crates/jcode-config-types/src/display.rs
+index a413d63d8..3efefb52c 100644
+--- a/crates/jcode-config-types/src/display.rs
++++ b/crates/jcode-config-types/src/display.rs
+@@ -2,7 +2,8 @@
+ 
+ use crate::{
+     DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
+-    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, default_true,
++    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, SessionPickerSort,
++    default_true,
+ };
+ use serde::{Deserialize, Serialize};
+ 
+@@ -119,6 +120,9 @@ pub struct DisplayConfig {
+     /// sessions (issue #674).
+     #[serde(default = "default_true")]
+     pub external_sessions: bool,
++    /// Ordering for sessions in the `/resume` picker: recent (default),
++    /// created, or name.
++    pub session_picker_sort: SessionPickerSort,
+     /// Usage percentage wording: "left" (default) or "used".
+     pub usage_display: String,
+     /// When to show the overscroll status line below the input
+@@ -164,6 +168,7 @@ impl Default for DisplayConfig {
+             colors: std::collections::BTreeMap::new(),
+             active_sessions_manager: false,
+             external_sessions: true,
++            session_picker_sort: SessionPickerSort::Recent,
+             usage_display: "left".to_string(),
+             overscroll_status: OverscrollStatusMode::default(),
+         }
+@@ -244,6 +249,25 @@ mod tests {
+         assert!(!disabled.pin_todos);
+     }
+ 
++    #[test]
++    fn session_picker_sort_defaults_to_recent_and_accepts_named_orders() {
++        assert_eq!(
++            DisplayConfig::default().session_picker_sort,
++            crate::SessionPickerSort::Recent
++        );
++
++        let created: DisplayConfig =
++            serde_json::from_str(r#"{"session_picker_sort":"created"}"#).expect("config");
++        assert_eq!(
++            created.session_picker_sort,
++            crate::SessionPickerSort::Created
++        );
++
++        let name: DisplayConfig =
++            serde_json::from_str(r#"{"session_picker_sort":"name"}"#).expect("config");
++        assert_eq!(name.session_picker_sort, crate::SessionPickerSort::Name);
++    }
++
+     #[test]
+     fn usage_percentage_wording_defaults_to_left_and_accepts_used() {
+         assert_eq!(DisplayConfig::default().usage_display, "left");
+diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
+index 0da428e34..845e1e2aa 100644
+--- a/crates/jcode-config-types/src/lib.rs
++++ b/crates/jcode-config-types/src/lib.rs
+@@ -52,6 +52,19 @@ pub enum SessionPickerResumeAction {
+     CurrentTerminal,
+ }
+ 
++/// How sessions are ordered in the `/resume` picker.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum SessionPickerSort {
++    /// Most recently active sessions first (default).
++    #[default]
++    Recent,
++    /// Most recently created sessions first.
++    Created,
++    /// Session titles in alphabetical order.
++    Name,
++}
++
+ impl SessionPickerResumeAction {
+     pub fn alternate(self) -> Self {
+         match self {
+diff --git a/crates/jcode-tui/src/tui/session_picker/filter.rs b/crates/jcode-tui/src/tui/session_picker/filter.rs
+index 91596228f..f3200d915 100644
+--- a/crates/jcode-tui/src/tui/session_picker/filter.rs
++++ b/crates/jcode-tui/src/tui/session_picker/filter.rs
+@@ -1,4 +1,4 @@
+-use super::loading::session_matches_picker_query;
++use super::loading::{compare_sessions, session_matches_picker_query};
+ use super::*;
+ 
+ impl SessionPicker {
+@@ -78,17 +78,14 @@ impl SessionPicker {
+             })
+             .collect::<Vec<_>>();
+ 
+-        filtered.sort_by(|a, b| {
+-            let a = self
+-                .session_by_ref(*a)
+-                .map(|session| session.last_message_time)
+-                .unwrap_or_default();
+-            let b = self
+-                .session_by_ref(*b)
+-                .map(|session| session.last_message_time)
+-                .unwrap_or_default();
+-            b.cmp(&a)
+-        });
++        filtered.sort_by(
++            |a, b| match (self.session_by_ref(*a), self.session_by_ref(*b)) {
++                (Some(a), Some(b)) => compare_sessions(a, b),
++                (Some(_), None) => std::cmp::Ordering::Less,
++                (None, Some(_)) => std::cmp::Ordering::Greater,
++                (None, None) => std::cmp::Ordering::Equal,
++            },
++        );
+         if filter_mode == SessionFilterMode::Active {
+             // Triage order for the active sessions manager: sessions that are
+             // ready for input (done streaming) float above ones still working,
+@@ -227,17 +224,14 @@ impl SessionPicker {
+             }
+         }
+ 
+-        saved_sessions.sort_by(|a, b| {
+-            let a = self
+-                .session_by_ref(*a)
+-                .map(|session| session.last_message_time)
+-                .unwrap_or_default();
+-            let b = self
+-                .session_by_ref(*b)
+-                .map(|session| session.last_message_time)
+-                .unwrap_or_default();
+-            b.cmp(&a)
+-        });
++        saved_sessions.sort_by(
++            |a, b| match (self.session_by_ref(*a), self.session_by_ref(*b)) {
++                (Some(a), Some(b)) => compare_sessions(a, b),
++                (Some(_), None) => std::cmp::Ordering::Less,
++                (None, Some(_)) => std::cmp::Ordering::Greater,
++                (None, None) => std::cmp::Ordering::Equal,
++            },
++        );
+ 
+         if !saved_sessions.is_empty() {
+             self.items.push(PickerItem::SavedHeader {
+diff --git a/crates/jcode-tui/src/tui/session_picker/loading.rs b/crates/jcode-tui/src/tui/session_picker/loading.rs
+index 2e6993ce0..2ba5c1672 100644
+--- a/crates/jcode-tui/src/tui/session_picker/loading.rs
++++ b/crates/jcode-tui/src/tui/session_picker/loading.rs
+@@ -23,6 +23,32 @@ use super::{
+ 
+ use super::{ResumeTarget, SessionSource};
+ 
++pub(super) fn compare_sessions(a: &SessionInfo, b: &SessionInfo) -> std::cmp::Ordering {
++    compare_sessions_by(a, b, crate::config::config().display.session_picker_sort)
++}
++
++fn compare_sessions_by(
++    a: &SessionInfo,
++    b: &SessionInfo,
++    sort: jcode_config_types::SessionPickerSort,
++) -> std::cmp::Ordering {
++    match sort {
++        jcode_config_types::SessionPickerSort::Recent => b
++            .last_message_time
++            .cmp(&a.last_message_time)
++            .then_with(|| a.id.cmp(&b.id)),
++        jcode_config_types::SessionPickerSort::Created => b
++            .created_at
++            .cmp(&a.created_at)
++            .then_with(|| a.id.cmp(&b.id)),
++        jcode_config_types::SessionPickerSort::Name => a
++            .title
++            .to_lowercase()
++            .cmp(&b.title.to_lowercase())
++            .then_with(|| a.id.cmp(&b.id)),
++    }
++}
++
+ #[cfg(test)]
+ const TRANSCRIPT_SEARCH_CHUNK_BYTES: usize = 64 * 1024;
+ 
+@@ -58,7 +84,7 @@ fn include_old_saved_sessions_on_initial_load() -> bool {
+ }
+ 
+ const SESSION_LIST_CACHE_TTL: Duration = Duration::from_secs(5);
+-const SESSION_LIST_DISK_CACHE_VERSION: u32 = 2;
++const SESSION_LIST_DISK_CACHE_VERSION: u32 = 3;
+ const SESSION_LIST_DISK_CACHE_MAX_AGE_SECONDS: i64 = 7 * 24 * 60 * 60;
+ const SAVED_METADATA_TAIL_SCAN_BYTES: u64 = 64 * 1024;
+ const INITIAL_TRANSCRIPT_SEARCH_BUDGET_BYTES: usize = 64 * 1024;
+@@ -143,6 +169,7 @@ struct SessionListCacheEntry {
+     /// serve a stale list that still contains (or still omits) other CLIs'
+     /// transcripts.
+     external_sessions: bool,
++    session_picker_sort: jcode_config_types::SessionPickerSort,
+     sessions: Vec<SessionInfo>,
+ }
+ 
+@@ -158,6 +185,8 @@ struct GroupedSessionListDiskCache {
+     /// file stays readable (it was written with externals on).
+     #[serde(default = "crate::tui::session_picker::loading::default_true")]
+     external_sessions: bool,
++    #[serde(default)]
++    session_picker_sort: jcode_config_types::SessionPickerSort,
+     server_groups: Vec<ServerGroup>,
+     orphan_sessions: Vec<SessionInfo>,
+ }
+@@ -186,12 +215,14 @@ fn session_list_disk_cache_is_usable(
+     sessions_dir: &Path,
+     scan_limit: usize,
+     want_external: bool,
++    sort: jcode_config_types::SessionPickerSort,
+ ) -> bool {
+     cache.version == SESSION_LIST_DISK_CACHE_VERSION
+         && cache.sessions_dir == sessions_dir
+         && cache.scan_limit == scan_limit
+         && cache.include_old_saved_sessions == include_old_saved_sessions_on_initial_load()
+         && cache.external_sessions == want_external
++        && cache.session_picker_sort == sort
+         && chrono::Utc::now()
+             .signed_duration_since(cache.generated_at)
+             .num_seconds()
+@@ -214,6 +245,7 @@ fn write_grouped_session_list_disk_cache(
+         scan_limit,
+         include_old_saved_sessions: include_old_saved_sessions_on_initial_load(),
+         external_sessions: include_external_sessions(),
++        session_picker_sort: crate::config::config().display.session_picker_sort,
+         server_groups: server_groups.to_vec(),
+         orphan_sessions: orphan_sessions.to_vec(),
+     };
+@@ -236,6 +268,7 @@ pub fn load_cached_sessions_grouped() -> Option<(Vec<ServerGroup>, Vec<SessionIn
+         &sessions_dir,
+         scan_limit,
+         include_external_sessions(),
++        crate::config::config().display.session_picker_sort,
+     ) {
+         return None;
+     }
+@@ -1772,12 +1805,14 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+     let sessions_dir = storage::jcode_dir()?.join("sessions");
+     let scan_limit = session_scan_limit();
+     let want_external = include_external_sessions();
++    let sort = crate::config::config().display.session_picker_sort;
+ 
+     if let Ok(cache) = session_list_cache().lock()
+         && let Some(entry) = cache.as_ref()
+         && entry.sessions_dir == sessions_dir
+         && entry.scan_limit == scan_limit
+         && entry.external_sessions == want_external
++        && entry.session_picker_sort == sort
+         && entry.loaded_at.elapsed() <= SESSION_LIST_CACHE_TTL
+     {
+         return Ok(entry.sessions.clone());
+@@ -1885,7 +1920,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+     });
+     sessions.extend(external_sessions);
+ 
+-    sessions.sort_by(|a, b| b.last_message_time.cmp(&a.last_message_time));
++    sessions.sort_by(|a, b| compare_sessions_by(a, b, sort));
+ 
+     if let Ok(mut cache) = session_list_cache().lock() {
+         *cache = Some(SessionListCacheEntry {
+@@ -1893,6 +1928,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+             sessions_dir,
+             scan_limit,
+             external_sessions: want_external,
++            session_picker_sort: sort,
+             sessions: sessions.clone(),
+         });
+     }
+diff --git a/crates/jcode-tui/src/tui/session_picker/loading_tests.rs b/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
+index 96b7a9851..476760365 100644
+--- a/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
++++ b/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
+@@ -88,6 +88,66 @@ fn trivial_hidden_only_snapshot_detector_keeps_system_plus_visible_message() {
+     assert!(!snapshot_bytes_look_trivial_hidden_only(bytes));
+ }
+ 
++#[test]
++fn session_sort_orders_by_the_configured_field() {
++    use jcode_config_types::SessionPickerSort;
++
++    let now = chrono::Utc::now();
++    let mut older_named_zebra = test_session_info("zebra", now);
++    older_named_zebra.created_at = now - chrono::Duration::hours(2);
++    older_named_zebra.last_message_time = now - chrono::Duration::hours(1);
++
++    let mut newer_named_alpha = test_session_info("alpha", now);
++    newer_named_alpha.created_at = now - chrono::Duration::hours(1);
++    newer_named_alpha.last_message_time = now - chrono::Duration::hours(2);
++
++    let mut sessions = vec![older_named_zebra.clone(), newer_named_alpha.clone()];
++    sessions.sort_by(|a, b| compare_sessions_by(a, b, SessionPickerSort::Recent));
++    assert_eq!(sessions[0].id, "zebra");
++
++    sessions.sort_by(|a, b| compare_sessions_by(a, b, SessionPickerSort::Created));
++    assert_eq!(sessions[0].id, "alpha");
++
++    sessions.sort_by(|a, b| compare_sessions_by(a, b, SessionPickerSort::Name));
++    assert_eq!(sessions[0].id, "alpha");
++}
++
++fn test_session_info(id: &str, now: chrono::DateTime<chrono::Utc>) -> SessionInfo {
++    SessionInfo {
++        id: id.to_string(),
++        parent_id: None,
++        short_name: id.to_string(),
++        icon: String::new(),
++        title: id.to_string(),
++        message_count: 0,
++        user_message_count: 0,
++        assistant_message_count: 0,
++        created_at: now,
++        last_message_time: now,
++        last_active_at: None,
++        working_dir: None,
++        model: None,
++        provider_key: None,
++        is_canary: false,
++        is_debug: false,
++        saved: false,
++        save_label: None,
++        status: SessionStatus::Closed,
++        needs_catchup: false,
++        estimated_tokens: 0,
++        first_user_prompt: None,
++        messages_preview: Vec::new(),
++        search_index: String::new(),
++        server_name: None,
++        server_icon: None,
++        source: SessionSource::Jcode,
++        resume_target: ResumeTarget::JcodeSession {
++            session_id: id.to_string(),
++        },
++        external_path: None,
++    }
++}
++
+ #[test]
+ fn cached_grouped_sessions_round_trip_from_disk() {
+     let _env_lock = crate::storage::lock_test_env();
+@@ -139,6 +199,7 @@ fn cached_grouped_sessions_round_trip_from_disk() {
+         scan_limit: session_scan_limit(),
+         include_old_saved_sessions: include_old_saved_sessions_on_initial_load(),
+         external_sessions: include_external_sessions(),
++        session_picker_sort: crate::config::config().display.session_picker_sort,
+         server_groups: Vec::new(),
+         orphan_sessions: vec![session],
+     };
+@@ -1394,6 +1455,7 @@ fn session_matches_picker_query_requires_all_tokens_order_independent() {
+ /// jcode's own sessions, and toggling that must not be masked by either cache.
+ mod external_session_opt_out {
+     use super::super::{GroupedSessionListDiskCache, session_list_disk_cache_is_usable};
++    use jcode_config_types::SessionPickerSort;
+     use std::path::{Path, PathBuf};
+ 
+     fn disk_cache(dir: &Path, external_sessions: bool) -> GroupedSessionListDiskCache {
+@@ -1404,6 +1466,7 @@ mod external_session_opt_out {
+             scan_limit: 50,
+             include_old_saved_sessions: super::super::include_old_saved_sessions_on_initial_load(),
+             external_sessions,
++            session_picker_sort: SessionPickerSort::Recent,
+             server_groups: Vec::new(),
+             orphan_sessions: Vec::new(),
+         }
+@@ -1415,11 +1478,11 @@ mod external_session_opt_out {
+         let cache = disk_cache(&dir, true);
+ 
+         assert!(
+-            session_list_disk_cache_is_usable(&cache, &dir, 50, true),
++            session_list_disk_cache_is_usable(&cache, &dir, 50, true, SessionPickerSort::Recent),
+             "same setting -> reusable"
+         );
+         assert!(
+-            !session_list_disk_cache_is_usable(&cache, &dir, 50, false),
++            !session_list_disk_cache_is_usable(&cache, &dir, 50, false, SessionPickerSort::Recent),
+             "opting out must not be served a cache that still contains other CLIs' sessions"
+         );
+     }
+@@ -1429,9 +1492,15 @@ mod external_session_opt_out {
+         let dir = PathBuf::from("/tmp/jcode-test-sessions");
+         let cache = disk_cache(&dir, false);
+ 
+-        assert!(session_list_disk_cache_is_usable(&cache, &dir, 50, false));
++        assert!(session_list_disk_cache_is_usable(
++            &cache,
++            &dir,
++            50,
++            false,
++            SessionPickerSort::Recent
++        ));
+         assert!(
+-            !session_list_disk_cache_is_usable(&cache, &dir, 50, true),
++            !session_list_disk_cache_is_usable(&cache, &dir, 50, true, SessionPickerSort::Recent),
+             "opting back in must trigger a rescan"
+         );
+     }

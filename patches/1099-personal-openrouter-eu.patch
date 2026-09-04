@@ -248,10 +248,10 @@ index 0d707a8e4..9b66a3db0 100644
              AuthCredentialSource::None,
              "not configured".to_string(),
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 8b090f00e..4b6328c17 100644
+index f4601ccd5..137a58a25 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -362,10 +362,11 @@ tool_profile = "acp"
+@@ -366,10 +366,11 @@ tool_profile = "acp"
  # for model switching, persisted routes, dispatch, and failover, not just picker
  # visibility. Empty or unset keeps all providers enabled. A non-empty list with
  # only unknown entries fails closed. Unknown entries are warned about and denied.
