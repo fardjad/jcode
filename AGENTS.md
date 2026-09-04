@@ -19,6 +19,9 @@ Commands:
 just help
 just validate-patch-files
 just create-patched-copy
+just snapshot-patches            # regenerate patches from .patched-jcode commits
+just list-patches                # print commit-to-patch mapping
+just migrate-commit-metadata     # one-time: copy patch metadata into commits
 just install-patched-version
 just test-patch-file <patch-file>
 just create-upstream-candidate-branch-from <patch-file>
@@ -30,10 +33,10 @@ just sync vX.Y.Z             # selected upstream release tag
 local `master`. If local `master` does not exist, it initializes it from
 configured `upstream/master`; later runs retain that base. Use `just sync` to
 refresh it and run clean-upstream compatibility learning. It then applies every
-patch. Use `just test-patch-file <patch-file>` for declared
-validation
-commands and compatibility tests. Test and candidate workflows start clean
-worktrees from `master`. Failures retain worktrees and print cleanup commands.
+patch, each as its own commit. Use `just test-patch-file <patch-file>` for
+declared validation commands and compatibility tests. Test and candidate
+workflows start clean worktrees from `master`. Failures retain worktrees and
+print cleanup commands.
 
 Compatibility failures are learned only from clean upstream worktrees. Ignored
 state lives at `.tools/nextest/exclusions/<base-commit>.json`, keyed by base
@@ -58,38 +61,40 @@ Required metadata headers are `X-Jcode-Patch-Intent`,
 non-empty ordered sections: `Patch intent:`, `Why it exists:`, `Upstream
 integration points:`, `Update guidance:`, and `Validation:`.
 
-## Authoring patch mail headers
+## Working in .patched-jcode (commit-first workflow)
 
-Every `patches/*.patch` must have exactly one copy of each required
-`X-Jcode-Patch-*` header and exactly one copy of each required body section.
-Place headers after `Subject:`. Place body sections after the first blank line
-and before the mail-patch `---` separator, in required order.
+Never edit `.patch` files directly. Patches are persistence artifacts derived
+from commits. The commit message in `.patched-jcode` is the single source of
+truth for both the diff and the `X-Jcode-Patch-*` metadata.
 
-Wrap every prose line in the mail header/body at 80 columns or fewer. Do not
-wrap validation commands: each command is one unindented line under
-`Validation:`. Never append generated `format-patch` output to an existing
-patch. Replace the patch file, then add metadata/body sections once; otherwise
-duplicate sections result. The validator rejects duplicate required headers and
-body sections; do not rely on validation alone to catch this after generation.
+The ideal workflow for any change:
 
-Before committing a catalog patch, inspect its header through the `---`
-separator, run `just validate-patch-files`, then run
-`just test-patch-file patches/<name>.patch`.
+1. `just create-patched-copy` — ensures `.patched-jcode` exists, clean, and
+   matches the current catalog.
+2. Edit source files directly in `.patched-jcode/`.
+3. Commit or amend the relevant commit there (see below for which commit).
+4. `just snapshot-patches` — regenerates every `.patch` file from the commits
+   above `master`. Run `just validate-patch-files` to confirm.
+5. `just test-patch-file patches/<name>.patch` to run the patch's validation.
 
-## Patch update and commit discipline
+### Mapping commits to patches
 
-When a change fixes behavior owned by an existing catalog patch, regenerate or
-otherwise update that patch in the same work item before reporting the fix.
-Never leave source-only fixes in `.patched-jcode` while its catalog patch is
-stale.
+Commits above `master` in `.patched-jcode` map to patch files by lexicographic
+order: the oldest commit is the first patch, the next is the second, and so on.
+Run `just list-patches` to see the mapping. To change an existing patch, amend
+the corresponding commit. To add a new patch, add a new commit on top and run
+`just snapshot-patches`; it assigns the next available numeric prefix and
+derives a slug from the commit subject.
 
-Do not commit, amend, push, or create a PR unless the user explicitly asks.
-Leave updated catalog files and generated worktree changes uncommitted for user
-review. Do not create temporary commits merely to regenerate a patch.
+### Commit message format
 
-Template for body inserted after generated mail headers:
+Every patch commit message must contain the three `X-Jcode-Patch-*` headers and
+the five body sections. `git format-patch` turns the commit message into the
+patch file, so the message is the patch. Use this format:
 
 ```text
+feat: short imperative subject
+
 X-Jcode-Patch-Intent: short user-visible outcome
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
@@ -108,8 +113,36 @@ State what future updates must preserve.
 
 Validation:
 scripts/cargo_exec.sh test -p package focused_test --lib
----
 ```
+
+Wrap every prose line at 80 columns or fewer. Do not wrap validation commands:
+each command is one unindented line under `Validation:`. The `X-Jcode-Patch-*`
+headers go in the commit message body, after the subject and its blank line.
+Dependencies must be declared with `X-Jcode-Patch-Depends-On` as `none` or
+comma-separated earlier patch names. Required metadata headers are
+`X-Jcode-Patch-Intent`, `X-Jcode-Patch-Kind`, and
+`X-Jcode-Patch-Depends-On`. Required ordered body sections are `Patch intent:`,
+`Why it exists:`, `Upstream integration points:`, `Update guidance:`, and
+`Validation:`.
+
+### Personal vs candidate patches
+
+Personal patches use `X-Jcode-Patch-Kind: personal-*` and a `1000`-series numeric
+prefix. The snapshot tool zeroes their `From` commit hash for reproducibility.
+Candidate patches use `X-Jcode-Patch-Kind: upstream-candidate` and a `0000`-series
+prefix; they keep their real `From` hash. Keep candidate patches focused and
+independent from personal patches.
+
+## Patch update and commit discipline
+
+When a change fixes behavior owned by an existing catalog patch, make the fix in
+`.patched-jcode`, amend the corresponding commit, then run
+`just snapshot-patches` to regenerate the patch. Never leave source-only fixes
+in `.patched-jcode` while its catalog patch is stale.
+
+Do not commit, amend, push, or create a PR unless the user explicitly asks.
+Leave updated catalog files and generated worktree changes uncommitted for user
+review. Do not create temporary commits merely to regenerate a patch.
 
 ## Plugins
 

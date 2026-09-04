@@ -2,6 +2,7 @@ From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Tue, 1 Sep 2026 23:42:00 +0200
 Subject: [PATCH] fix: isolate release installer PATH opt-in
+
 X-Jcode-Patch-Intent: keep release installer shell PATH changes opt-in
 X-Jcode-Patch-Kind: personal-release-installer
 X-Jcode-Patch-Depends-On: none
@@ -38,8 +39,17 @@ Validation:
 bash scripts/test_install_release_policy.sh
 bash scripts/test_install_release_metadata.sh
 ---
+ README.md                                |  7 +++
+ scripts/install_release.sh               | 23 +++----
+ scripts/lib/install_release_policy.sh    | 49 +++++++++++++++
+ scripts/test_install_release_metadata.sh | 12 +++-
+ scripts/test_install_release_policy.sh   | 79 ++++++++++++++++++++++++
+ 5 files changed, 155 insertions(+), 15 deletions(-)
+ create mode 100644 scripts/lib/install_release_policy.sh
+ create mode 100755 scripts/test_install_release_policy.sh
+
 diff --git a/README.md b/README.md
-index db18f389ccc6fece549a7d3c57d2465667485397..86e95a9609a10cc8cd0199817823ce85eb1c0203 100644
+index db18f389c..86e95a960 100644
 --- a/README.md
 +++ b/README.md
 @@ -897,6 +897,13 @@ Then symlink to your PATH:
@@ -57,7 +67,7 @@ index db18f389ccc6fece549a7d3c57d2465667485397..86e95a9609a10cc8cd0199817823ce85
  
  Removes installed binaries and the launcher but keeps your config, auth, and
 diff --git a/scripts/install_release.sh b/scripts/install_release.sh
-index 074874a5161e6a5f578de7c0a32f726eb08f7914..bdab7011a8e195134add3bb91c2b10e7f2ed1107 100755
+index 074874a51..bdab7011a 100755
 --- a/scripts/install_release.sh
 +++ b/scripts/install_release.sh
 @@ -9,18 +9,16 @@
@@ -99,7 +109,7 @@ index 074874a5161e6a5f578de7c0a32f726eb08f7914..bdab7011a8e195134add3bb91c2b10e7
 +jcode_maybe_configure_release_path "$install_dir" "$configure_path"
 diff --git a/scripts/lib/install_release_policy.sh b/scripts/lib/install_release_policy.sh
 new file mode 100644
-index 0000000000000000000000000000000000000000..6f7b18690a784de92cb961d2683ebab810a583c7
+index 000000000..6f7b18690
 --- /dev/null
 +++ b/scripts/lib/install_release_policy.sh
 @@ -0,0 +1,49 @@
@@ -153,7 +163,7 @@ index 0000000000000000000000000000000000000000..6f7b18690a784de92cb961d2683ebab8
 +  fi
 +}
 diff --git a/scripts/test_install_release_metadata.sh b/scripts/test_install_release_metadata.sh
-index f5cfcc9ae01965c63963a272a9b3ecf36a763667..59a131fe72b4046657fe5113f8c48739d845388c 100755
+index f5cfcc9ae..59a131fe7 100755
 --- a/scripts/test_install_release_metadata.sh
 +++ b/scripts/test_install_release_metadata.sh
 @@ -6,7 +6,10 @@ trap 'rm -rf "$tmp"' EXIT
@@ -188,7 +198,7 @@ index f5cfcc9ae01965c63963a272a9b3ecf36a763667..59a131fe72b4046657fe5113f8c48739
    echo "installer accepted a binary with stale metadata" >&2; exit 1
 diff --git a/scripts/test_install_release_policy.sh b/scripts/test_install_release_policy.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..3a094f8528aa41bb4af72323df11c5181f863427
+index 000000000..3a094f852
 --- /dev/null
 +++ b/scripts/test_install_release_policy.sh
 @@ -0,0 +1,79 @@

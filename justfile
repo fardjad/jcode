@@ -47,6 +47,30 @@ create-patched-copy:
   trap - ERR
   printf 'patches applied; worktree retained: %s\n' "$worktree"
 
+# Regenerate every catalog patch from .patched-jcode commits.
+snapshot-patches:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/snapshot_patches.py"
+
+# Print the commit-to-patch mapping for .patched-jcode.
+list-patches:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/snapshot_patches.py" --list
+
+# One-time: copy patch metadata into .patched-jcode commit messages.
+migrate-commit-metadata:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/migrate_commit_metadata.py"
+
 # Refresh patched copy, then install its fast release build.
 install-patched-version:
   #!/usr/bin/env bash

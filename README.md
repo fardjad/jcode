@@ -79,8 +79,8 @@ just sync vX.Y.Z
 ```
 
 This refreshes the local upstream base and rebuilds `.patched-jcode/` with your
-patches. If upstream changes conflict with a patch, use AI assistance to update
-the affected patch, then run the command again.
+patches. If upstream changes conflict with a patch, resolve the conflict in
+`.patched-jcode/`, amend the affected commit, then run `just snapshot-patches`.
 
 When you are happy with the synchronized catalog, push both the catalog and
 selected upstream base:
@@ -89,7 +89,27 @@ selected upstream base:
 just push
 ```
 
-### 2. Install the patched version
+### 2. Make a change (commit-first workflow)
+
+Never edit `.patch` files directly. Work in `.patched-jcode/` and let the
+snapshot tool regenerate patches from commits.
+
+```bash
+just create-patched-copy          # ensure .patched-jcode is clean and current
+just list-patches                 # see which commit maps to which patch
+# edit source files in .patched-jcode/
+# commit or amend the relevant commit there
+just snapshot-patches             # regenerate every .patch from commits
+just validate-patch-files         # confirm patches apply cleanly
+just test-patch-file patches/<name>.patch   # run the patch's validation
+```
+
+Each commit above `master` in `.patched-jcode/` is one patch. The commit message
+must include the `X-Jcode-Patch-*` headers and the body sections (`Patch intent:`,
+`Why it exists:`, `Upstream integration points:`, `Update guidance:`,
+`Validation:`). See `AGENTS.md` for the full format.
+
+### 3. Install the patched version
 
 Build and install the current patched jcode:
 
@@ -100,7 +120,7 @@ just install-patched-version
 This refreshes `.patched-jcode/`, builds it, and installs the resulting jcode
 version locally.
 
-### 3. Validate and test patches
+### 4. Validate and test patches
 
 Validate the patch catalog and ensure the patches apply:
 
@@ -114,10 +134,10 @@ Test one patch and its declared validation command:
 just test-patch-file patches/1001-personal-release-installer-path-opt-in.patch
 ```
 
-Use this after changing a patch, and before relying on it after an upstream
-sync.
+Use this after snapshotting a change, and before relying on it after an
+upstream sync.
 
-### 4. Prepare an upstream contribution
+### 5. Prepare an upstream contribution
 
 Create a branch from a candidate patch:
 

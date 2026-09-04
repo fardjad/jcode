@@ -1,7 +1,8 @@
-From b917417f76bf7cfb5fec88dd10ccd56a1827a41c Mon Sep 17 00:00:00 2001
+From a7b1c8ceef4e3344e081dba8a38580695c7d33df Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Tue, 18 Aug 2026 10:20:23 +0200
 Subject: [PATCH] feat: add pre-tool input transformers
+
 X-Jcode-Patch-Intent: generic pre-tool transformer hook/config/docs
 X-Jcode-Patch-Kind: upstream-candidate
 X-Jcode-Patch-Depends-On: none
@@ -42,7 +43,7 @@ scripts/cargo_exec.sh test -p jcode-base tool_transformer
  7 files changed, 236 insertions(+), 4 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index fd5dc4eb0d6e4b6043125f68ffd1dda76d0505bf..d7e3e38921072066ccf0167ecf050e31ae9cdd88 100644
+index fd5dc4eb0..d7e3e3892 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -707,14 +707,22 @@ impl Registry {
@@ -73,7 +74,7 @@ index fd5dc4eb0d6e4b6043125f68ffd1dda76d0505bf..d7e3e38921072066ccf0167ecf050e31
                  &ctx.session_id,
                  working_dir.as_deref(),
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index 5c5fbe30a8cf174375686d673e785585e5375389..2056d8ac19411e462c36652a9fc2f5907a6793dd 100644
+index e0775844f..b9fc5a3ca 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
 @@ -87,6 +87,8 @@ const CONFIG_ENV_KEYS: &[&str] = &[
@@ -86,10 +87,10 @@ index 5c5fbe30a8cf174375686d673e785585e5375389..2056d8ac19411e462c36652a9fc2f590
      "JCODE_HOOK_POST_TOOL",
      "JCODE_HOOK_SESSION_END",
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 568efbf6c8a7d96ad48f6731e74dbb5b3e0b84cd..7f43a35d55393fc2fe6d188a472759c12edbb8bb 100644
+index 131bf8738..e18362afd 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -543,6 +543,11 @@ swarm_max_concurrent_agents = 32
+@@ -558,6 +558,11 @@ swarm_max_concurrent_agents = 32
  # turn_complete_sound = "Glass"
  
  [hooks]
@@ -102,10 +103,10 @@ index 568efbf6c8a7d96ad48f6731e74dbb5b3e0b84cd..7f43a35d55393fc2fe6d188a472759c1
  # programs can observe or gate agent behavior. Commands are parsed shell-style
  # (quotes work) but executed directly, with JCODE_HOOK_* env vars describing
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 1fe725072bedfae4b97a5b0197f9e6ab274a804b..6dc8df17056afad027724af80fcb4bb822298088 100644
+index 8cf979fd6..89adb667d 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
-@@ -476,6 +476,15 @@ impl Config {
+@@ -491,6 +491,15 @@ impl Config {
          hook_env_override(&mut self.hooks.session_start, "JCODE_HOOK_SESSION_START");
          hook_env_override(&mut self.hooks.session_end, "JCODE_HOOK_SESSION_END");
          hook_env_override(&mut self.hooks.pre_tool, "JCODE_HOOK_PRE_TOOL");
@@ -122,7 +123,7 @@ index 1fe725072bedfae4b97a5b0197f9e6ab274a804b..6dc8df17056afad027724af80fcb4bb8
          if let Ok(v) = std::env::var("JCODE_HOOK_PRE_TOOL_TIMEOUT_MS") {
              if let Ok(parsed) = v.trim().parse::<u64>() {
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index 32a02938b64f863a81efe36b8040c5da628c9d90..81b7fe3ae63407c15b31d8d755c6a2517ef3926c 100644
+index 32a02938b..81b7fe3ae 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -21,6 +21,7 @@
@@ -325,10 +326,10 @@ index 32a02938b64f863a81efe36b8040c5da628c9d90..81b7fe3ae63407c15b31d8d755c6a251
      #[tokio::test]
      async fn pre_tool_gate_allows_on_exit_zero_and_blocks_on_exit_two() {
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 2073ca05901eefc51574d662c13bb700872ded0f..27ef850fd9aa1214baaf3bab8a5d85f0456a621d 100644
+index 1550a531d..e8cf4eefe 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -828,6 +828,12 @@ impl<'de> Deserialize<'de> for HookCommands {
+@@ -855,6 +855,12 @@ impl<'de> Deserialize<'de> for HookCommands {
  #[derive(Debug, Clone, Serialize, Deserialize)]
  #[serde(default)]
  pub struct HooksConfig {
@@ -341,7 +342,7 @@ index 2073ca05901eefc51574d662c13bb700872ded0f..27ef850fd9aa1214baaf3bab8a5d85f0
      /// Runs when an agent turn begins (after the user message is added and
      /// before the model starts generating). Fires before the first `pre_tool`,
      /// so integrations can detect that the agent is actively working even while
-@@ -862,6 +868,8 @@ pub struct HooksConfig {
+@@ -889,6 +895,8 @@ pub struct HooksConfig {
  impl Default for HooksConfig {
      fn default() -> Self {
          Self {
@@ -351,7 +352,7 @@ index 2073ca05901eefc51574d662c13bb700872ded0f..27ef850fd9aa1214baaf3bab8a5d85f0
              turn_end: None,
              session_start: None,
 diff --git a/docs/HOOKS.md b/docs/HOOKS.md
-index 5025ca58c1f29ad517806464ac96bdab0b6adf97..4f07468225d22ea4c8d24970e71bd25581ed1005 100644
+index 5025ca58c..4f0746822 100644
 --- a/docs/HOOKS.md
 +++ b/docs/HOOKS.md
 @@ -82,6 +82,28 @@ Fail-open is deliberate: a broken policy script should degrade to "no policy"
@@ -383,5 +384,3 @@ index 5025ca58c1f29ad517806464ac96bdab0b6adf97..4f07468225d22ea4c8d24970e71bd255
  ### Example policy script
  
  ```bash
--- 
-2.55.0
