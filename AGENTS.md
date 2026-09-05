@@ -19,7 +19,8 @@ Commands:
 just help
 just validate-patch-files
 just create-patched-copy
-just snapshot-patches            # regenerate patches from .patched-jcode commits
+just snapshot-patches            # regenerate patches and normalize personal hashes
+just normalize-patch             # normalize existing personal patch hashes
 just list-patches                # print commit-to-patch mapping
 just migrate-commit-metadata     # one-time: copy patch metadata into commits
 just install-patched-version
@@ -74,7 +75,8 @@ The ideal workflow for any change:
 2. Edit source files directly in `.patched-jcode/`.
 3. Commit or amend the relevant commit there (see below for which commit).
 4. `just snapshot-patches` — regenerates every `.patch` file from the commits
-   above `master`. Run `just validate-patch-files` to confirm.
+   above `master` and normalizes every personal patch's `From` hash to zeros.
+   Run `just validate-patch-files` to confirm.
 5. `just test-patch-file patches/<name>.patch` to run the patch's validation.
 
 ### Mapping commits to patches
@@ -128,10 +130,12 @@ comma-separated earlier patch names. Required metadata headers are
 ### Personal vs candidate patches
 
 Personal patches use `X-Jcode-Patch-Kind: personal-*` and a `1000`-series numeric
-prefix. The snapshot tool zeroes their `From` commit hash for reproducibility.
-Candidate patches use `X-Jcode-Patch-Kind: upstream-candidate` and a `0000`-series
-prefix; they keep their real `From` hash. Keep candidate patches focused and
-independent from personal patches.
+prefix. `just snapshot-patches` always normalizes their `From` commit hash to
+zeros for reproducibility. `just normalize-patch` provides the same cleanup for
+an existing catalog. Candidate patches use `X-Jcode-Patch-Kind:
+upstream-candidate` and retain their real hash.
+They use a `0000`-series prefix. Keep candidate patches focused and independent
+from personal patches.
 
 ## Patch update and commit discipline
 

@@ -47,13 +47,22 @@ create-patched-copy:
   trap - ERR
   printf 'patches applied; worktree retained: %s\n' "$worktree"
 
-# Regenerate every catalog patch from .patched-jcode commits.
+# Regenerate every catalog patch and normalize personal From hashes.
 snapshot-patches:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
   python3 "$repo_root/scripts/snapshot_patches.py"
+  python3 "$repo_root/scripts/normalize_patch.py"
+
+# Zero personal patch From hashes to avoid backing-commit-only diffs.
+normalize-patch:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/normalize_patch.py"
 
 # Print the commit-to-patch mapping for .patched-jcode.
 list-patches:

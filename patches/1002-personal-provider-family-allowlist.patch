@@ -82,7 +82,7 @@ scripts/cargo_exec.sh test -p jcode-base provider_route_ --lib
  43 files changed, 1598 insertions(+), 110 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
-index daa5b30f1..2a5af946b 100644
+index 923ee5de1..1723a7a2a 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -186,6 +186,7 @@ jcode-build-meta = { path = "crates/jcode-build-meta" }
@@ -2616,7 +2616,7 @@ index 4dac50218..27c9f3b27 100644
          self.reload_credentials_now();
      }
 diff --git a/crates/jcode-provider-openrouter-runtime/src/lib.rs b/crates/jcode-provider-openrouter-runtime/src/lib.rs
-index 704a22c43..a709b2026 100644
+index 86a0e5151..ae8d47cd3 100644
 --- a/crates/jcode-provider-openrouter-runtime/src/lib.rs
 +++ b/crates/jcode-provider-openrouter-runtime/src/lib.rs
 @@ -27,7 +27,9 @@ use jcode_base::provider_catalog::{
@@ -2646,7 +2646,7 @@ index 704a22c43..a709b2026 100644
  const OPENROUTER_TRANSPORT_STATE_ENV: &str = "JCODE_OPENROUTER_TRANSPORT_STATE";
  const KIMI_CODING_USER_AGENT: &str = "claude-cli/1.0.0";
  const KIMI_CODING_X_APP: &str = "cli";
-@@ -1646,27 +1649,24 @@ impl OpenRouterProvider {
+@@ -1683,27 +1686,24 @@ impl OpenRouterProvider {
          })
      }
  
@@ -2683,7 +2683,7 @@ index 704a22c43..a709b2026 100644
              },
              supports_provider_features: true,
              supports_model_catalog: true,
-@@ -1675,7 +1675,7 @@ impl OpenRouterProvider {
+@@ -1712,7 +1712,7 @@ impl OpenRouterProvider {
              disable_reasoning_heuristics: false,
              static_reasoning_config: HashMap::new(),
              max_tokens: Self::configured_max_tokens(None),
@@ -2692,7 +2692,7 @@ index 704a22c43..a709b2026 100644
              static_models: Vec::new(),
              static_context_limits: HashMap::new(),
              static_image_input_support: HashMap::new(),
-@@ -1689,6 +1689,10 @@ impl OpenRouterProvider {
+@@ -1727,6 +1727,10 @@ impl OpenRouterProvider {
          })
      }
  
@@ -2704,7 +2704,7 @@ index 704a22c43..a709b2026 100644
          profile: jcode_base::provider_catalog::OpenAiCompatibleProfile,
      ) -> Result<Self> {
 diff --git a/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs b/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
-index 4114fafd2..fec934939 100644
+index c452b05af..854896bb8 100644
 --- a/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
 +++ b/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
 @@ -4,6 +4,20 @@ use jcode_base::provider::{ModelCatalogRefreshSummary, summarize_model_catalog_r

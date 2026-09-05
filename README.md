@@ -99,10 +99,15 @@ just create-patched-copy          # ensure .patched-jcode is clean and current
 just list-patches                 # see which commit maps to which patch
 # edit source files in .patched-jcode/
 # commit or amend the relevant commit there
-just snapshot-patches             # regenerate every .patch from commits
+just snapshot-patches             # regenerate and normalize personal patch hashes
 just validate-patch-files         # confirm patches apply cleanly
 just test-patch-file patches/<name>.patch   # run the patch's validation
 ```
+
+`just snapshot-patches` automatically zeroes the `From` hash in every personal
+patch so recreated backing commits do not create irrelevant diffs. Use `just
+normalize-patch` to apply that cleanup independently. Upstream-candidate patch
+hashes are preserved as provenance.
 
 Each commit above `master` in `.patched-jcode/` is one patch. The commit message
 must include the `X-Jcode-Patch-*` headers and the body sections (`Patch intent:`,

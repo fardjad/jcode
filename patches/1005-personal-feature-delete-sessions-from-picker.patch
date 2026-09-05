@@ -1,0 +1,187 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Sat, 5 Sep 2026 21:04:55 +0200
+Subject: [PATCH] feat: delete sessions from picker with Ctrl+D
+
+X-Jcode-Patch-Intent: Delete the selected session directly from the session picker.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1004-personal-feature-configure-session-picker-default-filter.patch
+
+Patch intent:
+Add Ctrl+D to delete the selected session from the session picker without a
+confirmation prompt. Remove the backing local snapshot and journal or the
+external transcript, then remove the row from the open picker.
+
+Why it exists:
+Users need a fast way to remove obsolete sessions while reviewing their
+session history. This intentionally provides no undo or confirmation step.
+
+Upstream integration points:
+SessionPicker::handle_overlay_key routes Ctrl+D to deletion. Session storage
+paths provide the local snapshot and journal paths, and the picker cache is
+invalidated so a later /resume does not show a deleted session.
+
+Update guidance:
+Preserve the unmodified d debug toggle. Keep deletion scoped to the selected
+entry and remove every storage file owned by that supported session source.
+
+Validation:
+cargo test -p jcode-tui ctrl_d_deletes_the_selected_session_without_closing_the_picker --lib
+---
+ crates/jcode-tui/src/tui/session_picker.rs    | 52 +++++++++++++++++++
+ .../src/tui/session_picker/loading.rs         |  3 ++
+ .../src/tui/session_picker/render.rs          |  4 +-
+ .../jcode-tui/src/tui/session_picker_tests.rs | 39 ++++++++++++++
+ 4 files changed, 96 insertions(+), 2 deletions(-)
+
+diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
+index 96ebf74ae..dbfc4deb7 100644
+--- a/crates/jcode-tui/src/tui/session_picker.rs
++++ b/crates/jcode-tui/src/tui/session_picker.rs
+@@ -838,6 +838,55 @@ impl SessionPicker {
+         self.selected_session_ids.len()
+     }
+ 
++    /// Delete the selected session and remove it from this picker immediately.
++    ///
++    /// Local jcode sessions have both a snapshot and an optional journal. Other
++    /// session sources expose their backing transcript through `external_path`.
++    fn delete_selected_session(&mut self) -> Result<()> {
++        let Some(session) = self.selected_session() else {
++            return Ok(());
++        };
++        let session_id = session.id.clone();
++        let paths = match session.resume_target {
++            ResumeTarget::JcodeSession { ref session_id } => {
++                let snapshot = crate::session::session_path(session_id)?;
++                vec![
++                    snapshot.clone(),
++                    crate::session::session_journal_path_from_snapshot(&snapshot),
++                ]
++            }
++            _ => session
++                .external_path
++                .as_deref()
++                .map(std::path::PathBuf::from)
++                .into_iter()
++                .collect(),
++        };
++
++        for path in paths {
++            match std::fs::remove_file(&path) {
++                Ok(()) => {}
++                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
++                Err(err) => return Err(err.into()),
++            }
++        }
++
++        self.all_sessions.retain(|session| session.id != session_id);
++        self.all_orphan_sessions
++            .retain(|session| session.id != session_id);
++        for group in &mut self.all_server_groups {
++            group.sessions.retain(|session| session.id != session_id);
++        }
++        self.selected_session_ids.remove(&session_id);
++        self.crashed_session_ids.remove(&session_id);
++        self.preview_load_failures.remove(&session_id);
++        self.pending_preview_load = None;
++        self.preview_cache = None;
++        invalidate_session_list_cache();
++        self.rebuild_items();
++        Ok(())
++    }
++
+     fn toggle_selected_session(&mut self) {
+         let Some(session_id) = self.selected_session().map(|session| session.id.clone()) else {
+             return;
+@@ -1268,6 +1317,9 @@ impl SessionPicker {
+             KeyCode::Char('/') => {
+                 self.search_active = true;
+             }
++            KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
++                self.delete_selected_session()?;
++            }
+             KeyCode::Char('d') => {
+                 self.toggle_test_sessions();
+             }
+diff --git a/crates/jcode-tui/src/tui/session_picker/loading.rs b/crates/jcode-tui/src/tui/session_picker/loading.rs
+index 2ba5c1672..a422c8b40 100644
+--- a/crates/jcode-tui/src/tui/session_picker/loading.rs
++++ b/crates/jcode-tui/src/tui/session_picker/loading.rs
+@@ -204,6 +204,9 @@ pub fn invalidate_session_list_cache() {
+     if let Ok(mut cache) = session_list_cache().lock() {
+         *cache = None;
+     }
++    if let Ok(path) = session_list_disk_cache_path() {
++        let _ = std::fs::remove_file(path);
++    }
+ }
+ 
+ fn session_list_disk_cache_path() -> Result<PathBuf> {
+diff --git a/crates/jcode-tui/src/tui/session_picker/render.rs b/crates/jcode-tui/src/tui/session_picker/render.rs
+index 04fa4c557..b3603adf8 100644
+--- a/crates/jcode-tui/src/tui/session_picker/render.rs
++++ b/crates/jcode-tui/src/tui/session_picker/render.rs
+@@ -643,10 +643,10 @@ impl SessionPicker {
+         } else {
+             match crate::config::config().keybindings.session_picker_enter {
+                 crate::config::SessionPickerResumeAction::CurrentTerminal => {
+-                    " Space select · Enter in place · Ctrl+Enter new terminal · d debug · / search · h/l focus · ↑↓ · q ".to_string()
++                    " Space select · Enter in place · Ctrl+Enter new terminal · Ctrl+D delete · d debug · / search · h/l focus · ↑↓ · q ".to_string()
+                 }
+                 crate::config::SessionPickerResumeAction::NewTerminal => {
+-                    " Space select · Enter new terminal · Ctrl+Enter in place · d debug · / search · h/l focus · ↑↓ · q ".to_string()
++                    " Space select · Enter new terminal · Ctrl+Enter in place · Ctrl+D delete · d debug · / search · h/l focus · ↑↓ · q ".to_string()
+                 }
+             }
+         };
+diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
+index 3398241fa..fd97c07d0 100644
+--- a/crates/jcode-tui/src/tui/session_picker_tests.rs
++++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
+@@ -1152,6 +1152,45 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
+     }
+ }
+ 
++#[test]
++fn ctrl_d_deletes_the_selected_session_without_closing_the_picker() {
++    let _env_lock = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let previous_home = std::env::var("JCODE_HOME").ok();
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let mut session = Session::create_with_id(
++        "session_delete_selected".to_string(),
++        Some("/tmp/delete-selected".to_string()),
++        Some("Delete selected".to_string()),
++    );
++    session.save().expect("save session");
++    let snapshot = crate::session::session_path(&session.id).expect("session path");
++    let journal = crate::session::session_journal_path_from_snapshot(&snapshot);
++    std::fs::write(&journal, "journal").expect("write journal");
++
++    let mut picker = SessionPicker::new(vec![make_session(
++        &session.id,
++        "delete-selected",
++        false,
++        SessionStatus::Closed,
++    )]);
++    let action = picker
++        .handle_overlay_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
++        .expect("delete selected session");
++
++    assert!(matches!(action, OverlayAction::Continue));
++    assert!(!snapshot.exists());
++    assert!(!journal.exists());
++    assert_eq!(picker.visible_session_count(), 0);
++
++    if let Some(previous_home) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous_home);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++}
++
+ #[test]
+ fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
+     let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
