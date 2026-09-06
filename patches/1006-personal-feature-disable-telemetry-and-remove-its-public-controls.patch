@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Fardjad Davari <public@fardjad.com>
-Date: Sun, 6 Sep 2026 15:10:22 +0200
+From: jcode patch catalog <jcode@localhost>
+Date: Sun, 6 Sep 2026 22:07:00 +0000
 Subject: [PATCH] feat: disable telemetry and remove its public controls
 
 X-Jcode-Patch-Intent: Disable all telemetry delivery and remove public telemetry controls.
@@ -40,9 +40,9 @@ scripts/cargo_exec.sh check -p jcode -p jcode-tui -p jcode-telemetry-core
  src/cli/dispatch.rs                           |   1 -
  src/cli/mod.rs                                |   1 -
  src/cli/proctitle.rs                          |   1 -
- src/cli/startup.rs                            |  89 +---
+ src/cli/startup.rs                            |  91 +---
  src/cli/telemetry.rs                          |  78 ---
- 14 files changed, 17 insertions(+), 789 deletions(-)
+ 14 files changed, 17 insertions(+), 791 deletions(-)
  delete mode 100644 TELEMETRY.md
  delete mode 100644 src/cli/telemetry.rs
 
@@ -530,10 +530,10 @@ index b34ebd985..7b234cf33 100644
  
      #[test]
 diff --git a/crates/jcode-telemetry-core/src/lib.rs b/crates/jcode-telemetry-core/src/lib.rs
-index d8d14f3ee..9d0cb30ea 100644
+index d6f7faf3c..787a08a6b 100644
 --- a/crates/jcode-telemetry-core/src/lib.rs
 +++ b/crates/jcode-telemetry-core/src/lib.rs
-@@ -454,18 +454,10 @@ pub fn status() -> TelemetryStatus {
+@@ -456,18 +456,10 @@ pub fn status() -> TelemetryStatus {
      }
  }
  
@@ -555,7 +555,7 @@ index d8d14f3ee..9d0cb30ea 100644
  }
  
  /// Marker file recording that the user opted out of anonymous usage telemetry.
-@@ -1412,6 +1404,9 @@ fn transcript_background_sender() -> &'static SyncSender<Value> {
+@@ -1409,6 +1401,9 @@ fn transcript_background_sender() -> &'static SyncSender<Value> {
  }
  
  fn send_transcript_payload(payload: Value) -> bool {
@@ -565,17 +565,17 @@ index d8d14f3ee..9d0cb30ea 100644
      #[cfg(test)]
      {
          if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
-@@ -1434,6 +1429,9 @@ fn send_transcript_payload(payload: Value) -> bool {
+@@ -1431,6 +1426,9 @@ fn send_transcript_payload(payload: Value) -> bool {
  }
  
- fn send_payload(payload: serde_json::Value, mode: DeliveryMode) -> bool {
+ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
 +    if !is_enabled() {
 +        return false;
 +    }
+     concurrency::mark_legacy_concurrency_unavailable(&mut payload);
      #[cfg(test)]
      {
-         let _ = mode;
-@@ -1824,7 +1822,6 @@ pub fn record_install_if_first_run() {
+@@ -1821,7 +1819,6 @@ pub fn record_install_if_first_run() {
      }
      if first_run {
          emit_onboarding_step_once("first_run", None, None);
@@ -583,7 +583,7 @@ index d8d14f3ee..9d0cb30ea 100644
      }
      mark_current_version_recorded();
  }
-@@ -2568,25 +2565,5 @@ pub fn current_provider_model() -> Option<(String, String)> {
+@@ -2553,25 +2550,5 @@ pub fn current_provider_model() -> Option<(String, String)> {
      })
  }
  
@@ -610,10 +610,10 @@ index d8d14f3ee..9d0cb30ea 100644
  #[cfg(test)]
  mod tests;
 diff --git a/crates/jcode-tui/src/tui/app/commands.rs b/crates/jcode-tui/src/tui/app/commands.rs
-index f6b5120eb..e57ee50b3 100644
+index 9efbd44bd..787b3d440 100644
 --- a/crates/jcode-tui/src/tui/app/commands.rs
 +++ b/crates/jcode-tui/src/tui/app/commands.rs
-@@ -3616,59 +3616,6 @@ pub(super) fn handle_feedback_command(app: &mut App, trimmed: &str) -> bool {
+@@ -3618,59 +3618,6 @@ pub(super) fn handle_feedback_command(app: &mut App, trimmed: &str) -> bool {
      true
  }
  
@@ -674,10 +674,10 @@ index f6b5120eb..e57ee50b3 100644
  #[path = "commands_tests.rs"]
  mod tests;
 diff --git a/crates/jcode-tui/src/tui/app/commands_dispatch.rs b/crates/jcode-tui/src/tui/app/commands_dispatch.rs
-index 5902930ee..a65bcb977 100644
+index 58f80acff..1a79914b8 100644
 --- a/crates/jcode-tui/src/tui/app/commands_dispatch.rs
 +++ b/crates/jcode-tui/src/tui/app/commands_dispatch.rs
-@@ -34,7 +34,6 @@ pub(super) fn dispatch_local_command(app: &mut App, trimmed: &str) -> bool {
+@@ -182,7 +182,6 @@ pub(super) fn dispatch_local_command(app: &mut App, trimmed: &str) -> bool {
          || super::commands::handle_usage_command(app, trimmed)
          || super::productivity::handle_productivity_command(app, trimmed)
          || super::commands::handle_feedback_command(app, trimmed)
@@ -686,7 +686,7 @@ index 5902930ee..a65bcb977 100644
          || super::state_ui::handle_info_command(app, trimmed)
          || super::auth::handle_auth_command(app, trimmed)
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index 286b89234..a03daa91a 100644
+index 76113d357..58c3f81fb 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 @@ -156,7 +156,6 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
@@ -769,10 +769,10 @@ index 1d73abe9d..66b9690eb 100644
      let telemetry_h = (telemetry.len() as u16).min(TELEMETRY_LINES);
      let body_h = body.len() as u16;
 diff --git a/src/cli/args.rs b/src/cli/args.rs
-index b15a850d8..c41113b9b 100644
+index 1eb5a5830..3b2bdd972 100644
 --- a/src/cli/args.rs
 +++ b/src/cli/args.rs
-@@ -267,10 +267,6 @@ pub(crate) enum Command {
+@@ -287,10 +287,6 @@ pub(crate) enum Command {
          json: bool,
      },
  
@@ -783,7 +783,7 @@ index b15a850d8..c41113b9b 100644
      /// Self-development mode: run as a canary session on the shared server
      #[command(alias = "selfdev")]
      SelfDev {
-@@ -567,20 +563,6 @@ pub(crate) enum Command {
+@@ -592,20 +588,6 @@ pub(crate) enum Command {
      },
  }
  
@@ -805,10 +805,10 @@ index b15a850d8..c41113b9b 100644
  pub(crate) enum AccountCommand {
      /// Open browser-based device authorization and wait for plan activation
 diff --git a/src/cli/args/tests.rs b/src/cli/args/tests.rs
-index e47b6d24e..4629be7ce 100644
+index 706576f78..f91f463de 100644
 --- a/src/cli/args/tests.rs
 +++ b/src/cli/args/tests.rs
-@@ -49,30 +49,6 @@ fn server_promote_parses_default_and_explicit_version() {
+@@ -126,30 +126,6 @@ fn server_promote_parses_default_and_explicit_version() {
      ));
  }
  
@@ -840,10 +840,10 @@ index e47b6d24e..4629be7ce 100644
  fn test_provider_choice_aliases_parse() {
      let args = Args::try_parse_from(["jcode", "--provider", "z.ai", "run", "smoke"]).unwrap();
 diff --git a/src/cli/dispatch.rs b/src/cli/dispatch.rs
-index 2e48a44f0..142796d2c 100644
+index 2800f1dad..719323195 100644
 --- a/src/cli/dispatch.rs
 +++ b/src/cli/dispatch.rs
-@@ -312,7 +312,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
+@@ -364,7 +364,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
          Some(Command::Usage { json }) => {
              commands::run_usage_command(json).await?;
          }
@@ -852,12 +852,12 @@ index 2e48a44f0..142796d2c 100644
              selfdev::run_self_dev(build, args.resume).await?;
          }
 diff --git a/src/cli/mod.rs b/src/cli/mod.rs
-index 7ba873ff6..5d613d414 100644
+index c3fd3c5e1..ba4788c2f 100644
 --- a/src/cli/mod.rs
 +++ b/src/cli/mod.rs
-@@ -14,6 +14,5 @@ pub mod provider_doctor;
- pub mod provider_init;
- pub mod selfdev;
+@@ -18,6 +18,5 @@ pub mod ssh;
+ #[cfg(unix)]
+ pub mod ssh_transport;
  pub mod startup;
 -pub mod telemetry;
  pub mod terminal;
@@ -875,7 +875,7 @@ index cffcae02b..f90a5aa3f 100644
          Some(Command::Debug { .. }) => "jcode debug".to_string(),
          Some(Command::Auth(_)) => "jcode auth".to_string(),
 diff --git a/src/cli/startup.rs b/src/cli/startup.rs
-index 03f3d3366..373a0fc14 100644
+index 8ef40f778..ca235666f 100644
 --- a/src/cli/startup.rs
 +++ b/src/cli/startup.rs
 @@ -2,9 +2,7 @@ use anyhow::Result;
@@ -889,7 +889,7 @@ index 03f3d3366..373a0fc14 100644
  
  use super::{
      args::{Args, Command},
-@@ -113,15 +111,7 @@ pub async fn run() -> Result<()> {
+@@ -129,15 +127,7 @@ pub async fn run() -> Result<()> {
      perf::init_background();
      startup_profile::mark("perf_init");
  
@@ -904,9 +904,9 @@ index 03f3d3366..373a0fc14 100644
 -    startup_profile::mark("telemetry_check");
 +    startup_profile::mark("startup");
  
-     let args = parse_and_prepare_args()?;
+     let args = parse_and_prepare_args(args)?;
      spawn_background_update_check(&args);
-@@ -134,50 +124,6 @@ pub async fn run() -> Result<()> {
+@@ -150,52 +140,6 @@ pub async fn run() -> Result<()> {
      Ok(())
  }
  
@@ -936,6 +936,9 @@ index 03f3d3366..373a0fc14 100644
 -                    | "-C"
 -                    | "--cwd"
 -                    | "--remote-working-dir"
+-                    | "--ssh"
+-                    | "--ssh-binary"
+-                    | "--ssh-server-socket"
 -                    | "--spawn-hotkey"
 -                    | "--socket"
 -                    | "-m"
@@ -953,11 +956,10 @@ index 03f3d3366..373a0fc14 100644
 -    }
 -    false
 -}
--
+ 
  /// Register provider runtimes that live downstream of `jcode-base` with the
  /// base crate's external provider registry. Keep every downstream runtime
- /// registration in this one function so the composition-root wiring stays
-@@ -483,37 +429,6 @@ mod tests {
+@@ -505,37 +449,6 @@ mod tests {
          Args::parse_from(argv)
      }
  

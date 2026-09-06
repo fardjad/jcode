@@ -41,7 +41,7 @@ cargo test -p jcode-tui test_filter_mode_keyboard_shortcuts_cycle_both_direction
  5 files changed, 47 insertions(+), 1 deletion(-)
 
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index f4601ccd5..0466c77a6 100644
+index 45cd35a5f..c09de1bf9 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
 @@ -220,6 +220,10 @@ prompt_entry_animation = true
@@ -107,7 +107,7 @@ index 3efefb52c..d3c084356 100644
  
      #[test]
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 845e1e2aa..9e04dd43c 100644
+index 0c3b7da9a..fe26278e6 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -52,6 +52,17 @@ pub enum SessionPickerResumeAction {
@@ -129,10 +129,10 @@ index 845e1e2aa..9e04dd43c 100644
  #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
  #[serde(rename_all = "kebab-case")]
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 57cd04807..675af5f36 100644
+index 4e474e929..777b1c733 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-@@ -2384,6 +2384,7 @@ impl App {
+@@ -2432,6 +2432,7 @@ impl App {
              (SessionPicker::loading(), "Loading sessions...")
          };
          picker.set_current_dir(current_dir);
@@ -140,7 +140,7 @@ index 57cd04807..675af5f36 100644
          picker.set_current_session_id(Some(super::commands::active_session_id(self)));
          self.session_picker_overlay = Some(RefCell::new(picker));
          self.session_picker_mode = SessionPickerMode::Resume;
-@@ -2505,6 +2506,7 @@ impl App {
+@@ -2556,6 +2557,7 @@ impl App {
              SessionPickerMode::Resume => {
                  let mut picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
                  picker.set_current_dir(self.session.working_dir.clone());
