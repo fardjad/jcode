@@ -47,6 +47,25 @@ create-patched-copy:
   trap - ERR
   printf 'patches applied; worktree retained: %s\n' "$worktree"
 
+# Apply every patch, compile the complete patched workspace, and run its
+# compatibility suite. Use this after upstream changes and before publishing
+# catalog updates, because patch application alone cannot detect Rust errors.
+validate-patched-copy:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  worktree="$repo_root/.patched-jcode"
+
+  just --justfile "$repo_root/justfile" create-patched-copy
+  (
+    cd "$worktree"
+    cargo check --workspace
+  )
+  base=$(git rev-parse master^{commit})
+  just --justfile "$repo_root/justfile" _fast-test "$worktree" "$base"
+  printf 'patched workspace validated: %s\n' "$worktree"
+
 # Regenerate every catalog patch and normalize personal From hashes.
 snapshot-patches:
   #!/usr/bin/env bash
@@ -139,6 +158,23 @@ create-upstream-candidate-branch-from patch:
   trap - ERR
   printf 'candidate ready: %s\n' "$branch"
 
+# Learn compatibility exclusions from a clean worktree at the current master.
+# This is intentionally separate from patched validation so patch failures
+# cannot be learned or hidden.
+learn-upstream-exclusions:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  base=$(git rev-parse --verify master^{commit})
+  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create sync-upstream master)
+  trap 'printf "clean-upstream learning failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
+
+  just --justfile "$repo_root/justfile" _learn-tests "$worktree" "$base"
+  python3 "$repo_root/scripts/patch_worktree.py" cleanup sync-upstream --path "$worktree"
+  trap - ERR
+  printf 'learned clean-upstream exclusions for: %s\n' "$base"
+
 # Sync local master from upstream, learn exclusions, and create patched copy.
 sync release="master":
   #!/usr/bin/env bash
@@ -177,13 +213,8 @@ sync release="master":
   printf 'selected ref: %s\nselected base: %s\n' "$selected_ref" "$selected_base"
   git branch -f master "$selected_base"
 
-  upstream_worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create sync-upstream master)
-  if ! just --justfile "$repo_root/justfile" _learn-tests "$upstream_worktree" "$selected_base"; then
-    printf 'clean upstream fast tests failed; worktree retained: %s\n' "$upstream_worktree" >&2
-    exit 1
-  fi
-  python3 "$repo_root/scripts/patch_worktree.py" cleanup sync-upstream --path "$upstream_worktree"
-  just --justfile "$repo_root/justfile" create-patched-copy
+  just --justfile "$repo_root/justfile" learn-upstream-exclusions
+  just --justfile "$repo_root/justfile" validate-patched-copy
 
 # Push catalog, synchronized upstream base, and candidate branches to origin.
 push:

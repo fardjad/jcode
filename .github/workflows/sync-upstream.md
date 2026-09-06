@@ -65,10 +65,19 @@ that knowledge here.
 
 ## Steps
 
-1. Run `just create-patched-copy` to validate and apply all patches.
-   Local `master` is already updated to upstream by the pre-agent steps.
+1. Run `just learn-upstream-exclusions` before touching any patches. Local
+   `master` is already updated to upstream by the pre-agent steps. This runs
+   the compatibility suite in a clean upstream-only worktree and refreshes
+   the ignored, base-specific exclusions. Never learn exclusions from a
+   patched worktree, because that could hide a catalog regression.
 
-2. If `just create-patched-copy` fails, you MUST fix the patches. Do not
+2. Run `just validate-patched-copy`. This applies every patch, runs
+   `cargo check --workspace` against the complete patched worktree, and runs
+   the compatibility suite using the exclusions learned in step 1. Patch
+   application alone is not sufficient: it
+   cannot detect a patch that applies cleanly but no longer compiles.
+
+3. If `just validate-patched-copy` fails, you MUST fix the patches. Do not
    just report the failure and call noop. Follow the commit-first workflow
    described in `AGENTS.md`:
    - The worktree at `.patched-jcode/` is retained even on failure
@@ -79,18 +88,19 @@ that knowledge here.
    - Run `just snapshot-patches` to regenerate all `.patch` files from the
      amended commits
    - Run `just validate-patch-files` to confirm metadata is valid
-   - Run `just create-patched-copy` again to verify all patches apply cleanly
-   - Repeat until `just create-patched-copy` succeeds
+   - Run `just validate-patched-copy` again to verify patch application,
+     compilation, and compatibility tests
+   - Repeat until `just validate-patched-copy` succeeds
    - Never edit `.patch` files directly; they are derived from commits
 
-3. After `just create-patched-copy` succeeds, check for changes:
+4. After `just validate-patched-copy` succeeds, check for changes:
    ```
    git status --porcelain
    ```
 
-4. If there are no changes, call `noop` confirming sync is up to date.
+5. If there are no changes, call `noop` confirming sync is up to date.
 
-5. If there are changes, create a PR via `create_pull_request` with a
+6. If there are changes, create a PR via `create_pull_request` with a
    title like "sync: update patches for upstream <short-sha>".
 
 Do not use `git commit`, `git push`, or `gh` directly for GitHub writes.
