@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+PATCH_ENCODING = "utf-8"
+
 
 class CatalogError(RuntimeError):
     """Raised for an invalid catalog or failed workflow operation."""
@@ -65,12 +67,14 @@ def resolve_patch(root: Path, value: str) -> Path:
 
 def _header_values(path: Path, prefix: str) -> list[str]:
     """Read RFC-style catalog header values."""
-    return [line[len(prefix):] for line in path.read_text().splitlines() if line.startswith(prefix)]
+    return [line[len(prefix):] for line in path.read_text(encoding=PATCH_ENCODING).splitlines()
+            if line.startswith(prefix)]
 
 
 def _metadata(path: Path, name: str) -> str:
     """Read one non-empty catalog header."""
-    values = [line[len(name) + 1:].strip() for line in path.read_text().splitlines()
+    values = [line[len(name) + 1:].strip()
+              for line in path.read_text(encoding=PATCH_ENCODING).splitlines()
               if line.startswith(f"{name}:")]
     if len(values) != 1 or not values[0].strip():
         raise CatalogError(f"invalid {name.lower()} header in {path.name}")
@@ -120,7 +124,7 @@ def dependency_order(root: Path, target: Path) -> list[Patch]:
 
 def validation_commands(path: Path) -> list[str]:
     """Return non-empty commands from patch Validation section."""
-    text = path.read_text()
+    text = path.read_text(encoding=PATCH_ENCODING)
     section = text.split("\nValidation:\n", 1)
     if len(section) != 2:
         raise CatalogError(f"missing Validation section: {path.name}")

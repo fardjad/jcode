@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 ZERO_HASH = "0" * 40
+PATCH_ENCODING = "utf-8"
 FROM_HEADER = re.compile(r"^(From )([0-9a-f]{40})( .*)$", re.MULTILINE)
 KIND_HEADER = re.compile(r"^X-Jcode-Patch-Kind:\s*(\S.*?)\s*$", re.MULTILINE)
 
@@ -33,7 +34,7 @@ def patch_kind(path: Path, text: str) -> str:
 
 def normalize_patch(path: Path) -> bool:
     """Zero one personal patch's top-level mail hash, returning whether it changed."""
-    text = path.read_text()
+    text = path.read_text(encoding=PATCH_ENCODING)
     if patch_kind(path, text) == "upstream-candidate":
         return False
 
@@ -44,7 +45,7 @@ def normalize_patch(path: Path) -> bool:
         return False
 
     normalized = text[: match.start(2)] + ZERO_HASH + text[match.end(2) :]
-    path.write_text(normalized)
+    path.write_text(normalized, encoding=PATCH_ENCODING)
     return True
 
 

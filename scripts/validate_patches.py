@@ -8,7 +8,15 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from patch_catalog import CatalogError, Patch, fail, git, patches, repository_root
+from patch_catalog import (
+    PATCH_ENCODING,
+    CatalogError,
+    Patch,
+    fail,
+    git,
+    patches,
+    repository_root,
+)
 
 
 SECTIONS = ("Patch intent:", "Why it exists:", "Upstream integration points:", "Update guidance:", "Validation:")
@@ -25,7 +33,7 @@ def validate_file(root: Path, patch: Patch) -> None:
     path = patch.path
     relative = path.relative_to(root).as_posix()
     require(git("ls-files", "--error-unmatch", relative, cwd=root, quiet=True) == relative, f"untracked {relative}")
-    text = path.read_text()
+    text = path.read_text(encoding=PATCH_ENCODING)
     header_body, separator, _ = text.partition("\n---\n")
     require(bool(separator), f"missing patch body section: {relative}")
     _, body_separator, _ = header_body.partition("\n\n")

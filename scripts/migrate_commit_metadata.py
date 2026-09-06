@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from patch_catalog import CatalogError, fail, git, patches, repository_root
+from patch_catalog import PATCH_ENCODING, CatalogError, fail, git, patches, repository_root
 
 
 def patched_worktree_path(root: Path) -> Path:
@@ -35,7 +35,7 @@ def commits_above_base(worktree: Path, base: str) -> list[str]:
 
 def extract_metadata_from_patch(patch_path: Path) -> str:
     """Return the metadata body (after Subject, before ---) from a patch file."""
-    text = patch_path.read_text()
+    text = patch_path.read_text(encoding=PATCH_ENCODING)
     header_body, sep, _ = text.partition("\n---\n")
     if not sep:
         raise CatalogError(f"missing --- separator in {patch_path.name}")
