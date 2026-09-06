@@ -17,6 +17,7 @@ from pathlib import Path
 
 from patch_catalog import (
     CatalogError,
+    PATCH_ENCODING,
     fail,
     git,
     patches,
@@ -185,10 +186,10 @@ def snapshot(root: Path) -> list[str]:
 
         patch_text = format_patch(worktree, commit, kind)
         destination = root / "patches" / patch_name
-        if destination.exists() and destination.read_text() == patch_text:
+        if destination.exists() and destination.read_text(encoding=PATCH_ENCODING) == patch_text:
             print(f"unchanged: {patch_name}")
         else:
-            destination.write_text(patch_text)
+            destination.write_text(patch_text, encoding=PATCH_ENCODING)
             print(f"regenerated: {patch_name}")
         regenerated.append(patch_name)
 

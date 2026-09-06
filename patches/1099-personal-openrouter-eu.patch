@@ -2559,10 +2559,10 @@ index fcf14b9b1..7eb3c7563 100644
      // ("azure"); keep the dedicated mapping used across the auth lifecycle.
      if provider.eq_ignore_ascii_case("azure")
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index 286b89234..3fba5d19c 100644
+index a03daa91a..ce32b1075 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-@@ -474,7 +474,9 @@ impl App {
+@@ -473,7 +473,9 @@ impl App {
              };
  
              for route in routes {
@@ -2573,7 +2573,7 @@ index 286b89234..3fba5d19c 100644
                      let help = if route.provider == "auto" {
                          "Use automatic OpenRouter provider routing"
                      } else {
-@@ -483,12 +485,29 @@ impl App {
+@@ -482,12 +484,29 @@ impl App {
                      push_unique(
                          &mut seen,
                          &mut suggestions,
