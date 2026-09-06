@@ -1,4 +1,4 @@
-From 0146b95b18ec136e43c1d488b964cd2bf2dd9d0b Mon Sep 17 00:00:00 2001
+From 23f1cf09ec167149bdb48414a7a0a134d4b8c33c Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Tue, 18 Aug 2026 10:20:23 +0200
 Subject: [PATCH] feat: add pre-tool input transformers
@@ -43,10 +43,10 @@ scripts/cargo_exec.sh test -p jcode-base tool_transformer
  7 files changed, 236 insertions(+), 4 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index fd5dc4eb0..d7e3e3892 100644
+index 446c6a9e9..d56e9424c 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -707,14 +707,22 @@ impl Registry {
+@@ -801,14 +801,22 @@ impl Registry {
          // Drop the lock before executing
          drop(tools);
  
@@ -87,10 +87,10 @@ index e0775844f..b9fc5a3ca 100644
      "JCODE_HOOK_POST_TOOL",
      "JCODE_HOOK_SESSION_END",
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 131bf8738..e18362afd 100644
+index 0834c4efe..124280789 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -558,6 +558,11 @@ swarm_max_concurrent_agents = 32
+@@ -559,6 +559,11 @@ swarm_max_concurrent_agents = 32
  # turn_complete_sound = "Glass"
  
  [hooks]
@@ -326,7 +326,7 @@ index 32a02938b..81b7fe3ae 100644
      #[tokio::test]
      async fn pre_tool_gate_allows_on_exit_zero_and_blocks_on_exit_two() {
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 1550a531d..e8cf4eefe 100644
+index ab74bcbff..d260dfecf 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -855,6 +855,12 @@ impl<'de> Deserialize<'de> for HookCommands {

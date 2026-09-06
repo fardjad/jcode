@@ -39,7 +39,7 @@ cargo test -p jcode-tui cached_grouped_sessions_round_trip_from_disk --lib
  6 files changed, 170 insertions(+), 30 deletions(-)
 
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 8b090f00e..f4601ccd5 100644
+index 2cd0bd6a4..45cd35a5f 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
 @@ -220,6 +220,10 @@ prompt_entry_animation = true
@@ -112,7 +112,7 @@ index a413d63d8..3efefb52c 100644
      fn usage_percentage_wording_defaults_to_left_and_accepts_used() {
          assert_eq!(DisplayConfig::default().usage_display, "left");
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 0da428e34..845e1e2aa 100644
+index 674fe7d0a..0c3b7da9a 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -52,6 +52,19 @@ pub enum SessionPickerResumeAction {
