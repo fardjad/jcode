@@ -9,14 +9,15 @@ X-Jcode-Patch-Depends-On: none
 
 Patch intent:
 Add a provider-family execution allowlist that gates model switching,
-persisted routes, dispatch, and failover. Empty or absent means unrestricted;
-a non-empty list fails closed for unknown identities.
+persisted routes, dispatch, failover, and direct memory-sidecar selection.
+Empty or absent means unrestricted; a non-empty list fails closed for unknown
+identities.
 
 Why it exists:
-Keeps sessions inside explicit provider allowlists while preserving empty-list
-legacy behavior. Non-goal is restricting picker visibility only; the picker
-narrowing is a separate config field that cannot grant execution the allowlist
-denies.
+Keeps sessions inside explicit provider allowlists, including auxiliary
+sidecar calls that would otherwise bypass main-provider dispatch. Non-goal is
+restricting picker visibility only; the picker narrowing is a separate config
+field that cannot grant execution the allowlist denies.
 
 Upstream integration points:
 crates/jcode-config-types/src/lib.rs adds the allowed_providers field.
@@ -25,16 +26,20 @@ provider_family() methods on RuntimeKey and ModelRouteApiMethod.
 crates/jcode-base/src/provider/mod.rs enforces policy in set_model and route filtering.
 crates/jcode-base/src/provider/dispatch.rs and multi_provider.rs enforce in failover.
 crates/jcode-base/src/provider/catalog_routes.rs filters catalog routes by policy.
-crates/jcode-base/src/provider/tests.rs covers policy enforcement.
+crates/jcode-base/src/sidecar.rs applies policy before direct OpenAI or Claude
+sidecar selection.
+crates/jcode-base/src/provider/tests.rs and sidecar.rs cover policy enforcement.
 crates/jcode-base/src/config/default_file.rs documents the policy.
 
 Update guidance:
 Keep ProviderFamily taxonomy exhaustive. OpenRouterEu is a forward-compatible
-variant that the OpenRouter EU patch maps a runtime to. The policy must fail
+variant that the OpenRouter EU patch maps a runtime to. Apply this policy to
+all direct provider clients, not just main dispatch. The policy must fail
 closed for unknown entries and preserve empty-list legacy behavior.
 
 Validation:
 scripts/cargo_exec.sh test -p jcode-base provider_route_ --lib
+scripts/cargo_exec.sh test -p jcode-base sidecar_does_not_select_claude_when_family_is_disallowed --lib
 ---
  Cargo.toml                                    |   4 +-
  crates/jcode-app-core/src/agent/provider.rs   |   1 +
@@ -54,6 +59,7 @@ scripts/cargo_exec.sh test -p jcode-base provider_route_ --lib
  crates/jcode-base/src/provider/selection.rs   |   2 +
  crates/jcode-base/src/provider/tests.rs       | 381 ++++++++++++++-
  .../tests/issue_534_profile_preservation.rs   |   2 +-
+ crates/jcode-base/src/sidecar.rs              |  77 ++-
  crates/jcode-config-types/src/lib.rs          |  12 +-
  crates/jcode-protocol/src/wire.rs             |   2 +
  .../src/lib.rs                                |  14 +
@@ -79,7 +85,7 @@ scripts/cargo_exec.sh test -p jcode-base provider_route_ --lib
  src/cli/commands.rs                           |   2 +-
  src/cli/commands_tests.rs                     |  10 +-
  src/cli/startup.rs                            |   4 +-
- 43 files changed, 1598 insertions(+), 110 deletions(-)
+ 44 files changed, 1665 insertions(+), 120 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
 index 214c1cd70..0f9a455e8 100644
@@ -1820,6 +1826,142 @@ index 645287a14..22cff57df 100644
                      if std::env::var_os("OPENROUTER_API_KEY").is_none() {
                          anyhow::bail!("OPENROUTER_API_KEY is not configured");
                      }
+diff --git a/crates/jcode-base/src/sidecar.rs b/crates/jcode-base/src/sidecar.rs
+index a20de5c5d..81ac925b3 100644
+--- a/crates/jcode-base/src/sidecar.rs
++++ b/crates/jcode-base/src/sidecar.rs
+@@ -9,6 +9,7 @@
+ 
+ use crate::auth;
+ use anyhow::{Context, Result};
++use jcode_provider_core::{ProviderFamily, ProviderFamilyPolicy};
+ use reqwest::StatusCode;
+ use serde::{Deserialize, Serialize};
+ use std::fmt;
+@@ -152,6 +153,11 @@ pub struct Sidecar {
+ }
+ 
+ impl Sidecar {
++    fn family_allowed(family: ProviderFamily) -> bool {
++        ProviderFamilyPolicy::parse(&crate::config::config().provider.allowed_providers)
++            .allows_family(family)
++    }
++
+     /// Create a new sidecar client, auto-selecting the best available backend.
+     /// Prefers OpenAI (GPT-5.6 Luna with no reasoning) if creds exist, falls back to Claude.
+     pub fn new() -> Self {
+@@ -162,8 +168,19 @@ impl Sidecar {
+     fn with_configured_model(configured_model: Option<String>) -> Self {
+         let (backend, model, provider) = if let Some(model) = configured_model {
+             match crate::provider::provider_for_model(&model) {
+-                Some("openai") => (SidecarBackend::OpenAI, model, None),
+-                Some("claude") => (SidecarBackend::Claude, model, None),
++                Some("openai") if Self::family_allowed(ProviderFamily::OpenAi) => {
++                    (SidecarBackend::OpenAI, model, None)
++                }
++                Some("claude") if Self::family_allowed(ProviderFamily::Claude) => {
++                    (SidecarBackend::Claude, model, None)
++                }
++                Some("openai") | Some("claude") => {
++                    crate::logging::warn(&format!(
++                        "Ignoring memory sidecar model override '{}'; its provider family is disabled",
++                        model
++                    ));
++                    Self::auto_select_backend()
++                }
+                 _ => {
+                     crate::logging::warn(&format!(
+                         "Ignoring unsupported memory sidecar model override '{}'; expected an OpenAI or Claude model",
+@@ -202,13 +219,17 @@ impl Sidecar {
+         String,
+         Option<Arc<dyn crate::provider::Provider>>,
+     ) {
+-        if auth::codex::load_credentials().is_ok() {
++        if Self::family_allowed(ProviderFamily::OpenAi)
++            && auth::codex::load_credentials().is_ok()
++        {
+             (
+                 SidecarBackend::OpenAI,
+                 SIDECAR_OPENAI_MODEL.to_string(),
+                 None,
+             )
+-        } else if auth::claude::load_credentials().is_ok() {
++        } else if Self::family_allowed(ProviderFamily::Claude)
++            && auth::claude::load_credentials().is_ok()
++        {
+             (
+                 SidecarBackend::Claude,
+                 SIDECAR_CLAUDE_MODEL.to_string(),
+@@ -220,11 +241,12 @@ impl Sidecar {
+             // user's selected model and routes accordingly.
+             (SidecarBackend::Provider, provider.model(), Some(provider))
+         } else {
+-            // No credentials and no live provider: default to Claude so the
+-            // eventual error message is actionable.
++            // Never select a direct provider outside the configured family
++            // policy. The Provider backend without a live provider fails with
++            // an actionable error instead of initiating disallowed egress.
+             (
+-                SidecarBackend::Claude,
+-                SIDECAR_CLAUDE_MODEL.to_string(),
++                SidecarBackend::Provider,
++                "unavailable".to_string(),
+                 None,
+             )
+         }
+@@ -242,8 +264,10 @@ impl Sidecar {
+     /// can run; if it returns `false`, memory's sidecar mode is treated as
+     /// unavailable rather than silently degrading to the no-LLM path.
+     pub fn llm_backend_available() -> bool {
+-        auth::codex::load_credentials().is_ok()
+-            || auth::claude::load_credentials().is_ok()
++        (Self::family_allowed(ProviderFamily::OpenAi)
++            && auth::codex::load_credentials().is_ok())
++            || (Self::family_allowed(ProviderFamily::Claude)
++                && auth::claude::load_credentials().is_ok())
+             || crate::provider::active_provider_fork().is_some()
+     }
+ 
+@@ -1212,6 +1236,39 @@ mod tests {
+         crate::auth::claude::set_active_account_override(None);
+     }
+ 
++    #[test]
++    fn sidecar_does_not_select_claude_when_family_is_disallowed() {
++        let _guard = crate::storage::lock_test_env();
++        let temp = tempfile::TempDir::new().expect("create temp jcode home");
++        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
++        let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
++        let config_path = crate::config::Config::path().expect("config path");
++        std::fs::create_dir_all(config_path.parent().expect("config parent"))
++            .expect("create config parent");
++        std::fs::write(
++            &config_path,
++            "[provider]\nallowed_providers = [\"openrouter-eu\"]\n",
++        )
++        .expect("write provider policy");
++        crate::config::invalidate_config_cache();
++
++        crate::auth::claude::upsert_account(crate::auth::claude::AnthropicAccount {
++            label: "claude-1".to_string(),
++            access: "claude-access".to_string(),
++            refresh: "claude-refresh".to_string(),
++            expires: 4_102_444_800_000,
++            email: None,
++            scopes: Vec::new(),
++            subscription_type: None,
++        })
++        .expect("write Claude test auth");
++
++        let sidecar = Sidecar::with_configured_model(None);
++        assert_ne!(sidecar.backend, SidecarBackend::Claude);
++        crate::auth::claude::set_active_account_override(None);
++        crate::config::invalidate_config_cache();
++    }
++
+     #[test]
+     fn test_chatgpt_oauth_uses_luna_with_no_reasoning_when_available() {
+         let _guard = crate::storage::lock_test_env();
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
 index d260dfecf..674fe7d0a 100644
 --- a/crates/jcode-config-types/src/lib.rs
