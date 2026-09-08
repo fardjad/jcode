@@ -51,11 +51,18 @@ engine:
         allowed_providers = ["openrouter-eu"]
         openai_reasoning_effort = "low"
         openai_service_tier = "flex"
-        cross_provider_failover = "countdown"
+        # A non-interactive CI run cannot approve a provider change. Keep all
+        # requests on OpenRouter EU rather than silently falling back to an
+        # unrelated provider such as Anthropic.
+        cross_provider_failover = "manual"
         preserve_reasoning_context = true
         max_retries = 8
         retry_backoff_cap_secs = 300
         stream_idle_timeout_secs = 180
+
+        [features]
+        # CI does not need persistent memory retrieval or its embedding model.
+        memory = false
 
         [tools]
         profile = "full"
@@ -69,8 +76,7 @@ engine:
       command-name: jcode
       args:
         - run
-        - --json
-        - --quiet
+        - --ndjson
         - --no-update
         - --no-selfdev
         - --provider
@@ -82,6 +88,16 @@ engine:
       write-timestamp: true
       env:
         OPENROUTER_EU_API_KEY: ${{ secrets.OPENROUTER_EU_API_KEY }}
+        # Defensive opt-out for the released engine binary. The catalog patch
+        # also hard-disables telemetry in source, but CI must not rely on a
+        # release being built from that patched commit.
+        JCODE_NO_TELEMETRY: "1"
+        # These variables protect CI even when the downloaded release ignores
+        # the config-file feature flag. They prevent the embedding download
+        # and memory-sidecar provider requests observed in the prior run.
+        JCODE_MEMORY_ENABLED: "0"
+        JCODE_MEMORY_SIDECAR_ENABLED: "0"
+        JCODE_PERSIST_MEMORY_INJECTIONS: "0"
         JCODE_RUN_AUTO_POKE: "0"
     mcp:
       config-path: .jcode/mcp.json
@@ -164,7 +180,10 @@ engine:
 pre-agent-steps:
   - name: Install jcode CLI
     run: |
-      VERSION="${GH_AW_ENGINE_VERSION:-v0.81.7}"
+      VERSION=$(curl -fsSI https://github.com/fardjad/jcode/releases/latest \
+        | sed -n 's#^[Ll]ocation: .*/tag/\([^\r\n]*\).*#\1#p' \
+        | tr -d '\r\n')
+      test -n "$VERSION"
       ARCH=$(uname -m)
       case "$ARCH" in
         x86_64)  ARCH="x86_64" ;;

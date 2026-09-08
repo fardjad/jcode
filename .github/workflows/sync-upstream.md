@@ -9,11 +9,14 @@ network:
   allowed:
     - defaults
     - eu.openrouter.ai
+    - get.nexte.st
+    - release-assets.githubusercontent.com
     - rust
 permissions:
   contents: read
   pull-requests: read
 max-turns: 80
+timeout-minutes: 75
 safe-outputs:
   create-pull-request:
     max: 1
@@ -24,6 +27,10 @@ checkout:
   fetch:
     - master
 jobs:
+  agent:
+    # The agent and an independent post-agent validation can each compile the
+    # workspace on a cold runner.
+    timeout-minutes: 120
   sync-master:
     runs-on: ubuntu-latest
     permissions:
@@ -56,6 +63,13 @@ pre-agent-steps:
       git remote set-url upstream https://github.com/1jehuang/jcode.git 2>/dev/null || git remote add upstream https://github.com/1jehuang/jcode.git
       git fetch upstream master
       git branch -f master FETCH_HEAD
+post-steps:
+  # Do not rely on an agent assertion or noop message. Reapply every catalog
+  # patch, compile the complete patched workspace, and run compatibility tests
+  # after the agent finishes. This makes a failed patched validation fail the
+  # workflow even when the agent incorrectly reports success.
+  - name: Verify patched workspace compiles and tests
+    run: just validate-patched-copy
 ---
 Synchronize this repo's patch catalog with upstream jcode.
 
@@ -77,10 +91,17 @@ that knowledge here.
    application alone is not sufficient: it
    cannot detect a patch that applies cleanly but no longer compiles.
 
-3. If `just validate-patched-copy` fails, you MUST fix the patches. Do not
-   just report the failure and call noop. Follow the commit-first workflow
-   described in `AGENTS.md`:
+3. If `just validate-patched-copy` fails, you MUST diagnose and fix the
+   patches yourself. Do not stop after one failed diagnosis, report the
+   failure, call `noop`, or create a PR that merely describes the failure.
+   Treat a nonzero validation exit as an unfinished task and keep iterating
+   until validation succeeds or the agent execution limit is reached. Follow
+   the commit-first workflow described in `AGENTS.md`:
    - The worktree at `.patched-jcode/` is retained even on failure
+   - Locate the retained worktree with `git worktree list --porcelain`; do not
+     assume it is at `.patched-jcode/` after a failed creation attempt
+   - Inspect the failed `git am` state, rejected hunks, compiler diagnostics,
+     or test failures and determine the upstream compatibility change needed
    - Enter `.patched-jcode/` and fix the source files directly so the
      change compiles and works against the new upstream base
    - Amend the corresponding commit (use `just list-patches` to find the
@@ -93,14 +114,17 @@ that knowledge here.
    - Repeat until `just validate-patched-copy` succeeds
    - Never edit `.patch` files directly; they are derived from commits
 
-4. After `just validate-patched-copy` succeeds, check for changes:
+4. You may call a safe-output tool only after `just validate-patched-copy`
+   succeeds. A failed validation is never a valid `noop` outcome.
+
+5. After `just validate-patched-copy` succeeds, check for changes:
    ```
    git status --porcelain
    ```
 
-5. If there are no changes, call `noop` confirming sync is up to date.
+6. If there are no changes, call `noop` confirming sync is up to date.
 
-6. If there are changes, create a PR via `create_pull_request` with a
+7. If there are changes, create a PR via `create_pull_request` with a
    title like "sync: update patches for upstream <short-sha>".
 
 Do not use `git commit`, `git push`, or `gh` directly for GitHub writes.
