@@ -9,9 +9,11 @@ X-Jcode-Patch-Depends-On: none
 
 Patch intent:
 Add a provider-family execution allowlist that gates model switching,
-persisted routes, dispatch, failover, and direct memory-sidecar selection.
+persisted routes, dispatch, failover, and all direct memory-sidecar egress.
 Empty or absent means unrestricted; a non-empty list fails closed for unknown
-identities.
+identities. Picker-visibility methods also respect the allowlist so routes
+for denied families are hidden, but this is a side effect of execution policy,
+not a separate visibility filter.
 
 Why it exists:
 Keeps sessions inside explicit provider allowlists, including auxiliary
@@ -23,11 +25,12 @@ Upstream integration points:
 crates/jcode-config-types/src/lib.rs adds the allowed_providers field.
 crates/jcode-provider-core/src/lib.rs defines ProviderFamily, ProviderFamilyPolicy,
 provider_family() methods on RuntimeKey and ModelRouteApiMethod.
-crates/jcode-base/src/provider/mod.rs enforces policy in set_model and route filtering.
+crates/jcode-base/src/provider/mod.rs enforces policy in set_model and route
+filtering, and in available_providers_for_model and provider_details_for_model.
 crates/jcode-base/src/provider/dispatch.rs and multi_provider.rs enforce in failover.
 crates/jcode-base/src/provider/catalog_routes.rs filters catalog routes by policy.
-crates/jcode-base/src/sidecar.rs applies policy before direct OpenAI or Claude
-sidecar selection.
+crates/jcode-base/src/sidecar.rs applies policy to automatic selection, explicit
+sidecar constructors, and direct-backend fallbacks.
 crates/jcode-base/src/provider/tests.rs and sidecar.rs cover policy enforcement.
 crates/jcode-base/src/config/default_file.rs documents the policy.
 
@@ -39,7 +42,13 @@ closed for unknown entries and preserve empty-list legacy behavior.
 
 Validation:
 scripts/cargo_exec.sh test -p jcode-base provider_route_ --lib
-scripts/cargo_exec.sh test -p jcode-base sidecar_does_not_select_claude_when_family_is_disallowed --lib
+scripts/cargo_exec.sh test -p jcode-base sidecar_does_not_select_disallowed_direct_backends --lib
+scripts/cargo_exec.sh test -p jcode-base sidecar_provider_backend_delegates_to_main_dispatch_for_policy --lib
+scripts/cargo_exec.sh test -p jcode-base jcode_provider_complete_and_split_blocked_by_policy --lib
+scripts/cargo_exec.sh test -p jcode-base policy_blocks_failover --lib
+scripts/cargo_exec.sh test -p jcode-base policy_filters_catalog --lib
+scripts/cargo_exec.sh test -p jcode-base policy_blocks_persisted --lib
+scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provider_families --lib
 ---
  Cargo.toml                                    |   4 +-
  crates/jcode-app-core/src/agent/provider.rs   |   1 +
@@ -50,16 +59,16 @@ scripts/cargo_exec.sh test -p jcode-base sidecar_does_not_select_claude_when_fam
  .../src/server/provider_control_tests.rs      |   2 +
  crates/jcode-base/src/config/default_file.rs  |  12 +-
  crates/jcode-base/src/provider/accessors.rs   |  18 +
- .../jcode-base/src/provider/catalog_routes.rs | 230 ++++++++-
+ .../jcode-base/src/provider/catalog_routes.rs | 230 +++++++-
  crates/jcode-base/src/provider/dispatch.rs    |  65 +++
  crates/jcode-base/src/provider/external.rs    |   5 +-
- crates/jcode-base/src/provider/jcode.rs       |  22 +
- crates/jcode-base/src/provider/mod.rs         | 273 +++++++++--
+ crates/jcode-base/src/provider/jcode.rs       |  62 ++
+ crates/jcode-base/src/provider/mod.rs         | 273 +++++++--
  .../jcode-base/src/provider/multi_provider.rs |   4 +-
  crates/jcode-base/src/provider/selection.rs   |   2 +
- crates/jcode-base/src/provider/tests.rs       | 381 ++++++++++++++-
+ crates/jcode-base/src/provider/tests.rs       | 535 +++++++++++++++++-
  .../tests/issue_534_profile_preservation.rs   |   2 +-
- crates/jcode-base/src/sidecar.rs              |  77 ++-
+ crates/jcode-base/src/sidecar.rs              | 151 ++++-
  crates/jcode-config-types/src/lib.rs          |  12 +-
  crates/jcode-protocol/src/wire.rs             |   2 +
  .../src/lib.rs                                |  14 +
@@ -67,7 +76,7 @@ scripts/cargo_exec.sh test -p jcode-base sidecar_does_not_select_claude_when_fam
  crates/jcode-provider-bedrock/src/lib.rs      |   4 +
  .../src/lib.rs                                |   4 +
  .../jcode-provider-copilot-runtime/src/lib.rs |   4 +
- crates/jcode-provider-core/src/lib.rs         | 452 ++++++++++++++++++
+ crates/jcode-provider-core/src/lib.rs         | 452 +++++++++++++++
  .../jcode-provider-cursor-runtime/src/lib.rs  |   4 +
  .../jcode-provider-gemini-runtime/src/lib.rs  |   4 +
  .../src/lib.rs                                |   4 +
@@ -85,7 +94,7 @@ scripts/cargo_exec.sh test -p jcode-base sidecar_does_not_select_claude_when_fam
  src/cli/commands.rs                           |   2 +-
  src/cli/commands_tests.rs                     |  10 +-
  src/cli/startup.rs                            |   4 +-
- 44 files changed, 1665 insertions(+), 120 deletions(-)
+ 44 files changed, 1930 insertions(+), 123 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
 index 214c1cd70..0f9a455e8 100644
@@ -767,7 +776,7 @@ index 96bd01296..605c46c94 100644
      CompatibleProfile(crate::provider_catalog::OpenAiCompatibleProfile),
      /// User-defined named OpenAI-compatible provider from config
 diff --git a/crates/jcode-base/src/provider/jcode.rs b/crates/jcode-base/src/provider/jcode.rs
-index 9322be95c..193708f74 100644
+index 9322be95c..13bc5a984 100644
 --- a/crates/jcode-base/src/provider/jcode.rs
 +++ b/crates/jcode-base/src/provider/jcode.rs
 @@ -11,6 +11,12 @@ pub struct JcodeProvider {
@@ -832,6 +841,53 @@ index 9322be95c..193708f74 100644
          Self::model_routes_for(crate::subscription_catalog::effective_tier())
      }
  
+@@ -347,6 +369,46 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn jcode_provider_complete_and_split_blocked_by_policy() {
++        let _guard = crate::storage::lock_test_env();
++        crate::subscription_catalog::clear_runtime_env();
++
++        let config_path = crate::config::Config::path().expect("config path");
++        std::fs::create_dir_all(config_path.parent().expect("config parent"))
++            .expect("config parent");
++        std::fs::write(
++            &config_path,
++            "[provider]\nallowed_providers = [\"claude\"]\n",
++        )
++        .expect("policy config");
++        crate::config::invalidate_config_cache();
++
++        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
++        runtime.block_on(async {
++            let provider = JcodeProvider::new();
++            match provider.complete(&[], &[], "", None).await {
++                Err(msg) => assert!(
++                    msg.to_string().contains("disabled by provider policy"),
++                    "unexpected complete error: {msg}"
++                ),
++                Ok(_) => panic!("complete must be blocked when jcode family is denied"),
++            }
++            match provider.complete_split(&[], &[], "", "", None).await {
++                Err(msg) => assert!(
++                    msg.to_string().contains("disabled by provider policy"),
++                    "unexpected complete_split error: {msg}"
++                ),
++                Ok(_) => panic!("complete_split must be blocked when jcode family is denied"),
++            }
++        });
++
++        crate::subscription_catalog::clear_runtime_env();
++        // Reset config to unrestricted for other tests.
++        std::fs::write(&config_path, "").expect("reset config");
++        crate::config::invalidate_config_cache();
++    }
++
+     #[test]
+     fn jcode_provider_exposes_only_explicit_subscription_routes() {
+         use crate::subscription_catalog::JcodeTier;
 diff --git a/crates/jcode-base/src/provider/mod.rs b/crates/jcode-base/src/provider/mod.rs
 index 4a460acde..f3fd48545 100644
 --- a/crates/jcode-base/src/provider/mod.rs
@@ -1372,7 +1428,7 @@ index d9cddddeb..8802296ed 100644
                      profile_id: Some(profile_id),
                  } => return format!("{profile_id}:{model}"),
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index d8c9292fd..5628a3a61 100644
+index d8c9292fd..414bcd17c 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
 @@ -1,6 +1,142 @@
@@ -1604,7 +1660,7 @@ index d8c9292fd..5628a3a61 100644
          }
      }
  
-@@ -854,8 +1049,174 @@ impl StubExternalRuntime {
+@@ -854,8 +1049,205 @@ impl StubExternalRuntime {
      }
  }
  
@@ -1771,6 +1827,37 @@ index d8c9292fd..5628a3a61 100644
 +    });
 +}
 +
++/// Policy must block model switching for every provider family, not just
++/// Claude and OpenAI. This test denies all families except Claude and
++/// verifies that `set_model` with a Copilot, Gemini, Bedrock, and
++/// Antigravity prefix is rejected.
++#[test]
++fn policy_blocks_set_model_for_all_provider_families() {
++    with_clean_provider_test_env(|| {
++        let runtime = enter_test_runtime();
++        runtime.block_on(async {
++            let config_path = crate::config::Config::path().expect("config path");
++            std::fs::create_dir_all(config_path.parent().expect("config parent"))
++                .expect("config parent");
++            std::fs::write(
++                &config_path,
++                "[provider]\nallowed_providers = [\"claude\"]\n",
++            )
++            .expect("policy config");
++            crate::config::invalidate_config_cache();
++
++            let provider = test_multi_provider_with_openai();
++            for prefix in ["copilot", "gemini", "bedrock", "antigravity"] {
++                let model = format!("{prefix}:test-model");
++                assert!(
++                    provider.set_model(&model).is_err(),
++                    "set_model with {prefix} prefix must be blocked by policy"
++                );
++            }
++        });
++    });
++}
++
  #[async_trait::async_trait]
  impl Provider for StubExternalRuntime {
 +    fn runtime_key(&self) -> RuntimeKey {
@@ -1779,7 +1866,7 @@ index d8c9292fd..5628a3a61 100644
      async fn complete(
          &self,
          _messages: &[Message],
-@@ -863,6 +1224,20 @@ impl Provider for StubExternalRuntime {
+@@ -863,6 +1255,20 @@ impl Provider for StubExternalRuntime {
          _system: &str,
          _resume_session_id: Option<&str>,
      ) -> anyhow::Result<EventStream> {
@@ -1800,7 +1887,7 @@ index d8c9292fd..5628a3a61 100644
          anyhow::bail!("stub {} runtime does not stream", self.name)
      }
      fn name(&self) -> &'static str {
-@@ -982,9 +1357,9 @@ fn register_test_external_runtimes() {
+@@ -982,9 +1388,9 @@ fn register_test_external_runtimes() {
          use jcode_provider_openrouter_runtime::OpenRouterProvider;
          let provider: Arc<dyn Provider> = match spec {
              OpenRouterRuntimeSpec::Default => Arc::new(OpenRouterProvider::new()?),
@@ -1813,6 +1900,133 @@ index d8c9292fd..5628a3a61 100644
              OpenRouterRuntimeSpec::CompatibleProfile(profile) => Arc::new(
                  OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
              ),
+@@ -1204,3 +1610,126 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
+         );
+     });
+ }
++ 
++/// Failover must not escalate to a provider family the policy denies. When
++/// the active provider is disallowed, `complete_with_failover` bails before
++/// trying any fallback candidate.
++#[test]
++fn policy_blocks_failover_to_disallowed_family() {
++    with_clean_provider_test_env(|| {
++        let runtime = enter_test_runtime();
++        runtime.block_on(async {
++            let config_path = crate::config::Config::path().expect("config path");
++            std::fs::create_dir_all(config_path.parent().expect("config parent"))
++                .expect("config parent");
++            std::fs::write(
++                &config_path,
++                "[provider]\nallowed_providers = [\"claude\"]\n",
++            )
++            .expect("policy config");
++            crate::config::invalidate_config_cache();
++
++            let provider = test_multi_provider_with_openai();
++            // complete_with_failover should bail on the active provider and
++            // never try to fail over to the disallowed OpenAI family.
++            let result = provider.complete(&[], &[], "", None).await;
++            match result {
++                Err(msg) => assert!(
++                    msg.to_string().contains("disabled by provider policy"),
++                    "unexpected error: {msg}"
++                ),
++                Ok(_) => panic!("failover must not execute when the active family is denied"),
++            }
++        });
++    });
++}
++
++
++/// Catalog route filtering must remove all routes whose API method maps to a
++/// denied provider family. This is a narrowly named regression for the
++/// `filter_routes_by_policy` boundary.
++#[test]
++fn policy_filters_catalog_routes_by_family() {
++    let routes = vec![
++        ModelRoute {
++            model: "gpt-5.5".into(),
++            provider: "OpenAI".into(),
++            api_method: "openai-oauth".into(),
++            available: true,
++            detail: String::new(),
++            cheapness: None,
++        },
++        ModelRoute {
++            model: "claude-opus".into(),
++            provider: "Anthropic".into(),
++            api_method: "claude-oauth".into(),
++            available: true,
++            detail: String::new(),
++            cheapness: None,
++        },
++    ];
++    // Only Claude allowed: the OpenAI route must be filtered out.
++    let policy = ProviderFamilyPolicy::parse(&["claude".into()]);
++    let filtered = super::filter_routes_by_policy(routes, &policy);
++    assert_eq!(filtered.len(), 1, "only claude routes should survive");
++    assert_eq!(filtered[0].api_method, "claude-oauth");
++
++    // Only OpenAI allowed: the Claude route must be filtered out.
++    let routes = vec![
++        ModelRoute {
++            model: "gpt-5.5".into(),
++            provider: "OpenAI".into(),
++            api_method: "openai-oauth".into(),
++            available: true,
++            detail: String::new(),
++            cheapness: None,
++        },
++        ModelRoute {
++            model: "claude-opus".into(),
++            provider: "Anthropic".into(),
++            api_method: "claude-oauth".into(),
++            available: true,
++            detail: String::new(),
++            cheapness: None,
++        },
++    ];
++    let policy = ProviderFamilyPolicy::parse(&["openai".into()]);
++    let filtered = super::filter_routes_by_policy(routes, &policy);
++    assert_eq!(filtered.len(), 1, "only openai routes should survive");
++    assert_eq!(filtered[0].api_method, "openai-oauth");
++}
++
++
++/// Persisted route restoration must reject a selection whose runtime key is
++/// denied by the policy. This is a narrowly named regression for the
++/// `set_route_selection` boundary.
++#[test]
++fn policy_blocks_persisted_route_restoration_for_disallowed_family() {
++    with_clean_provider_test_env(|| {
++        let runtime = enter_test_runtime();
++        runtime.block_on(async {
++            let config_path = crate::config::Config::path().expect("config path");
++            std::fs::create_dir_all(config_path.parent().expect("config parent"))
++                .expect("config parent");
++            std::fs::write(
++                &config_path,
++                "[provider]\nallowed_providers = [\"claude\"]\n",
++            )
++            .expect("policy config");
++            crate::config::invalidate_config_cache();
++
++            let provider = test_multi_provider_with_openai();
++            let selection = RouteSelection {
++                model: ALL_OPENAI_MODELS[0].to_string(),
++                runtime_key: RuntimeKey::OpenAIOAuth,
++                api_method: "openai-oauth".to_string(),
++                provider_label: "OpenAI".to_string(),
++                detail: String::new(),
++            };
++            assert!(
++                provider.set_route_selection(&selection).is_err(),
++                "persisted route restoration must reject a disallowed family"
++            );
++        });
++    });
++}
 diff --git a/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs b/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs
 index 645287a14..22cff57df 100644
 --- a/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs
@@ -1827,7 +2041,7 @@ index 645287a14..22cff57df 100644
                          anyhow::bail!("OPENROUTER_API_KEY is not configured");
                      }
 diff --git a/crates/jcode-base/src/sidecar.rs b/crates/jcode-base/src/sidecar.rs
-index a20de5c5d..81ac925b3 100644
+index a20de5c5d..d0829d8ff 100644
 --- a/crates/jcode-base/src/sidecar.rs
 +++ b/crates/jcode-base/src/sidecar.rs
 @@ -9,6 +9,7 @@
@@ -1872,14 +2086,12 @@ index a20de5c5d..81ac925b3 100644
                  _ => {
                      crate::logging::warn(&format!(
                          "Ignoring unsupported memory sidecar model override '{}'; expected an OpenAI or Claude model",
-@@ -202,13 +219,17 @@ impl Sidecar {
+@@ -202,13 +219,15 @@ impl Sidecar {
          String,
          Option<Arc<dyn crate::provider::Provider>>,
      ) {
 -        if auth::codex::load_credentials().is_ok() {
-+        if Self::family_allowed(ProviderFamily::OpenAi)
-+            && auth::codex::load_credentials().is_ok()
-+        {
++        if Self::family_allowed(ProviderFamily::OpenAi) && auth::codex::load_credentials().is_ok() {
              (
                  SidecarBackend::OpenAI,
                  SIDECAR_OPENAI_MODEL.to_string(),
@@ -1892,42 +2104,69 @@ index a20de5c5d..81ac925b3 100644
              (
                  SidecarBackend::Claude,
                  SIDECAR_CLAUDE_MODEL.to_string(),
-@@ -220,11 +241,12 @@ impl Sidecar {
+@@ -220,13 +239,10 @@ impl Sidecar {
              // user's selected model and routes accordingly.
              (SidecarBackend::Provider, provider.model(), Some(provider))
          } else {
 -            // No credentials and no live provider: default to Claude so the
 -            // eventual error message is actionable.
+-            (
+-                SidecarBackend::Claude,
+-                SIDECAR_CLAUDE_MODEL.to_string(),
+-                None,
+-            )
 +            // Never select a direct provider outside the configured family
 +            // policy. The Provider backend without a live provider fails with
 +            // an actionable error instead of initiating disallowed egress.
-             (
--                SidecarBackend::Claude,
--                SIDECAR_CLAUDE_MODEL.to_string(),
-+                SidecarBackend::Provider,
-+                "unavailable".to_string(),
-                 None,
-             )
++            (SidecarBackend::Provider, "unavailable".to_string(), None)
          }
-@@ -242,8 +264,10 @@ impl Sidecar {
+     }
+ 
+@@ -242,8 +258,9 @@ impl Sidecar {
      /// can run; if it returns `false`, memory's sidecar mode is treated as
      /// unavailable rather than silently degrading to the no-LLM path.
      pub fn llm_backend_available() -> bool {
 -        auth::codex::load_credentials().is_ok()
 -            || auth::claude::load_credentials().is_ok()
-+        (Self::family_allowed(ProviderFamily::OpenAi)
-+            && auth::codex::load_credentials().is_ok())
++        (Self::family_allowed(ProviderFamily::OpenAi) && auth::codex::load_credentials().is_ok())
 +            || (Self::family_allowed(ProviderFamily::Claude)
 +                && auth::claude::load_credentials().is_ok())
              || crate::provider::active_provider_fork().is_some()
      }
  
-@@ -1212,6 +1236,39 @@ mod tests {
+@@ -291,8 +308,18 @@ impl Sidecar {
+ 
+     /// Simple completion - send a prompt, get a response.
+     /// Routes to the correct API based on the detected backend.
++    ///
++    /// Direct backends are checked again here because explicit sidecar
++    /// constructors can bypass automatic backend selection. This keeps the
++    /// execution allowlist as the egress boundary, not merely a chooser hint.
+     pub async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
+         match self.backend {
++            SidecarBackend::OpenAI if !Self::family_allowed(ProviderFamily::OpenAi) => {
++                anyhow::bail!("OpenAI sidecar is disabled by provider.allowed_providers")
++            }
++            SidecarBackend::Claude if !Self::family_allowed(ProviderFamily::Claude) => {
++                anyhow::bail!("Claude sidecar is disabled by provider.allowed_providers")
++            }
+             SidecarBackend::OpenAI => self.complete_openai(system, user_message).await,
+             SidecarBackend::Claude => self.complete_claude(system, user_message).await,
+             SidecarBackend::Provider => self.complete_via_provider(system, user_message).await,
+@@ -395,6 +422,7 @@ impl Sidecar {
+                     }
+                     Err(OpenAiSidecarError::Api { status, body })
+                         if is_openai_model_unavailable(status, &body)
++                            && Self::family_allowed(ProviderFamily::Claude)
+                             && auth::claude::load_credentials().is_ok() =>
+                     {
+                         // Both GPT-5.6 Luna and the gpt-5.4 OAuth
+@@ -1212,6 +1240,103 @@ mod tests {
          crate::auth::claude::set_active_account_override(None);
      }
  
 +    #[test]
-+    fn sidecar_does_not_select_claude_when_family_is_disallowed() {
++    fn sidecar_does_not_select_disallowed_direct_backends() {
 +        let _guard = crate::storage::lock_test_env();
 +        let temp = tempfile::TempDir::new().expect("create temp jcode home");
 +        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
@@ -1942,6 +2181,8 @@ index a20de5c5d..81ac925b3 100644
 +        .expect("write provider policy");
 +        crate::config::invalidate_config_cache();
 +
++        codex::upsert_account_from_tokens("openai-1", "sk-test-key-123", "", None, None)
++            .expect("write OpenAI test auth");
 +        crate::auth::claude::upsert_account(crate::auth::claude::AnthropicAccount {
 +            label: "claude-1".to_string(),
 +            access: "claude-access".to_string(),
@@ -1954,8 +2195,70 @@ index a20de5c5d..81ac925b3 100644
 +        .expect("write Claude test auth");
 +
 +        let sidecar = Sidecar::with_configured_model(None);
-+        assert_ne!(sidecar.backend, SidecarBackend::Claude);
++        assert_eq!(sidecar.backend, SidecarBackend::Provider);
++
++        for explicit_sidecar in [
++            Sidecar::with_openai_model("gpt-5.6-luna", None),
++            Sidecar::with_claude_model("claude-haiku-4-5-20251001"),
++        ] {
++            let error = futures::executor::block_on(explicit_sidecar.complete("system", "user"))
++                .expect_err("disallowed direct sidecar must not egress");
++            assert!(
++                error
++                    .to_string()
++                    .contains("disabled by provider.allowed_providers")
++            );
++        }
++
++        codex::set_active_account_override(None);
 +        crate::auth::claude::set_active_account_override(None);
++        crate::config::invalidate_config_cache();
++    }
++
++    /// The `Provider` backend delegates to the active provider's
++    /// `complete_simple`, which goes through `complete_with_failover` where
++    /// policy is enforced. The sidecar itself must not add a separate policy
++    /// check for this backend; the main dispatch path is the egress boundary.
++    /// When no live provider is registered, the error must be the provider
++    /// availability error, not a sidecar policy error.
++    #[test]
++    fn sidecar_provider_backend_delegates_to_main_dispatch_for_policy() {
++        let _guard = crate::storage::lock_test_env();
++        let temp = tempfile::TempDir::new().expect("create temp jcode home");
++        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
++        let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
++        let config_path = crate::config::Config::path().expect("config path");
++        std::fs::create_dir_all(config_path.parent().expect("config parent"))
++            .expect("create config parent");
++        // Allow only openrouter-eu so all direct backends are disallowed and
++        // the Provider backend is auto-selected.
++        std::fs::write(
++            &config_path,
++            "[provider]\nallowed_providers = [\"openrouter-eu\"]\n",
++        )
++        .expect("write provider policy");
++        crate::config::invalidate_config_cache();
++
++        // No credentials and no active provider fork: the Provider backend is
++        // selected but has no provider to delegate to.
++        let sidecar = Sidecar::with_configured_model(None);
++        assert_eq!(sidecar.backend, SidecarBackend::Provider);
++
++        let error = futures::executor::block_on(sidecar.complete("system", "user"))
++            .expect_err("Provider backend without a live provider must fail");
++        // The error must come from the provider availability check in
++        // complete_via_provider, not from a sidecar-level policy check.
++        assert!(
++            !error
++                .to_string()
++                .contains("disabled by provider.allowed_providers"),
++            "Provider backend must not add its own sidecar policy check: {error}"
++        );
++        assert!(
++            error.to_string().contains("No active provider"),
++            "Provider backend must fail with a provider availability error: {error}"
++        );
++
 +        crate::config::invalidate_config_cache();
 +    }
 +

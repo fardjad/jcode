@@ -74,10 +74,11 @@ The ideal workflow for any change:
    matches the current catalog.
 2. Edit source files directly in `.patched-jcode/`.
 3. Commit or amend the relevant commit there (see below for which commit).
-4. `just snapshot-patches` — regenerates every `.patch` file from the commits
+4. Review intent vs code vs tests (see "Patch review" below).
+5. `just snapshot-patches` — regenerates every `.patch` file from the commits
    above `master` and normalizes every personal patch's `From` hash to zeros.
    Run `just validate-patch-files` to confirm.
-5. `just test-patch-file patches/<name>.patch` to run the patch's validation.
+6. `just test-patch-file patches/<name>.patch` to run the patch's validation.
 
 ### Mapping commits to patches
 
@@ -87,6 +88,52 @@ Run `just list-patches` to see the mapping. To change an existing patch, amend
 the corresponding commit. To add a new patch, add a new commit on top and run
 `just snapshot-patches`; it assigns the next available numeric prefix and
 derives a slug from the commit subject.
+
+### Patch review
+
+Before running `just snapshot-patches`, review every patch the change
+touched. The review compares the full stated intent (commit message body
+sections and `X-Jcode-Patch-*` headers) against the actual code diff and
+the named validation tests. The goal is to catch gaps where the code or
+tests are narrower than the intent claims, or where the code is broader
+than the intent describes.
+
+For each patch:
+
+1. Read the commit message (subject, headers, and all body sections).
+   Understand the complete scope of what the patch claims to do.
+
+2. Read the actual diff. Note every behavioral change the code makes,
+   including ones the prose does not explicitly call out. The code is the
+   ground truth for what the patch does.
+
+3. Read the `Validation:` section and find the actual test functions it
+   names. Read those tests.
+
+4. Compare: do the code and tests together prove the general behavior the
+   intent describes, or are they narrowly scoped to the specific bug
+   scenario that motivated the patch? For example:
+
+   - If the code adds a policy check but only for one provider path, does
+     it also cover the other paths the intent names (dispatch, failover,
+     sidecar, model switching)?
+   - If the intent says "all session sources," do the tests cover external
+     transcripts and missing files, or just one local fixture?
+   - If the code hardcodes a check for one provider when the policy should
+     apply to all, flag that as a bug even if tests pass.
+
+5. For any gap where the code or tests are narrower than the intent, fix
+   it before snapshotting: add a test that expresses the general
+   invariant, broaden the code, or update the intent prose to match what
+   the code actually does.
+
+6. Also check for the reverse: code changes that are broader than the
+   stated intent. These may be intentional but the intent should be
+   updated so future maintainers know the broader scope is deliberate.
+
+When fixing a gap, follow the same commit-first workflow: edit in
+`.patched-jcode`, amend the corresponding commit, add the new test name to
+the `Validation:` section, then snapshot.
 
 ### Commit message format
 

@@ -1,4 +1,4 @@
-From cb9eafaab52541161b9262b2d22be629467407a4 Mon Sep 17 00:00:00 2001
+From 3a44d495dfb62f7e5a3e31a8a6cf4e231c439679 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Tue, 18 Aug 2026 10:20:23 +0200
 Subject: [PATCH] feat: add pre-tool input transformers
@@ -31,16 +31,19 @@ original input on invalid output, nonzero exit, spawn failure, empty output, or
 timeout, and keep existing gate timeout/failure behavior.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-base tool_transformer
+scripts/cargo_exec.sh test -p jcode-base tool_transformer --lib
+scripts/cargo_exec.sh test -p jcode-base tool_transformer_fails_open_for_all_failure_modes --lib
+scripts/cargo_exec.sh test -p jcode-base transform_before_gate --lib
+scripts/cargo_exec.sh test -p jcode-base pre_tool_gate --lib
 ---
  crates/jcode-app-core/src/tool/mod.rs         |  16 +-
  crates/jcode-base/src/config.rs               |   2 +
  crates/jcode-base/src/config/default_file.rs  |   5 +
  crates/jcode-base/src/config/env_overrides.rs |   9 +
- crates/jcode-base/src/hooks.rs                | 178 ++++++++++++++++++
+ crates/jcode-base/src/hooks.rs                | 279 ++++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   8 +
- docs/HOOKS.md                                 |  22 +++
- 7 files changed, 236 insertions(+), 4 deletions(-)
+ docs/HOOKS.md                                 |  22 ++
+ 7 files changed, 337 insertions(+), 4 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
 index 446c6a9e9..d56e9424c 100644
@@ -123,7 +126,7 @@ index 8cf979fd6..89adb667d 100644
          if let Ok(v) = std::env::var("JCODE_HOOK_PRE_TOOL_TIMEOUT_MS") {
              if let Ok(parsed) = v.trim().parse::<u64>() {
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index 32a02938b..81b7fe3ae 100644
+index 32a02938b..c457cafd7 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -21,6 +21,7 @@
@@ -230,7 +233,7 @@ index 32a02938b..81b7fe3ae 100644
  /// True when running inside a hook process (recursion guard).
  fn hooks_suppressed() -> bool {
      std::env::var_os("JCODE_HOOKS_DISABLED").is_some()
-@@ -442,6 +532,94 @@ mod tests {
+@@ -442,6 +532,195 @@ mod tests {
          reset
      }
  
@@ -320,6 +323,107 @@ index 32a02938b..81b7fe3ae 100644
 +            transform_tool_input("ses_transform", None, "bash", input.clone()).await,
 +            input
 +        );
++    }
++
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn tool_transformer_fails_open_for_all_failure_modes() {
++        let _guard = crate::storage::lock_test_env();
++        let temp = tempfile::TempDir::new().expect("temp dir");
++        let nonzero = write_executable_script(
++            temp.path(),
++            "nonzero.sh",
++            "#!/bin/sh\ncat >/dev/null\nexit 1\n",
++        );
++        let empty_stdout = write_executable_script(
++            temp.path(),
++            "empty.sh",
++            "#!/bin/sh\ncat >/dev/null\n",
++        );
++        let non_object = write_executable_script(
++            temp.path(),
++            "array.sh",
++            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '[1, 2, 3]'\n",
++        );
++        let input = serde_json::json!({"command": "original"});
++
++        // Nonzero exit leaves input unchanged.
++        let _env = transform_test_config(
++            &serde_json::to_string(&[nonzero.to_string_lossy()]).expect("serialize"),
++            5000,
++        );
++        assert_eq!(
++            transform_tool_input("ses_fail", None, "bash", input.clone()).await,
++            input
++        );
++
++        // Empty stdout leaves input unchanged.
++        let _env = transform_test_config(
++            &serde_json::to_string(&[empty_stdout.to_string_lossy()]).expect("serialize"),
++            5000,
++        );
++        assert_eq!(
++            transform_tool_input("ses_fail", None, "bash", input.clone()).await,
++            input
++        );
++
++        // Valid JSON but not an object leaves input unchanged.
++        let _env = transform_test_config(
++            &serde_json::to_string(&[non_object.to_string_lossy()]).expect("serialize"),
++            5000,
++        );
++        assert_eq!(
++            transform_tool_input("ses_fail", None, "bash", input.clone()).await,
++            input
++        );
++
++        // Spawn failure (command does not exist) leaves input unchanged.
++        let _env = transform_test_config(
++            &serde_json::to_string(&[
++                "/nonexistent/path/that/does/not/exist/transform.sh".to_string(),
++            ])
++            .expect("serialize"),
++            5000,
++        );
++        assert_eq!(
++            transform_tool_input("ses_fail", None, "bash", input.clone()).await,
++            input
++        );
++    }
++
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn transform_before_gate_proves_transformed_json_reaches_gate() {
++        let _guard = crate::storage::lock_test_env();
++        let temp = tempfile::TempDir::new().expect("temp dir");
++
++        // Transformer: rewrites `command` from "dangerous" to "safe".
++        let transformer = write_executable_script(
++            temp.path(),
++            "transform.sh",
++            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"command\":\"safe\"}'\n",
++        );
++        // Gate: blocks when it sees "dangerous", allows "safe". Proves it
++        // received the *transformed* input, not the original.
++        let gate = write_executable_script(
++            temp.path(),
++            "gate.sh",
++            "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in\n*dangerous*) echo 'blocked: dangerous' >&2; exit 2;;\n*safe*) exit 0;;\n*) echo \"unexpected: $input\" >&2; exit 2;;\nesac\n",
++        );
++
++        let _transform_env =
++            transform_test_config(&transformer.to_string_lossy(), 5000);
++        let _gate_env = gate_test_config(&gate.to_string_lossy(), 5000);
++
++        // Step 1: transform the input.
++        let original = serde_json::json!({"command": "dangerous"});
++        let transformed = transform_tool_input("ses_int", None, "bash", original.clone()).await;
++        assert_eq!(transformed, serde_json::json!({"command": "safe"}));
++
++        // Step 2: gate sees the transformed value and allows it.
++        let transformed_json = transformed.to_string();
++        let decision = run_pre_tool_gate("ses_int", None, "bash", &transformed_json).await;
++        assert_eq!(decision, GateDecision::Allow);
 +    }
 +
      #[cfg(unix)]

@@ -11,7 +11,7 @@ Patch intent:
 Add OpenRouter EU as a first-class typed deployment with an EU endpoint,
 isolated credentials and caches, autocomplete, TUI visibility, and pricing
 lookup that uses EU catalog and endpoint cache rates. Model picker route
-building uses the active runtime's cache namespace so standard-only models
+building uses the active runtime cache namespace so standard-only models
 do not leak through the EU rewrite as EU-labeled routes.
 
 Why it exists:
@@ -27,12 +27,12 @@ crates/jcode-provider-openrouter-runtime/src/lib.rs adds the EU runtime factory.
 crates/jcode-provider-openrouter/src/lib.rs adds namespace-specific cache functions.
 crates/jcode-provider-metadata/src/catalog.rs adds the EU login provider entry.
 crates/jcode-base/src/provider/selection.rs, activation.rs, mod.rs wire EU
-selection. catalog_routes.rs resolves the active runtime's cache namespace and
-passes it to append_openrouter_routes and append_openrouter_alternative_routes
-so endpoint and catalog checks read from the EU namespace when EU is active.
-openrouter.rs adds catalog_lists_model_for_namespace for namespace-aware
-catalog membership checks.
-src/cli/login.rs and provider_init.rs add EU login and init flows.
+selection and set_model openrouter-eu: prefix handling. catalog_routes.rs
+resolves the active runtime cache namespace and passes it to
+append_openrouter_routes and append_openrouter_alternative_routes so endpoint
+and catalog checks read from the EU namespace when EU is active. openrouter.rs
+adds catalog_lists_model_for_namespace for namespace-aware catalog membership
+checks. src/cli/login.rs and provider_init.rs add EU login and init flows.
 crates/jcode-tui/ adds EU auth, header, onboarding, and model suggestions.
 
 Update guidance:
@@ -46,6 +46,11 @@ catalog, not standard-only models from the global cache.
 Validation:
 scripts/cargo_exec.sh test -p jcode-provider-openrouter-runtime eu_openrouter --lib
 scripts/cargo_exec.sh test -p jcode-provider-core runtime_key_ --lib
+scripts/cargo_exec.sh test -p jcode-base eu_routes_absent_without_eu_credentials --lib
+scripts/cargo_exec.sh test -p jcode-base eu_and_standard_caches_are_namespace --lib
+scripts/cargo_exec.sh test -p jcode-base eu_pricing_is_isolated --lib
+scripts/cargo_exec.sh test -p jcode-base set_model_openrouter_eu_prefix_respects_policy --lib
+scripts/cargo_exec.sh test -p jcode-base eu_dispatch_enforced_by_allowed_providers --lib
 ---
  Cargo.lock                                    |   1 +
  crates/jcode-base/src/auth/integration.rs     |   5 +-
@@ -53,30 +58,30 @@ scripts/cargo_exec.sh test -p jcode-provider-core runtime_key_ --lib
  crates/jcode-base/src/auth/mod.rs             |  34 ++-
  crates/jcode-base/src/config/default_file.rs  |   7 +-
  crates/jcode-base/src/provider/activation.rs  |  23 +-
- .../jcode-base/src/provider/catalog_routes.rs | 222 +++++++++++++++++-
- crates/jcode-base/src/provider/mod.rs         |  86 ++++++-
- crates/jcode-base/src/provider/openrouter.rs  |  30 ++-
- crates/jcode-base/src/provider/pricing.rs     |  57 ++++-
- crates/jcode-base/src/provider/selection.rs   |  31 ++-
- crates/jcode-base/src/provider/startup.rs     |  48 +++-
- crates/jcode-base/src/provider/tests.rs       |  47 ++++
+ .../jcode-base/src/provider/catalog_routes.rs | 272 ++++++++++++++++-
+ crates/jcode-base/src/provider/mod.rs         |  86 +++++-
+ crates/jcode-base/src/provider/openrouter.rs  |  30 +-
+ crates/jcode-base/src/provider/pricing.rs     |  57 +++-
+ crates/jcode-base/src/provider/selection.rs   |  31 +-
+ crates/jcode-base/src/provider/startup.rs     |  48 ++-
+ crates/jcode-base/src/provider/tests.rs       | 289 ++++++++++++++++++
  .../tests/issue_534_profile_preservation.rs   |   1 +
  crates/jcode-base/src/provider_activity.rs    |   4 +
  crates/jcode-base/src/provider_catalog.rs     |   3 +
  crates/jcode-base/src/session.rs              |   1 +
- crates/jcode-provider-core/src/lib.rs         |  55 ++++-
+ crates/jcode-provider-core/src/lib.rs         |  55 +++-
  crates/jcode-provider-core/src/models.rs      |   1 +
  crates/jcode-provider-core/src/selection.rs   |  13 +-
  crates/jcode-provider-metadata/Cargo.toml     |   1 +
  crates/jcode-provider-metadata/src/catalog.rs |  18 +-
  crates/jcode-provider-metadata/src/lib.rs     |  13 +-
- .../src/lib.rs                                |  72 ++++--
- .../src/openrouter_provider_impl.rs           |  64 +++--
- .../src/openrouter_tests.rs                   |  92 ++++++++
- crates/jcode-provider-openrouter/src/lib.rs   |  95 +++++++-
- crates/jcode-tui/src/tui/app/auth.rs          |  40 +++-
+ .../src/lib.rs                                |  72 +++--
+ .../src/openrouter_provider_impl.rs           |  64 ++--
+ .../src/openrouter_tests.rs                   |  92 ++++++
+ crates/jcode-provider-openrouter/src/lib.rs   |  95 +++++-
+ crates/jcode-tui/src/tui/app/auth.rs          |  40 ++-
  .../src/tui/app/auth_account_commands.rs      |   8 +-
- crates/jcode-tui/src/tui/app/auth_tests.rs    |  27 +++
+ crates/jcode-tui/src/tui/app/auth_tests.rs    |  27 ++
  .../src/tui/app/inline_interactive.rs         |   4 +-
  .../src/tui/app/inline_interactive/helpers.rs |   3 +
  .../inline_interactive_placeholder_routes.rs  |   3 +-
@@ -91,7 +96,7 @@ scripts/cargo_exec.sh test -p jcode-provider-core runtime_key_ --lib
  src/cli/provider_init.rs                      |  38 ++-
  src/cli/provider_init_tests.rs                |  25 +-
  tests/provider_matrix.rs                      |   4 +-
- 44 files changed, 1140 insertions(+), 145 deletions(-)
+ 44 files changed, 1432 insertions(+), 145 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
 index ad3c93107..32410e064 100644
@@ -345,14 +350,25 @@ index 88e7521ae..a8076a548 100644
              crate::env::set_var(model_hint.env_key, &model_hint.model);
          }
 diff --git a/crates/jcode-base/src/provider/catalog_routes.rs b/crates/jcode-base/src/provider/catalog_routes.rs
-index af985b52f..0e071ed1e 100644
+index af985b52f..5e2ced64b 100644
 --- a/crates/jcode-base/src/provider/catalog_routes.rs
 +++ b/crates/jcode-base/src/provider/catalog_routes.rs
-@@ -15,6 +15,34 @@ use super::{
+@@ -15,6 +15,45 @@ use super::{
  };
  use jcode_provider_core::{ProviderFamilyPolicy, RuntimeKey};
  
 +fn configured_eu_openrouter_routes() -> Vec<ModelRoute> {
++    // Only expose EU routes when EU credentials are actually present. A user
++    // with only standard OpenRouter credentials and a populated EU cache would
++    // otherwise see an EU-labelled route that cannot authenticate.
++    let has_eu_creds = crate::provider_catalog::load_api_key_from_env_or_config(
++        "OPENROUTER_EU_API_KEY",
++        "openrouter-eu.env",
++    )
++    .is_some();
++    if !has_eu_creds {
++        return Vec::new();
++    }
 +    let Some(cache) =
 +        jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter-eu")
 +    else {
@@ -383,7 +399,7 @@ index af985b52f..0e071ed1e 100644
  fn filter_catalog_routes(
      routes: Vec<ModelRoute>,
      policy: &ProviderFamilyPolicy,
-@@ -49,6 +77,7 @@ fn legacy_remote_route_method_from_provider_name(provider: Option<&str>) -> Stri
+@@ -49,6 +88,7 @@ fn legacy_remote_route_method_from_provider_name(provider: Option<&str>) -> Stri
          "bedrock" | "aws bedrock" => "bedrock".to_string(),
          "openrouter" => "openrouter".to_string(),
          "grok build" | "grok-build" | "grok" => "grok-build-acp".to_string(),
@@ -391,7 +407,7 @@ index af985b52f..0e071ed1e 100644
          _ => "remote-catalog".to_string(),
      }
  }
-@@ -280,12 +309,28 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
+@@ -280,12 +320,28 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
      append_cursor_routes(provider, &mut routes);
      append_bedrock_routes(provider, &mut routes);
  
@@ -424,7 +440,7 @@ index af985b52f..0e071ed1e 100644
  
      if !has_openrouter_transport && !added_direct_openai_compatible_routes {
          // OpenRouter not configured - show a placeholder as unavailable.
-@@ -300,7 +345,29 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
+@@ -300,7 +356,29 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
      }
  
      if has_openrouter_provider_features {
@@ -455,7 +471,7 @@ index af985b52f..0e071ed1e 100644
      }
  
      let total_ms = routes_started.elapsed().as_millis();
-@@ -685,6 +752,7 @@ fn append_bedrock_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>)
+@@ -685,6 +763,7 @@ fn append_bedrock_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>)
  /// OpenAI-compatible runtime path that shares the OpenRouter transport.
  fn append_openrouter_routes(
      provider: &MultiProvider,
@@ -463,7 +479,7 @@ index af985b52f..0e071ed1e 100644
      routes: &mut Vec<ModelRoute>,
      stats: &mut OpenRouterRouteStats,
  ) {
-@@ -698,7 +766,7 @@ fn append_openrouter_routes(
+@@ -698,7 +777,7 @@ fn append_openrouter_routes(
      for model in openrouter.available_models_display() {
          stats.models += 1;
          let cached = if supports_openrouter_provider_features {
@@ -472,7 +488,7 @@ index af985b52f..0e071ed1e 100644
          } else {
              None
          };
-@@ -794,19 +862,28 @@ fn append_openrouter_routes(
+@@ -794,19 +873,28 @@ fn append_openrouter_routes(
  }
  
  /// Claude/OpenAI models reachable via OpenRouter as alternative routes.
@@ -503,7 +519,7 @@ index af985b52f..0e071ed1e 100644
              routes.push(build_openrouter_fallback_provider_route(
                  &model,
                  &or_model,
-@@ -817,13 +894,15 @@ fn append_openrouter_alternative_routes(
+@@ -817,13 +905,15 @@ fn append_openrouter_alternative_routes(
  
      for model in ALL_OPENAI_MODELS {
          let or_model = format!("openai/{}", model);
@@ -521,7 +537,7 @@ index af985b52f..0e071ed1e 100644
              // Skip fallback routes for models OpenRouter definitively does not
              // serve (e.g. openai/gpt-5.3-codex-spark) so the picker never
              // offers a route that would 400 at request time.
-@@ -1731,6 +1810,47 @@ mod tests {
+@@ -1731,6 +1821,47 @@ mod tests {
          assert!(routes[0].available);
      }
  
@@ -569,7 +585,7 @@ index af985b52f..0e071ed1e 100644
      #[test]
      fn names_only_slash_fallback_projects_nonstandard_runtime_identity_first() {
          let allowed = ProviderFamilyPolicy::parse(&["openai-compatible".to_string()]);
-@@ -1749,6 +1869,30 @@ mod tests {
+@@ -1749,6 +1880,30 @@ mod tests {
          assert_eq!(routes[0].api_method, "openai-compatible:corp-gateway");
      }
  
@@ -600,7 +616,7 @@ index af985b52f..0e071ed1e 100644
      #[test]
      fn local_simplified_fallback_uses_runtime_key_not_provider_name() {
          let routes = simplified_model_routes_for_picker(
-@@ -1837,7 +1981,7 @@ mod tests {
+@@ -1837,7 +1992,7 @@ mod tests {
          // No catalog cache: optimistic, spark gets a fallback route.
          let mut routes = Vec::new();
          let mut stats = OpenRouterRouteStats::default();
@@ -609,7 +625,7 @@ index af985b52f..0e071ed1e 100644
          assert!(
              routes
                  .iter()
-@@ -1849,7 +1993,7 @@ mod tests {
+@@ -1849,7 +2004,7 @@ mod tests {
          save_openrouter_catalog_cache(&["openai/gpt-5.3-codex", "openai/gpt-5.5"]);
          let mut routes = Vec::new();
          let mut stats = OpenRouterRouteStats::default();
@@ -618,7 +634,7 @@ index af985b52f..0e071ed1e 100644
          assert!(
              !routes
                  .iter()
-@@ -1863,4 +2007,58 @@ mod tests {
+@@ -1863,4 +2018,97 @@ mod tests {
              "catalog-listed model keeps its OpenRouter fallback route"
          );
      }
@@ -674,6 +690,45 @@ index af985b52f..0e071ed1e 100644
 +                .iter()
 +                .any(|r| r.model == "gpt-6-astra" && r.api_method == "openrouter"),
 +            "EU-absent model must not get a fallback route from the EU namespace"
++        );
++    }
++
++    /// EU routes must not appear in the catalog when EU credentials are absent,
++    /// even if the EU cache is populated. A user with only standard OpenRouter
++    /// credentials would otherwise see EU-labeled routes that cannot
++    /// authenticate.
++    #[test]
++    fn eu_routes_absent_without_eu_credentials_even_with_populated_cache() {
++        let _guard = EnvGuard::new();
++
++        // Seed the EU cache so routes would appear if credential gating failed.
++        let jcode_home = std::env::var_os("JCODE_HOME").expect("JCODE_HOME set");
++        let cache_dir = std::path::PathBuf::from(jcode_home).join("cache");
++        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
++        let eu_cache = jcode_provider_openrouter::DiskCache {
++            cached_at: jcode_provider_openrouter::current_unix_secs().expect("time"),
++            source_api_base: Some("https://eu.openrouter.ai/api/v1".to_string()),
++            models: vec![jcode_provider_openrouter::ModelInfo {
++                id: "openai/gpt-5.6-luna".to_string(),
++                name: String::new(),
++                context_length: None,
++                pricing: jcode_provider_openrouter::ModelPricing::default(),
++                created: None,
++            }],
++        };
++        std::fs::write(
++            cache_dir.join("openrouter-eu_models.json"),
++            serde_json::to_string(&eu_cache).expect("serialize"),
++        )
++        .expect("write eu cache");
++
++        // Ensure EU credentials are absent.
++        crate::env::remove_var("OPENROUTER_EU_API_KEY");
++
++        let routes = configured_eu_openrouter_routes();
++        assert!(
++            routes.is_empty(),
++            "no EU routes should appear without EU credentials, got: {routes:?}"
 +        );
 +    }
  }
@@ -1184,7 +1239,7 @@ index a8fdd3653..7fba3ef36 100644
                  Ok(p) => Some(p),
                  Err(e) => {
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index 5628a3a61..b907dc3de 100644
+index 414bcd17c..8a06e6bd0 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
 @@ -1049,6 +1049,34 @@ impl StubExternalRuntime {
@@ -1245,7 +1300,7 @@ index 5628a3a61..b907dc3de 100644
  #[test]
  fn openrouter_only_dispatches_official_runtime_not_shared_slot_runtimes() {
      with_clean_provider_test_env(|| {
-@@ -1360,6 +1404,9 @@ fn register_test_external_runtimes() {
+@@ -1391,6 +1435,9 @@ fn register_test_external_runtimes() {
              OpenRouterRuntimeSpec::Official(
                  jcode_provider_core::OpenRouterDeploymentId::Standard,
              ) => Arc::new(OpenRouterProvider::new_openrouter_api_key_runtime()?),
@@ -1255,6 +1310,252 @@ index 5628a3a61..b907dc3de 100644
              OpenRouterRuntimeSpec::CompatibleProfile(profile) => Arc::new(
                  OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
              ),
+@@ -1733,3 +1780,245 @@ fn policy_blocks_persisted_route_restoration_for_disallowed_family() {
+         });
+     });
+ }
++/// EU and standard OpenRouter caches must be namespace-isolated: a model
++/// present in the EU cache but absent from the standard cache must not appear
++/// when the standard namespace is queried, and vice versa.
++#[test]
++fn eu_and_standard_caches_are_namespace_isolated() {
++    with_clean_provider_test_env(|| {
++        // Seed the EU cache with one model.
++        jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
++            "openrouter-eu",
++            &[jcode_provider_openrouter::ModelInfo {
++                id: "openai/eu-only-model".to_string(),
++                name: "EU Only".to_string(),
++                context_length: None,
++                pricing: jcode_provider_openrouter::ModelPricing::default(),
++                created: None,
++            }],
++            Some("https://eu.openrouter.ai/api/v1"),
++        );
++
++        // Seed the standard cache with a different model.
++        jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
++            "openrouter",
++            &[jcode_provider_openrouter::ModelInfo {
++                id: "openai/std-only-model".to_string(),
++                name: "Std Only".to_string(),
++                context_length: None,
++                pricing: jcode_provider_openrouter::ModelPricing::default(),
++                created: None,
++            }],
++            Some("https://openrouter.ai/api/v1"),
++        );
++
++        // EU cache should not contain the standard-only model.
++        let eu_cache =
++            jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter-eu")
++                .expect("EU cache should exist");
++        assert!(
++            !eu_cache.models.iter().any(|m| m.id == "openai/std-only-model"),
++            "standard-only model must not appear in EU cache"
++        );
++
++        // Standard cache should not contain the EU-only model.
++        let std_cache =
++            jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter")
++                .expect("standard cache should exist");
++        assert!(
++            !std_cache
++                .models
++                .iter()
++                .any(|m| m.id == "openai/eu-only-model"),
++            "EU-only model must not appear in standard cache"
++        );
++    });
++}
++
++
++/// EU pricing must use the EU cache, not the standard cache. A model present
++/// in both caches with different prices must return the EU price when queried
++/// from the EU namespace.
++#[test]
++fn eu_pricing_is_isolated_from_standard_cache() {
++    with_clean_provider_test_env(|| {
++        let eu_model = jcode_provider_openrouter::ModelInfo {
++            id: "openai/dual-priced".to_string(),
++            name: "Dual Priced".to_string(),
++            context_length: None,
++            pricing: jcode_provider_openrouter::ModelPricing {
++                prompt: Some("0.0000011".to_string()),
++                completion: Some("0.0000044".to_string()),
++                input_cache_read: None,
++                input_cache_write: None,
++            },
++            created: None,
++        };
++        let std_model = jcode_provider_openrouter::ModelInfo {
++            id: "openai/dual-priced".to_string(),
++            name: "Dual Priced".to_string(),
++            context_length: None,
++            pricing: jcode_provider_openrouter::ModelPricing {
++                prompt: Some("0.0000022".to_string()),
++                completion: Some("0.0000088".to_string()),
++                input_cache_read: None,
++                input_cache_write: None,
++            },
++            created: None,
++        };
++
++        jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
++            "openrouter-eu",
++            &[eu_model],
++            Some("https://eu.openrouter.ai/api/v1"),
++        );
++        jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
++            "openrouter",
++            &[std_model],
++            Some("https://openrouter.ai/api/v1"),
++        );
++
++        let eu_estimate =
++            pricing::metered_pricing_for_source("openrouter-eu", "openai/dual-priced")
++                .expect("EU pricing should resolve");
++        assert_eq!(
++            eu_estimate.input_price_per_mtok_micros,
++            Some(1_100_000),
++            "EU pricing must use the EU cache, not the standard cache"
++        );
++
++        let std_estimate =
++            pricing::metered_pricing_for_source("openrouter", "openai/dual-priced")
++                .expect("standard pricing should resolve");
++        assert_eq!(
++            std_estimate.input_price_per_mtok_micros,
++            Some(2_200_000),
++            "standard pricing must use the standard cache, not the EU cache"
++        );
++    });
++}
++
++/// set_model with the openrouter-eu: prefix must respect the provider
++/// allowlist. When EU is denied, it must bail with a policy error. When EU
++/// is allowed, it must pass the policy check (it may fail on credentials,
++/// but the error must not be a policy rejection).
++#[test]
++fn set_model_openrouter_eu_prefix_respects_policy() {
++    with_clean_provider_test_env(|| {
++        let runtime = enter_test_runtime();
++        let _guard = runtime.enter();
++
++        let config_path = crate::config::Config::path().expect("config path");
++        std::fs::create_dir_all(config_path.parent().expect("config parent"))
++            .expect("config parent");
++
++        // Deny EU: set_model must fail with a policy error.
++        std::fs::write(
++            &config_path,
++            "[provider]\nallowed_providers = [\"openrouter\"]\n",
++        )
++        .expect("policy config");
++        crate::config::invalidate_config_cache();
++
++        let provider = test_multi_provider_with_openai();
++        let result = provider.set_model("openrouter-eu:test-model");
++        assert!(result.is_err(), "set_model must fail when EU is denied");
++        assert!(
++            result
++                .unwrap_err()
++                .to_string()
++                .contains("disabled by provider policy"),
++            "error must mention provider policy"
++        );
++
++        // Allow EU: set_model must pass the policy check. It may fail on
++        // credentials, but the error must not be a policy rejection.
++        std::fs::write(
++            &config_path,
++            "[provider]\nallowed_providers = [\"openrouter-eu\"]\n",
++        )
++        .expect("policy config");
++        crate::config::invalidate_config_cache();
++
++        let provider = test_multi_provider_with_openai();
++        let result = provider.set_model("openrouter-eu:test-model");
++        match result {
++            Ok(()) => {
++                // If the runtime was created, verify it is the EU runtime.
++                assert_eq!(
++                    provider.runtime_key_for_provider(ActiveProvider::OpenRouter),
++                    Some(RuntimeKey::OpenRouterEu),
++                    "active OpenRouter runtime must be EU after set_model"
++                );
++            }
++            Err(err) => {
++                assert!(
++                    !err.to_string().contains("disabled by provider policy"),
++                    "set_model must not fail with a policy error when EU is allowed: {err}"
++                );
++            }
++        }
++    });
++}
++
++/// Dispatch enforcement: when allowed_providers = ["openrouter-eu"], the
++/// EU runtime must be dispatchable and the standard OpenRouter runtime must
++/// be blocked. This complements
++/// openrouter_only_dispatches_official_runtime_not_shared_slot_runtimes
++/// which tests the reverse (openrouter-only blocks EU).
++#[test]
++fn eu_dispatch_enforced_by_allowed_providers() {
++    with_clean_provider_test_env(|| {
++        let runtime = enter_test_runtime();
++        runtime.block_on(async {
++            let config_path = crate::config::Config::path().expect("config path");
++            std::fs::create_dir_all(config_path.parent().expect("config parent"))
++                .expect("config parent");
++
++            // Allow only EU: standard OpenRouter dispatch must be blocked.
++            std::fs::write(
++                &config_path,
++                "[provider]\nallowed_providers = [\"openrouter-eu\"]\n",
++            )
++            .expect("policy config");
++            crate::config::invalidate_config_cache();
++
++            let mut provider = test_multi_provider_with_openai();
++            *provider.active.write().expect("active provider lock") =
++                ActiveProvider::OpenRouter;
++            // Install a standard OpenRouter stub as the active runtime.
++            let standard = Arc::new(StubExternalRuntime::new(
++                "OpenRouter",
++                "OpenRouter",
++                "openrouter",
++                ALL_OPENAI_MODELS,
++            )) as Arc<dyn Provider>;
++            *provider.openrouter.write().expect("openrouter lock") = Some(standard);
++            assert!(
++                provider.complete(&[], &[], "", None).await.is_err(),
++                "standard OpenRouter dispatch must be blocked when only EU is allowed"
++            );
++
++            // Install an EU stub as the active runtime: dispatch must pass
++            // the policy check (it will fail on the stub's complete, but not
++            // with a policy error).
++            let eu = Arc::new(StubExternalRuntime::new(
++                "OpenRouter EU",
++                "OpenRouter EU",
++                "openrouter-eu",
++                ALL_OPENAI_MODELS,
++            )) as Arc<dyn Provider>;
++            *provider.openrouter.write().expect("openrouter lock") = Some(eu);
++            let result = provider.complete(&[], &[], "", None).await;
++            match result {
++                Err(err) => {
++                    assert!(
++                        !err.to_string().contains("disabled by provider policy"),
++                        "EU dispatch must not be blocked by policy: {err}"
++                    );
++                }
++                Ok(_) => {}
++            }
++        });
++    });
++}
 diff --git a/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs b/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs
 index 22cff57df..7f3c460e5 100644
 --- a/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs
@@ -2512,10 +2813,10 @@ index 45364166b..68aff11b1 100644
          // Expanding them here creates one duplicate picker row per effort.
          Method::OpenAiCompatible { .. } => false,
 diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
-index 10946dab2..fdc0656c1 100644
+index ba1ea63e8..66dfce3e3 100644
 --- a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
 +++ b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
-@@ -1417,7 +1417,17 @@ impl App {
+@@ -1371,7 +1371,17 @@ impl App {
          use crate::auth::AuthState;
          let status = crate::auth::AuthStatus::check_fast();
          // (display name, provider-key, state)
@@ -2534,7 +2835,7 @@ index 10946dab2..fdc0656c1 100644
              ("Anthropic (Claude)", "anthropic", status.anthropic.state),
              ("OpenAI", "openai", status.openai),
              ("Jcode subscription", "jcode", status.jcode),
-@@ -1425,6 +1435,7 @@ impl App {
+@@ -1379,6 +1389,7 @@ impl App {
              ("GitHub Copilot", "copilot", status.copilot),
              ("Cursor", "cursor", status.cursor),
              ("OpenRouter", "openrouter", status.openrouter),
@@ -2559,7 +2860,7 @@ index 6d9cc5ad8..1e17e9246 100644
      // ("azure"); keep the dedicated mapping used across the auth lifecycle.
      if provider.eq_ignore_ascii_case("azure")
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index 58c3f81fb..1d670408f 100644
+index d34377f21..f62da05cd 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 @@ -473,7 +473,9 @@ impl App {

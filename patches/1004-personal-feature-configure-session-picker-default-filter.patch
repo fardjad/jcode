@@ -32,13 +32,15 @@ the CurrentDir filter has the comparison base it needs.
 Validation:
 cargo test -p jcode-config-types session_picker_sort_defaults_to_recent_and_accepts_named_orders --lib
 cargo test -p jcode-tui test_filter_mode_keyboard_shortcuts_cycle_both_directions --lib
+cargo test -p jcode-tui default_filter --lib
 ---
- crates/jcode-base/src/config/default_file.rs  |  4 ++++
- crates/jcode-config-types/src/display.rs      | 19 ++++++++++++++++++-
- crates/jcode-config-types/src/lib.rs          | 11 +++++++++++
- .../src/tui/app/inline_interactive.rs         |  2 ++
- crates/jcode-tui/src/tui/session_picker.rs    | 12 ++++++++++++
- 5 files changed, 47 insertions(+), 1 deletion(-)
+ crates/jcode-base/src/config/default_file.rs  |   4 +
+ crates/jcode-config-types/src/display.rs      |  19 ++-
+ crates/jcode-config-types/src/lib.rs          |  11 ++
+ .../src/tui/app/inline_interactive.rs         |   2 +
+ crates/jcode-tui/src/tui/session_picker.rs    |  12 ++
+ .../jcode-tui/src/tui/session_picker_tests.rs | 119 ++++++++++++++++++
+ 6 files changed, 166 insertions(+), 1 deletion(-)
 
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
 index 45cd35a5f..c09de1bf9 100644
@@ -171,3 +173,130 @@ index 7c0e12cee..96ebf74ae 100644
      /// Whether the given session's working directory matches the directory the
      /// picker was opened from.
      pub(super) fn session_in_current_dir(&self, session: &SessionInfo) -> bool {
+diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
+index 12535d0c1..553e43f0d 100644
+--- a/crates/jcode-tui/src/tui/session_picker_tests.rs
++++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
+@@ -2635,3 +2635,122 @@ fn sort_ordering_applies_to_saved_sessions_in_grouped_view() {
+     std::fs::write(&config_path, "").expect("reset config");
+     crate::config::invalidate_config_cache();
+ }
++
++/// The default-filter entry point must record the current directory before
++/// applying the filter, so `current-dir` filtering only shows matching
++/// sessions. This simulates the `/resume` path: `set_current_dir` then
++/// `apply_configured_default_filter`.
++#[test]
++fn default_filter_current_dir_shows_only_matching_sessions_after_set_current_dir() {
++    let _guard = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let _home = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let config_path = crate::config::Config::path().expect("config path");
++    std::fs::create_dir_all(config_path.parent().expect("config parent"))
++        .expect("create config parent");
++    std::fs::write(
++        &config_path,
++        "[display]\nsession_picker_default_filter = \"current-dir\"\n",
++    )
++    .expect("write config");
++    crate::config::invalidate_config_cache();
++
++    let mut same = make_session("same_dir", "same", false, SessionStatus::Closed);
++    same.working_dir = Some("/work/project".to_string());
++    let mut other = make_session("other_dir", "other", false, SessionStatus::Closed);
++    other.working_dir = Some("/home/elsewhere".to_string());
++
++    let mut picker = SessionPicker::new(vec![same, other]);
++    // The entry point records the current dir before applying the filter.
++    picker.set_current_dir(Some("/work/project/".to_string()));
++    picker.apply_configured_default_filter();
++
++    assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
++    assert_eq!(picker.visible_session_count(), 1);
++    assert!(picker
++        .visible_session_iter()
++        .all(|s| s.id == "same_dir"));
++
++    // Reset config so it does not leak.
++    std::fs::write(&config_path, "").expect("reset config");
++    crate::config::invalidate_config_cache();
++}
++
++
++/// The `all` default must show every session regardless of current dir.
++#[test]
++fn default_filter_all_shows_every_session() {
++    let _guard = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let _home = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let config_path = crate::config::Config::path().expect("config path");
++    std::fs::create_dir_all(config_path.parent().expect("config parent"))
++        .expect("create config parent");
++    std::fs::write(
++        &config_path,
++        "[display]\nsession_picker_default_filter = \"all\"\n",
++    )
++    .expect("write config");
++    crate::config::invalidate_config_cache();
++
++    let mut same = make_session("same_dir", "same", false, SessionStatus::Closed);
++    same.working_dir = Some("/work/project".to_string());
++    let mut other = make_session("other_dir", "other", false, SessionStatus::Closed);
++    other.working_dir = Some("/home/elsewhere".to_string());
++
++    let mut picker = SessionPicker::new(vec![same, other]);
++    picker.set_current_dir(Some("/work/project/".to_string()));
++    picker.apply_configured_default_filter();
++
++    assert_eq!(picker.filter_mode, SessionFilterMode::All);
++    assert_eq!(picker.visible_session_count(), 2);
++
++    std::fs::write(&config_path, "").expect("reset config");
++    crate::config::invalidate_config_cache();
++}
++
++
++/// The async loaded-picker fallback path must also apply the default filter
++/// after recording the current dir. This simulates the fallback that fires
++/// when the cached grouped list arrives: `new_grouped` then `set_current_dir`
++/// then `apply_configured_default_filter`.
++#[test]
++fn default_filter_current_dir_applied_on_async_loaded_picker() {
++    let _guard = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let _home = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let config_path = crate::config::Config::path().expect("config path");
++    std::fs::create_dir_all(config_path.parent().expect("config parent"))
++        .expect("create config parent");
++    std::fs::write(
++        &config_path,
++        "[display]\nsession_picker_default_filter = \"current-dir\"\n",
++    )
++    .expect("write config");
++    crate::config::invalidate_config_cache();
++
++    let mut same = make_session("same_dir", "same", false, SessionStatus::Closed);
++    same.working_dir = Some("/work/project".to_string());
++    let mut other = make_session("other_dir", "other", false, SessionStatus::Closed);
++    other.working_dir = Some("/home/elsewhere".to_string());
++
++    // Simulate the async fallback: new_grouped with empty server groups.
++    let mut picker = SessionPicker::new_grouped(Vec::new(), vec![same, other]);
++    picker.set_current_dir(Some("/work/project/".to_string()));
++    picker.apply_configured_default_filter();
++
++    assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
++    assert_eq!(picker.visible_session_count(), 1);
++    assert!(picker
++        .visible_session_iter()
++        .all(|s| s.id == "same_dir"));
++
++    std::fs::write(&config_path, "").expect("reset config");
++    crate::config::invalidate_config_cache();
++}

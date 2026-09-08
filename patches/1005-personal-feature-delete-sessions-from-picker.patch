@@ -19,7 +19,8 @@ session history. This intentionally provides no undo or confirmation step.
 Upstream integration points:
 SessionPicker::handle_overlay_key routes Ctrl+D to deletion. Session storage
 paths provide the local snapshot and journal paths, and the picker cache is
-invalidated so a later /resume does not show a deleted session.
+invalidated so a later /resume does not show a deleted session. Server-group
+sessions are removed from their group in all_server_groups.
 
 Update guidance:
 Preserve the unmodified d debug toggle. Keep deletion scoped to the selected
@@ -27,12 +28,16 @@ entry and remove every storage file owned by that supported session source.
 
 Validation:
 cargo test -p jcode-tui ctrl_d_deletes_the_selected_session_without_closing_the_picker --lib
+cargo test -p jcode-tui ctrl_d_deletes_external --lib
+cargo test -p jcode-tui ctrl_d_deletes_session_with_missing --lib
+cargo test -p jcode-tui deleted_session_invalidates --lib
+cargo test -p jcode-tui ctrl_d_deletes_session_from_server_group --lib
 ---
- crates/jcode-tui/src/tui/session_picker.rs    | 52 +++++++++++++++++++
- .../src/tui/session_picker/loading.rs         |  3 ++
- .../src/tui/session_picker/render.rs          |  4 +-
- .../jcode-tui/src/tui/session_picker_tests.rs | 39 ++++++++++++++
- 4 files changed, 96 insertions(+), 2 deletions(-)
+ crates/jcode-tui/src/tui/session_picker.rs    |  52 ++++
+ .../src/tui/session_picker/loading.rs         |   3 +
+ .../src/tui/session_picker/render.rs          |   4 +-
+ .../jcode-tui/src/tui/session_picker_tests.rs | 231 ++++++++++++++++++
+ 4 files changed, 288 insertions(+), 2 deletions(-)
 
 diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
 index 96ebf74ae..dbfc4deb7 100644
@@ -136,7 +141,7 @@ index 04fa4c557..b3603adf8 100644
              }
          };
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index 3398241fa..fd97c07d0 100644
+index 553e43f0d..b0dd84ce9 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
 @@ -1152,6 +1152,45 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
@@ -185,3 +190,199 @@ index 3398241fa..fd97c07d0 100644
  #[test]
  fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
      let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
+@@ -2754,3 +2793,195 @@ fn default_filter_current_dir_applied_on_async_loaded_picker() {
+     std::fs::write(&config_path, "").expect("reset config");
+     crate::config::invalidate_config_cache();
+ }
++
++/// Deleting a session backed by an external transcript (e.g. Claude Code)
++/// must remove the external file and the picker row.
++#[test]
++fn ctrl_d_deletes_external_transcript_session() {
++    let _env_lock = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let previous_home = std::env::var("JCODE_HOME").ok();
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    // Create a fake external transcript file.
++    let external_file = temp.path().join("claude_session.jsonl");
++    std::fs::write(&external_file, "{\"type\":\"assistant\"}").expect("write external file");
++
++    let mut session = make_session("external_claude", "claude-ext", false, SessionStatus::Closed);
++    session.source = SessionSource::ClaudeCode;
++    session.resume_target = ResumeTarget::ClaudeCodeSession {
++        session_id: "external_claude".to_string(),
++        session_path: external_file.to_string_lossy().to_string(),
++    };
++    session.external_path = Some(external_file.to_string_lossy().to_string());
++
++    let mut picker = SessionPicker::new(vec![session]);
++    assert_eq!(picker.visible_session_count(), 1);
++
++    let action = picker
++        .handle_overlay_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
++        .expect("delete external session");
++
++    assert!(matches!(action, OverlayAction::Continue));
++    assert!(!external_file.exists(), "external file must be deleted");
++    assert_eq!(picker.visible_session_count(), 0);
++
++    if let Some(previous_home) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous_home);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++}
++
++
++/// Deleting a session whose backing files are already gone must not error and
++/// must still remove the row from the picker.
++#[test]
++fn ctrl_d_deletes_session_with_missing_backing_files() {
++    let _env_lock = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let previous_home = std::env::var("JCODE_HOME").ok();
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let session_id = "session_already_gone";
++    // Do NOT create the snapshot or journal files.
++    let mut picker = SessionPicker::new(vec![make_session(
++        session_id,
++        "gone",
++        false,
++        SessionStatus::Closed,
++    )]);
++    assert_eq!(picker.visible_session_count(), 1);
++
++    let action = picker
++        .handle_overlay_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
++        .expect("delete missing session");
++
++    assert!(matches!(action, OverlayAction::Continue));
++    assert_eq!(picker.visible_session_count(), 0);
++
++    if let Some(previous_home) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous_home);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++}
++
++
++/// After deleting a session, the disk cache must be invalidated so the
++/// deleted session does not reappear when the picker is reopened from the
++/// cache. This verifies `invalidate_session_list_cache` is called on delete.
++#[test]
++fn deleted_session_invalidates_disk_cache() {
++    let _env_lock = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let previous_home = std::env::var("JCODE_HOME").ok();
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let mut session = Session::create_with_id(
++        "session_cache_invalidation".to_string(),
++        Some("/tmp/cache-inv".to_string()),
++        Some("Cache invalidation".to_string()),
++    );
++    session.save().expect("save session");
++    let snapshot = crate::session::session_path(&session.id).expect("session path");
++    let journal = crate::session::session_journal_path_from_snapshot(&snapshot);
++    std::fs::write(&journal, "journal").expect("write journal");
++
++    // Write a fake disk cache file so we can verify it is removed on delete.
++    let cache_dir = temp.path().join("cache");
++    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
++    let cache_file = cache_dir.join("session-picker-list-v2.json");
++    std::fs::write(&cache_file, "{}").expect("write cache file");
++    assert!(cache_file.exists(), "cache file should exist before delete");
++
++    let mut picker = SessionPicker::new(vec![make_session(
++        &session.id,
++        "cache-inv",
++        false,
++        SessionStatus::Closed,
++    )]);
++    let action = picker
++        .handle_overlay_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
++        .expect("delete session");
++    assert!(matches!(action, OverlayAction::Continue));
++    assert_eq!(picker.visible_session_count(), 0);
++
++    // The disk cache file must be removed so a subsequent picker open does not
++    // serve a stale list containing the deleted session.
++    assert!(
++        !cache_file.exists(),
++        "disk cache must be invalidated after delete"
++    );
++
++    if let Some(previous_home) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous_home);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++}
++
++/// Deleting a session from a server group must remove it from the group's
++/// session list, not just from `all_sessions` or `all_orphan_sessions`.
++/// This verifies the `all_server_groups` retain loop in
++/// `delete_selected_session`.
++#[test]
++fn ctrl_d_deletes_session_from_server_group() {
++    let _env_lock = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let previous_home = std::env::var("JCODE_HOME").ok();
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let mut session = Session::create_with_id(
++        "session_in_server_group".to_string(),
++        Some("/tmp/server-group".to_string()),
++        Some("Server group session".to_string()),
++    );
++    session.save().expect("save session");
++    let snapshot = crate::session::session_path(&session.id).expect("session path");
++    let journal = crate::session::session_journal_path_from_snapshot(&snapshot);
++    std::fs::write(&journal, "journal").expect("write journal");
++
++    let session_info = make_session(
++        &session.id,
++        "server-group-session",
++        false,
++        SessionStatus::Closed,
++    );
++
++    let server_group = ServerGroup {
++        name: "test-server".to_string(),
++        icon: String::new(),
++        version: String::new(),
++        git_hash: String::new(),
++        is_running: true,
++        sessions: vec![session_info],
++    };
++
++    let mut picker = SessionPicker::new_grouped(vec![server_group], Vec::new());
++    assert_eq!(picker.visible_session_count(), 1);
++
++    let action = picker
++        .handle_overlay_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
++        .expect("delete session from server group");
++
++    assert!(matches!(action, OverlayAction::Continue));
++    assert!(!snapshot.exists());
++    assert!(!journal.exists());
++    assert_eq!(picker.visible_session_count(), 0);
++
++    // Verify the session was removed from the server group itself.
++    assert!(
++        picker
++            .all_server_groups
++            .iter()
++            .all(|group| group.sessions.iter().all(|s| s.id != session.id)),
++        "session must be removed from all_server_groups"
++    );
++
++    if let Some(previous_home) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous_home);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++}
