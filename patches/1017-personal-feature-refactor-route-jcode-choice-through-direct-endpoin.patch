@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Tue, 8 Sep 2026 23:39:04 +0200
+Subject: [PATCH] refactor: route jcode choice through direct endpoint
+ configuration
+
+X-Jcode-Patch-Intent: Make the jcode provider choice use ordinary direct endpoint configuration.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1015-personal-feature-refactor-remove-hosted-subscription-account-api.patch
+
+Patch intent:
+Route `--provider jcode` through the generic OpenAI-compatible profile instead
+of the managed subscription wrapper, so configured endpoints and API keys are
+the only credentials used by that provider choice.
+
+Why it exists:
+The retained jcode route must operate as a direct configured inference endpoint
+without hosted accounts, tiers, billing, or curated server-managed routing.
+
+Upstream integration points:
+The patch changes provider choice profile selection and initial provider
+construction in the CLI composition root.
+
+Update guidance:
+Keep the jcode choice bound to the generic OpenAI-compatible configuration. Do
+not reintroduce subscription runtime activation or managed account credentials.
+
+Validation:
+scripts/cargo_exec.sh check -p jcode
+scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoint_profile --lib
+---
+ src/cli/provider_init.rs       | 10 +++++--
+ src/cli/provider_init_tests.rs | 51 ++--------------------------------
+ 2 files changed, 11 insertions(+), 50 deletions(-)
+
+diff --git a/src/cli/provider_init.rs b/src/cli/provider_init.rs
+index b7c0022d9..fed380ca9 100644
+--- a/src/cli/provider_init.rs
++++ b/src/cli/provider_init.rs
+@@ -433,6 +433,9 @@ pub fn login_provider_choice_mappings() -> &'static [(ProviderChoice, LoginProvi
+ }
+ 
+ pub fn profile_for_choice(choice: &ProviderChoice) -> Option<OpenAiCompatibleProfile> {
++    if matches!(choice, ProviderChoice::Jcode) {
++        return Some(crate::provider_catalog::OPENAI_COMPAT_PROFILE);
++    }
+     match login_provider_for_choice(choice)?.target {
+         LoginProviderTarget::OpenAiCompatible(profile) => Some(profile),
+         _ => None,
+@@ -1483,8 +1486,11 @@ async fn init_provider_with_options(
+ 
+     let provider: Arc<dyn provider::Provider> = match choice {
+         ProviderChoice::Jcode => {
+-            init_notice("Using Jcode subscription provider");
+-            Arc::new(provider::jcode::JcodeProvider::new())
++            disable_subscription_runtime_mode();
++            ensure_external_api_key_auth_allowed_for_explicit_choice("OPENAI_COMPAT_API_KEY")?;
++            init_notice("Using configured OpenAI-compatible endpoint as the initial provider");
++            select_initial_model_provider("openai-compatible");
++            Arc::new(provider::MultiProvider::with_preference_fast(false))
+         }
+         ProviderChoice::Claude => {
+             disable_subscription_runtime_mode();
+diff --git a/src/cli/provider_init_tests.rs b/src/cli/provider_init_tests.rs
+index f044e0194..1b8cf231a 100644
+--- a/src/cli/provider_init_tests.rs
++++ b/src/cli/provider_init_tests.rs
+@@ -301,56 +301,11 @@ fn test_auto_init_login_selection_preserves_order() {
+ }
+ 
+ #[test]
+-fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
+-    let _guard = lock_env();
+-    let _env_guard = crate::storage::lock_test_env();
+-    // Sandbox JCODE_HOME: with the real home, persisted auth/credential state
+-    // (e.g. a pinned anthropic api-key route) re-pins JCODE_RUNTIME_PROVIDER
+-    // during MultiProvider construction and breaks the assertions below.
+-    let dir = TempDir::new().expect("temp dir");
+-    let saved_home = std::env::var("JCODE_HOME").ok();
+-    crate::env::set_var("JCODE_HOME", dir.path());
+-    crate::subscription_catalog::clear_runtime_env();
+-    crate::env::remove_var("JCODE_OPENROUTER_MODEL");
+-    crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+-    crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
+-    crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
+-
+-    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+-    let provider = runtime
+-        .block_on(init_provider(&ProviderChoice::Jcode, None))
+-        .expect("init jcode provider");
+-
+-    assert_eq!(provider.name(), "Jcode Hosted Models");
+-    assert!(crate::subscription_catalog::is_runtime_mode_enabled());
+-    assert_eq!(
+-        std::env::var("JCODE_OPENROUTER_MODEL").ok().as_deref(),
+-        Some(crate::subscription_catalog::default_model().id)
+-    );
+-    assert_eq!(
+-        std::env::var("JCODE_ACTIVE_PROVIDER").ok().as_deref(),
+-        Some("openrouter")
+-    );
++fn jcode_choice_uses_the_generic_direct_endpoint_profile() {
+     assert_eq!(
+-        std::env::var("JCODE_RUNTIME_PROVIDER").ok().as_deref(),
+-        Some("jcode")
+-    );
+-    assert_eq!(
+-        std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT")
+-            .ok()
+-            .as_deref(),
+-        Some("1")
++        profile_for_choice(&ProviderChoice::Jcode),
++        Some(crate::provider_catalog::OPENAI_COMPAT_PROFILE)
+     );
+-
+-    crate::subscription_catalog::clear_runtime_env();
+-    crate::env::remove_var("JCODE_OPENROUTER_MODEL");
+-    crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+-    crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
+-    crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
+-    match saved_home {
+-        Some(home) => crate::env::set_var("JCODE_HOME", home),
+-        None => crate::env::remove_var("JCODE_HOME"),
+-    }
+ }
+ 
+ #[test]

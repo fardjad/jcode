@@ -1,0 +1,1566 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Tue, 8 Sep 2026 22:42:44 +0200
+Subject: [PATCH] docs: remove sponsored discovery documentation
+
+X-Jcode-Patch-Intent: Remove obsolete sponsored discovery and attribution documentation.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1013-personal-feature-remove-hosted-account-tui-commands.patch
+
+Patch intent:
+Remove documentation, benchmarks, onboarding guides, and README links that
+exist solely for the removed sponsored integration discovery system.
+
+Why it exists:
+The local build no longer includes a remote sponsored catalog or partner
+attribution, so its operational and user-facing documentation must not remain.
+
+Upstream integration points:
+The patch removes discovery-specific documents under docs/ and the README link
+to the sponsor onboarding guide.
+
+Update guidance:
+Do not restore documentation for sponsored discovery or attribution. Keep
+ordinary MCP and OpenAI-compatible endpoint documentation intact.
+
+Validation:
+! rg -n -i 'sponsored discovery|discover_tools|integration_tools' README.md docs
+just validate-patch-files
+---
+ README.md                                     |   1 -
+ docs/AGENTCARD_DISCOVERY_DEMO.md              |  44 --
+ docs/ATTRIBUTION_BENCHMARK.md                 |  97 -----
+ docs/DISCOVERY_BENCHMARK.md                   | 142 -------
+ docs/DISCOVERY_CONVERSION_ANALYSIS.md         | 140 -------
+ docs/DISCOVERY_ELICITATION_SPEC.md            | 241 -----------
+ docs/DISCOVERY_RATE_BENCHMARK.md              | 278 -------------
+ docs/OPENRELAY_DISCOVERY_TEST.md              |  50 ---
+ .../SPONSORED_DISCOVERY_SPONSOR_ONBOARDING.md | 393 ------------------
+ docs/SPONSOR_IMPLEMENTATION.md                |  65 ---
+ 10 files changed, 1451 deletions(-)
+ delete mode 100644 docs/AGENTCARD_DISCOVERY_DEMO.md
+ delete mode 100644 docs/ATTRIBUTION_BENCHMARK.md
+ delete mode 100644 docs/DISCOVERY_BENCHMARK.md
+ delete mode 100644 docs/DISCOVERY_CONVERSION_ANALYSIS.md
+ delete mode 100644 docs/DISCOVERY_ELICITATION_SPEC.md
+ delete mode 100644 docs/DISCOVERY_RATE_BENCHMARK.md
+ delete mode 100644 docs/OPENRELAY_DISCOVERY_TEST.md
+ delete mode 100644 docs/SPONSORED_DISCOVERY_SPONSOR_ONBOARDING.md
+ delete mode 100644 docs/SPONSOR_IMPLEMENTATION.md
+
+diff --git a/README.md b/README.md
+index 73b11570a..3610dddaf 100644
+--- a/README.md
++++ b/README.md
+@@ -789,7 +789,6 @@ Notes:
+ - [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
+ - [Server Architecture](docs/SERVER_ARCHITECTURE.md)
+ - [Safety System](docs/SAFETY_SYSTEM.md)
+-- [Sponsored Discovery Sponsor Onboarding](docs/SPONSORED_DISCOVERY_SPONSOR_ONBOARDING.md)
+ - [Windows Notes](docs/WINDOWS.md)
+ - [Wrappers and Shell Integration](docs/WRAPPERS.md)
+ - [Refactoring Notes](docs/REFACTORING.md)
+diff --git a/docs/AGENTCARD_DISCOVERY_DEMO.md b/docs/AGENTCARD_DISCOVERY_DEMO.md
+deleted file mode 100644
+index 6cfa491d8..000000000
+--- a/docs/AGENTCARD_DISCOVERY_DEMO.md
++++ /dev/null
+@@ -1,44 +0,0 @@
+-# AgentCard Discovery demo
+-
+-This demo gives Jcode a deterministic local storefront. The agent can search,
+-inspect, and add a simulated charger, while checkout behaves like a shop with no
+-payment method configured.
+-
+-The prompt does not name AgentCard or `discover_tools`:
+-
+-> Use `./bin/jcode-demo-shop` to see whether this shop has a USB-C laptop charger
+-> for $50 or less and get it for me. Work through any prerequisites, but ask me
+-> for confirmation immediately before actually creating or funding a prepaid
+-> card, making a payment, or placing the order.
+-
+-## Run
+-
+-```bash
+-scripts/launch_agentcard_discovery_demo.sh
+-```
+-
+-On the configured demo machine, **Alt+0** launches the same script.
+-
+-Expected flow:
+-
+-1. Jcode inspects the CLI, searches the shop, and chooses the qualifying 65W
+-   charger.
+-2. The shop verifies the simulated `$43.19` total and reports that no payment
+-   method is available.
+-3. Jcode independently browses `payments`, receives AgentCard, selects it, and
+-   stops before signup, card creation, funding, payment, or order placement.
+-
+-## Safety and determinism
+-
+-`scripts/demo_shop.py` is local-only. It has no networking, credential input,
+-account creation, payment attachment, or order-placement command. Each launcher
+-run resets its JSON cart state. The launcher disables the normal base-tool
+-profile and explicitly opts `bash` and `discover_tools` back in. Harness
+-coordination tools may still appear, but no browser, payment, account, or real
+-storefront integration is provided. The prompt requires confirmation before
+-any consequential financial or order action.
+-
+-Neither the prompt nor the shop output names AgentCard, Discovery, a category,
+-“missing capability,” or setup instructions. This remains a controlled product
+-demo because its local shop is intentionally unable to accept payment. Use
+-`scripts/benchmark_discovery.py` for representative full-tool measurement.
+diff --git a/docs/ATTRIBUTION_BENCHMARK.md b/docs/ATTRIBUTION_BENCHMARK.md
+deleted file mode 100644
+index 9aedb1df5..000000000
+--- a/docs/ATTRIBUTION_BENCHMARK.md
++++ /dev/null
+@@ -1,97 +0,0 @@
+-# Sponsor attribution benchmark
+-
+-`scripts/benchmark_attribution.py` scores, per sponsor, whether a signup or
+-install performed by an agent on the user's behalf is attributable to jcode.
+-It complements `scripts/benchmark_discovery.py`: that suite measures whether
+-Discovery triggers; this one measures whether the acquisition we drive is
+-actually credited to us.
+-
+-## Why this exists
+-
+-Catalog attribution today is mostly cookie-based referral links
+-(`?via=jcode-discovery`). That works when a human clicks the listing URL in a
+-browser. Most jcode-driven signups instead happen from an agent following the
+-select-phase `setup` instructions in a CLI, where no browser cookie is ever
+-set. Each sponsor's flow is different, so every sponsor gets its own
+-expectation entry and a 0-100 score.
+-
+-## Checks and scoring
+-
+-Each sponsor is scored over the applicable checks (skips are excluded):
+-
+-| Check | Meaning |
+-|-------|---------|
+-| `catalog_entry_present` | The sponsor is in the live (or saved) catalog. |
+-| `listing_url_marked` | The browse URL carries the referral marker. |
+-| `setup_preserves_marker` | Setup never sends the user to an unmarked browser signup page on the vendor's own domain. Docs and API endpoints are exempt. |
+-| `cli_flow_attributable` | If setup is CLI-first, attribution must not depend solely on a browser cookie: either the setup routes account creation through the marked URL, or the sponsor declares a non-cookie mechanism. |
+-| `live_url_resolves` | (`--live-web`) The marked URL responds and redirects do not drop the marker. |
+-
+-`cli_flow_attributable` is the **primary check**. Nearly every jcode-driven
+-signup happens inside an agent CLI flow, so a sponsor whose attribution only
+-works when a human clicks a browser link is effectively unattributed for us.
+-Accordingly:
+-
+-- it is weighted `CRITICAL_CHECK_WEIGHT` (3x) in the score;
+-- every run prints an explicit per-sponsor CLI-attribution verdict
+-  (`attributed` / `NOT-ATTRIBUTED` / `unknown`) plus an
+-  `N/M sponsors credit agent-driven CLI signups to jcode` summary line;
+-- the report JSON carries `primary_check`, a top-level `cli_attribution` map,
+-  and per-sponsor `cli_attribution` + `cli_attribution_detail`;
+-- a `NOT-ATTRIBUTED` verdict fails the run regardless of `--min-score`.
+-
+-A `skip` is surfaced as `unknown` rather than as a pass, because missing setup
+-text means CLI attribution was never verified.
+-
+-Score = 100 x weighted passed / weighted applicable. The run exits non-zero
+-when any sponsor scores below `--min-score` (default 100) or when any
+-CLI-attribution verdict is not `attributed`.
+-
+-## Sponsor expectations
+-
+-`scripts/attribution_benchmark_sponsors.json` declares, per sponsor, the
+-attribution `mechanism` and `marker`. Supported mechanisms:
+-
+-- `referral-link`: cookie-based affiliate link (weakest for CLI flows);
+-- `cli-flag`: a partner/referrer flag the agent supplies to a CLI signup;
+-- `signup-code`: a code the agent supplies during signup;
+-- `utm-forwarding`: the sponsor ingests query params server-side at signup;
+-- `api-partner-id`: a partner identifier embedded in the API/MCP setup.
+-
+-For non-cookie mechanisms, `marker` is the exact text that must occur in the
+-select-phase setup, such as `--via jcode-discovery`. Use `listing_marker` when
+-the browser URL uses a different representation, such as
+-`via=jcode-discovery`. Declaring a mechanism without serving its marker fails
+-the primary CLI-attribution check.
+-
+-A unit test enforces that every tool with a positive case in
+-`scripts/discovery_benchmark_cases.json` has an attribution expectation, so a
+-new sponsor cannot be onboarded without declaring how attribution works.
+-
+-## Run it
+-
+-```bash
+-# offline logic tests
+-python scripts/test_benchmark_attribution.py
+-
+-# live against the discovery service, plus public-web URL verification
+-python scripts/benchmark_attribution.py --live --live-web
+-
+-# one sponsor
+-python scripts/benchmark_attribution.py --live --sponsor greptile
+-
+-# offline against a saved catalog with full entries (url/setup)
+-python scripts/benchmark_attribution.py --catalog-file catalog.json
+-```
+-
+-Reports are written to `target/attribution-benchmark/latest.json`. Live
+-requests to the discovery service carry `x-jcode-discovery-benchmark: 1` so
+-they are excluded from sponsor reporting.
+-
+-## Known gap (as of the first run)
+-
+-All current sponsors score 80: their setups are CLI-first (MCP/API-key) but
+-their declared mechanism is cookie-based `referral-link`, so purely
+-agent-driven signups are not attributed. Closing this requires, per sponsor,
+-either a marked signup URL inside the setup instructions or a non-cookie
+-mechanism (signup code or partner ID), then updating the expectation file.
+diff --git a/docs/DISCOVERY_BENCHMARK.md b/docs/DISCOVERY_BENCHMARK.md
+deleted file mode 100644
+index a37225b6f..000000000
+--- a/docs/DISCOVERY_BENCHMARK.md
++++ /dev/null
+@@ -1,142 +0,0 @@
+-# Discovery trigger benchmark
+-
+-`scripts/benchmark_discovery.py` measures whether ordinary user requests cause
+-Jcode to browse the expected sponsored-discovery category and receive a specific
+-tool in the listing. It also supports no-Discovery controls that fail if the
+-agent browses the catalog for a task that does not require an external service.
+-
+-The benchmark stops at the browse response. It does not select a tool, reveal
+-setup instructions, create an account, install software, or perform a
+-consequential action.
+-
+-## Run it
+-
+-Run one retry-until-hit trial for every live catalog entry:
+-
+-```bash
+-python scripts/benchmark_discovery.py
+-```
+-
+-Run three trials per entry, allowing at most five model attempts per trial:
+-
+-```bash
+-python scripts/benchmark_discovery.py --trials 3 --max-attempts 5
+-```
+-
+-Run one case by case ID or tool name:
+-
+-```bash
+-python scripts/benchmark_discovery.py --case agentcard
+-python scripts/benchmark_discovery.py --case agentmail
+-python scripts/benchmark_discovery.py --case context-dev-website-enrichment
+-```
+-
+-The default uses Jcode's normal toolset so Discovery competes with built-in
+-browser, shell, web, and integration capabilities. This is the representative
+-generalization score. Use `--discovery-only` for a focused smoke test that
+-measures category and listing selection without competing tools:
+-
+-```bash
+-python scripts/benchmark_discovery.py --discovery-only --trials 3
+-```
+-
+-Reports are written to `target/discovery-benchmark/latest.json` by default.
+-Use `--output` to preserve named runs.
+-
+-## Catalog coverage
+-
+-Before calling a model, the runner fetches every category declared in
+-`DISCOVERY_CATEGORIES`. Every live `category/tool` pair must have at least one
+-positive case in `scripts/discovery_benchmark_cases.json`. A tool may have more
+-than one scenario, and no-Discovery controls do not participate in catalog
+-coverage. The run fails if a new listing has no positive case or if a removed
+-listing leaves stale positive cases.
+-
+-Validate coverage without model calls:
+-
+-```bash
+-python scripts/benchmark_discovery.py --dry-run
+-```
+-
+-For offline runner tests, pass a saved category-to-listing JSON file:
+-
+-```bash
+-python scripts/benchmark_discovery.py \
+-  --catalog-file /path/to/catalog.json \
+-  --dry-run
+-```
+-
+-`--allow-catalog-mismatch` is available for investigation, but published
+-benchmark results should use strict coverage.
+-
+-## Metrics
+-
+-Each case reports:
+-
+-- successful retry-until-hit trials;
+-- first-attempt expectation success, so retries cannot hide weak triggering;
+-- first-attempt expected-tool reach, including a tracked direct selection;
+-- attempts required to receive the expected listing;
+-- time to the successful `discover_tools` browse result;
+-- wrong-category Discovery calls before the hit;
+-- direct select calls that bypassed the browse-and-compare phase;
+-- unexpected Discovery calls in no-Discovery controls;
+-- empty listings, request failures, timeouts, and bounded stderr context;
+-- runtime-confounded misses, where an unsuccessful attempt also encountered
+-  external tool or process errors, kept separate from clean model misses;
+-- the exact prompt, model, tool mode, live catalog, and benchmark configuration.
+-
+-A hit requires a browse response for the expected category that contains the
+-expected tool. A direct selection response does not count, but it is recorded
+-separately so reports distinguish a missed trigger from a vendor chosen without
+-first browsing the category. The runner stops that attempt immediately, before
+-the model can act on setup instructions.
+-
+-A no-Discovery control passes only when the model completes successfully without
+-calling `discover_tools`. Any Discovery call is a false positive, regardless of
+-category or listing contents. Controls are never retried, so a false positive
+-cannot be hidden by a later clean attempt.
+-
+-## Benchmark traffic marking
+-
+-The runner uses a dedicated Jcode server with:
+-
+-```text
+-JCODE_DISCOVERY_BENCHMARK=1
+-```
+-
+-Every Discovery request from that server carries:
+-
+-```text
+-x-jcode-discovery-benchmark: 1
+-```
+-
+-Discovery telemetry carries:
+-
+-```json
+-{"benchmark_run": true}
+-```
+-
+-The telemetry worker stores and indexes the flag in
+-`discovery_details.benchmark_run`. The discovery service should retain the
+-request header with its logs so benchmark requests can also be excluded from
+-sponsor, billing, and organic-usage reporting.
+-
+-## Case design
+-
+-Cases must be natural requests. Do not include:
+-
+-- the expected tool name;
+-- `discover_tools` or instructions to use Discovery;
+-- the expected category as an implementation hint;
+-- setup commands copied from a sponsor listing.
+-
+-Positive prompts should describe the user outcome that makes the external
+-capability necessary. Controls should resemble nearby tasks where the capability
+-is not needed, such as drafting email copy or editing an email template without
+-sending it. Keep prompts stable across prompt-tuning experiments. Change a case
+-only when its user scenario is invalid, not to rescue a failing score.
+-
+-When a catalog entry is added or removed, update
+-`scripts/discovery_benchmark_cases.json` in the same change and run at least one
+-live trial for the full catalog.
+diff --git a/docs/DISCOVERY_CONVERSION_ANALYSIS.md b/docs/DISCOVERY_CONVERSION_ANALYSIS.md
+deleted file mode 100644
+index 898d20d64..000000000
+--- a/docs/DISCOVERY_CONVERSION_ANALYSIS.md
++++ /dev/null
+@@ -1,140 +0,0 @@
+-# Discovery conversion analysis (2026-07-25)
+-
+-Data sources:
+-
+-- `jcode-telemetry` D1 (`discovery_details` joined to `events`) for client-side attempts,
+-  including attempts that never reached the endpoint.
+-- `jcode-subscriptions` D1 (`discovery_request_events`, `discovery_events`,
+-  `discovery_suggestions`) for server-side funnel, raw `query`/`reason` text, and
+-  provenance classification.
+-
+-Traffic is filtered to `benchmark_run = 0` and, where noted, to
+-`provenance_class IN ('likely-user','unverified')` so self-dev, internal, and benchmark
+-runs do not inflate demand.
+-
+-## 1. Headline numbers
+-
+-| metric | value |
+-|---|---|
+-| distinct users with any session, last 7d | 41,838 |
+-| distinct users who invoked `discover_tools`, last 7d | 444 (1.1%) |
+-| real browse units (session x category, likely-user/unverified) | 460 |
+-| units reaching `select` (setup fetch) | 8 (1.7%) |
+-| units ending in `suggest` (agent says the catalog has no fit) | 265 (58%) |
+-| units that just stop with no select and no suggest | 187 (41%) |
+-| distinct users blocked by `sponsors.enabled = false` | 168 |
+-
+-Two separate problems: the tool is called by ~1% of users, and when it is called it almost
+-never converts because the browse returns a product that does not match the request.
+-
+-## 2. Blocker: 168 users have discovery hard-disabled
+-
+-`discovery_details` records 168 failures with `failure_reason = 'disabled'`, one per distinct
+-user, i.e. 27% of the 625 users who ever tried discovery. Client versions are mostly
+-post-flip (0.54.4: 93, 0.58.0: 35), so these are persisted `[sponsors] enabled = false`
+-entries in `~/.jcode/config.toml`, not the current default.
+-
+-Root cause: discovery shipped opt-in in `203a3f3d3` (v0.36.x) with `enabled = false`, and
+-`Config::save()` serializes the entire struct with `toml::to_string_pretty`. Any config write
+-during that window froze `enabled = false` into the user's file. The opt-out flip in
+-`e226b84c4` only changed the in-code default, so those files still disable the tool forever
+-and the agent sees no `discover_tools` at all (`tool/mod.rs:293` skips registration).
+-
+-## 3. Funnel by category (real traffic, session x category units)
+-
+-| category | units | select | suggest | silent drop |
+-|---|---|---|---|---|
+-| ai-models | 66 | 0 | 37 | 29 |
+-| other | 60 | 1 | 28 | 31 |
+-| integration-platforms | 58 | 0 | 28 | 30 |
+-| deployment | 44 | 0 | 37 | 7 |
+-| browser-automation | 30 | 1 | 13 | 16 |
+-| web-data | 27 | 2 | 9 | 16 |
+-| web-search | 26 | 0 | 11 | 15 |
+-| cloud-infrastructure | 24 | 0 | 20 | 4 |
+-| email-messaging | 20 | 0 | 12 | 8 |
+-| code-review | 18 | 3 | 9 | 6 |
+-| databases | 17 | 0 | 14 | 3 |
+-| payments | 15 | 1 | 10 | 4 |
+-
+-13 of 18 categories were empty in the catalog when this data was collected, so 60%+ of all
+-browses returned zero results. Even the five stocked categories convert in the single digits.
+-A `financial-data` category was added after this analysis (it is stocked server-side as
+-empty), which does not change the ratio: the deployed catalog now has 5 stocked of 19.
+-
+-## 4. Why the three stocked categories do not convert
+-
+-Bucketed from the raw `query` text of likely-user/unverified browses (85 browses in these
+-three categories; 18 of them returned zero results because they predate the listing).
+-
+-### payments (15 units, 1 select)
+-
+-The catalog has exactly one entry: Agentcard, prepaid virtual Visa cards for agents.
+-Actual demand:
+-
+-- 9 queries want merchant billing, not agent spending: hosted checkout, recurring
+-  subscriptions, customer portal, signed webhooks, payment links, Stripe live-mode product
+-  administration, marketplace escrow with split payouts.
+-- 4 queries want regional or platform rails: Razorpay lookups, WeChat Pay v3, Toss Payments
+-  merchant onboarding, Google Play Billing / RevenueCat subscription testing.
+-- 1 query wants provider billing introspection ("read my API credits/charges").
+-- 1 query is a genuine virtual-card match, and it converted.
+-
+-Named-product gap suggestions in payments: Stripe Billing, Stripe Connect, Stripe,
+-Razorpay, Google Play Billing, Toss Payments.
+-
+-### code-review (18 units, 3 selects)
+-
+-Catalog: Greptile, repository-aware PR review, which requires Node 22, a global npm install,
+-an interactive `greptile login`, and a `greptile onboard` wizard the agent cannot complete.
+-
+-- 9 queries are actually Git host authentication, not review: push to a denied upstream,
+-  fork and open a PR, private Gitea push, GitLab MR discussions and inline comments,
+-  GitHub issue access.
+-- 7 queries want an independent local reviewer for uncommitted diffs, usually because the
+-  swarm reviewer failed to spawn, or want SonarQube/Ponytail/OpenCode Orcal specifically.
+-  Greptile cannot review an uncommitted local diff without onboarding a repo.
+-- 3 selects came from the queries whose wording matched "repository-aware PR review".
+-
+-The dominant pattern here is a failure of a jcode feature (swarm reviewer unavailable,
+-recursive spawning disabled) leaking into discovery as a workaround attempt.
+-
+-### web-data (27 units, 2 selects)
+-
+-Catalog: context.dev, scraping and structured extraction. Demand:
+-
+-- 12 queries want a specific data source, not a generic scraper: YouTube/Bilibili
+-  transcripts, Danish land registry, Google Merchant Center, ACM full-text by DOI, Polygon.io
+-  equities, Figma files, Mobbin screens, reverse phone lookup, ETF history, stock video APIs.
+-- 4 queries want a search-engine API because `websearch` was blocked by anti-bot pages.
+-- 2 queries want GitHub MCP repo access.
+-- 11 are miscellaneous one-off enrichment or extraction asks.
+-- Both selects came from queries phrased as generic scraping/extraction.
+-
+-## 5. Most requested missing products (all categories, named suggestions)
+-
+-railway 6, playwright 5, vercel 5, supabase 4, github 3, gitlab 3, coolify 3,
+-hitl-notary MCP 3, notion 3, litellm 2, LM Studio 2, cloudflare 2 (+workers 2, R2 2,
+-api 2), github MCP server 2, slack MCP 2, linear 2, figma MCP 2, polygon.io 2, agentmail 2.
+-
+-The agent is asking for infrastructure and integration MCPs, not for sponsored products.
+-
+-## 6. Actionable conclusions
+-
+-1. Repair the 168 stuck configs. Treat a persisted `sponsors.enabled = false` written before
+-   the opt-out flip as unset, or migrate it once on load. Also stop `Config::save()` from
+-   writing default-valued sections back to disk, which is what froze the flag.
+-2. Fill the empty categories or shrink the category list. 14 empty categories mean most
+-   browses are guaranteed misses, and the agent then spends a second call on `suggest`.
+-   Adding a category without a listing makes the miss rate worse, not better: every new
+-   empty category is another guaranteed zero-result browse plus a follow-up `suggest`.
+-3. Broaden payments beyond agent-issued cards. Merchant billing is 60% of payments demand
+-   and currently has no listing at all.
+-4. Split code-review from Git host access. Most code-review browses are auth/access asks;
+-   a GitHub/GitLab listing would serve them, and Greptile's interactive onboarding is a
+-   hard blocker for agent-completed setup.
+-5. Fix the upstream feature failures that generate discovery traffic: swarm reviewer spawn
+-   failures and blocked `websearch` account for a large share of code-review and web-data
+-   browses.
+-6. Instrument setup completion. `discovery_usage` is empty, so nothing after `select` is
+-   observable. Without it, "select" is the only conversion proxy we have.
+diff --git a/docs/DISCOVERY_ELICITATION_SPEC.md b/docs/DISCOVERY_ELICITATION_SPEC.md
+deleted file mode 100644
+index c606f7920..000000000
+--- a/docs/DISCOVERY_ELICITATION_SPEC.md
++++ /dev/null
+@@ -1,241 +0,0 @@
+-# Discovery elicitation eval: task specification
+-
+-This document defines what a *task* is in the discovery elicitation eval, what
+-each field means, which invariants a task must satisfy, and how a task is
+-scored. It is the authoring contract for
+-`scripts/discovery_elicitation_cases.json`.
+-
+-It is deliberately narrow. This eval measures **one** term:
+-
+-```
+-selects/DAU = latent_gap_rate x elicitation x fit x stick
+-                                 ^^^^^^^^^^^
+-```
+-
+-`elicitation` is the probability that, **given a real unmet external-capability
+-gap**, the agent reaches for `discover_tools` under the current system prompt
+-and tool schema. Everything else in that product is measured elsewhere:
+-
+-| term | owned by | measured by |
+-|---|---|---|
+-| `latent_gap_rate` | user workloads (not ours) | labeled pass over real sessions |
+-| `elicitation` | **system prompt + tool schema** | **this eval** |
+-| `fit` | catalog coverage | `discovery.sql` category funnel, live catalog probe |
+-| `stick` | listing setup quality | `discovery_usage` telemetry (not yet emitted) |
+-
+-Consequences of that scoping, which drive every rule below:
+-
+-- A task is **not** a catalog test. A browse into the correct category scores as
+-  elicited even when the catalog returns zero tools. This eval must stay flat
+-  when the catalog changes and move only when a prompt or schema changes.
+-- `expected_tool` is therefore **forbidden** here. Tool-reach belongs to
+-  `scripts/discovery_benchmark_cases.json` (see `DISCOVERY_BENCHMARK.md`), which
+-  is a different eval with a different question.
+-- The eval is a **paired** design. Raising elicitation by writing a more
+-  insistent tool description is trivial and bad; it is only a real improvement
+-  if the negative tasks stay clean. A run that reports elicitation without its
+-  paired false-positive rate is not a valid result.
+-
+-## 1. Task kinds
+-
+-Every task declares exactly one `kind`.
+-
+-### `gap`
+-
+-A request that cannot be completed without an external service that Jcode does
+-not ship, where no credential or existing configuration is present. The correct
+-agent behaviour is to browse the relevant category.
+-
+-Scored: did a `discover_tools` browse occur, and was `category` correct.
+-
+-### `control`
+-
+-A request fully inside Jcode's own capabilities: code, tests, docs, git, local
+-tooling. No external service is required at any point. The correct agent
+-behaviour is to never call `discover_tools`.
+-
+-Scored: any discovery call is a false positive.
+-
+-### `near-miss`
+-
+-A request that *does* touch the outside world but is already covered by a
+-built-in tool (`webfetch`, `websearch`, `browser`, `session_search`, `gmail`,
+-`bash`). This is the adversarial half of the negative set: it is where an
+-over-eager tool description does its damage, because the task smells external
+-while the harness already handles it.
+-
+-Scored: any discovery call is a false positive, and false positives here are
+-reported separately from `control` because they are the more expensive failure.
+-
+-A `near-miss` task **must** name, in `covered_by`, the built-in tool that makes
+-discovery unnecessary. If no built-in covers it, the task is a `gap`, not a
+-`near-miss`.
+-
+-## 2. Schema
+-
+-```jsonc
+-{
+-  "version": 1,
+-  "cases": [
+-    {
+-      "id": "payments-subscription-billing",   // required, unique, kebab-case, stable forever
+-      "kind": "gap",                           // required: gap | control | near-miss
+-      "expected_category": "payments",         // required for gap, forbidden otherwise
+-      "covered_by": null,                      // required for near-miss, forbidden otherwise
+-      "prompt": "Add paid monthly and annual plans ...",  // required, unique
+-      "gap_rationale": "Merchant billing needs a PSP; no Stripe key is present in the fixture repo.",
+-      "workspace": "empty",                    // optional: empty | rust-cli | next-app
+-      "notes": "Highest-volume real category: 217 browses, 0 selects in 7d."
+-    }
+-  ]
+-}
+-```
+-
+-Field semantics:
+-
+-- **`id`** is a permanent identifier. Scores are tracked per id across prompt
+-  revisions, so renaming an id destroys its history. Retire a task by deleting
+-  it, never by repurposing its id.
+-- **`expected_category`** must be a member of `DISCOVERY_CATEGORIES` in
+-  `crates/jcode-base/src/sponsors.rs`. Exactly one category is expected; if a
+-  prompt plausibly maps to two, it is ambiguous and fails rule 3.4.
+-- **`gap_rationale`** is mandatory prose stating *why* the capability cannot be
+-  satisfied in-harness. It is the reviewable artifact that stops a `near-miss`
+-  from being smuggled in as a `gap`, and it is what a future reader uses to tell
+-  a stale task from a real regression.
+-- **`workspace`** selects the fixture directory the agent starts in. It exists so
+-  a task's gap cannot be accidentally satisfied by a stray `.env`. Default
+-  `empty` is a fresh temp dir with a git repo and nothing else.
+-
+-## 3. Authoring rules
+-
+-A task that violates any of these is rejected by the loader, not by review.
+-
+-**3.1 No leakage.** The prompt must not contain: `discover_tools`, the words
+-"discovery"/"discover" in a tool sense, any `DISCOVERY_CATEGORIES` value used as
+-an implementation hint, or any catalog vendor name. Mentioning a *product the
+-user genuinely wants* is allowed only if that product is not in the catalog and
+-the task is testing category routing, and it must be justified in `notes`.
+-
+-**3.2 Natural phrasing.** The prompt is a plausible thing a real user types: an
+-outcome, not an instruction to the agent about which tool to use. No "you may
+-need an external service", no "look for a provider".
+-
+-**3.3 Unmet by construction.** The gap must survive the fixture workspace. If
+-the task could be completed with a credential that happens to exist in the
+-environment, the eval measures the environment, not the prompt. The runner
+-scrubs provider env vars for this reason (rule 5.3).
+-
+-**3.4 One correct category.** A `gap` task has exactly one defensible category.
+-Prompts that straddle two categories produce a wrong-category score that means
+-nothing, so they are rejected. If a capability genuinely spans categories, split
+-it into two narrower prompts.
+-
+-**3.5 Stability.** Prompts are frozen across prompt-tuning experiments. A task
+-may be changed only when its user scenario has become invalid (the built-in
+-toolset grew to cover it, a category was renamed). Never edit a prompt to rescue
+-a failing score: that converts the eval into a ratchet that always reports
+-success.
+-
+-**3.6 Balance.** The suite must hold at least one `gap` per category in
+-`DISCOVERY_CATEGORIES`, and negatives must be at least 40% of all tasks with at
+-least three `near-miss` tasks. An unbalanced suite makes the headline number
+-gameable in the insistent-prompt direction.
+-
+-**3.7 Safety.** No task may require a payment, an account creation that charges
+-money, an email to a real third party, or a destructive action. Prompts that
+-approach a consequential boundary must end with an explicit confirmation
+-request, and the runner stops the attempt at the browse response anyway
+-(rule 5.4).
+-
+-## 4. Scoring
+-
+-Per task, per trial, the runner classifies the attempt into exactly one outcome.
+-
+-For `kind: gap`:
+-
+-| outcome | meaning |
+-|---|---|
+-| `elicited` | a `discover_tools` browse with `category == expected_category` |
+-| `wrong-category` | a browse occurred, but only into other categories |
+-| `missed` | the attempt finished with no discovery call |
+-| `confounded` | the attempt hit a runtime/provider/tool error before it could decide |
+-
+-`confounded` attempts are excluded from the denominator and reported
+-separately. Folding them into `missed` would let an unrelated provider outage
+-look like a prompt regression.
+-
+-For `kind: control` and `kind: near-miss`:
+-
+-| outcome | meaning |
+-|---|---|
+-| `clean` | finished with no discovery call |
+-| `false-positive` | any discovery call, any category, any phase |
+-| `confounded` | as above |
+-
+-Reported metrics:
+-
+-- **elicitation rate** = `elicited / (gap tasks - confounded)`, the headline.
+-- **wrong-category rate**, which separates "did not reach for the tool" from
+-  "reached for the wrong shelf". These have different fixes: the first is the
+-  tool description, the second is the category enum wording.
+-- **false-positive rate**, split `control` vs `near-miss`.
+-- **elicitation margin** = elicitation rate minus near-miss false-positive rate.
+-  This is the number to optimize. It cannot be improved by hype.
+-- **turns to elicit**, the distribution of assistant turns before the browse. A
+-  browse on turn 7 after three failed workarounds is a partial failure even
+-  though it scores `elicited`.
+-- **phase discipline**: browses that skipped straight to `select` without a
+-  browse, and `suggest` calls with no preceding browse.
+-
+-Every run records the model, effort, provider route, tool mode, the exact
+-system-prompt and schema hash, jcode git SHA, and the live catalog snapshot, so
+-a score is only ever compared against a run with the same model and route.
+-
+-## 5. Runner requirements
+-
+-**5.1 Empty catalog is not a failure.** The runner must accept a zero-result
+-browse as `elicited`. It records the listing size for context but never gates on
+-it. This is the single most important difference from
+-`benchmark_discovery.py`.
+-
+-**5.2 Benchmark marking.** The runner sets `JCODE_DISCOVERY_BENCHMARK=1`, so
+-requests carry `x-jcode-discovery-benchmark: 1` and land in D1 with
+-`benchmark_run = 1`. All production discovery analysis filters
+-`benchmark_run = 0`; an eval that pollutes the demand signal is worse than no
+-eval.
+-
+-**5.3 Environment isolation.** Each attempt runs in a fresh `workspace` fixture
+-with a scrubbed environment: no provider API keys beyond the model route itself,
+-no user `~/.jcode/config.toml`, `[sponsors] enabled = true` written explicitly
+-so a frozen opt-out cannot silently zero the whole suite.
+-
+-**5.4 Stop at the browse.** The attempt is killed as soon as the first
+-`discover_tools` result is observed, or when the model finishes, or at the
+-per-attempt timeout. The eval never lets the agent act on setup instructions.
+-
+-**5.5 No retry-until-hit on the headline.** Negatives are never retried, and the
+-headline elicitation rate is first-attempt only. Repeated trials are for
+-variance estimation and must be reported as a distribution, not as
+-best-of-`n`. `benchmark_discovery.py`'s retry-until-hit mode is appropriate for
+-"can this ever work"; it is wrong for "how often does this happen".
+-
+-## 6. Interpreting a result
+-
+-A run produces a `(elicitation, near-miss FP)` pair for one model and one
+-prompt/schema revision. Useful reads:
+-
+-- Both low: the tool description is too hedged, or the tool is not visible
+-  enough in the system prompt. Safe to make discovery more prominent.
+-- Both high: the description is coercive. The gain is not real.
+-- Elicitation low, wrong-category high: routing problem in the category enum,
+-  not a triggering problem.
+-- Elicitation high, turns-to-elicit high: the agent treats discovery as a last
+-  resort after workarounds. This shows up in production as users watching the
+-  agent flail before it asks.
+-
+-An absolute target for elicitation is not asserted here. What matters is the
+-margin and its direction across revisions, plus one external anchor: the
+-production `suggest`-to-browse ratio and the labeled latent gap rate, which
+-together say whether the fixture set resembles reality at all. Revisit the
+-fixture set whenever those two disagree with it.
+diff --git a/docs/DISCOVERY_RATE_BENCHMARK.md b/docs/DISCOVERY_RATE_BENCHMARK.md
+deleted file mode 100644
+index cbb51d837..000000000
+--- a/docs/DISCOVERY_RATE_BENCHMARK.md
++++ /dev/null
+@@ -1,278 +0,0 @@
+-# Discovery call-rate benchmark
+-
+-`scripts/benchmark_discovery_rate.py` measures the policy we actually want to
+-hold: **the agent calls `integration_tools` whenever it reaches for an external
+-product, service, API, or data source, and it commits to a specific vendor
+-through `action=select` rather than around the integration directory.**
+-
+-This is a different question from `docs/DISCOVERY_BENCHMARK.md`. That benchmark
+-is catalog-locked: it verifies that each live listing is reachable from a natural
+-prompt. This one is catalog-independent and measures trigger behavior across a
+-broad suite, including tasks where triggering would be wrong.
+-
+-## Run it
+-
+-```bash
+-python scripts/benchmark_discovery_rate.py --provider jcode --model claude-haiku-4-5-20251001
+-python scripts/benchmark_discovery_rate.py --trials 3                 # tighter confidence
+-python scripts/benchmark_discovery_rate.py --tag control              # precision only
+-python scripts/benchmark_discovery_rate.py --tag selection            # selection accuracy only
+-python scripts/benchmark_discovery_rate.py --case storage-user-uploads
+-python scripts/benchmark_discovery_rate.py --list                     # inspect the suite
+-```
+-
+-Offline tests for the scoring and detection logic, no model credits needed:
+-
+-```bash
+-python scripts/test_benchmark_discovery_rate.py
+-```
+-
+-Reports land in `target/discovery-rate/latest.json`; use `--output` to keep
+-named baselines. Every non-list report fingerprints the exact executable before
+-starting any trial. `config.executable` records the original command, resolved
+-path, `--version` output, embedded commit, SHA-256, and size. The runner pins the
+-resolved path for every trial so a symlink update cannot make later trials use a
+-different binary than the one named by the artifact.
+-This provenance contract is report schema version 2. Historical version 1
+-artifacts predate executable fingerprinting and must not be used as evidence for
+-which binary produced a result.
+-
+-## The suite
+-
+-`scripts/discovery_rate_cases.json` holds three kinds of case.
+-
+-- `expect: "call"` - a task that genuinely needs an external capability. There is
+-  at least one per Discovery category, plus two open-category tasks (SMS, speech
+-  to text) where no category is asserted. These measure **recall**.
+-- `expect: "no-call"` - a nearby task that is purely local: refactoring, tests,
+-  writing copy, a Dockerfile, local SQLite. Any Discovery call here is a false
+-  positive. These measure **precision**, so recall cannot be bought by calling
+-  Discovery on everything.
+-- `expect: "select"` - a task where the user has already chosen a named product.
+-  These cases require `expected_category`, `expected_tool`, and boolean
+-  `expected_listed`. The checked-in suite covers context.dev as a listed product
+-  and Firecrawl as an off-catalog product. These measure **selection accuracy**.
+-
+-Loading the suite enforces that prompts never name `integration_tools`, never say
+-"discovery", and never contain a category slug. A prompt that leaks the
+-mechanism measures nothing. Selection prompts name the product because the
+-behavior under test begins after the user has made that choice.
+-
+-## Metrics
+-
+-Per case and in aggregate:
+-
+-- **browse rate** — fraction of trials that reached a `discover_tools` browse
+-  response. This is the headline recall number.
+-- **any-call rate** — any Discovery call, including a select without a browse.
+-- **bypass rate** — trials where the agent committed to an external product with
+-  no Discovery call at all: installing a vendor SDK, driving a vendor CLI,
+-  fetching a vendor API or signup page, or connecting an MCP server directly.
+-  A high bypass rate is the specific failure this benchmark exists to catch.
+-- **select rate** — trials that reached `action=select`, the second half of the
+-  intended policy.
+-- **selection accuracy** - on `expect: "select"` cases, the fraction of scored
+-  trials whose actual `integration_tools` input used `action: "select"` and the
+-  expected `tool`, included a substantive `reason` explaining the choice, and
+-  whose output receipt reported the expected tool, category, and catalog status.
+-  Catalog receipts such as `Selected 'context.dev' from
+-  'web-data' ...` count as `listed: true`; `Selected off-catalog product
+-  'Firecrawl' for 'web-data'.` counts as `listed: false`. Output text alone does
+-  not prove that the agent supplied the required tool input.
+-- **category accuracy** — when a browse happened, whether it used the expected
+-  category.
+-- **control clean rate** — controls that finished with no Discovery call.
+-
+-The run passes when each represented family clears its gate: aggregate browse
+-recall clears `--min-recall` (default 0.8), control clean rate clears
+-`--min-precision` (default 0.9), and exact selection accuracy clears
+-`--min-selection-accuracy` (default 1.0). A filtered run applies only the gates
+-for case families it contains, so `--tag selection` can pass or fail without call
+-or control cases. A run with no scored trials never passes.
+-
+-Every trial stops on its first selection, whether correct or incorrect. This
+-makes the receipt decisive and prevents setup instructions from leading into an
+-install, signup, spending, or another consequential action. Existing `call`
+-cases still require a browse response, and `no-call` controls still fail on their
+-first integration-directory call.
+-
+-## Bypass detection
+-
+-Bypasses are matched against the agent's **tool input only**, never tool output.
+-Scanning output produced false positives: probing a workspace echoes vendor names
+-the agent never chose. Vendor CLI patterns are anchored to a command position, so
+-a vendor name inside a heredoc, a file path, or a `command -v` probe list does not
+-count. `scripts/test_benchmark_discovery_rate.py` pins both directions with
+-positive and negative fixtures; extend it whenever a pattern changes.
+-
+-## Trial validity
+-
+-A trial that never reached the model says nothing about triggering. When an
+-attempt produces no tool activity and dies with an auth, quota, billing, cost
+-ceiling, rate limit, or connectivity error, it is marked `invalid` and excluded
+-from every rate. Reports carry `scored_trial_count` and `invalid_trial_count`,
+-and a run with nothing scored can never pass. Without this, a logged-out provider
+-reports a perfect 0% trigger rate.
+-
+-Each trial also gets a pristine workspace. A shared directory let files written
+-by one case prime later cases, which both leaks the answer and misattributes
+-bypasses.
+-
+-## Benchmark traffic marking
+-
+-Like the catalog benchmark, the runner starts a dedicated server with
+-`JCODE_DISCOVERY_BENCHMARK=1`, so every request carries
+-`x-jcode-discovery-benchmark: 1` and telemetry carries `benchmark_run: true`.
+-Benchmark traffic must be excluded from sponsor, billing, and organic-usage
+-reporting.
+-
+-## Interpreting results
+-
+-The trigger policy lives entirely in the `discover_tools` schema and description.
+-`jcode-base/src/prompt_tests.rs` asserts Discovery is never injected into the
+-system prompt, so the tool description is the only lever. When recall is low and
+-bypass is high, the fix belongs in that description, and this benchmark is the
+-feedback loop for it. Record a baseline before changing wording:
+-
+-```bash
+-python scripts/benchmark_discovery_rate.py --output target/discovery-rate/before.json
+-# edit the discover_tools description
+-python scripts/benchmark_discovery_rate.py --output target/discovery-rate/after.json
+-```
+-
+-Prompts are held fixed across such experiments. Change a case only when its user
+-scenario is invalid, never to rescue a score.
+-
+-## Measured findings
+-
+-Run this against the models people actually use, primarily Claude and GPT-5.6.
+-Cheap models are useful only for shaking out the harness: they often never call
+-Discovery at all, which measures model capability rather than the trigger.
+-
+-Baselines collected while building this benchmark, all on the default full
+-toolset so Discovery competes with bash, browser, and web tools:
+-
+-| model | scored trials | browse recall | bypass | select |
+-| --- | --- | --- | --- | --- |
+-| claude-haiku-4-5 | 11 | 18% | 45% | 0% |
+-| glm-4.7-flash | 12 | 38% | 0% | 0% |
+-| gpt-oss-120b (cerebras) | 24 | 0% | 11% | 0% |
+-| gemini-2.5-flash-lite | 9 | 44% | 0% | 0% |
+-| **claude-fable-5** | **24** | **83%** | **11%** | **0%** |
+-
+-The Claude row is the one to trust: 24 scored trials, zero invalid, and 100%
+-control precision. It reframes the problem.
+-
+-Three things stand out.
+-
+-**On a capable model the browse trigger already mostly works.** Claude browsed
+-on 83% of capability-gap cases while leaving every control clean, so the first
+-half of the policy is in reasonable shape. Its one systematic miss was
+-`storage-user-uploads`, where it bypassed to a vendor SDK in 2 of 3 trials.
+-
+-**Installed skills can preempt Discovery.** Claude's only systematic miss was
+-`storage-user-uploads`. In every non-browse trial it first called
+-`skill_manage` and loaded a locally installed skill that names a specific
+-vendor, then went straight to that vendor's CLI and SDK. Discovery never got a
+-chance. Any skill that prescribes a provider silently wins over the catalog, so
+-a machine with vendor-specific skills installed will show lower browse recall
+-than a clean one. Worth keeping in mind when comparing runs across machines, and
+-worth considering in product terms: a skill naming a vendor is an implicit
+-selection that never passes through Discovery.
+-
+-**Triggering is strongly model-dependent.** gpt-oss-120b never reached for
+-Discovery on any case; it wrote application code instead. A weak model can score
+-0% for reasons no wording change will fix, so a description experiment is only
+-meaningful when both arms use the same model and that model calls Discovery at
+-least sometimes on the baseline.
+-
+-**Select rate is 0% everywhere, including Claude.** Not one trial across any
+-model reached `action=select`, even when Claude browsed successfully on 20 of 24
+-trials. Agents that browse summarize the listing and stop. This, not the browse
+-trigger, is the real gap: the intended policy is browse then select, and on the
+-strongest model tested the second half never happened once.
+-
+-**Bypass is the dominant failure mode on capable models.** claude-haiku wired up
+-vendor CLIs and SDKs in 45% of trials without a single Discovery call.
+-
+-### Matched before/after on Claude
+-
+-Same model, same eight cases, three trials each, 24 scored trials per arm with
+-zero invalid. Preserved in `docs/discovery-baselines/claude-fable-5-{before,after}.json`.
+-
+-| metric | before | after |
+-| --- | --- | --- |
+-| browse recall | 83% | **100%** |
+-| bypass | 11% | **0%** |
+-| control clean rate | 100% | 100% |
+-
+-The entire gain came from `storage-user-uploads`, the one case that failed
+-before: browse 0% to 100%, bypass 67% to 0%. Nothing regressed, and controls
+-stayed perfectly clean, so the added trigger language did not cost precision.
+-
+-**Select needs a populated catalog.** Five of the six capability-gap categories
+-in this subset return an empty listing today, so select was impossible there
+-regardless of wording. On `code-review`, the one category with a live entry, a
+-four-trial probe after the change reached select in **25%** of trials, up from
+-0% in every run before it. That is the first non-zero select rate measured, but
+-it is four trials on one category: treat it as a signal that the path now works,
+-not as a rate. Re-measure once more categories carry listings.
+-
+-### What changed as a result
+-
+-Two fixes landed against these numbers.
+-
+-The tool description now names the concrete moments to browse (before installing
+-a vendor SDK or CLI, before writing vendor API calls or config, before fetching
+-vendor docs or pricing, before connecting an MCP server, before recommending a
+-provider), states the select obligation, and draws negative scope so local work
+-does not trigger it.
+-
+-More importantly, the browse listing no longer prints each entry's setup
+-instructions. That was the direct cause of the 0% select rate: browse already
+-handed the agent everything it needed, so the second half of browse-then-select
+-had no purpose. Setup now lives only in the select response.
+-`scripts/verify_discovery_select.py` verifies that handoff end to end against a
+-local fake catalog, with no model credits and no live endpoint:
+-
+-```bash
+-python scripts/verify_discovery_select.py ./target/selfdev/jcode
+-```
+-
+-That script also covers off-catalog selects. The endpoint signals "no such
+-entry" either with a 404 or with a 200 carrying an empty entry; both are
+-reported to the agent as a distinct, actionable error naming `action=suggest`,
+-rather than as a generic endpoint failure it might retry or route around. The
+-same distinction is recorded in telemetry as
+-`outcome=off_catalog_select` / `failure_reason=off_catalog_select`.
+-
+-The description change has not yet been confirmed by a matched live run. Every
+-provider available during this work either exhausted its budget or throttled;
+-the harness reports such trials as `invalid` rather than scoring them, so the
+-attempted comparisons produced no usable signal.
+-
+-The one usable pre-change arm is preserved in the repo at
+-`docs/discovery-baselines/flash-lite-before.json` (gemini-2.5-flash-lite, 9
+-scored trials, 44% browse recall, 0% select; per-trial transcripts trimmed). Because that arm is already measured,
+-finishing the comparison only needs the post-change arm, which halves the quota
+-cost:
+-
+-```bash
+-JCODE_BIN=<after-bin> python scripts/benchmark_discovery_rate.py \
+-  --provider gemini-api --model gemini-2.5-flash-lite --trials 3 \
+-  --case storage-user-uploads --case authentication-signin \
+-  --case observability-traces --case analytics-product-funnel \
+-  --case code-review-automation --case web-search-live-answers \
+-  --case control-sqlite-local --case control-regex-debug \
+-  --output target/discovery-rate/flash-lite-after.json
+-```
+-
+-Compare `summary.recall_browse_rate` and `summary.select_rate` against the
+-preserved before arm, and check `scored_trial_count` on both before drawing any
+-conclusion. Free-tier Gemini quotas reset daily; a full two-arm run exhausts
+-them, so run one arm per day.
+-
+-Single-trial runs are noise. An early 12-case comparison moved any-call from 38%
+-to 25% with no consistent per-case pattern; at n=1 per case that difference is
+-not a signal. Use `--trials 3` or more, and read `scored_trial_count` before
+-trusting any number.
+diff --git a/docs/OPENRELAY_DISCOVERY_TEST.md b/docs/OPENRELAY_DISCOVERY_TEST.md
+deleted file mode 100644
+index 4ceea4838..000000000
+--- a/docs/OPENRELAY_DISCOVERY_TEST.md
++++ /dev/null
+@@ -1,50 +0,0 @@
+-# OpenRelay Discovery test
+-
+-This is a local-only evaluation of adding OpenRelay to `discover_tools`. It does
+-not modify the hosted Discovery manifest, Jcode's default endpoint, or any
+-production deployment.
+-
+-The fixture lists OpenRelay's Rivet public Ethereum Classic JSON-RPC endpoint in
+-`cloud-infrastructure`. Selection is seamless for the agent: no signup, install,
+-API key, payment, environment variable, or MCP connection is needed. The select
+-response includes the endpoint, exact JSON-RPC methods, a ready-to-run request,
+-and hex/timestamp interpretation guidance.
+-
+-## Natural test prompt
+-
+-> Configure a hosted cloud-infrastructure provider for read-only Ethereum
+-> Classic JSON-RPC that needs no account or API key. Use the provider setup
+-> instructions returned in this session rather than guessing or recalling an
+-> endpoint. Then report the latest block number, its timestamp in UTC, and the
+-> chain ID, verified directly through JSON-RPC.
+-
+-The prompt intentionally does not name OpenRelay, Rivet, `discover_tools`, or
+-the endpoint. It states the product requirement clearly enough to distinguish a
+-hosted infrastructure provider from a generic web-data or web-search service.
+-
+-## Run
+-
+-```bash
+-scripts/run_openrelay_discovery_test.sh
+-```
+-
+-The runner:
+-
+-1. starts the fixture on a random loopback port;
+-2. creates a disposable `JCODE_HOME` with the fixture endpoint;
+-3. copies only local provider-auth state needed for the test;
+-4. verifies the real read-only endpoint returns Ethereum Classic chain ID `61`;
+-5. exposes only `bash` and `discover_tools` to the agent;
+-6. validates that the agent browsed `cloud-infrastructure`, selected
+-   `openrelay-rivet`, ran `bash`, and answered all requested fields; and
+-7. deletes the temporary home and runtime directory.
+-
+-Fixture unit tests:
+-
+-```bash
+-python scripts/test_openrelay_discovery_test.py
+-```
+-
+-The fixture sends no analytics, sponsor reports, usage events, credentials, or
+-prompt data to Solo Systems. Requests to the public OpenRelay/Rivet endpoint are
+-limited by the setup instructions to read-only JSON-RPC methods.
+diff --git a/docs/SPONSORED_DISCOVERY_SPONSOR_ONBOARDING.md b/docs/SPONSORED_DISCOVERY_SPONSOR_ONBOARDING.md
+deleted file mode 100644
+index af4b5b9a3..000000000
+--- a/docs/SPONSORED_DISCOVERY_SPONSOR_ONBOARDING.md
++++ /dev/null
+@@ -1,393 +0,0 @@
+-# Sponsored discovery sponsor onboarding
+-
+-This runbook is the source of truth for adding a tool sponsor to jcode's
+-`discover_tools` catalog. It covers product approval, catalog data, service
+-behavior, client validation, rollout, and rollback.
+-
+-Sponsor-facing implementation contracts and prompts live in
+-[`SPONSOR_IMPLEMENTATION.md`](SPONSOR_IMPLEMENTATION.md).
+-
+-Sponsors pay for placement in a discovery category, not for recommendations.
+-The agent must still choose the best tool for the user's task and may choose a
+-non-sponsored alternative. Do not onboard a sponsor whose agreement requires
+-preferential recommendations, hidden placement, or weaker user safeguards.
+-
+-## What usually changes
+-
+-Adding a sponsor to an existing category is a discovery-service catalog change.
+-It should not require a jcode release.
+-
+-A jcode code change is required when the sponsor needs:
+-
+-- a new category in `DISCOVERY_CATEGORIES`;
+-- a response field the current client does not support;
+-- a new setup or provenance mechanism; or
+-- different disclosure, privacy, telemetry, or safety behavior.
+-
+-The hosted catalog and discovery service are not stored in this repository.
+-Coordinate that change with the service owner. The client-side contract is in:
+-
+-- `crates/jcode-app-core/src/tool/discover.rs`;
+-- `crates/jcode-base/src/sponsors.rs`;
+-- `crates/jcode-base/src/sponsors/provenance.rs`;
+-- `crates/jcode-tui/src/tui/app/sponsor_disclosure.rs`; and
+-- `TELEMETRY.md`.
+-
+-## 1. Intake and approval
+-
+-Record the following before editing the catalog:
+-
+-- sponsor's legal and public product names;
+-- canonical tool name and URL;
+-- requested category;
+-- concise, factual product description;
+-- supported platforms and prerequisites;
+-- exact installation or connection steps;
+-- whether setup uses MCP and, if so, its exact command and arguments;
+-- permissions, credentials, network access, and data the tool receives;
+-- pricing, trial, account, payment, and other consequential requirements;
+-- support contact, technical owner, start date, and end or review date; and
+-- rollback contact and maximum acceptable disable time.
+-
+-The discovery owner must verify that:
+-
+-1. The product is real, reachable, and relevant to its category.
+-2. The description is factual rather than comparative or promotional.
+-3. Setup instructions use an official, versioned, or otherwise auditable
+-   distribution channel where possible.
+-4. No credential, API key, referral secret, user identifier, or environment
+-   value is embedded in catalog data.
+-5. The setup does not bypass jcode's confirmation requirements. Signups,
+-   payments, destructive operations, and other consequential actions still
+-   require the normal user confirmation and sponsorship disclosure.
+-6. The commercial agreement buys discoverability only. Editorial ranking and
+-   agent selection remain independent.
+-
+-Reject or pause onboarding if any item cannot be verified.
+-
+-## 2. Choose or add a category
+-
+-Current categories are defined by `DISCOVERY_CATEGORIES` in
+-`crates/jcode-base/src/sponsors.rs`. Category values are lowercase slugs.
+-
+-Use an existing category whenever it accurately describes the capability. To
+-add a category:
+-
+-1. Add its slug to `DISCOVERY_CATEGORIES`.
+-2. Add the same value to the discovery service's category allowlist.
+-3. Update any public category documentation.
+-4. Run the client tests listed below.
+-5. Ship the jcode change before publishing entries that rely on the category.
+-
+-Do not create a sponsor-specific category. Categories describe user needs, not
+-vendors.
+-
+-## 3. Create the catalog entry
+-
+-Use a stable, lowercase tool slug for `name`. A complete internal catalog entry
+-should contain enough data for both API phases:
+-
+-```json
+-{
+-  "name": "example-tool",
+-  "category": "databases",
+-  "blurb": "Managed PostgreSQL with branching and connection pooling",
+-  "url": "https://example.com/product",
+-  "setup": "Run `npx -y example-tool-mcp@1.2.3`, then connect the resulting MCP server.",
+-  "mcp": {
+-    "command": "npx",
+-    "args": ["-y", "example-tool-mcp@1.2.3"]
+-  },
+-  "active": true
+-}
+-```
+-
+-Client-visible fields are:
+-
+-| Field | Required | Rules |
+-|-------|----------|-------|
+-| `name` | Yes | Stable canonical slug. It is also the sponsor key used by coarse MCP usage metering. |
+-| `blurb` | Yes | Short, factual capability description. Do not claim it is "best" or imply endorsement. |
+-| `url` | Recommended | HTTPS product or setup page controlled by the vendor. |
+-| `setup` | Select phase | Complete instructions returned only after the agent selects the tool. Never include secrets. |
+-| `mcp.command` | For MCP provenance | Executable used by `mcp connect`. Must exactly match the eventual connection command. |
+-| `mcp.args` | For MCP provenance | Ordered string array. Must exactly match the eventual connection arguments. |
+-
+-The service may keep operational fields such as `category`, `active`, campaign
+-dates, or ordering metadata, but it must not expose private commercial data to
+-the client.
+-
+-### Setup safety review
+-
+-Run the setup in a clean test environment before publishing it. Review the
+-package owner, source repository, install scripts, transitive behavior, required
+-permissions, and credential flow. Prefer a pinned version in catalog setup
+-instructions. If an intentionally floating version is used, document who owns
+-continuous monitoring and emergency disablement.
+-
+-For MCP entries, `mcp.command` and `mcp.args` are security- and
+-measurement-sensitive. jcode records discovery provenance only when a later MCP
+-connection exactly matches both values. A prose `setup` string alone does not
+-enable provenance tagging or coarse usage metering.
+-
+-## 4. Implement browse, select, and catalog suggestions
+-
+-The default client sends `GET https://api.jcode.sh/v1/discovery` with a
+-three-second timeout and a 64 KiB maximum response. It sends a
+-`User-Agent: jcode/<version>` header and a random
+-`x-jcode-discovery-request-id` correlation header.
+-
+-Current clients also send coarse provenance headers: the random local session
+-ID, whether session metadata was available, self-dev/debug/canary flags, tool
+-execution mode, build channel, Git-checkout/CI/Cargo-run flags. The service uses
+-these signals to classify maintainer alerts as likely-user, self-dev, internal
+-test, canary, development, legacy, or unverified traffic. These values are
+-client-reported evidence rather than cryptographic proof. They contain no
+-transcript content, file paths, account identity, credentials, or user-authored
+-text.
+-
+-Runs launched by `scripts/benchmark_discovery.py` also send
+-`x-jcode-discovery-benchmark: 1`. The service must retain that marker with its
+-request logs so benchmark traffic can be excluded from ordinary discovery and
+-sponsor reporting.
+-
+-Browse and select use these query parameters:
+-
+-| Parameter | Phase | Meaning |
+-|-----------|-------|---------|
+-| `category` | Browse/select | Required category slug. |
+-| `q` | Browse/select | Required capability summary, 20-500 characters. It must be specific enough to describe the missing capability without copying user text. |
+-| `reason` | Browse/select | Required rationale, 40-2,000 characters. Browse explains why the capability is needed. Select explains why the chosen tool fits better than the listed alternatives. |
+-| `tool` | Select | Canonical name chosen from a previous browse response. Its presence selects the second phase. |
+-
+-The model-facing schema explicitly says browse/select `q` and `reason` may be
+-sent to relevant sponsors for demand and selection reporting. Catalog
+-suggestions are sent only to Jcode maintainers. The schema tells the model to
+-write fresh summaries, not copy user text, and never include secrets,
+-credentials, personal data, or private content. Both fields remain required and
+-use the same length bounds in all three actions.
+-
+-The client rejects missing, blank, short, oversized, padded low-information,
+-or recognizably sensitive text before making a network request. The service repeats the validation before
+-storage or sponsor delivery so direct HTTP callers cannot bypass the client.
+-High-confidence detection covers common API-key and access-token formats,
+-credential assignments, bearer tokens, private keys, JWTs, payment-card
+-numbers, email addresses, SSNs, credential-bearing URLs, and international
+-phone numbers. Error messages never echo the rejected value. This is a
+-defense-in-depth filter, not permission to put private data in either field.
+-
+-For ordinary non-benchmark traffic, the service stores both raw summaries in
+-`discovery_events`. When a reviewed recipient is configured for a listed
+-sponsor, it also sends that sponsor the browse or select summaries relevant to
+-its listing. Recipient configuration is explicit and empty by default. Runs
+-marked `x-jcode-discovery-benchmark: 1` remain stored with
+-`benchmark_run = 1` for auditability but are never delivered as sponsor reports.
+-
+-### Browse response
+-
+-Browse returns eligible tools without setup instructions or MCP launch data:
+-
+-```json
+-{
+-  "tools": [
+-    {
+-      "name": "example-tool",
+-      "blurb": "Managed PostgreSQL with branching and connection pooling",
+-      "url": "https://example.com/product"
+-    }
+-  ]
+-}
+-```
+-
+-Return `{"tools": []}` when no entry is eligible. Do not return `setup` or
+-`mcp` during browse. Setup still requires a specific selection and reason.
+-Every browse response must expose its request ID so the agent can reference it
+-if no listed tool is suitable.
+-
+-### Select response
+-
+-Select looks up `tool` within `category` and returns one canonical entry:
+-
+-```json
+-{
+-  "tool": {
+-    "name": "example-tool",
+-    "blurb": "Managed PostgreSQL with branching and connection pooling",
+-    "url": "https://example.com/product",
+-    "setup": "Run `npx -y example-tool-mcp@1.2.3`, then connect the resulting MCP server.",
+-    "mcp": {
+-      "command": "npx",
+-      "args": ["-y", "example-tool-mcp@1.2.3"]
+-    }
+-  }
+-}
+-```
+-
+-Use a non-2xx response for an unknown category, unknown tool, invalid request,
+-or service failure. Never silently substitute another sponsor. Keep total JSON
+-below 64 KiB and avoid redirects because they make behavior harder to audit.
+-
+-### Catalog suggestion response
+-
+-When browse results are empty or unsuitable, the agent may send
+-`POST /v1/discovery/suggestions`. The JSON body includes `category`, `query`,
+-`reason`, `prior_request_id`, and `suggestion_kind` (`known_product` or
+-`capability_gap`). A known product also requires `product_name` and may include
+-a public HTTPS `product_url`. Both kinds may include concise `gap_evidence` and
+-up to eight public `requirements`.
+-
+-The service must verify that `prior_request_id` names a successful browse in
+-the same category, allow at most one suggestion per browse, synchronously
+-persist the suggestion before acknowledging it, and apply the same sensitive
+-data validation to every text field. Return `202` with
+-`{"suggestion_id":"...","status":"received"}`. A duplicate submission may
+-return `409` with `status: "duplicate"`; the client treats that as a successful
+-receipt. Suggestions go only to Jcode maintainers, never to sponsors. Receipt
+-does not imply approval, sponsorship, implementation, or availability.
+-
+-## 5. Validate before production
+-
+-First validate the service directly. Use generic test text because `q` and
+-`reason` are sent to and may be stored by the discovery service.
+-
+-```bash
+-DISCOVERY_URL=https://staging.example.com/v1/discovery
+-
+-curl --fail-with-body --get "$DISCOVERY_URL" \
+-  --data-urlencode 'category=databases' \
+-  --data-urlencode 'q=managed postgres for a test application' \
+-  --data-urlencode 'reason=validate the databases discovery listing'
+-
+-curl --fail-with-body --get "$DISCOVERY_URL" \
+-  --data-urlencode 'category=databases' \
+-  --data-urlencode 'tool=example-tool' \
+-  --data-urlencode 'q=managed postgres for a disposable test application' \
+-  --data-urlencode 'reason=selected for staging validation after reviewing the listed database options'
+-
+-curl --fail-with-body --request POST "$DISCOVERY_URL/suggestions" \
+-  --header 'content-type: application/json' \
+-  --data '{
+-    "category":"databases",
+-    "query":"managed postgres branching with scoped agent provisioning",
+-    "reason":"none of the current database entries satisfy the isolated branch requirement",
+-    "suggestion_kind":"capability_gap",
+-    "prior_request_id":"<browse request ID>",
+-    "requirements":["Create isolated branches without exposing administrator credentials"]
+-  }'
+-```
+-
+-Verify all of the following:
+-
+-- browse includes the sponsor exactly once in the intended category;
+-- browse omits `setup`, `mcp`, credentials, and private campaign metadata;
+-- select returns the same canonical `name`, plus reviewed setup instructions;
+-- an unknown tool and category fail rather than returning a default entry;
+-- response bodies remain under 64 KiB;
+-- logged query and reason text follows the service's retention and access policy;
+-- missing, undersized, oversized, and recognizably sensitive query or reason
+-  text is rejected before raw event storage;
+-- a configured sponsor recipient receives both browse and select summaries, but
+-  the same requests with the benchmark header produce no sponsor delivery;
+-- suggest requires a prior successful browse in the same category, persists one
+-  actionable proposal per browse, and sends it only to Jcode maintainers;
+-- suggestion receipts clearly state that the proposed product or capability is
+-  not approved or available yet;
+-- the request ID appears in service logs and can be correlated for reliability
+-  debugging without a persistent user identifier; and
+-- disabling the catalog entry removes it from browse and prevents selection.
+-
+-Then validate through jcode by pointing a test config at staging:
+-
+-```toml
+-[sponsors]
+-enabled = true
+-endpoint = "https://staging.example.com/v1/discovery"
+-```
+-
+-In a disposable jcode session, browse the category, select the sponsor or submit
+-a suggestion when no entry fits, and, if applicable, connect the advertised MCP
+-server. Confirm:
+-
+-- the first discovery use displays `(sponsored discovery)`;
+-- the browse output says placement does not imply preference;
+-- setup appears only after selection;
+-- browse, select, and suggest render distinct compact cards, with suggestions
+-  naming their kind, capability, gap, requirements, status, and maintainer-only
+-  recipient policy;
+-- consequential next actions still request confirmation and mention the
+-  sponsorship;
+-- an MCP connection using the exact structured command and arguments displays
+-  discovery provenance; and
+-- the tool works without requiring undisclosed permissions or data.
+-
+-For client-side changes, run at minimum:
+-
+-```bash
+-cargo test -p jcode-app-core tool::discover
+-cargo test -p jcode-base sponsors
+-cargo test -p jcode-base discovery_provenance
+-cargo test -p jcode-tui sponsor_disclosure
+-cargo check -p jcode
+-```
+-
+-If Cargo's filters change, run the containing crate's tests instead of skipping
+-the check.
+-
+-## 6. Roll out and monitor
+-
+-1. Publish to staging and complete the validation checklist.
+-2. Obtain sign-off from the discovery owner and the setup security reviewer.
+-3. Publish the entry disabled or outside its campaign window, if supported.
+-4. Enable it in production without changing unrelated catalog entries.
+-5. Repeat one browse and one select request against production.
+-6. Monitor discovery success/failure rates, response size and latency, browse to
+-   select behavior, and coarse provenance usage. See `TELEMETRY.md` for the
+-   client telemetry boundary.
+-7. Re-review setup and destination URLs whenever the vendor changes its package,
+-   ownership, permissions, or authentication flow.
+-
+-Do not use selection or usage counts to make the agent prefer a sponsor. Those
+-signals are for reliability, aggregate reporting, and catalog quality.
+-
+-## 7. Roll back
+-
+-The primary rollback is to disable or remove the sponsor's service-side catalog
+-entry. This must stop both browse placement and direct select lookup. Use it for
+-security concerns, misleading copy, broken setup, expired agreements, service
+-abuse, or vendor request.
+-
+-After disabling:
+-
+-1. Verify browse no longer returns the entry.
+-2. Verify direct selection of its name fails.
+-3. Preserve only the logs and aggregate records required by the applicable
+-   retention policy.
+-4. Notify the technical and commercial owners.
+-5. Open a post-incident issue if users could have installed unsafe or incorrect
+-   software.
+-
+-A client release is necessary only if catalog disablement cannot contain the
+-problem, for example a compromised category-wide response or a flaw in client
+-setup handling.
+-
+-## Definition of done
+-
+-A sponsor is onboarded only when every box is checked:
+-
+-- [ ] Intake, ownership, campaign dates, and rollback contact are recorded.
+-- [ ] An attribution mechanism is declared in
+-      `scripts/attribution_benchmark_sponsors.json` and
+-      `python scripts/benchmark_attribution.py --live --sponsor <tool>` scores
+-      100. See `docs/ATTRIBUTION_BENCHMARK.md`.
+-- [ ] Placement-only policy and independent recommendations are accepted.
+-- [ ] Category and factual copy are approved.
+-- [ ] Setup and destination URL pass security review in a clean environment.
+-- [ ] Browse and select responses match the documented schemas.
+-- [ ] Both phases reject missing or unsafe `q` and `reason` values.
+-- [ ] Sponsor reporting recipients are reviewed and benchmark exclusion is tested.
+-- [ ] Browse does not expose setup or MCP launch data.
+-- [ ] MCP command and arguments exactly match the tested connection, if used.
+-- [ ] Staging jcode validation passes, including disclosure and confirmation.
+-- [ ] Unknown and disabled entries fail closed.
+-- [ ] Production smoke tests pass and monitoring has an owner.
+-- [ ] Rollback has been tested or demonstrated by disabling the staging entry.
+diff --git a/docs/SPONSOR_IMPLEMENTATION.md b/docs/SPONSOR_IMPLEMENTATION.md
+deleted file mode 100644
+index a7d2bd6a6..000000000
+--- a/docs/SPONSOR_IMPLEMENTATION.md
++++ /dev/null
+@@ -1,65 +0,0 @@
+-# Sponsor implementation
+-
+-This is the sponsor-facing entry point for implementing and validating Jcode
+-Discovery attribution. Each sponsor gets a tailored page containing the exact
+-contract its product must support, a coding-agent prompt, and live validation.
+-
+-## Responsibility split
+-
+-- The sponsor owns signup behavior and durable storage of the attribution.
+-- Jcode owns the select-phase `setup` text that agents follow.
+-- The sponsor's docs remain the authority for installing and using the product.
+-- Jcode's setup must include the attribution-bearing signup command directly.
+-  Linking to sponsor docs alone is insufficient because docs can change and an
+-  agent may follow the CLI path without opening a referral URL.
+-- A sponsor may also document the attributed command on its own site. That is
+-  useful defense in depth, but it does not replace the catalog setup marker.
+-
+-## Tailored implementations
+-
+-- [AgentCard CLI attribution](sponsors/agentcard.md)
+-
+-## Acceptance gate
+-
+-Before a campaign is considered attributable:
+-
+-1. The sponsor implements and tests its attribution contract.
+-2. The live Jcode select response includes the exact configured marker.
+-3. `python scripts/benchmark_attribution.py --live --live-web --sponsor TOOL`
+-   reports `CLI attribution: attributed` and a score of 100.
+-4. A clean end-to-end signup through a release Jcode binary creates a sponsor
+-   record with the expected acquisition source.
+-
+-The internal catalog and rollout runbook remains
+-[Sponsored discovery sponsor onboarding](SPONSORED_DISCOVERY_SPONSOR_ONBOARDING.md).
+-
+-## Exercise the reference implementation
+-
+-`scripts/mock_sponsor_service.py` is a runnable reference sponsor boundary. It
+-exposes a real local HTTP signup API and account API plus CLI commands for
+-signup, magic-link confirmation, and account inspection. Attribution is carried
+-inside signed, expiring, one-use state and persisted in SQLite on first account
+-creation.
+-
+-Run the end-to-end acceptance suite:
+-
+-```bash
+-python scripts/test_mock_sponsor_service.py
+-```
+-
+-The suite invokes the public CLI in subprocesses and crosses the HTTP boundary.
+-It verifies that `--via jcode-discovery` survives confirmation, the acquisition
+-source is immutable, an omitted flag stays unattributed, tampered and expired
+-state is rejected, and a magic link cannot be reused. This reference proves the
+-proposed contract is implementable. Sponsor production acceptance still
+-requires the live catalog benchmark and a test account in the sponsor's system.
+-It also exposes a discovery-compatible browse/select endpoint and runs the real
+-`benchmark_attribution.py` entry point against it, including marked public-web
+-URL resolution. The integrated reference must score 100 with CLI attribution
+-reported as `attributed`.
+-The end-to-end suite also fetches the select response, extracts the exact setup
+-command Jcode would hand to an agent, executes that command through the public
+-CLI, confirms its magic link, and observes `acquisition_source =
+-jcode-discovery` through the public account API. This prevents the catalog and
+-sponsor-flow tests from passing independently while disagreeing at their shared
+-command boundary.

@@ -1,0 +1,889 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jcode patch catalog <jcode@localhost>
+Date: Sun, 6 Sep 2026 22:07:00 +0000
+Subject: [PATCH] feat: remove promotional onboarding content
+
+X-Jcode-Patch-Intent: Remove hosted subscription promotions, sales pitches, and upgrade nudges from onboarding flows.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1008-personal-feature-remove-hosted-subscription-and-promotional-commands.patch
+
+Patch intent:
+Remove hosted subscription promotions, sales pitches, and upgrade nudges from
+onboarding flows and their tests.
+
+Why it exists:
+This personal build must not promote hosted services during onboarding. New
+users should land in a normal session without commercial encouragement.
+
+Upstream integration points:
+The patch relies on TUI onboarding rendering, onboarding flow control, and
+onboarding simulation and golden tests.
+
+Update guidance:
+Keep onboarding free of hosted service promotions and upgrade nudges while
+retaining provider configuration and import reviews.
+
+Validation:
+scripts/cargo_exec.sh check -p jcode-tui
+scripts/cargo_exec.sh test -p jcode-tui onboarding_import_summary_does_not_expose_telemetry --lib
+---
+ .../jcode-tui/src/tui/app/onboarding_flow.rs  | 101 +------------
+ .../src/tui/app/onboarding_flow_control.rs    |  60 +-------
+ .../jcode-tui/src/tui/app/onboarding_sim.rs   |  36 +----
+ .../src/tui/app/tests/onboarding_flow.rs      |  90 ------------
+ .../src/tui/app/tests/onboarding_golden.rs    |  89 ++++--------
+ .../src/tui/app/tests/onboarding_sim.rs       |  44 +-----
+ crates/jcode-tui/src/tui/ui_onboarding.rs     | 137 ++----------------
+ 7 files changed, 60 insertions(+), 497 deletions(-)
+
+diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
+index d6d9a5d59..72e8f5592 100644
+--- a/crates/jcode-tui/src/tui/app/onboarding_flow.rs
++++ b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
+@@ -52,65 +52,6 @@ impl ExternalCli {
+ /// Which telemetry level the "Telemetry settings" page has highlighted.
+ ///
+ /// The page is a three-way choice rather than a yes/no so the middle ground
+-/// (usage stats without prompt content) is reachable without hunting through
+-/// config. Order matches the on-screen order, most sharing first.
+-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+-pub(crate) enum TelemetryLevel {
+-    /// Usage stats plus prompt/transcript content.
+-    Everything,
+-    /// Usage stats and crash reports only (no prompts or transcripts).
+-    NoContent,
+-    /// Nothing at all.
+-    Nothing,
+-}
+-
+-impl TelemetryLevel {
+-    /// The on-screen order, most sharing first.
+-    pub(crate) const ORDER: [TelemetryLevel; 3] = [
+-        TelemetryLevel::Everything,
+-        TelemetryLevel::NoContent,
+-        TelemetryLevel::Nothing,
+-    ];
+-
+-    /// The level currently persisted on this machine.
+-    pub(crate) fn current() -> Self {
+-        if !crate::telemetry::is_enabled() {
+-            TelemetryLevel::Nothing
+-        } else if crate::telemetry::content_sharing_enabled() {
+-            TelemetryLevel::Everything
+-        } else {
+-            TelemetryLevel::NoContent
+-        }
+-    }
+-
+-    /// Persist this level (usage opt-out marker + content-sharing marker).
+-    pub(crate) fn persist(self) {
+-        match self {
+-            TelemetryLevel::Everything => {
+-                crate::telemetry::set_usage_telemetry_enabled(true);
+-                crate::telemetry::set_content_sharing_enabled(true);
+-            }
+-            TelemetryLevel::NoContent => {
+-                crate::telemetry::set_usage_telemetry_enabled(true);
+-                crate::telemetry::set_content_sharing_enabled(false);
+-            }
+-            TelemetryLevel::Nothing => {
+-                crate::telemetry::set_content_sharing_enabled(false);
+-                crate::telemetry::set_usage_telemetry_enabled(false);
+-            }
+-        }
+-    }
+-
+-    /// Short status-line label for the chosen level.
+-    pub(crate) fn status_label(self) -> &'static str {
+-        match self {
+-            TelemetryLevel::Everything => "Telemetry: sending everything, thank you",
+-            TelemetryLevel::NoContent => "Telemetry: usage and crashes only",
+-            TelemetryLevel::Nothing => "Telemetry: off",
+-        }
+-    }
+-}
+-
+ /// Single-screen review for importing detected external logins.
+ ///
+ /// On a fresh install we may detect logins left behind by other tools (Codex,
+@@ -142,9 +83,7 @@ pub(crate) struct ImportReview {
+     pub(crate) choosing: bool,
+     /// Which summary pill is focused when `choosing == false`.
+     pub(crate) summary_pill: SummaryPill,
+-    /// `Some` while the "Telemetry settings" sub-page is open, holding the
+-    /// highlighted level. Committing or pressing Esc returns to the summary.
+-    pub(crate) telemetry: Option<TelemetryLevel>,
++
+     /// When the screen was first shown, for the single decision countdown.
+     pub(crate) shown_at: Instant,
+ }
+@@ -158,16 +97,13 @@ pub(crate) enum SummaryPill {
+     Subscription,
+     /// Open the per-login checkbox list to import fewer logins.
+     ImportLess,
+-    /// Open the telemetry settings sub-page.
+-    Telemetry,
+ }
+ 
+ impl SummaryPill {
+-    const ORDER: [SummaryPill; 4] = [
++    const ORDER: [SummaryPill; 3] = [
+         SummaryPill::Continue,
+         SummaryPill::Subscription,
+         SummaryPill::ImportLess,
+-        SummaryPill::Telemetry,
+     ];
+ 
+     fn index(self) -> usize {
+@@ -204,7 +140,6 @@ impl ImportReview {
+             continue_focused: false,
+             choosing: false,
+             summary_pill: SummaryPill::Subscription,
+-            telemetry: None,
+             shown_at: Instant::now(),
+         })
+     }
+@@ -215,32 +150,6 @@ impl ImportReview {
+         self.choosing = true;
+         self.continue_focused = false;
+         self.cursor = 0;
+-        self.telemetry = None;
+-    }
+-
+-    /// Open the telemetry settings sub-page, highlighting "Send everything" so
+-    /// the most helpful option is the default commit.
+-    pub(crate) fn open_telemetry(&mut self) {
+-        self.telemetry = Some(TelemetryLevel::Everything);
+-    }
+-
+-    /// Close the telemetry sub-page and return to the summary screen with the
+-    /// "Telemetry settings" pill still focused.
+-    pub(crate) fn close_telemetry(&mut self) {
+-        self.telemetry = None;
+-    }
+-
+-    /// Move the telemetry highlight. No-op unless the sub-page is open.
+-    pub(crate) fn telemetry_step(&mut self, forward: bool) {
+-        let Some(level) = self.telemetry else { return };
+-        let order = TelemetryLevel::ORDER;
+-        let i = order.iter().position(|&l| l == level).unwrap_or(0);
+-        let next = if forward {
+-            (i + 1) % order.len()
+-        } else {
+-            (i + order.len() - 1) % order.len()
+-        };
+-        self.telemetry = Some(order[next]);
+     }
+ 
+     /// Move the summary pill focus. Keeps `continue_focused` in sync so the
+@@ -369,11 +278,9 @@ impl ImportReview {
+             .as_secs()
+     }
+ 
+-    /// Whether the decision countdown has elapsed. Paused while the telemetry
+-    /// settings sub-page is open so the screen never commits the import out
+-    /// from under a user who is reading it.
++    /// Whether the decision countdown has elapsed.
+     pub(crate) fn timed_out(&self) -> bool {
+-        self.telemetry.is_none() && self.shown_at.elapsed() >= DECISION_TIMEOUT
++        self.shown_at.elapsed() >= DECISION_TIMEOUT
+     }
+ }
+ 
+diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
+index fdc0656c1..66dfce3e3 100644
+--- a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
++++ b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
+@@ -296,11 +296,6 @@ impl App {
+         // The import (if any) has resolved; leave the progress state.
+         self.onboarding_import_in_progress = None;
+         self.onboarding_import_error = None;
+-        // Content sharing is opt-in and off by default. Respect an explicit
+-        // choice from the telemetry settings page instead of overwriting it.
+-        if !self.onboarding_telemetry_choice_made {
+-            crate::telemetry::set_content_sharing_enabled(false);
+-        }
+         self.set_onboarding_phase(OnboardingPhase::ModelSelect);
+         self.onboarding_after_model_select();
+     }
+@@ -552,33 +547,12 @@ impl App {
+         // Set when the user wants to learn about the hosted Jcode subscription
+         // instead of importing one of the detected third-party logins.
+         let mut open_pricing = false;
+-        // Set when the user committed a telemetry level, so we persist it
+-        // outside the review borrow.
+-        let mut telemetry_choice = None;
+         {
+             let Some(review) = self.onboarding_import_review_mut() else {
+                 return false;
+             };
+-            if let Some(level) = review.telemetry {
+-                // Telemetry settings sub-page: three stacked options, most
+-                // sharing first. Up/Down move, Enter commits and returns,
+-                // Esc returns without changing anything.
+-                match code {
+-                    KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+-                        review.telemetry_step(false)
+-                    }
+-                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+-                        review.telemetry_step(true)
+-                    }
+-                    KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => review.close_telemetry(),
+-                    KeyCode::Enter | KeyCode::Char(' ') => {
+-                        telemetry_choice = Some(level);
+-                        review.close_telemetry();
+-                    }
+-                    _ => return false,
+-                }
+-            } else if !review.choosing {
+-                // Summary: Continue, Subscription, Import less, and Telemetry pills.
++            if !review.choosing {
++                // Summary: Continue, Subscription, and Import less pills.
+                 // Arrows/Tab move; Enter/Space commits the focused one.
+                 match code {
+                     KeyCode::Left
+@@ -593,8 +567,6 @@ impl App {
+                     | KeyCode::Char('l') => review.summary_step(true),
+                     // c is a direct shortcut into choose mode.
+                     KeyCode::Char('c') | KeyCode::Char('C') => review.enter_choose_mode(),
+-                    // t jumps straight to the telemetry settings page.
+-                    KeyCode::Char('t') | KeyCode::Char('T') => review.open_telemetry(),
+                     // y = "yes, import everything" regardless of pill focus, so
+                     // the timeout is never a forced wait.
+                     KeyCode::Char('y') | KeyCode::Char('Y') => finished = true,
+@@ -602,7 +574,6 @@ impl App {
+                         SummaryPill::Continue => finished = true,
+                         SummaryPill::Subscription => open_pricing = true,
+                         SummaryPill::ImportLess => review.enter_choose_mode(),
+-                        SummaryPill::Telemetry => review.open_telemetry(),
+                     },
+                     _ => return false,
+                 }
+@@ -627,12 +598,6 @@ impl App {
+                 }
+             }
+         }
+-        if let Some(level) = telemetry_choice {
+-            level.persist();
+-            self.onboarding_telemetry_choice_made = true;
+-            self.set_status_notice(level.status_label().to_string());
+-            return true;
+-        }
+         if open_pricing {
+             self.onboarding_import_error = None;
+             let url = crate::subscription_catalog::JCODE_PRICING_URL;
+@@ -762,15 +727,8 @@ impl App {
+     }
+ 
+     /// Whether the import screen's telemetry settings sub-page is currently
+-    /// showing. Used so Esc means "go back" there rather than "leave
+-    /// onboarding", and so the import countdown pauses while it is open.
+     pub(super) fn onboarding_telemetry_page_open(&self) -> bool {
+-        matches!(
+-            self.onboarding_phase(),
+-            Some(OnboardingPhase::Login {
+-                import: Some(review)
+-            }) if review.telemetry.is_some()
+-        )
++        false
+     }
+ 
+     /// Refresh the status notice to reflect the current import-list selection.
+@@ -780,14 +738,10 @@ impl App {
+             let total = review.total();
+             let secs = review.seconds_remaining();
+             let notice = if !review.choosing {
+-                if review.telemetry.is_some() {
+-                    "Telemetry settings - arrows move, Enter chooses, Esc goes back".to_string()
+-                } else {
+-                    format!(
+-                        "Found {total} login{} - Enter imports all (auto in {secs}s), or pick \"Import less\"",
+-                        if total == 1 { "" } else { "s" },
+-                    )
+-                }
++                format!(
++                    "Found {total} login{} - Enter imports all (auto in {secs}s), or pick \"Import less\"",
++                    if total == 1 { "" } else { "s" },
++                )
+             } else {
+                 format!(
+                     "Import {checked} of {total} login{} - Space toggles, arrows move, Enter imports (auto in {secs}s)",
+diff --git a/crates/jcode-tui/src/tui/app/onboarding_sim.rs b/crates/jcode-tui/src/tui/app/onboarding_sim.rs
+index 6a736e1a1..06bf1daed 100644
+--- a/crates/jcode-tui/src/tui/app/onboarding_sim.rs
++++ b/crates/jcode-tui/src/tui/app/onboarding_sim.rs
+@@ -16,7 +16,7 @@
+ 
+ use super::App;
+ use super::SessionPickerMode;
+-use super::onboarding_flow::{ImportReview, OnboardingFlow, OnboardingPhase, SummaryPill};
++use super::onboarding_flow::{ImportReview, OnboardingFlow, OnboardingPhase};
+ use crossterm::event::{KeyCode, KeyModifiers};
+ use std::time::Instant;
+ 
+@@ -179,26 +179,6 @@ impl App {
+                     }),
+                 },
+             },
+-            SimScreen {
+-                title: "Telemetry settings (from the summary's third pill)",
+-                phase: OnboardingPhase::Login {
+-                    import: ImportReview::new(vec![
+-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
+-                            "OpenAI/Codex",
+-                            "Codex auth.json",
+-                        ),
+-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
+-                            "Claude",
+-                            "Claude Code",
+-                        ),
+-                    ])
+-                    .map(|mut review| {
+-                        review.focus_summary_pill(SummaryPill::Telemetry);
+-                        review.open_telemetry();
+-                        review
+-                    }),
+-                },
+-            },
+             SimScreen {
+                 title: "Import detected logins (single)",
+                 phase: OnboardingPhase::Login {
+@@ -320,18 +300,15 @@ impl App {
+         }
+     }
+ 
+-    /// Move the import checkbox cursor, or the telemetry option highlight while
+-    /// the telemetry settings screen is showing. Only meaningful on the import
+-    /// family of screens.
++    /// Move the import checkbox cursor. Only meaningful on the import family
++    /// of screens.
+     fn onboarding_sim_move_cursor(&mut self, down: bool) -> bool {
+         if let Some(flow) = self.onboarding_flow.as_mut()
+             && let OnboardingPhase::Login {
+                 import: Some(review),
+             } = &mut flow.phase
+         {
+-            if review.telemetry.is_some() {
+-                review.telemetry_step(down);
+-            } else if down {
++            if down {
+                 review.cursor_down();
+             } else {
+                 review.cursor_up();
+@@ -341,8 +318,8 @@ impl App {
+         false
+     }
+ 
+-    /// Move the import summary pill focus (Continue / Import less / Telemetry
+-    /// settings) so the simulator can preview each pill's highlighted state.
++    /// Move the import summary pill focus (Continue / Import less) so the
++    /// simulator can preview each pill's highlighted state.
+     /// Returns true when the current screen is the read-only summary.
+     fn onboarding_sim_step_summary_pill(&mut self, forward: bool) -> bool {
+         if let Some(flow) = self.onboarding_flow.as_mut()
+@@ -350,7 +327,6 @@ impl App {
+                 import: Some(review),
+             } = &mut flow.phase
+             && !review.choosing
+-            && review.telemetry.is_none()
+         {
+             review.summary_step(forward);
+             return true;
+diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
+index 27e8fca8e..61fa72c1d 100644
+--- a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
++++ b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
+@@ -1675,96 +1675,6 @@ fn recent_project_review_falls_back_cleanly_when_no_repo_is_known() {
+     }));
+ }
+ 
+-#[test]
+-fn telemetry_pill_opens_settings_page_and_commits_choice() {
+-    use crate::external_auth::ExternalAuthReviewCandidate;
+-    use crate::tui::app::onboarding_flow::{ImportReview, TelemetryLevel};
+-
+-    with_temp_jcode_home(|| {
+-        let mut app = create_test_app();
+-        app.onboarding_flow = None;
+-        app.begin_onboarding_flow_at_login();
+-        let review =
+-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json")])
+-                .unwrap();
+-        if let Some(flow) = app.onboarding_flow.as_mut() {
+-            flow.phase = OnboardingPhase::Login {
+-                import: Some(review),
+-            };
+-        }
+-
+-        // Right twice: Subscription -> Import less -> Telemetry settings.
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Right));
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Right));
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
+-
+-        // The page opens defaulted to "Send everything".
+-        match app.onboarding_phase() {
+-            Some(OnboardingPhase::Login {
+-                import: Some(review),
+-            }) => assert_eq!(review.telemetry, Some(TelemetryLevel::Everything)),
+-            other => panic!("expected telemetry page open, got {other:?}"),
+-        }
+-        // The import countdown is paused while the page is open, so the screen
+-        // cannot commit the import out from under the user.
+-        assert!(!app.onboarding_flow.as_ref().unwrap().decision_timed_out());
+-
+-        // Enter commits "Send everything": usage on, content sharing on.
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
+-        assert!(crate::telemetry::is_enabled());
+-        assert!(crate::telemetry::content_sharing_enabled());
+-        // We are back on the summary screen with the import still pending.
+-        match app.onboarding_phase() {
+-            Some(OnboardingPhase::Login {
+-                import: Some(review),
+-            }) => {
+-                assert!(review.telemetry.is_none());
+-                assert!(!review.choosing);
+-            }
+-            other => panic!("expected import summary, got {other:?}"),
+-        }
+-        assert!(app.onboarding_import_in_progress.is_none());
+-    });
+-}
+-
+-#[test]
+-fn telemetry_page_send_nothing_disables_telemetry_and_esc_goes_back() {
+-    use crate::external_auth::ExternalAuthReviewCandidate;
+-    use crate::tui::app::onboarding_flow::ImportReview;
+-
+-    with_temp_jcode_home(|| {
+-        let mut app = create_test_app();
+-        app.onboarding_flow = None;
+-        app.begin_onboarding_flow_at_login();
+-        let review =
+-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json")])
+-                .unwrap();
+-        if let Some(flow) = app.onboarding_flow.as_mut() {
+-            flow.phase = OnboardingPhase::Login {
+-                import: Some(review),
+-            };
+-        }
+-
+-        // t is the direct shortcut onto the telemetry page; Esc returns without
+-        // changing anything and keeps onboarding active.
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('t')));
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Esc));
+-        assert!(matches!(
+-            app.onboarding_phase(),
+-            Some(OnboardingPhase::Login { import: Some(_) })
+-        ));
+-        assert!(crate::telemetry::is_enabled());
+-
+-        // Reopen, walk down to "Send nothing", commit.
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('t')));
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Down));
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Down));
+-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
+-        assert!(!crate::telemetry::is_enabled());
+-        assert!(!crate::telemetry::content_sharing_enabled());
+-    });
+-}
+-
+ #[test]
+ fn start_choice_prefetches_recent_project_so_enter_does_not_block() {
+     let mut app = onboarding_test_app();
+diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_golden.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_golden.rs
+index d5fbfa720..44fcfeae2 100644
+--- a/crates/jcode-tui/src/tui/app/tests/onboarding_golden.rs
++++ b/crates/jcode-tui/src/tui/app/tests/onboarding_golden.rs
+@@ -513,47 +513,6 @@ fn onboarding_golden_walks_failure_and_async_states() {
+     }
+ }
+ 
+-/// Golden render of the "Telemetry settings" sub-page reached from the import
+-/// summary. Three stacked options with dim consequence captions, defaulting to
+-/// "Send everything".
+-#[test]
+-fn onboarding_golden_telemetry_settings_page() {
+-    use crate::external_auth::ExternalAuthReviewCandidate;
+-    use crate::tui::app::onboarding_flow::ImportReview;
+-
+-    let mut review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
+-        "OpenAI/Codex",
+-        "Codex auth.json",
+-    )])
+-    .unwrap();
+-    review.open_telemetry();
+-    let app = app_in_phase(OnboardingPhase::Login {
+-        import: Some(review),
+-    });
+-    let text = render_onboarding_text(&app, 80, 34);
+-    dump("Telemetry settings page", &text);
+-    assert!(text.contains("Telemetry settings"), "title: {text}");
+-    assert!(
+-        text.contains("Share full transcripts (30-day retention)"),
+-        "option 1: {text}"
+-    );
+-    assert!(
+-        text.contains("Includes prompts, model responses, reasoning, code, and tool"),
+-        "caption 1: {text}"
+-    );
+-    assert!(
+-        text.contains("No prompts or transcripts"),
+-        "option 2: {text}"
+-    );
+-    assert!(text.contains("Send nothing"), "option 3: {text}");
+-    assert!(text.contains("/telemetry"), "later-change hint: {text}");
+-    // The import summary is hidden while the sub-page is open.
+-    assert!(
+-        !text.contains("We found 1 existing login"),
+-        "summary hidden: {text}"
+-    );
+-}
+-
+ /// Generate a reviewable image for every state in the onboarding graph
+ /// (`onboarding_graph.rs`), rendered through the exact widget tree the live
+ /// flow uses. Welcome-card states render via the onboarding welcome layout;
+@@ -620,23 +579,6 @@ fn onboarding_import_happy_path_images() {
+         write_onboarding_svg(&output_dir, "login-import-choose.svg", &app, width, height);
+     }
+ 
+-    // ---- login_import (telemetry sub-page) ----
+-    {
+-        let mut review = ImportReview::new(many_candidates()).unwrap();
+-        review.focus_summary_pill(SummaryPill::Telemetry);
+-        review.open_telemetry();
+-        let app = app_in_phase(OnboardingPhase::Login {
+-            import: Some(review),
+-        });
+-        write_onboarding_svg(
+-            &output_dir,
+-            "login-import-telemetry.svg",
+-            &app,
+-            width,
+-            height,
+-        );
+-    }
+-
+     // ---- import committed, async import running (transient progress card) ----
+     {
+         let mut app = app_in_phase(OnboardingPhase::Login { import: None });
+@@ -741,3 +683,34 @@ fn onboarding_import_happy_path_images() {
+ 
+     println!("wrote onboarding images to {}", output_dir.display());
+ }
++
++/// The import summary screen must not expose telemetry controls. The
++/// telemetry settings sub-page, the Telemetry pill, and the /telemetry
++/// hint were removed when telemetry delivery was disabled.
++#[test]
++fn onboarding_import_summary_does_not_expose_telemetry() {
++    use crate::external_auth::ExternalAuthReviewCandidate;
++    use crate::tui::app::onboarding_flow::ImportReview;
++
++    let review = ImportReview::new(vec![
++        ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
++        ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
++    ])
++    .unwrap();
++    let app = app_in_phase(OnboardingPhase::Login {
++        import: Some(review),
++    });
++    let text = render_onboarding_text(&app, 80, 34);
++    assert!(
++        !text.contains("Telemetry"),
++        "telemetry controls must not appear: {text}"
++    );
++    assert!(
++        !text.contains("/telemetry"),
++        "telemetry command hint must not appear: {text}"
++    );
++    assert!(
++        !text.contains("Share full transcripts"),
++        "telemetry content-sharing option must not appear: {text}"
++    );
++}
+diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
+index d1d49ba73..e1f758a58 100644
+--- a/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
++++ b/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
+@@ -148,46 +148,6 @@ fn altgr_5_does_not_start_onboarding_simulator() {
+     assert!(!app.onboarding_sim_active());
+ }
+ 
+-#[test]
+-fn onboarding_sim_includes_telemetry_settings_screen() {
+-    let mut app = create_test_app();
+-    app.start_onboarding_simulator();
+-
+-    // Tab through screens until the telemetry settings page shows. The sim's
+-    // catalog is small, so a bounded walk is enough and it fails loudly if the
+-    // screen was dropped from the catalog.
+-    let mut found = false;
+-    for _ in 0..12 {
+-        if let Some(OnboardingPhase::Login {
+-            import: Some(review),
+-        }) = app.onboarding_phase()
+-            && review.telemetry.is_some()
+-        {
+-            found = true;
+-            break;
+-        }
+-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+-    }
+-    assert!(found, "sim should include a telemetry settings screen");
+-
+-    // Down/Up preview the three options without persisting anything.
+-    use crate::tui::app::onboarding_flow::TelemetryLevel;
+-    app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+-    match app.onboarding_phase() {
+-        Some(OnboardingPhase::Login {
+-            import: Some(review),
+-        }) => assert_eq!(review.telemetry, Some(TelemetryLevel::NoContent)),
+-        other => panic!("expected telemetry screen, got {other:?}"),
+-    }
+-    app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+-    match app.onboarding_phase() {
+-        Some(OnboardingPhase::Login {
+-            import: Some(review),
+-        }) => assert_eq!(review.telemetry, Some(TelemetryLevel::Everything)),
+-        other => panic!("expected telemetry screen, got {other:?}"),
+-    }
+-}
+-
+ #[test]
+ fn onboarding_sim_summary_arrows_preview_all_pills() {
+     use crate::tui::app::onboarding_flow::SummaryPill;
+@@ -206,9 +166,7 @@ fn onboarding_sim_summary_arrows_preview_all_pills() {
+     app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+     assert_eq!(pill(&app), SummaryPill::ImportLess);
+     app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+-    assert_eq!(pill(&app), SummaryPill::Telemetry);
+-    app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+     assert_eq!(pill(&app), SummaryPill::Continue);
+     app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+-    assert_eq!(pill(&app), SummaryPill::Telemetry);
++    assert_eq!(pill(&app), SummaryPill::ImportLess);
+ }
+diff --git a/crates/jcode-tui/src/tui/ui_onboarding.rs b/crates/jcode-tui/src/tui/ui_onboarding.rs
+index 1d73abe9d..76cf7f50e 100644
+--- a/crates/jcode-tui/src/tui/ui_onboarding.rs
++++ b/crates/jcode-tui/src/tui/ui_onboarding.rs
+@@ -5,16 +5,14 @@
+ //! unauthenticated / new user, or `/onboarding-preview`).
+ //!
+ //! Layout, top to bottom, vertically centered in the chat area:
+-//!   1. Grayed telemetry notice header.
+-//!   2. "Welcome to jcode onboarding" title.
+-//!   3. The login / getting-started prompt with suggestions.
++//!   1. "Welcome to jcode onboarding" title.
++//!   2. The login / getting-started prompt with suggestions.
+ 
+ use super::dim_color;
+ use crate::tui::TuiState;
+ use crate::tui::color_support::rgb;
+ use ratatui::{prelude::*, widgets::Paragraph};
+ 
+-const TELEMETRY_LINES: u16 = 4;
+ const GAP: u16 = 1;
+ 
+ /// Accent color for the welcome title.
+@@ -136,8 +134,7 @@ fn continue_pill_line(focused: bool, align: Alignment) -> Line<'static> {
+ }
+ 
+ /// The summary-screen action row. A new user can import the logins we found or
+-/// use a Jcode subscription, with secondary controls for a selective import and
+-/// telemetry settings.
++/// use a Jcode subscription, with a secondary control for a selective import.
+ fn import_summary_pills_line(
+     focused: crate::tui::ImportSummaryPill,
+     align: Alignment,
+@@ -155,75 +152,9 @@ fn import_summary_pills_line(
+         "Import less",
+         focused == Pill::ImportLess,
+     ));
+-    spans.push(Span::raw("   "));
+-    spans.extend(lozenge_pill_spans("Telemetry", focused == Pill::Telemetry));
+     Line::from(spans).alignment(align)
+ }
+ 
+-/// The telemetry settings sub-page: three stacked pills, most sharing first,
+-/// each with a dim one-line consequence caption. Reached from the "Telemetry
+-/// settings" pill on the import summary; Esc returns without changing anything.
+-fn telemetry_settings_lines(
+-    highlighted: crate::tui::TelemetryChoice,
+-    env_forced_off: bool,
+-    align: Alignment,
+-) -> Vec<Line<'static>> {
+-    use crate::tui::TelemetryChoice as Choice;
+-    let dim = Style::default().fg(dim_color());
+-    let mut lines: Vec<Line<'static>> = Vec::new();
+-    lines.push(
+-        Line::from(Span::styled(
+-            "Telemetry settings",
+-            Style::default()
+-                .fg(welcome_accent())
+-                .add_modifier(Modifier::BOLD),
+-        ))
+-        .alignment(align),
+-    );
+-    lines.push(Line::from(""));
+-
+-    let options = [
+-        (
+-            Choice::Everything,
+-            "Share full transcripts (30-day retention)",
+-            "Includes prompts, model responses, reasoning, code, and tool input/output",
+-        ),
+-        (
+-            Choice::NoContent,
+-            "No prompts or transcripts",
+-            "Usage stats and crash reports only",
+-        ),
+-        (
+-            Choice::Nothing,
+-            "Send nothing",
+-            "We stop seeing crashes and can't fix them",
+-        ),
+-    ];
+-    for (choice, label, caption) in options {
+-        lines.push(Line::from(lozenge_pill_spans(label, choice == highlighted)).alignment(align));
+-        lines.push(Line::from(Span::styled(caption, dim)).alignment(align));
+-        lines.push(Line::from(""));
+-    }
+-
+-    if env_forced_off {
+-        lines.push(
+-            Line::from(Span::styled(
+-                "Your environment already disables telemetry (JCODE_NO_TELEMETRY).",
+-                dim,
+-            ))
+-            .alignment(align),
+-        );
+-    }
+-    lines.push(
+-        Line::from(Span::styled(
+-            "Esc goes back. Change this later with /telemetry.",
+-            dim,
+-        ))
+-        .alignment(align),
+-    );
+-    lines
+-}
+-
+ /// Render the read-only detected-login list for the import summary screen: one
+ /// dim checkmarked row per detected login. No cursor, no columns - the user is
+ /// just being shown what we found before they hit Continue.
+@@ -352,32 +283,6 @@ fn import_two_column_lines(prompt: &crate::tui::LoginImportPrompt) -> Vec<Line<'
+     out
+ }
+ 
+-/// Grayed telemetry notice shown at the very top of the onboarding screen.
+-fn telemetry_header_lines(width: u16) -> Vec<Line<'static>> {
+-    let align = Alignment::Center;
+-    let dim = Style::default().fg(dim_color());
+-    let lines = vec![
+-        "jcode collects anonymous usage statistics (version, OS, session",
+-        "activity, and crash reasons). No code, prompts, or personal data.",
+-        "Change anytime: /telemetry (or export JCODE_NO_TELEMETRY=1)",
+-    ];
+-    lines
+-        .into_iter()
+-        .map(|text| {
+-            // Truncate defensively on very narrow terminals.
+-            let text = if (text.chars().count() as u16) > width.saturating_sub(2) {
+-                text.chars()
+-                    .take(width.saturating_sub(3) as usize)
+-                    .collect::<String>()
+-                    + "…"
+-            } else {
+-                text.to_string()
+-            };
+-            Line::from(Span::styled(text, dim)).alignment(align)
+-        })
+-        .collect()
+-}
+-
+ /// Welcome title line, rendered above the phase body.
+ fn welcome_title_line() -> Line<'static> {
+     Line::from(Span::styled(
+@@ -504,21 +409,10 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
+                     );
+                 }
+                 Some(prompt) if !prompt.choosing => {
+-                    // Telemetry settings sub-page takes over the body while
+-                    // it is open, then returns to the summary below.
+-                    if let Some(choice) = prompt.telemetry {
+-                        lines.extend(telemetry_settings_lines(
+-                            choice,
+-                            prompt.telemetry_env_forced_off,
+-                            align,
+-                        ));
+-                        return lines;
+-                    }
+                     // Summary screen (default): show what we detected as a
+                     // read-only checkmarked list, then land the user on a
+                     // preselected "Continue" pill that imports everything.
+-                    // "Import less" opens the per-login list; "Telemetry
+-                    // settings" opens the telemetry sub-page.
++                    // "Import less" opens the per-login list.
+                     let found = prompt.rows.len();
+                     lines.push(
+                         Line::from(Span::styled(
+@@ -674,7 +568,7 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
+ /// Draw the full onboarding welcome screen into `area`.
+ ///
+ /// Vertical structure (top to bottom):
+-///   telemetry header, gap, title, keyboard hint, gap, phase body.
++///   title, keyboard hint, gap, phase body.
+ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
+     if area.width < 4 || area.height < 6 {
+         // Too small for the full treatment: fall back to a minimal welcome.
+@@ -684,27 +578,24 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
+         return;
+     }
+ 
+-    let telemetry = telemetry_header_lines(area.width);
+     let body = welcome_body_lines(app);
+-    let telemetry_h = (telemetry.len() as u16).min(TELEMETRY_LINES);
+     let body_h = body.len() as u16;
+     const TITLE_H: u16 = 1;
+     const HINT_H: u16 = 1;
+ 
+     // The title/hint block is dropped first when the area is short so the
+     // phase body (the actionable part) always fits.
+-    let show_title_block = area.height > telemetry_h + TITLE_H + HINT_H + body_h + GAP * 2;
++    let show_title_block = area.height > TITLE_H + HINT_H + body_h + GAP * 2;
+ 
+     let used = if show_title_block {
+-        telemetry_h + GAP + TITLE_H + HINT_H + GAP + body_h
++        TITLE_H + HINT_H + GAP + body_h + GAP
+     } else {
+-        telemetry_h + GAP + body_h
++        body_h + GAP
+     };
+     let pad_top = area.height.saturating_sub(used) / 2;
+ 
+-    let mut constraints = vec![Constraint::Length(pad_top), Constraint::Length(telemetry_h)];
++    let mut constraints = vec![Constraint::Length(pad_top)];
+     if show_title_block {
+-        constraints.push(Constraint::Length(GAP));
+         constraints.push(Constraint::Length(TITLE_H));
+         constraints.push(Constraint::Length(HINT_H));
+     }
+@@ -717,15 +608,9 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
+         .constraints(constraints)
+         .split(area);
+ 
+-    // chunks[0] = top pad, [1] = telemetry, then optional gap/title/hint, gap, body.
+-    frame.render_widget(
+-        Paragraph::new(telemetry).alignment(Alignment::Center),
+-        chunks[1],
+-    );
+-
+-    let mut idx = 2;
++    // chunks[0] = top pad, then optional title/hint, gap, body.
++    let mut idx = 1;
+     if show_title_block {
+-        idx += 1; // skip gap chunk
+         frame.render_widget(
+             Paragraph::new(welcome_title_line()).alignment(Alignment::Center),
+             chunks[idx],

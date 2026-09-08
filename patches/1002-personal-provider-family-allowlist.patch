@@ -97,7 +97,7 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  44 files changed, 1930 insertions(+), 123 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
-index 214c1cd70..0f9a455e8 100644
+index af5982279..983b09374 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -186,6 +186,7 @@ jcode-build-meta = { path = "crates/jcode-build-meta" }
@@ -3174,7 +3174,7 @@ index c452b05af..854896bb8 100644
          OpenRouterProvider::runtime_display_name(self)
      }
 diff --git a/crates/jcode-tui/src/tui/app.rs b/crates/jcode-tui/src/tui/app.rs
-index e2175bc9c..0ac679924 100644
+index 3fea71ccd..78bf63745 100644
 --- a/crates/jcode-tui/src/tui/app.rs
 +++ b/crates/jcode-tui/src/tui/app.rs
 @@ -1152,6 +1152,7 @@ pub struct App {
@@ -3186,7 +3186,7 @@ index e2175bc9c..0ac679924 100644
      /// catalog snapshot (`AvailableModelsUpdated`). The onboarding readiness
      /// validation uses this to wait for the post-login catalog refresh to land
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 5052c847b..4e474e929 100644
+index b0fb8afdf..0965269d9 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
 @@ -638,12 +638,14 @@ impl App {
@@ -3392,7 +3392,7 @@ index 3eb86eee2..32a526034 100644
              suggestions
                  .iter()
 diff --git a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-index 86452acc2..76ed0bd54 100644
+index 39a4a7388..d3b7f6519 100644
 --- a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
 +++ b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
 @@ -525,6 +525,7 @@ impl App {
@@ -3403,7 +3403,7 @@ index 86452acc2..76ed0bd54 100644
              remote_model_catalog_generation: 0,
              remote_resolved_credential: None,
              remote_startup_phase: None,
-@@ -975,6 +976,7 @@ impl App {
+@@ -976,6 +977,7 @@ impl App {
              remote_client_instance_id: crate::id::new_id("client"),
              remote_provider_name: None,
              remote_provider_model: None,

@@ -131,7 +131,7 @@ index 0c3b7da9a..fe26278e6 100644
  #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
  #[serde(rename_all = "kebab-case")]
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 4e474e929..777b1c733 100644
+index 0965269d9..90ab02b18 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
 @@ -2432,6 +2432,7 @@ impl App {

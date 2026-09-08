@@ -99,7 +99,7 @@ scripts/cargo_exec.sh test -p jcode-base eu_dispatch_enforced_by_allowed_provide
  44 files changed, 1432 insertions(+), 145 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index ad3c93107..32410e064 100644
+index ed6fa54d8..56c6f1dbc 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -3759,6 +3759,7 @@ dependencies = [
@@ -2763,7 +2763,7 @@ index f8bcc8374..1e226053b 100644
      let _env_guard = crate::storage::lock_test_env();
      let temp = tempfile::tempdir().expect("tempdir");
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 777b1c733..3cf9014a1 100644
+index 90ab02b18..31d2043d7 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
 @@ -476,6 +476,7 @@ fn model_picker_provider_hint_from_model_spec(model_spec: &str) -> Option<(&str,
@@ -2813,10 +2813,10 @@ index 45364166b..68aff11b1 100644
          // Expanding them here creates one duplicate picker row per effort.
          Method::OpenAiCompatible { .. } => false,
 diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
-index ba1ea63e8..66dfce3e3 100644
+index 10946dab2..fdc0656c1 100644
 --- a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
 +++ b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
-@@ -1371,7 +1371,17 @@ impl App {
+@@ -1417,7 +1417,17 @@ impl App {
          use crate::auth::AuthState;
          let status = crate::auth::AuthStatus::check_fast();
          // (display name, provider-key, state)
@@ -2835,7 +2835,7 @@ index ba1ea63e8..66dfce3e3 100644
              ("Anthropic (Claude)", "anthropic", status.anthropic.state),
              ("OpenAI", "openai", status.openai),
              ("Jcode subscription", "jcode", status.jcode),
-@@ -1379,6 +1389,7 @@ impl App {
+@@ -1425,6 +1435,7 @@ impl App {
              ("GitHub Copilot", "copilot", status.copilot),
              ("Cursor", "cursor", status.cursor),
              ("OpenRouter", "openrouter", status.openrouter),
@@ -2844,10 +2844,10 @@ index ba1ea63e8..66dfce3e3 100644
          ];
          // Normalize the default provider's key so aliases like "claude" map to
 diff --git a/crates/jcode-tui/src/tui/app/remote.rs b/crates/jcode-tui/src/tui/app/remote.rs
-index 6d9cc5ad8..1e17e9246 100644
+index 7c2c6a455..8c8188c2c 100644
 --- a/crates/jcode-tui/src/tui/app/remote.rs
 +++ b/crates/jcode-tui/src/tui/app/remote.rs
-@@ -689,6 +689,11 @@ pub(super) async fn handle_bus_event(
+@@ -690,6 +690,11 @@ pub(super) async fn handle_bus_event(
  /// after an Anthropic API-key login) and skipping the post-login model switch.
  fn auth_provider_hint_for_login_provider(provider: &str) -> Option<&'static str> {
      let provider = provider.trim();
@@ -2860,10 +2860,10 @@ index 6d9cc5ad8..1e17e9246 100644
      // ("azure"); keep the dedicated mapping used across the auth lifecycle.
      if provider.eq_ignore_ascii_case("azure")
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index d34377f21..f62da05cd 100644
+index 76113d357..4c07f3e55 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-@@ -473,7 +473,9 @@ impl App {
+@@ -474,7 +474,9 @@ impl App {
              };
  
              for route in routes {
@@ -2874,7 +2874,7 @@ index d34377f21..f62da05cd 100644
                      let help = if route.provider == "auto" {
                          "Use automatic OpenRouter provider routing"
                      } else {
-@@ -482,12 +484,29 @@ impl App {
+@@ -483,12 +485,29 @@ impl App {
                      push_unique(
                          &mut seen,
                          &mut suggestions,

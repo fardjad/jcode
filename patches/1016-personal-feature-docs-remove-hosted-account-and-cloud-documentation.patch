@@ -1,0 +1,653 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Tue, 8 Sep 2026 23:18:51 +0200
+Subject: [PATCH] docs: remove hosted account and cloud documentation
+
+X-Jcode-Patch-Intent: Remove obsolete hosted account, billing, and cloud documentation.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1015-personal-feature-refactor-remove-hosted-subscription-account-api.patch
+
+Patch intent:
+Remove documentation exclusively describing hosted Jcode account activation,
+device authorization, subscriptions, billing, cloud access, and sponsor account
+attribution.
+
+Why it exists:
+The local build no longer contains these hosted services, so retaining their
+documentation would mislead users and maintainers.
+
+Upstream integration points:
+The patch deletes account contract, account flow, cloud, and sponsor documents
+that depend on the removed hosted account and sponsored discovery systems.
+
+Update guidance:
+Do not restore hosted account or cloud documentation. Preserve local setup,
+external provider, direct endpoint, and ordinary MCP documentation.
+
+Validation:
+! rg -n -i 'Jcode account activation|paid Jcode subscriptions|device authorization' docs
+just validate-patch-files
+---
+ docs/JCODE_CLOUD_AWS.md                       | 114 ---------
+ .../dev/ACCOUNT_CONTRACT_CONFORMANCE_TESTS.md | 216 ------------------
+ .../ACCOUNT_FLOWS_OBSERVABILITY_PRIVACY.md    | 163 -------------
+ docs/sponsors/agentcard.md                    |  96 --------
+ 4 files changed, 589 deletions(-)
+ delete mode 100644 docs/JCODE_CLOUD_AWS.md
+ delete mode 100644 docs/dev/ACCOUNT_CONTRACT_CONFORMANCE_TESTS.md
+ delete mode 100644 docs/dev/ACCOUNT_FLOWS_OBSERVABILITY_PRIVACY.md
+ delete mode 100644 docs/sponsors/agentcard.md
+
+diff --git a/docs/JCODE_CLOUD_AWS.md b/docs/JCODE_CLOUD_AWS.md
+deleted file mode 100644
+index 7246c34e7..000000000
+--- a/docs/JCODE_CLOUD_AWS.md
++++ /dev/null
+@@ -1,114 +0,0 @@
+-# Jcode Cloud on AWS
+-
+-Status: product and infrastructure direction, August 2026. The managed customer
+-control plane described here is not deployed yet.
+-
+-## Product decision
+-
+-`/remote` is the single activation entry point for Jcode Cloud. It opens the Jcode account activation page, where a user signs in, confirms the subscription entitlement, chooses a region, and creates or wakes their host. `/remote status`, `/remote on`, `/remote pair`, and `/remote revoke` remain the explicit self-hosted gateway controls.
+-
+-Cloud access is bundled into paid Jcode subscriptions rather than sold as a second product. The subscription pays for the control plane and a bounded amount of host runtime/storage. Model-token budgets remain governed by the existing subscription tier.
+-
+-### User journey
+-
+-1. Run `/remote` on desktop or select **Jcode Cloud** in a client.
+-2. Browser opens `https://jcode.sh/account`. During early access, the account
+-   page handles sign-in and plan management but does not yet provision a host.
+-3. Sign in with the existing Jcode device/account identity. If needed, subscribe or upgrade.
+-4. Pick the nearest supported region. Defaults are automatic and reversible.
+-5. Jcode provisions an isolated host, imports only credentials or repository access the user explicitly approves, and displays progress.
+-6. The page returns a one-time deep link. Desktop and mobile store a revocable device credential.
+-7. Later connections wake the host automatically. It stops after 30 idle minutes and preserves the encrypted workspace.
+-
+-The normal path must not expose EC2, SSH, ports, pairing codes, AWS accounts, or instance types. Advanced users retain the local self-hosting commands.
+-
+-## AWS architecture
+-
+-```mermaid
+-flowchart LR
+-  C[Jcode clients] -->|OAuth/device credential| CF[CloudFront]
+-  CF --> APIGW[API Gateway HTTP + WebSocket]
+-  APIGW --> CP[Lambda control plane]
+-  CP --> DDB[(DynamoDB accounts, hosts, devices, jobs)]
+-  CP --> SQS[SQS provisioning jobs]
+-  SQS --> PROV[Provisioner Lambda or Step Functions]
+-  PROV --> EC2[Per-user EC2 host]
+-  EC2 --> EBS[(Encrypted EBS workspace)]
+-  EC2 --> BR[Amazon Bedrock]
+-  EC2 --> SSM[Systems Manager]
+-  APIGW --> ROUTER[Subscription model router]
+-  ROUTER --> BR
+-  EV[EventBridge] --> REAPER[Idle and budget reaper]
+-  REAPER --> EC2
+-  BILL[Stripe webhooks] --> APIGW
+-  CP --> SES[SES transactional email]
+-  LOG[CloudWatch + CloudTrail] --- CP
+-```
+-
+-### AWS services
+-
+-- **Identity:** Cognito user pool federated from the existing Jcode account during migration. Long term, Cognito is the account identity authority. Device authorization is implemented by Lambda/API Gateway with hashed, short-lived codes.
+-- **API edge:** CloudFront, WAF, API Gateway HTTP APIs, and WebSocket APIs. No user host has public ingress.
+-- **State:** DynamoDB with on-demand capacity, point-in-time recovery, TTL for device codes, idempotency records, and host leases.
+-- **Provisioning:** SQS plus Step Functions for idempotent create, wake, stop, update, snapshot, and delete workflows.
+-- **Compute:** one EC2 instance and encrypted EBS volume per active user initially. Hosts use SSM and outbound-only networking. Move steady multi-tenant workloads to ECS only after isolation and economics are measured.
+-- **Model routing:** Bedrock by default. Non-Bedrock upstreams remain behind the subscription router until equivalent models are available.
+-- **Secrets:** Secrets Manager for service secrets. Per-user grants use short-lived scoped credentials. Never copy local plaintext credentials by default.
+-- **Observability:** CloudWatch structured logs/metrics, X-Ray traces, CloudTrail, GuardDuty, Security Hub, and AWS Budgets.
+-- **Email:** SES. **Artifacts:** versioned private S3 buckets. **Encryption:** KMS customer-managed keys with separate control-plane and host-data keys.
+-
+-## Isolation and network rules
+-
+-- Dedicated instance profile, security group, EBS volume, and host record per user.
+-- No public IPv4 or inbound security-group rules for production hosts.
+-- Clients connect through the managed WebSocket edge. The control plane routes authenticated sessions to the assigned host over an outbound tunnel.
+-- SSM Session Manager is the only operator shell path. CloudTrail records all administrative access.
+-- Device tokens are random, hashed at rest, scoped to one account/host, rotatable, and revocable.
+-- Every mutating API accepts an idempotency key. Provisioning workflows reconcile desired state after retries.
+-
+-## Subscription policy
+-
+-All paid tiers include Cloud activation. Limits are entitlements, not separate SKUs:
+-
+-| Tier | Included cloud shape | Included runtime policy |
+-|---|---|---|
+-| Plus | burstable 2 vCPU, 4 GiB, 20 GiB | personal interactive use, aggressive idle stop |
+-| Pro | 2 vCPU, 8 GiB, 40 GiB | longer monthly runtime allowance |
+-| Max | 4 vCPU, 16 GiB, 80 GiB | larger repos and background agents |
+-| Ultra | 8 vCPU, 32 GiB, 160 GiB | sustained agents and higher concurrency |
+-| Solo | configurable dedicated host | contract limits and priority support |
+-
+-Exact included hours must be set from measured AWS cost plus support and model margin. Hard safety behavior is required before launch: warn at 70%, stop paid overage by default at 100%, and require explicit opt-in for metered overage.
+-
+-## API contract
+-
+-Authenticated endpoints under the existing `api.jcode.sh/v1` origin:
+-
+-- `GET /cloud` returns entitlement, desired/actual host state, region, limits, client endpoint, and pending operation.
+-- `POST /cloud/activate` creates the desired host idempotently.
+-- `POST /cloud/wake` and `POST /cloud/stop` change desired state.
+-- `POST /cloud/devices` issues a one-time pairing/deep-link exchange.
+-- `DELETE /cloud/devices/{id}` revokes a client.
+-- `POST /cloud/transfer` creates an explicit, encrypted project import job.
+-- `DELETE /cloud` requires recent authentication, creates a recovery snapshot, and schedules final deletion after a retention window.
+-
+-Host lifecycle states are `absent`, `provisioning`, `stopped`, `starting`, `ready`, `stopping`, `failed`, and `deleting`. Clients poll operations and may also subscribe to WebSocket lifecycle events.
+-
+-## Rollout
+-
+-1. **Internal alpha:** keep the existing guarded `jcode-phone` EC2 deployment as the reference host. Validate wake, SSM, gateway, Bedrock, idle stop, and breaker paths.
+-2. **Single-account beta:** deploy AWS control-plane stacks with IaC, provision per-user hosts in `us-east-1`, and manually grant a small allowlist.
+-3. **Subscription beta:** connect existing account entitlements and Stripe events, enforce tier limits, and add self-service activation.
+-4. **General availability:** multi-region hosts, automated recovery, support tooling, cost attribution, deletion/export flows, and published SLOs.
+-
+-## Infrastructure requirements before customer provisioning
+-
+-- Use CDK or Terraform as the sole writer for production resources. Do not build the multi-user stack from ad hoc CLI commands.
+-- Separate `dev`, `staging`, and `prod` AWS accounts under Organizations with SCPs and IAM Identity Center.
+-- Require MFA for human roles and OIDC for CI. No long-lived administrator keys.
+-- Add per-account and per-user budget alarms, concurrency quotas, EC2 quota checks, DLQs, backup restore tests, and a tested global kill switch.
+-- Complete threat modeling, privacy/retention policy, incident runbook, and billing reconciliation tests.
+-
+-## Current state
+-
+-The AWS account already contains a live-tested reference deployment in `us-east-1`: EC2 host `i-08214cf66cd3f80c7`, wake and breaker Lambdas, SSM management, Bedrock access, idle shutdown, encrypted EBS, and a $10 budget guardrail. It is suitable for internal validation, not shared customer tenancy. The current subscription/account backend is owned by the private `solosystems-backend` repository and uses Cloudflare-backed services, so moving **everything** to AWS requires a coordinated backend migration rather than client-only changes.
+diff --git a/docs/dev/ACCOUNT_CONTRACT_CONFORMANCE_TESTS.md b/docs/dev/ACCOUNT_CONTRACT_CONFORMANCE_TESTS.md
+deleted file mode 100644
+index c1c113d19..000000000
+--- a/docs/dev/ACCOUNT_CONTRACT_CONFORMANCE_TESTS.md
++++ /dev/null
+@@ -1,216 +0,0 @@
+-# Account Contract Conformance Tests and Test Vectors
+-
+-Executable conformance design for the jcode subscription account contract:
+-device login, browser approval/denial, account state (`/v1/me`), checkout,
+-billing portal, webhook ordering, revocation, and mixed-version compatibility.
+-
+-The client half of the contract lives in this repo; the server half lives in
+-the private `solosystems-backend` repo. This document defines the shared test
+-vectors, the harnesses that execute them on each side, and who owns what.
+-
+-## Grounding (current code)
+-
+-- Device flow client and wire contract: `src/cli/login/jcode_device.rs:1-225`
+-  - `POST {auth_base}/v1/auth/device {"email"}` ->
+-    `{device_code, verify_url, expires_in (default 900), interval (default 5)}`
+-  - `POST {auth_base}/v1/auth/token {"device_code"}` ->
+-    `202`/`428` pending, `429` slow-down, `200` approved
+-    `{api_key, account_id?, email?, tier?}`, `200 {"status":"pending"}` legacy
+-    pending, error codes `authorization_pending|pending`, `slow_down`,
+-    `expired_token|expired|expired_device_code`, `access_denied|denied`,
+-    and `404`/`410` treated as expired.
+-- Poll loop timing: `src/cli/login/jcode_device.rs:230-264`
+-  (`interval.max(1)`, deadline from `expires_in`, `slow_down` adds 5s).
+-- Credential persistence: `src/cli/login/jcode_device.rs:268-304`
+-  (`JCODE_API_KEY`, `JCODE_ACCOUNT_ID`, `JCODE_ACCOUNT_EMAIL`, `JCODE_TIER`
+-  into the jcode-subscription env file).
+-- Account state client: `crates/jcode-base/src/subscription_api.rs`
+-  (`GET /v1/me` -> `SubscriptionMe`, 5s timeout, persists cached tier;
+-  unknown/absent tier gates like Plus:
+-  `crates/jcode-base/src/subscription_catalog.rs:193-204`).
+-- Existing executable harness to extend: scripted local HTTP server in
+-  `src/cli/login/jcode_device/tests.rs:7-46` plus state-machine tests
+-  (`poll_state_machine_*`, `poll_for_api_key_*`).
+-- Auth failure classification for negative-path assertions:
+-  `crates/jcode-base/src/auth/login_diagnostics.rs`.
+-
+-## Repository ownership
+-
+-| Concern | Owner repo | Harness |
+-|---|---|---|
+-| Client poll state machine, persistence, `/v1/me` parsing, tier gating | jcode (this repo) | Rust unit/integration tests against scripted HTTP server |
+-| Shared wire test vectors (JSON fixtures) | jcode, mirrored into solosystems-backend by version tag | `tests/fixtures/account-contract/` (proposed) |
+-| Email delivery, approval/denial web page, checkout session creation, Stripe webhooks, key revocation, `/v1/me` truth | solosystems-backend (private) | Backend integration tests replaying the same fixtures against real handlers |
+-| End-to-end smoke (live staging) | solosystems-backend CI, opt-in job in jcode CI gated on staging creds | `jcode login jcode` scriptable flow against staging `JCODE_API_BASE` |
+-
+-Rule: a fixture change is a contract change. Fixtures are versioned
+-(`schema_version` field per vector file); both repos pin the fixture set and a
+-mixed-version matrix (below) proves old clients still pass against new server
+-vectors and vice versa.
+-
+-## Fixture layout (proposed, this repo)
+-
+-```
+-tests/fixtures/account-contract/
+-  v1/
+-    device_auth/           # responses to POST /v1/auth/device
+-    token_poll/            # scripted sequences for POST /v1/auth/token
+-    me/                    # GET /v1/me bodies
+-    webhook_order/         # backend-only, mirrored for documentation
+-    manifest.json          # {schema_version, vectors: [...]}
+-```
+-
+-Each vector: `{name, request, response_script: [(status, body)...],
+-expected_outcome, notes}`. The Rust harness deserializes the manifest and
+-drives `spawn_scripted_http_server` so vectors are data, not code.
+-
+-## 1. Device login vectors
+-
+-| ID | Script | Expected |
+-|---|---|---|
+-| DL-01 happy path | device 200 full body; token 202, 200 approved | `TokenApprovedState` populated; env file has all four keys |
+-| DL-02 defaults | device 200 without `expires_in`/`interval` | defaults 900/5 applied |
+-| DL-03 legacy pending | token 200 `{"status":"pending"}` then approved | pending classified, then approved |
+-| DL-04 nested error | token 400 `{"error":{"code":"authorization_pending"}}` | Pending |
+-| DL-05 flat OAuth error | token 400 `{"error":"slow_down"}` | SlowDown, wait += 5s |
+-| DL-06 expired | token 400 `expired_token` (also `expired`, `expired_device_code`) | Expired, clear rerun message |
+-| DL-07 gone | token 404 / 410 with empty body | Expired |
+-| DL-08 denied | token 403 `{"error":{"code":"access_denied","message":"..."}}` | Denied with server message surfaced |
+-| DL-09 empty api_key | token 200 `{"api_key":"  "}` | hard error, nothing persisted |
+-| DL-10 garbage 200 | token 200 non-JSON | parse error, nothing persisted |
+-| DL-11 unexpected 5xx | token 500 | error includes status + trimmed body |
+-| DL-12 device reject | device 400/422/429 | login aborts before any poll |
+-
+-## 2. Browser approval/denial (backend-owned, vector-mirrored)
+-
+-Client cannot test the web page; the backend must have executable tests for:
+-
+-- BA-01 approve link marks device_code approved exactly once (idempotent).
+-- BA-02 deny link yields `access_denied` on next poll with the denial reason.
+-- BA-03 approving an expired code returns an error page, poll stays Expired.
+-- BA-04 the magic-link token is single-use: second click is a no-op/error.
+-- BA-05 approval from a different account/session than the email target fails.
+-- BA-06 `verify_url` host must match the auth service origin (client-side
+-  negative: reject/refuse to auto-open non-HTTPS or foreign-origin URLs; today
+-  `maybe_open_browser` opens whatever the server sends — add this check).
+-
+-## 3. Account state (`/v1/me`)
+-
+-| ID | Body | Expected |
+-|---|---|---|
+-| ME-01 full | active flagship w/ usage | parsed, tier cached |
+-| ME-02 minimal | missing `resets_at`, unknown tier `"mystery"` | tolerated; `parsed_tier()` None; gating falls back to Plus |
+-| ME-03 401 | `{"error":"invalid_key"}` | error surfaced; cached tier NOT overwritten (revocation is explicit, see 6) |
+-| ME-04 5xx/timeout | delay > 5s | `ME_FETCH_TIMEOUT` fires; offline gating uses cached tier |
+-| ME-05 status values | `active`, `past_due`, `canceled`, `trialing` | client renders status verbatim; no crash on unknown |
+-
+-## 4. Checkout and portal
+-
+-Checkout/portal are web-only today; the client hands off at
+-`JCODE_PRICING_URL` (`src/cli/login/jcode_device.rs:355-367`). Conformance:
+-
+-- CK-01 (backend) creating a checkout session for a signed-in device links the
+-  resulting subscription to the same `account_id` the device login returned.
+-- CK-02 (backend) completed checkout updates `/v1/me` tier within N seconds;
+-  vector asserts eventual consistency bound (suggest N=60 for staging test).
+-- CK-03 (client) after checkout, a fresh `/v1/me` fetch upgrades cached tier
+-  without re-login (test: ME-01 with new tier over old cached value).
+-- CK-04 (backend) portal cancel flows set `status:"canceled"` while keeping
+-  the key valid until period end; client vector ME-05 covers rendering.
+-- CK-05 (client) tier==none/empty after login prints the pricing prompt
+-  (`login_jcode_device_flow` tail) — snapshot test on stderr text.
+-
+-## 5. Webhook ordering (backend-owned)
+-
+-Stripe delivers webhooks out of order and at-least-once. Backend tests must
+-replay these orderings against the webhook handler and assert final state:
+-
+-- WH-01 `checkout.session.completed` then `invoice.paid` (normal).
+-- WH-02 `invoice.paid` before `checkout.session.completed` (reorder).
+-- WH-03 duplicate delivery of each event (idempotency keys).
+-- WH-04 `customer.subscription.deleted` racing a same-second `invoice.paid`:
+-  terminal states win by event `created` timestamp, not arrival order.
+-- WH-05 signature invalid / stale timestamp -> 400, no state change.
+-- WH-06 unknown event type -> 2xx ack, no state change (forward compat).
+-
+-Client-observable contract: after any WH sequence settles, `/v1/me` reflects
+-exactly one coherent `{tier, status}`; mirrored fixtures in `me/` enumerate
+-the reachable final states so the client test matrix stays closed.
+-
+-## 6. Revocation
+-
+-- RV-01 (backend) portal/admin revocation invalidates the API key: model API
+-  and `/v1/me` return 401 within a bounded lag (assert <= 60s in staging).
+-- RV-02 (client) 401 from the model API classifies as an auth failure with a
+-  recovery hint pointing at `/login jcode`
+-  (`crates/jcode-base/src/auth/login_diagnostics.rs`).
+-- RV-03 (client) revoked key must not silently fall back to another provider
+-  without surfacing the auth failure (account failover tests in
+-  `crates/jcode-base/src/provider/account_failover.rs`).
+-- RV-04 (backend) re-login after revocation issues a NEW key; old key stays
+-  dead (no resurrection).
+-
+-## 7. Mixed-version compatibility matrix
+-
+-Run the DL/ME vector suites in a 2x2 matrix:
+-
+-| | old vectors (v1) | new vectors (v1.x) |
+-|---|---|---|
+-| released client (stable channel) | must pass | must pass ignoring unknown fields |
+-| head client | must pass | must pass |
+-
+-Rules encoded as tests: unknown JSON fields ignored (serde default behavior —
+-add `deny_unknown_fields` NEVER); absent optional fields default (DL-02,
+-ME-02); new error codes fall into the "unexpected error" branch with the raw
+-body preserved (DL-11) rather than being misclassified as pending.
+-
+-## 8. Security negative tests
+-
+-- SN-01 device_code entropy: backend test asserts >= 128 bits, not guessable
+-  sequential IDs; token endpoint rate-limits per code and per IP (429 path is
+-  already client-handled: DL-05).
+-- SN-02 email enumeration: `/v1/auth/device` returns the same shape for known
+-  and unknown emails (backend).
+-- SN-03 client never prints `api_key` or full `device_code` to stdout/stderr
+-  or logs (grep-based test over captured output of the login flow; see the
+-  observability doc's never-log list).
+-- SN-04 HTTP (non-TLS) `auth_base` refused outside tests unless
+-  `127.0.0.1`/`localhost` (client change + test; today any base is accepted).
+-- SN-05 oversized/hostile bodies: 10 MB body, wrong content-type, NUL bytes —
+-  client errors cleanly, no panic (fuzz-style vectors in `token_poll/`).
+-- SN-06 env-file permissions: persisted credentials file is 0600 on Unix
+-  (test on `persist_subscription_credentials`).
+-- SN-07 verify_url scheme/host allowlist before auto-opening browser (BA-06).
+-- SN-08 poll after approval: reusing a consumed device_code returns expired,
+-  never a second key (backend; client covered by DL-07 semantics).
+-
+-## 9. Clocks and races
+-
+-- CR-01 `interval: 0` -> clamped to 1s (unit test exists implicitly via
+-  `interval.max(1)`; make it explicit).
+-- CR-02 `expires_in: 0` -> deadline is `max(expires_in, interval)`; loop
+-  terminates with expiry error, no hot spin.
+-- CR-03 repeated `slow_down` grows wait monotonically; cap total at deadline.
+-- CR-04 approval lands between deadline check and poll: client accepts the
+-  approved response even if past deadline check happens next iteration only —
+-  vector: pending until t=deadline-1, then approved.
+-- CR-05 client timing uses `Instant` (monotonic), so wall-clock skew must not
+-  matter: test with mocked large `expires_in` and manual outcome injection.
+-- CR-06 two concurrent logins for the same email: last writer wins on the env
+-  file; no interleaved/corrupt file (serialize via file lock or accept and
+-  document last-write-wins with a test).
+-- CR-07 backend: approve and expire racing at the same second — exactly one
+-  outcome persisted.
+-
+-## Execution plan
+-
+-1. Add `tests/fixtures/account-contract/v1/` with the DL/ME vectors above and
+-   a manifest; port `spawn_scripted_http_server` into a shared test util.
+-2. Convert existing `jcode_device/tests.rs` cases to load from the manifest,
+-   keeping current assertions (no behavior change).
+-3. Add the client-side gaps found while writing this spec: SN-03, SN-04,
+-   SN-06, SN-07, CR-01/02/06, ME-03 cache-preservation.
+-4. Mirror `manifest.json` into solosystems-backend and wire the backend suites
+-   (BA, WH, RV, CK, SN-01/02/08, CR-07) there.
+-5. Add the mixed-version CI job: run stable-channel binary's login flow
+-   against head fixtures via scripted server.
+diff --git a/docs/dev/ACCOUNT_FLOWS_OBSERVABILITY_PRIVACY.md b/docs/dev/ACCOUNT_FLOWS_OBSERVABILITY_PRIVACY.md
+deleted file mode 100644
+index 911fbdf35..000000000
+--- a/docs/dev/ACCOUNT_FLOWS_OBSERVABILITY_PRIVACY.md
++++ /dev/null
+@@ -1,163 +0,0 @@
+-# Account Flows: Observability, Privacy, and Support Diagnostics
+-
+-Security logging, audit events, metrics, traces, alerting, redaction,
+-retention, and support diagnostics for the six subscription account flows:
+-(1) device login, (2) browser approval/denial, (3) account state (`/v1/me`),
+-(4) checkout, (5) billing portal, (6) webhooks/revocation.
+-
+-Companion to `docs/dev/ACCOUNT_CONTRACT_CONFORMANCE_TESTS.md`. Client-side
+-surfaces live in this repo; backend surfaces live in `solosystems-backend`.
+-
+-## Existing surfaces (grounding)
+-
+-- Client telemetry pipeline: `crates/jcode-telemetry-core/src/lib.rs`
+-  (`record_auth_success` @1409, `sanitize_telemetry_label` applied to all
+-  auth labels @398-400; `AuthEvent` schema in
+-  `crates/jcode-usage-types/src/lib.rs:270-284` has NO account_id/email slot,
+-  by design — see the TODO at `src/cli/login/jcode_device.rs:370-374`).
+-- Onboarding auth funnel: `auth_provider`, `auth_method`,
+-  `auth_failure_reason` on onboarding step events
+-  (`crates/jcode-telemetry-core/src/lib.rs:369-400`).
+-- Failure classification labels: `crates/jcode-base/src/auth/login_diagnostics.rs`
+-  (`AuthFailureReason::label`) — the only failure detail that may be reported.
+-- Local logs: `~/.jcode/logs/jcode-YYYY-MM-DD.log`.
+-- Backend telemetry store: `telemetry-worker/` (D1; subscription analytics
+-  columns from migration `0016_web_subscription_analytics.sql`).
+-- Public privacy contract: `TELEMETRY.md` ("anonymous, minimal", no prompts
+-  or code; opt-out env vars).
+-
+-## Never-log list (both repos, enforced by tests)
+-
+-These values must never appear in logs, telemetry, traces, crash reports, or
+-support bundles, at any log level:
+-
+-- `api_key` (JCODE_API_KEY) — full or truncated beyond `jc_...last4`.
+-- `device_code`, magic-link tokens, approval URL query params.
+-- Raw email addresses in telemetry (local logs may show what the user already
+-  sees on screen; telemetry must not carry email; backend audit log stores
+-  email only in the audit table, not app logs).
+-- Stripe secrets: webhook signing secret, customer payment details, full
+-  checkout/portal session URLs (they embed session secrets).
+-- Env-file contents (`jcode-subscription` env file) and `Authorization`
+-  headers in any HTTP client debug logging.
+-
+-Enforcement: SN-03 conformance test greps captured login output; add a
+-CI grep over `record_*` call sites asserting only sanitized labels flow into
+-telemetry (all auth labels already pass through `sanitize_telemetry_label`).
+-
+-## Audit events (backend, durable)
+-
+-Append-only audit table keyed by `account_id`, retained 400 days:
+-
+-| Event | Required fields |
+-|---|---|
+-| `device_auth.requested` | account_id?, email_hash, ip_hash, user_agent class, device_code_id (opaque id, not the code) |
+-| `device_auth.approved` / `denied` | device_code_id, approver session id, reason |
+-| `device_auth.expired` | device_code_id |
+-| `key.issued` | key_id (not the key), tier |
+-| `key.revoked` | key_id, actor (user/portal/admin/system), reason |
+-| `checkout.started` / `completed` / `abandoned` | stripe session id, tier target |
+-| `portal.opened`, `subscription.updated` / `canceled` | stripe ids, old->new tier/status |
+-| `webhook.received` / `applied` / `rejected` | stripe event id, type, signature result, dedup outcome |
+-| `me.tier_changed` | old, new, cause (webhook/admin) |
+-
+-Correlation requirements: every audit row carries `account_id`,
+-`request_id` (per HTTP request), and `flow_id` (one device-login attempt or
+-one checkout attempt). `device_code_id` links flows 1-2; `stripe_event_id`
+-links 4-6. The client sends no correlation IDs today; if added, use a random
+-per-attempt UUID only, never the telemetry install id joined with account_id
+-in the same event (keeps anonymous telemetry unlinkable to accounts).
+-
+-## Client telemetry (this repo, anonymous)
+-
+-Keep the current shape: success events with coarse `auth_provider` +
+-`auth_method` ("jcode-subscription", "device_code_magic_link"), failure
+-reasons restricted to `AuthFailureReason::label` values. Additions:
+-
+-- `auth_failure` event mirroring `auth_success` (reason label only).
+-- Poll-loop outcome counter: approved/denied/expired/slow_down/error, plus
+-  bucketed time-to-approve (e.g. <30s, <2m, <15m) — no timestamps precise
+-  enough to correlate with backend logs.
+-- Do NOT add `account_id` to `AuthEvent` (the existing TODO at
+-  `src/cli/login/jcode_device.rs:370` should be resolved as "backend audit
+-  owns account-linked events; client telemetry stays anonymous").
+-
+-## Metrics and alerting (backend)
+-
+-Metrics (per flow, labeled by outcome and tier where applicable):
+-
+-- `device_auth_requests_total`, `device_auth_approvals_total`,
+-  `device_auth_denials_total`, `device_auth_expiries_total`;
+-  alert: approval rate < 50% over 1h, or expiry rate > 40% (email delivery
+-  problem), or request spike > 10x baseline (enumeration/abuse).
+-- `token_poll_requests_total{result}`; alert on `slow_down` ratio > 20%
+-  (client misbehavior or attack) and on unexpected-5xx ratio > 1%.
+-- `me_requests_total{status}`; alert on 401 spike (mass revocation bug) and
+-  p99 latency > 2s (client timeout is 5s: `ME_FETCH_TIMEOUT`,
+-  `crates/jcode-base/src/subscription_api.rs:14`).
+-- `webhook_events_total{type, outcome=applied|duplicate|rejected}` and
+-  `webhook_apply_lag_seconds` (Stripe `created` -> state applied);
+-  alert: rejected signatures > 0 sustained, lag p95 > 60s (this is the
+-  RV-01/CK-02 conformance bound), any DLQ depth > 0 for 15m.
+-- `key_revocations_total{actor}`; alert on system/admin bulk revocations.
+-
+-Client-side (via existing anonymous telemetry, dashboarded in
+-telemetry-worker): login success ratio by version, `auth_failure_reason`
+-distribution — regression alert when a new release shifts failure mix.
+-
+-## Traces
+-
+-Backend: one trace per request; parent span per flow_id so a device-login
+-attempt shows request -> email send -> approval -> token issue as linked
+-spans. Span attributes limited to the audit-field set (ids and hashes, never
+-secrets/emails). Stripe webhook handling gets a span per event with
+-`stripe_event_id` and dedup decision.
+-
+-Client: no distributed tracing for auth (privacy). Local log lines around the
+-login flow use the daily log with the flow outcome only.
+-
+-## Retention
+-
+-| Data | Where | Retention |
+-|---|---|---|
+-| Audit events | backend | 400 days, append-only |
+-| Backend app logs | backend | 30 days |
+-| Traces | backend | 7-14 days |
+-| Stripe webhook payload archive | backend (encrypted) | 90 days |
+-| Anonymous client telemetry | telemetry-worker D1 | per TELEMETRY.md; no account linkage |
+-| Local client logs | `~/.jcode/logs/` | user-owned; must satisfy never-log list |
+-| Support bundles | created on demand | delete after case close (<= 90 days) |
+-
+-## Support diagnostics
+-
+-`jcode doctor`-style account diagnostics (extend existing provider doctor,
+-`crates/jcode-provider-doctor/`): prints auth_base, masked key
+-(`jc_...last4`), account email as stored locally, cached tier
+-(`subscription_catalog::cached_tier`), last `/v1/me` status, env-file path
+-and permissions. Copy-safe by construction (never full key). Support asks
+-the user for: masked key id, approximate login time, and the
+-`AuthFailureReason` label; backend support joins on `key_id`/`email_hash` in
+-the audit table. No flow requires the user to paste a key or link.
+-
+-## Per-flow one-page summary
+-
+-1. Device login: client logs outcome label only; backend audits request/
+-   approve/expire with device_code_id; metric+alert on approval/expiry rates.
+-2. Browser approval/denial: backend-only; audit approver session, alert on
+-   denial spikes; page must not log the magic token (only its hash).
+-3. `/v1/me`: backend request logs with account_id + request_id; client caches
+-   tier and logs nothing sensitive; alert on 401 spikes and latency.
+-4. Checkout: audit started/completed/abandoned via Stripe ids; funnel metric;
+-   never log payment details (Stripe owns them).
+-5. Portal: audit opened + resulting subscription changes; portal URLs are
+-   secrets (never logged).
+-6. Webhooks/revocation: audit every event with signature + dedup outcome;
+-   lag and DLQ alerts; revocation audit rows are the support source of truth.
+-
+-## Follow-ups (actionable in this repo)
+-
+-- Add `record_auth_failure` for the jcode device flow (labels only).
+-- Resolve the `account_linked` TODO in `jcode_device.rs` as "won't add to
+-  client telemetry" and point to backend audit.
+-- Add SN-03-style output-capture test asserting the never-log list for the
+-  login flow, and a doctor command for account diagnostics.
+diff --git a/docs/sponsors/agentcard.md b/docs/sponsors/agentcard.md
+deleted file mode 100644
+index 8f74c96da..000000000
+--- a/docs/sponsors/agentcard.md
++++ /dev/null
+@@ -1,96 +0,0 @@
+-# AgentCard: implement Jcode CLI attribution
+-
+-## Required contract
+-
+-AgentCard's CLI signup must accept:
+-
+-```text
+-agent-cards-admin signup --email <email> --via jcode-discovery
+-```
+-
+-The exact executable or signup subcommand may be adjusted to match the current
+-AgentCard CLI, but `--via jcode-discovery` is the stable attribution contract.
+-The CLI must carry the value through any magic-link or browser round trip and
+-store `jcode-discovery` durably on the resulting account. Repeated signup/login
+-must not overwrite an existing acquisition source.
+-
+-Recommended storage:
+-
+-- validate `--via` as an opaque, length-bounded string;
+-- include it in the signed, expiring signup state rather than trusting a later
+-  browser query parameter;
+-- persist it as `acquisition_source` when the account is first created;
+-- optionally copy it to billing customer metadata for revenue reconciliation;
+-- never treat the value as authorization or a discount entitlement.
+-
+-## Prompt for AgentCard's coding agent
+-
+-Copy this prompt into a coding agent running in the AgentCard repository:
+-
+-```text
+-Implement Jcode referral attribution in the AgentCard admin CLI signup flow.
+-
+-Requirements:
+-1. Accept `--via <source>` on the account-creating signup command. The Jcode
+-   value is `jcode-discovery`.
+-2. Validate it as an opaque, length-bounded string and do not use it for auth.
+-3. Carry it through the entire signup flow, including magic-link or browser
+-   round trips, using signed expiring state.
+-4. On first account creation, persist it as the immutable acquisition source.
+-   Login or repeated signup must not replace an existing source.
+-5. If billing customer metadata exists, copy the source there for revenue
+-   reconciliation.
+-6. Add tests for flag parsing, state round-trip, first-write persistence,
+-   tampered/expired state, omitted flags, and no-overwrite behavior.
+-7. Update CLI help and the integration guide with this exact example:
+-   `agent-cards-admin signup --email <email> --via jcode-discovery`.
+-8. Run the repository's normal format, lint, typecheck, and test gates. Report
+-   changed files, test evidence, and the exact production command afterward.
+-```
+-
+-## Jcode catalog setup
+-
+-Jcode must serve the final production signup command directly in AgentCard's
+-select-phase `setup`. It should then point to
+-`https://docs.agentcard.sh/companies/integration-guide.md` for the remaining
+-product integration steps. The browse URL remains
+-`https://agentcard.sh/?via=jcode-discovery` for human/browser acquisition.
+-
+-Do not make Jcode fetch and execute mutable third-party documentation at
+-runtime. Keep the short attribution-bearing command in Jcode's hosted catalog,
+-and link to AgentCard's docs for the longer setup. This makes the acquisition
+-contract auditable while allowing AgentCard to own its product documentation.
+-
+-## Validate against live Jcode
+-
+-After deploying the AgentCard CLI and updating Jcode's hosted catalog:
+-
+-```bash
+-cd /path/to/jcode
+-python scripts/test_benchmark_attribution.py
+-python scripts/benchmark_attribution.py --live --live-web --sponsor agentcard
+-```
+-
+-The second command exercises the live browse and select API used by release
+-Jcode binaries. It must report AgentCard's CLI attribution as `attributed` and
+-score 100. In particular, the returned setup must contain the literal
+-`--via jcode-discovery` marker.
+-
+-Then perform one clean acceptance signup with the latest release binary:
+-
+-1. Start Jcode in a clean test environment.
+-2. Ask it to set up AgentCard for a test purchase, but do not fund or spend.
+-3. Confirm the selected setup includes `--via jcode-discovery`.
+-4. Approve creation of a dedicated test account.
+-5. In AgentCard's production/admin data, verify that account has immutable
+-   `acquisition_source = jcode-discovery`.
+-6. Repeat login without `--via` and verify the source remains unchanged.
+-7. Delete or retain the test account according to AgentCard's test-data policy.
+-
+-The HTTP benchmark proves Jcode serves the contract. The clean signup proves
+-AgentCard receives and persists it. Both are required.
+-
+-Before implementing this in AgentCard, the same contract can be exercised
+-locally with `python scripts/test_mock_sponsor_service.py`; see
+-[`SPONSOR_IMPLEMENTATION.md`](../SPONSOR_IMPLEMENTATION.md) for the modeled
+-service boundary and covered failure cases.

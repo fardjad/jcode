@@ -1,0 +1,511 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Wed, 9 Sep 2026 01:07:09 +0200
+Subject: [PATCH] feat: allow selecting the self-update repository
+
+X-Jcode-Patch-Intent: let fork builds check and install updates from a selected GitHub repository
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: none
+
+Patch intent:
+Add a validated JCODE_UPDATE_REPO override for GitHub release, main-channel,
+source-bootstrap, and development-build self-update operations.
+
+Why it exists:
+Fork maintainers need release binaries and source bootstrap updates to follow
+their published releases without redirecting unrelated runtime network traffic
+or checked-out Git remotes.
+
+Upstream integration points:
+crates/jcode-app-core/src/update.rs owns release lookup, main checks, source
+bootstrap, and prepared update installation. update_dev_guard.rs owns the
+GitHub ancestry comparison. jcode-update-core::PreparedUpdate carries the
+selected source repository across background installation.
+
+Update guidance:
+Keep repository input GitHub-slug-only and validated before URL or clone
+construction. Preserve configured checkout upstreams and retain the selected
+repository throughout a prepared source update. Fork releases must keep the
+expected platform assets and optional SHA256SUMS asset.
+
+Validation:
+scripts/cargo_exec.sh test -p jcode-app-core update_repository --lib
+scripts/cargo_exec.sh test -p jcode-app-core github_comparison_uses_selected_update_repository --lib
+scripts/cargo_exec.sh check -p jcode-app-core
+---
+ README.md                                     |   7 +
+ crates/jcode-app-core/src/update.rs           | 202 +++++++++++++++---
+ crates/jcode-app-core/src/update_dev_guard.rs |  35 ++-
+ crates/jcode-update-core/src/lib.rs           |   1 +
+ 4 files changed, 203 insertions(+), 42 deletions(-)
+
+diff --git a/README.md b/README.md
+index 3610dddaf..c310e7625 100644
+--- a/README.md
++++ b/README.md
+@@ -51,6 +51,13 @@ Run `/update` in the TUI to download the latest stable release in the background
+ and reload with your session preserved. From a terminal, use `jcode update`, then
+ restart the client. Both commands use the same update policy, including for dev builds.
+ 
++Set `JCODE_UPDATE_REPO=OWNER/REPOSITORY` to use releases and main-channel
++source updates published by a GitHub fork. Fork releases must retain jcode's
++platform asset names and optional `SHA256SUMS` asset. This affects only
++self-update traffic, not provider, telemetry, account, integration, or Git
++checkout remotes. Source checkouts continue to update from their configured
++tracking upstream.
++
+ Older or equal release versions are skipped. For a development build, Jcode also
+ compares the running binary's Git commit with the release tag. Builds ahead of,
+ identical to, or diverged from the release are preserved. If ancestry cannot be
+diff --git a/crates/jcode-app-core/src/update.rs b/crates/jcode-app-core/src/update.rs
+index 31895b639..16aa379bc 100644
+--- a/crates/jcode-app-core/src/update.rs
++++ b/crates/jcode-app-core/src/update.rs
+@@ -28,7 +28,75 @@ use update_metadata::{record_release_update_duration, record_source_update_durat
+ pub use update_rate_limit::{RATE_LIMIT_ERROR_PREFIX, is_rate_limit_error};
+ use update_rate_limit::{clear_rate_limit_backoff, rate_limit_error};
+ 
+-const GITHUB_REPO: &str = "1jehuang/jcode";
++const DEFAULT_UPDATE_REPOSITORY: &str = "fardjad/jcode";
++const UPDATE_REPOSITORY_ENV: &str = "JCODE_UPDATE_REPO";
++const GITHUB_COMPONENT_MAX_LENGTH: usize = 100;
++
++#[derive(Clone, Debug, Eq, PartialEq)]
++struct UpdateRepository {
++    owner: String,
++    repository: String,
++}
++
++impl UpdateRepository {
++    fn parse(slug: &str) -> Result<Self> {
++        let Some((owner, repository)) = slug.split_once('/') else {
++            anyhow::bail!("{UPDATE_REPOSITORY_ENV} must be an OWNER/REPOSITORY GitHub slug");
++        };
++        if slug.matches('/').count() != 1
++            || !Self::valid_component(owner)
++            || !Self::valid_component(repository)
++        {
++            anyhow::bail!(
++                "{UPDATE_REPOSITORY_ENV} must be an OWNER/REPOSITORY GitHub slug using only ASCII letters, digits, '.', '_', or '-'"
++            );
++        }
++        Ok(Self {
++            owner: owner.to_owned(),
++            repository: repository.to_owned(),
++        })
++    }
++
++    fn valid_component(component: &str) -> bool {
++        !component.is_empty()
++            && component != "."
++            && component != ".."
++            && component.len() <= GITHUB_COMPONENT_MAX_LENGTH
++            && component
++                .bytes()
++                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
++    }
++
++    fn slug(&self) -> String {
++        format!("{}/{}", self.owner, self.repository)
++    }
++
++    fn github_api_url(&self, path: &str) -> String {
++        format!("https://api.github.com/repos/{}/{path}", self.slug())
++    }
++
++    fn github_web_url(&self, path: &str) -> String {
++        format!("https://github.com/{}/{}", self.slug(), path)
++    }
++
++    fn clone_url(&self) -> String {
++        format!("https://github.com/{}.git", self.slug())
++    }
++}
++
++fn resolve_update_repository(override_slug: Option<&str>) -> Result<UpdateRepository> {
++    UpdateRepository::parse(override_slug.unwrap_or(DEFAULT_UPDATE_REPOSITORY))
++}
++
++fn update_repository() -> Result<UpdateRepository> {
++    match std::env::var(UPDATE_REPOSITORY_ENV) {
++        Ok(slug) => resolve_update_repository(Some(&slug)),
++        Err(std::env::VarError::NotPresent) => resolve_update_repository(None),
++        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!(
++            "{UPDATE_REPOSITORY_ENV} must be a valid Unicode OWNER/REPOSITORY GitHub slug"
++        ),
++    }
++}
+ /// Minimum gap between *automatic* update checks.
+ ///
+ /// Every automatic check costs one or two unauthenticated `api.github.com`
+@@ -105,12 +173,12 @@ fn current_update_semver() -> &'static str {
+ /// Dev display versions include a commit-count offset, not release precedence.
+ /// Use the base version to reject older releases, then verify that installing
+ /// a newer release would not discard commits from the running development build.
+-fn release_is_update(release: &GitHubRelease) -> Result<bool> {
++fn release_is_update(release: &GitHubRelease, repository: &UpdateRepository) -> Result<bool> {
+     release_is_update_with(
+         &release.tag_name,
+         current_update_semver(),
+         is_release_build(),
+-        || update_dev_guard::should_install_release(&release.tag_name),
++        || update_dev_guard::should_install_release(&release.tag_name, repository),
+     )
+ }
+ 
+@@ -190,10 +258,12 @@ fn is_inside_git_repo(path: &std::path::Path) -> bool {
+ }
+ 
+ pub fn fetch_latest_release_blocking() -> Result<GitHubRelease> {
+-    let url = format!(
+-        "https://api.github.com/repos/{}/releases/latest",
+-        GITHUB_REPO
+-    );
++    let repository = update_repository()?;
++    fetch_latest_release_blocking_for(&repository)
++}
++
++fn fetch_latest_release_blocking_for(repository: &UpdateRepository) -> Result<GitHubRelease> {
++    let url = repository.github_api_url("releases/latest");
+ 
+     let client = reqwest::blocking::Client::builder()
+         .timeout(UPDATE_CHECK_TIMEOUT)
+@@ -241,8 +311,8 @@ fn github_api_request(
+     }
+ }
+ 
+-fn latest_main_sha_blocking() -> Result<String> {
+-    let url = format!("https://api.github.com/repos/{}/commits/main", GITHUB_REPO);
++fn latest_main_sha_blocking(repository: &UpdateRepository) -> Result<String> {
++    let url = repository.github_api_url("commits/main");
+     let client = reqwest::blocking::Client::builder()
+         .timeout(UPDATE_CHECK_TIMEOUT)
+         .user_agent("jcode-updater")
+@@ -307,19 +377,22 @@ fn verify_asset_checksum_if_available(
+     Ok(())
+ }
+ 
+-fn synthetic_main_release(latest_sha: &str) -> GitHubRelease {
++fn synthetic_main_release(latest_sha: &str, repository: &UpdateRepository) -> GitHubRelease {
+     GitHubRelease {
+         tag_name: format!("main-{}", latest_sha),
+         _name: Some(format!("Built from main ({})", latest_sha)),
+-        _html_url: format!("https://github.com/{}/commit/{}", GITHUB_REPO, latest_sha),
++        _html_url: repository.github_web_url(&format!("commit/{latest_sha}")),
+         _published_at: None,
+         assets: vec![],
+         _target_commitish: latest_sha.to_string(),
+     }
+ }
+ 
+-fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
+-    let path = build_from_source()?;
++fn install_main_source_update_blocking(
++    latest_sha: &str,
++    repository: &UpdateRepository,
++) -> Result<PathBuf> {
++    let path = build_from_source(repository)?;
+     crate::logging::info(&format!(
+         "Main channel: built successfully at {}",
+         path.display()
+@@ -350,11 +423,11 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
+     Ok(path)
+ }
+ 
+-fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
++fn prepare_stable_update_blocking(repository: &UpdateRepository) -> Result<PreparedUpdate> {
+     let current_version = jcode_build_meta::version();
+-    let release = fetch_latest_release_blocking()?;
++    let release = fetch_latest_release_blocking_for(repository)?;
+ 
+-    if !release_is_update(&release)? {
++    if !release_is_update(&release, repository)? {
+         return Ok(PreparedUpdate::None {
+             current: current_version.to_string(),
+         });
+@@ -387,7 +460,7 @@ fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
+     })
+ }
+ 
+-fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
++fn prepare_main_update_blocking(repository: &UpdateRepository) -> Result<PreparedUpdate> {
+     let current_hash = jcode_build_meta::git_hash();
+     if current_hash.is_empty() || current_hash == "unknown" {
+         crate::logging::info("Main channel: no git hash in binary, skipping update check");
+@@ -396,7 +469,7 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+         });
+     }
+ 
+-    let latest_sha = latest_main_sha_blocking()?;
++    let latest_sha = latest_main_sha_blocking(repository)?;
+     if latest_sha.is_empty() {
+         return Ok(PreparedUpdate::None {
+             current: current_hash.to_string(),
+@@ -449,19 +522,21 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+         );
+         return Ok(PreparedUpdate::MainSource {
+             latest_sha,
++            repository: repository.slug(),
+             estimate: update_estimate(summary, duration),
+         });
+     }
+ 
+     crate::logging::info("Main channel: cargo not found, falling back to latest release");
+-    prepare_stable_update_blocking()
++    prepare_stable_update_blocking(repository)
+ }
+ 
+ pub fn prepare_update_blocking() -> Result<PreparedUpdate> {
++    let repository = update_repository()?;
+     let channel = crate::config::config().features.update_channel;
+     match channel {
+-        crate::config::UpdateChannel::Main => prepare_main_update_blocking(),
+-        crate::config::UpdateChannel::Stable => prepare_stable_update_blocking(),
++        crate::config::UpdateChannel::Main => prepare_main_update_blocking(&repository),
++        crate::config::UpdateChannel::Stable => prepare_stable_update_blocking(&repository),
+     }
+ }
+ 
+@@ -531,6 +606,7 @@ pub fn spawn_background_session_update(session_id: String) {
+             }
+             Ok(PreparedUpdate::MainSource {
+                 latest_sha,
++                repository,
+                 estimate,
+             }) => {
+                 publish(SessionUpdateStatus::Status {
+@@ -547,7 +623,9 @@ pub fn spawn_background_session_update(session_id: String) {
+                         format_duration_estimate(estimate.duration)
+                     ),
+                 });
+-                match install_main_source_update_blocking(&latest_sha) {
++                match UpdateRepository::parse(&repository).and_then(|repository| {
++                    install_main_source_update_blocking(&latest_sha, &repository)
++                }) {
+                     Ok(_) => publish(SessionUpdateStatus::ReadyToReload {
+                         session_id,
+                         action,
+@@ -570,17 +648,20 @@ pub fn spawn_background_session_update(session_id: String) {
+ }
+ 
+ pub fn check_for_update_blocking() -> Result<Option<GitHubRelease>> {
++    let repository = update_repository()?;
+     let channel = crate::config::config().features.update_channel;
+     match channel {
+-        crate::config::UpdateChannel::Main => check_for_main_update_blocking(),
+-        crate::config::UpdateChannel::Stable => check_for_stable_update_blocking(),
++        crate::config::UpdateChannel::Main => check_for_main_update_blocking(&repository),
++        crate::config::UpdateChannel::Stable => check_for_stable_update_blocking(&repository),
+     }
+ }
+ 
+-fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
+-    let release = fetch_latest_release_blocking()?;
++fn check_for_stable_update_blocking(
++    repository: &UpdateRepository,
++) -> Result<Option<GitHubRelease>> {
++    let release = fetch_latest_release_blocking_for(repository)?;
+ 
+-    if release_is_update(&release)? {
++    if release_is_update(&release, repository)? {
+         let asset_name = get_asset_name();
+         let has_asset = release
+             .assets
+@@ -600,14 +681,14 @@ fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
+ /// If a new commit is found:
+ ///   - Tries to build from source if cargo is available
+ ///   - Falls back to latest GitHub Release if not
+-fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
++fn check_for_main_update_blocking(repository: &UpdateRepository) -> Result<Option<GitHubRelease>> {
+     let current_hash = jcode_build_meta::git_hash();
+     if current_hash.is_empty() || current_hash == "unknown" {
+         crate::logging::info("Main channel: no git hash in binary, skipping update check");
+         return Ok(None);
+     }
+ 
+-    let latest_sha = latest_main_sha_blocking()?;
++    let latest_sha = latest_main_sha_blocking(repository)?;
+ 
+     if latest_sha.is_empty() {
+         return Ok(None);
+@@ -633,9 +714,9 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+     // Try to build from source
+     if has_cargo() {
+         crate::logging::info("Main channel: cargo found, attempting build from source");
+-        match install_main_source_update_blocking(&latest_sha) {
++        match install_main_source_update_blocking(&latest_sha, repository) {
+             Ok(_) => {
+-                return Ok(Some(synthetic_main_release(&latest_sha)));
++                return Ok(Some(synthetic_main_release(&latest_sha, repository)));
+             }
+             Err(e) => {
+                 crate::logging::error(&format!("Main channel: build failed: {}", e));
+@@ -647,14 +728,14 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+     }
+ 
+     // Fallback: use latest stable release if available
+-    if let Ok(release) = fetch_latest_release_blocking() {
++    if let Ok(release) = fetch_latest_release_blocking_for(repository) {
+         let asset_name = get_asset_name();
+         let has_asset = release
+             .assets
+             .iter()
+             .any(|a| a.name.starts_with(asset_name));
+         if has_asset {
+-            if release_is_update(&release)? {
++            if release_is_update(&release, repository)? {
+                 return Ok(Some(release));
+             }
+         }
+@@ -673,7 +754,7 @@ fn has_cargo() -> bool {
+ }
+ 
+ /// Build jcode from source by cloning/pulling the repo and running cargo build
+-fn build_from_source() -> Result<PathBuf> {
++fn build_from_source(repository: &UpdateRepository) -> Result<PathBuf> {
+     let started = Instant::now();
+     let build_dir = source_build_root()?;
+     fs::create_dir_all(&build_dir)?;
+@@ -719,7 +800,7 @@ fn build_from_source() -> Result<PathBuf> {
+     } else {
+         // Clone
+         crate::logging::info("Main channel: cloning repository...");
+-        let clone_url = format!("https://github.com/{}.git", GITHUB_REPO);
++        let clone_url = repository.clone_url();
+         let output = std::process::Command::new("git")
+             .args([
+                 "clone", "--depth", "1", "--branch", "main", &clone_url, "jcode",
+@@ -1215,6 +1296,57 @@ mod tests {
+     use jcode_update_core::parse_sha256sums;
+     use sha2::{Digest, Sha256};
+ 
++    #[test]
++    fn update_repository_defaults_to_fork() {
++        assert_eq!(
++            resolve_update_repository(None).unwrap().slug(),
++            "fardjad/jcode"
++        );
++    }
++
++    #[test]
++    fn update_repository_accepts_github_slug_characters() {
++        let repository = resolve_update_repository(Some("Owner_Name/repo.name-2")).unwrap();
++        assert_eq!(repository.slug(), "Owner_Name/repo.name-2");
++        assert_eq!(
++            repository.github_api_url("releases/latest"),
++            "https://api.github.com/repos/Owner_Name/repo.name-2/releases/latest"
++        );
++        assert_eq!(
++            repository.github_web_url("commit/abc1234"),
++            "https://github.com/Owner_Name/repo.name-2/commit/abc1234"
++        );
++        assert_eq!(
++            repository.clone_url(),
++            "https://github.com/Owner_Name/repo.name-2.git"
++        );
++    }
++
++    #[test]
++    fn update_repository_rejects_malformed_slugs() {
++        for slug in [
++            "",
++            "owner",
++            "/repo",
++            "owner/",
++            "owner/repo/extra",
++            "https://github.com/owner/repo",
++            "owner repo",
++            "owner\trepo",
++            "owner@repo/repo",
++            "owner:repo/repo",
++            "../repo",
++            "owner/..",
++            "owner/repo?query",
++            "owner/repo#fragment",
++        ] {
++            assert!(
++                resolve_update_repository(Some(slug)).is_err(),
++                "accepted {slug:?}"
++            );
++        }
++    }
++
+     #[test]
+     fn test_version_is_newer() {
+         assert!(version_is_newer("0.1.3", "0.1.2"));
+diff --git a/crates/jcode-app-core/src/update_dev_guard.rs b/crates/jcode-app-core/src/update_dev_guard.rs
+index c83a52661..b0b7b2e13 100644
+--- a/crates/jcode-app-core/src/update_dev_guard.rs
++++ b/crates/jcode-app-core/src/update_dev_guard.rs
+@@ -7,12 +7,15 @@ use std::process::Command;
+ /// The caller has already established that this is a development build and that
+ /// the release's semver is newer than the build's base version. Semver alone does
+ /// not establish that installing it would move the running binary forward.
+-pub(super) fn should_install_release(release_tag: &str) -> Result<bool> {
++pub(super) fn should_install_release(
++    release_tag: &str,
++    repository: &super::UpdateRepository,
++) -> Result<bool> {
+     should_install_release_with(
+         release_tag,
+         jcode_build_meta::git_hash(),
+         crate::build::get_repo_dir().as_deref(),
+-        github_comparison,
++        |release_tag, current_hash| github_comparison(repository, release_tag, current_hash),
+     )
+ }
+ 
+@@ -123,11 +126,20 @@ fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
+     }
+ }
+ 
+-fn github_comparison(release_tag: &str, current_hash: &str) -> Result<bool> {
+-    let url = format!(
+-        "https://api.github.com/repos/{}/compare/{release_tag}...{current_hash}",
+-        super::GITHUB_REPO
+-    );
++fn github_comparison_url(
++    repository: &super::UpdateRepository,
++    release_tag: &str,
++    current_hash: &str,
++) -> String {
++    repository.github_api_url(&format!("compare/{release_tag}...{current_hash}"))
++}
++
++fn github_comparison(
++    repository: &super::UpdateRepository,
++    release_tag: &str,
++    current_hash: &str,
++) -> Result<bool> {
++    let url = github_comparison_url(repository, release_tag, current_hash);
+     let client = reqwest::blocking::Client::builder()
+         .timeout(super::UPDATE_CHECK_TIMEOUT)
+         .user_agent("jcode-updater")
+@@ -242,6 +254,15 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn github_comparison_uses_selected_update_repository() {
++        let repository = super::super::UpdateRepository::parse("ForkOwner/jcode-fork").unwrap();
++        assert_eq!(
++            github_comparison_url(&repository, "v9.0.0", "abcdef123"),
++            "https://api.github.com/repos/ForkOwner/jcode-fork/compare/v9.0.0...abcdef123"
++        );
++    }
++
+     #[test]
+     fn local_ahead_retains_dev_build() {
+         let repo = Repo::new();
+diff --git a/crates/jcode-update-core/src/lib.rs b/crates/jcode-update-core/src/lib.rs
+index 5cc735095..a87f94856 100644
+--- a/crates/jcode-update-core/src/lib.rs
++++ b/crates/jcode-update-core/src/lib.rs
+@@ -61,6 +61,7 @@ pub enum PreparedUpdate {
+     },
+     MainSource {
+         latest_sha: String,
++        repository: String,
+         estimate: UpdateEstimate,
+     },
+ }

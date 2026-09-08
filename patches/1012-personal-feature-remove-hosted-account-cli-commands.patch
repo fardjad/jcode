@@ -1,0 +1,622 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Tue, 8 Sep 2026 21:53:36 +0200
+Subject: [PATCH] feat: remove hosted account CLI commands
+
+X-Jcode-Patch-Intent: Remove hosted account management and device authorization from the CLI.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1011-personal-feature-disable-automatic-onboarding.patch
+
+Patch intent:
+Remove the account subcommand, browser device-login command path, and account
+management implementation from the CLI while preserving normal provider flags
+and ordinary API-key configuration.
+
+Why it exists:
+A local build must not expose hosted account, billing, activation, or device
+authorization workflows as command-line functionality.
+
+Upstream integration points:
+The patch removes the account CLI module, device authorization implementation,
+command parsing, login dispatch, process title mapping, and parser coverage.
+
+Update guidance:
+Do not restore hosted account commands or browser device authorization. Keep
+direct provider and OpenAI-compatible API-key configuration available through
+the existing CLI options.
+
+Validation:
+scripts/cargo_exec.sh check -p jcode
+scripts/cargo_exec.sh test -p jcode hosted_account_subcommand_is_not_available --lib
+---
+ src/cli/account.rs            | 136 --------------------
+ src/cli/args.rs               |  26 ----
+ src/cli/args/tests.rs         |  42 +------
+ src/cli/dispatch.rs           |  11 +-
+ src/cli/login.rs              |  17 +--
+ src/cli/login/jcode_device.rs | 225 ----------------------------------
+ src/cli/mod.rs                |   1 -
+ src/cli/proctitle.rs          |   1 -
+ src/cli/startup.rs            |   1 -
+ 9 files changed, 9 insertions(+), 451 deletions(-)
+ delete mode 100644 src/cli/account.rs
+ delete mode 100644 src/cli/login/jcode_device.rs
+
+diff --git a/src/cli/account.rs b/src/cli/account.rs
+deleted file mode 100644
+index 0ff42c556..000000000
+--- a/src/cli/account.rs
++++ /dev/null
+@@ -1,136 +0,0 @@
+-use anyhow::{Context, Result};
+-
+-use crate::subscription_api::{self, AccountApiError};
+-
+-pub(crate) async fn run_login(no_browser: bool) -> Result<()> {
+-    super::login::run_jcode_account_login(no_browser).await
+-}
+-
+-pub(crate) async fn run_status(json: bool) -> Result<()> {
+-    let Some(api_key) = crate::subscription_catalog::configured_api_key() else {
+-        anyhow::bail!(
+-            "No Jcode account credential is configured. Run `jcode account login` to sign in."
+-        );
+-    };
+-    let client = crate::provider::shared_http_client();
+-    let api_base = subscription_api::configured_api_base();
+-    match subscription_api::fetch_subscription_me_with(&client, &api_base, &api_key).await {
+-        Ok(me) if json => {
+-            println!("{}", serde_json::to_string_pretty(&me)?);
+-            Ok(())
+-        }
+-        Ok(me) => {
+-            let tier = me
+-                .parsed_tier()
+-                .map(|tier| tier.display_name().to_string())
+-                .unwrap_or_else(|| me.tier.clone());
+-            println!("Jcode Account");
+-            println!("  Email:  {}", me.email);
+-            println!("  Plan:   {} ({})", tier, me.status);
+-            println!(
+-                "  Usage:  ${:.2} of ${:.2}",
+-                me.usage.used_usd, me.usage.budget_usd
+-            );
+-            if let Some(resets_at) = me.usage.resets_at {
+-                println!("  Resets: {}", resets_at);
+-            }
+-            println!("\nManage: {}", public_manage_url(me.manage_url.as_deref()));
+-            Ok(())
+-        }
+-        Err(AccountApiError::Unauthorized) => {
+-            crate::subscription_catalog::clear_account_credentials()
+-                .context("The account key is revoked, and local credential cleanup failed")?;
+-            anyhow::bail!(
+-                "The Jcode account key was revoked or expired. Local credentials were cleared. Run `jcode account login` to sign in again."
+-            )
+-        }
+-        Err(error) => Err(anyhow::Error::new(error)),
+-    }
+-}
+-
+-pub(crate) fn run_manage() -> Result<()> {
+-    let url = crate::subscription_catalog::JCODE_ACCOUNT_URL;
+-    println!("Opening Jcode account management: {url}");
+-    if crate::auth::browser_suppressed(false) {
+-        println!("Browser launch is disabled. Open the URL above manually.");
+-        return Ok(());
+-    }
+-    open::that_detached(url)
+-        .with_context(|| format!("Could not open the browser. Open {url} manually instead."))?;
+-    Ok(())
+-}
+-
+-pub(crate) async fn run_logout() -> Result<()> {
+-    let api_key = crate::subscription_catalog::configured_api_key();
+-    let remote = if let Some(api_key) = api_key.as_deref() {
+-        subscription_api::revoke_current_key(
+-            &crate::provider::shared_http_client(),
+-            &subscription_api::configured_api_base(),
+-            api_key,
+-        )
+-        .await
+-    } else {
+-        Ok(())
+-    };
+-
+-    // Local cleanup is unconditional, including offline and already-revoked
+-    // cases. This is the security boundary the CLI can always enforce.
+-    crate::subscription_catalog::clear_account_credentials()
+-        .context("Failed to securely clear local Jcode account credentials")?;
+-    crate::auth::AuthStatus::invalidate_cache();
+-
+-    match (api_key.is_some(), remote) {
+-        (false, _) => {
+-            println!("No local Jcode account credential was present. Local account cache is clear.")
+-        }
+-        (true, Ok(())) => println!(
+-            "Jcode account key revoked. Local credentials and account cache were securely cleared."
+-        ),
+-        (true, Err(AccountApiError::Unauthorized)) => println!(
+-            "The Jcode account key was already revoked. Local credentials and account cache were securely cleared."
+-        ),
+-        (true, Err(AccountApiError::Offline(_))) => println!(
+-            "Local credentials and account cache were securely cleared. The account API was offline, so remote key revocation could not be confirmed."
+-        ),
+-        (true, Err(error)) => println!(
+-            "Local credentials and account cache were securely cleared. Remote key revocation could not be confirmed: {error}"
+-        ),
+-    }
+-    Ok(())
+-}
+-
+-fn public_manage_url(candidate: Option<&str>) -> &str {
+-    candidate
+-        .filter(|url| {
+-            matches!(
+-                reqwest::Url::parse(url),
+-                Ok(parsed)
+-                    if parsed.scheme() == "https"
+-                        && matches!(parsed.host_str(), Some("jcode.sh" | "www.jcode.sh" | "solosystems.dev"))
+-                        && parsed.username().is_empty()
+-                        && parsed.password().is_none()
+-            )
+-        })
+-        .unwrap_or(crate::subscription_catalog::JCODE_ACCOUNT_URL)
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-
+-    #[test]
+-    fn manage_url_accepts_only_public_allowlisted_https_origins() {
+-        assert_eq!(
+-            public_manage_url(Some("https://jcode.sh/account")),
+-            "https://jcode.sh/account"
+-        );
+-        assert_eq!(
+-            public_manage_url(Some("https://evil.example/?key=jck_live_secret")),
+-            crate::subscription_catalog::JCODE_ACCOUNT_URL
+-        );
+-        assert_eq!(
+-            public_manage_url(Some("https://user:pass@jcode.sh/account")),
+-            crate::subscription_catalog::JCODE_ACCOUNT_URL
+-        );
+-    }
+-}
+diff --git a/src/cli/args.rs b/src/cli/args.rs
+index 3b2bdd972..cb7195fca 100644
+--- a/src/cli/args.rs
++++ b/src/cli/args.rs
+@@ -261,12 +261,6 @@ pub(crate) enum Command {
+         api_key_env: Option<String>,
+     },
+ 
+-    /// Log in to and manage your Jcode account
+-    Account {
+-        #[command(subcommand)]
+-        action: AccountCommand,
+-    },
+-
+     /// Run in simple REPL mode (no TUI)
+     Repl,
+ 
+@@ -588,26 +582,6 @@ pub(crate) enum Command {
+     },
+ }
+ 
+-#[derive(Subcommand, Debug)]
+-pub(crate) enum AccountCommand {
+-    /// Open browser-based device authorization and wait for plan activation
+-    Login {
+-        /// Do not open a browser automatically; print the public approval URL instead
+-        #[arg(long, alias = "headless")]
+-        no_browser: bool,
+-    },
+-    /// Show canonical account, plan, and usage status from /v1/me
+-    Status {
+-        /// Emit JSON instead of human-readable output
+-        #[arg(long)]
+-        json: bool,
+-    },
+-    /// Open the public Jcode account management page
+-    Manage,
+-    /// Revoke the current key when reachable, then securely clear local state
+-    Logout,
+-}
+-
+ #[derive(Subcommand, Debug)]
+ pub(crate) enum ServerCommand {
+     /// Internal native client protocol bridge over stdin/stdout (for SSH attach)
+diff --git a/src/cli/args/tests.rs b/src/cli/args/tests.rs
+index f91f463de..7e622bb15 100644
+--- a/src/cli/args/tests.rs
++++ b/src/cli/args/tests.rs
+@@ -681,43 +681,6 @@ fn login_scriptable_flags_parse() {
+     }
+ }
+ 
+-#[test]
+-fn account_subcommands_parse() {
+-    let login =
+-        Args::try_parse_from(["jcode", "account", "login", "--no-browser"]).expect("account login");
+-    assert!(matches!(
+-        login.command,
+-        Some(Command::Account {
+-            action: AccountCommand::Login { no_browser: true }
+-        })
+-    ));
+-
+-    let status =
+-        Args::try_parse_from(["jcode", "account", "status", "--json"]).expect("account status");
+-    assert!(matches!(
+-        status.command,
+-        Some(Command::Account {
+-            action: AccountCommand::Status { json: true }
+-        })
+-    ));
+-
+-    let manage = Args::try_parse_from(["jcode", "account", "manage"]).expect("account manage");
+-    assert!(matches!(
+-        manage.command,
+-        Some(Command::Account {
+-            action: AccountCommand::Manage
+-        })
+-    ));
+-
+-    let logout = Args::try_parse_from(["jcode", "account", "logout"]).expect("account logout");
+-    assert!(matches!(
+-        logout.command,
+-        Some(Command::Account {
+-            action: AccountCommand::Logout
+-        })
+-    ));
+-}
+-
+ #[test]
+ fn quiet_global_flag_parses() {
+     let args = Args::try_parse_from(["jcode", "--quiet", "model", "list"]).unwrap();
+@@ -1020,3 +983,8 @@ fn api_stdio_accepts_alias_and_daemon_socket_but_not_api_socket() {
+         );
+     }
+ }
++
++#[test]
++fn hosted_account_subcommand_is_not_available() {
++    assert!(Args::try_parse_from(["jcode", "account", "status"]).is_err());
++}
+diff --git a/src/cli/dispatch.rs b/src/cli/dispatch.rs
+index 719323195..d4a4a5a74 100644
+--- a/src/cli/dispatch.rs
++++ b/src/cli/dispatch.rs
+@@ -16,8 +16,7 @@ use crate::{
+ };
+ 
+ use super::{
+-    account, acp, commands, debug, hot_exec, login, output, provider_init, selfdev, terminal,
+-    tui_launch,
++    acp, commands, debug, hot_exec, login, output, provider_init, selfdev, terminal, tui_launch,
+ };
+ use provider_init::ProviderChoice;
+ 
+@@ -340,14 +339,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
+             )
+             .await?;
+         }
+-        Some(Command::Account { action }) => match action {
+-            super::args::AccountCommand::Login { no_browser } => {
+-                account::run_login(no_browser).await?
+-            }
+-            super::args::AccountCommand::Status { json } => account::run_status(json).await?,
+-            super::args::AccountCommand::Manage => account::run_manage()?,
+-            super::args::AccountCommand::Logout => account::run_logout().await?,
+-        },
+         Some(Command::Repl) => {
+             let (provider, registry) =
+                 provider_init::init_provider_and_registry(&args.provider, args.model.as_deref())
+diff --git a/src/cli/login.rs b/src/cli/login.rs
+index e0124e7cb..cfab72ce8 100644
+--- a/src/cli/login.rs
++++ b/src/cli/login.rs
+@@ -12,7 +12,6 @@ use crate::provider_catalog::{
+ use super::provider_init::{ProviderChoice, login_provider_for_choice, save_named_api_key};
+ 
+ mod existing_key_notice;
+-mod jcode_device;
+ mod next_step;
+ mod scriptable;
+ use scriptable::*;
+@@ -319,9 +318,9 @@ pub async fn run_login_provider(
+                 eprintln!("Imported {} existing auth source(s).", imported);
+                 Ok(LoginFlowOutcome::Completed)
+             }
+-            LoginProviderTarget::Jcode => login_jcode_flow(options.no_browser)
+-                .await
+-                .map(|_| LoginFlowOutcome::Completed),
++            LoginProviderTarget::Jcode => anyhow::bail!(
++                "Hosted jcode account login is unavailable in this local build. Configure a direct API key and endpoint with an OpenAI-compatible provider profile instead."
++            ),
+             LoginProviderTarget::Claude => login_claude_flow(account_label, options.no_browser)
+                 .await
+                 .map(|_| LoginFlowOutcome::Completed),
+@@ -539,16 +538,6 @@ async fn notify_running_server_auth_changed_best_effort(provider: Option<&str>)
+     }
+ }
+ 
+-async fn login_jcode_flow(no_browser: bool) -> Result<()> {
+-    eprintln!("Starting jcode subscription sign-in...");
+-    let _ = jcode_device::login_jcode_device_flow(no_browser).await?;
+-    Ok(())
+-}
+-
+-pub(crate) async fn run_jcode_account_login(no_browser: bool) -> Result<()> {
+-    login_jcode_flow(no_browser).await
+-}
+-
+ fn login_openai_api_key_flow() -> Result<()> {
+     eprintln!("Setting up OpenAI API key...");
+     eprintln!("Get your API key from: https://platform.openai.com/api-keys\n");
+diff --git a/src/cli/login/jcode_device.rs b/src/cli/login/jcode_device.rs
+deleted file mode 100644
+index ce6ba4c94..000000000
+--- a/src/cli/login/jcode_device.rs
++++ /dev/null
+@@ -1,225 +0,0 @@
+-//! CLI orchestration for the Jcode account device authorization flow.
+-//!
+-//! Protocol parsing and HTTP behavior live in `subscription_api` so the CLI and
+-//! TUI share the same contract and redaction guarantees.
+-
+-use anyhow::{Context, Result};
+-use std::future::Future;
+-use std::time::Duration;
+-
+-use crate::subscription_api::{
+-    self, ActivationOutcome, ApprovedAccountKey, PollingBackoff, TokenPollOutcome,
+-};
+-
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub(super) enum LoginCompletion {
+-    Active,
+-    KeySavedPlanPending,
+-    CanceledBeforeApproval,
+-}
+-
+-#[derive(Debug, Clone, PartialEq, Eq)]
+-pub(super) enum KeyPollCompletion {
+-    Approved(ApprovedAccountKey),
+-    Canceled,
+-}
+-
+-pub(super) async fn poll_for_api_key<C>(
+-    client: &reqwest::Client,
+-    api_base: &str,
+-    device_code: &str,
+-    interval: u64,
+-    expires_in: u64,
+-    cancel: C,
+-) -> Result<KeyPollCompletion>
+-where
+-    C: Future<Output = std::io::Result<()>>,
+-{
+-    tokio::pin!(cancel);
+-    let base_delay = Duration::from_secs(interval.max(1));
+-    let deadline =
+-        tokio::time::Instant::now() + Duration::from_secs(expires_in.max(interval.max(1)));
+-    let mut backoff = PollingBackoff::new(base_delay);
+-    let mut reported_offline = false;
+-
+-    loop {
+-        let delay = backoff.delay();
+-        if tokio::time::Instant::now() + delay >= deadline {
+-            anyhow::bail!(
+-                "Jcode account login timed out before browser approval. Run `jcode account login` to try again."
+-            );
+-        }
+-        tokio::select! {
+-            _ = tokio::time::sleep(delay) => {}
+-            signal = &mut cancel => {
+-                signal.context("Failed to listen for Ctrl-C")?;
+-                return Ok(KeyPollCompletion::Canceled);
+-            }
+-        }
+-
+-        // Deliberately do not poll cancellation while an exchange request is
+-        // in flight. The backend may atomically consume the one-time device
+-        // credential before the response reaches us. Finishing this bounded
+-        // request and persisting an approved key avoids stranding a live key
+-        // that the user can neither see nor revoke.
+-        match subscription_api::poll_device_token_once(client, api_base, device_code).await {
+-            Ok(TokenPollOutcome::Pending) => {
+-                backoff.on_pending();
+-                reported_offline = false;
+-            }
+-            Ok(TokenPollOutcome::SlowDown { retry_after }) => {
+-                backoff.on_slow_down(retry_after);
+-                reported_offline = false;
+-            }
+-            Ok(TokenPollOutcome::Approved(key)) => {
+-                return Ok(KeyPollCompletion::Approved(key));
+-            }
+-            Ok(TokenPollOutcome::Expired) => anyhow::bail!(
+-                "The browser approval expired or was already exchanged. Run `jcode account login` to start a new single-use flow."
+-            ),
+-            Ok(TokenPollOutcome::Denied) => {
+-                anyhow::bail!("Jcode account login was canceled or denied in the browser.")
+-            }
+-            Err(error) if error.is_temporary() => {
+-                if !reported_offline {
+-                    eprintln!("  Connection interrupted. Retrying with backoff...");
+-                    reported_offline = true;
+-                }
+-                backoff.on_offline_error();
+-            }
+-            Err(error) => return Err(anyhow::Error::new(error)),
+-        }
+-    }
+-}
+-
+-fn persist_approved_key(approved: &ApprovedAccountKey) -> Result<()> {
+-    crate::subscription_catalog::persist_account_credentials(
+-        &approved.api_key,
+-        Some(&approved.account_id),
+-        Some(&approved.email),
+-        Some(&approved.tier),
+-    )?;
+-    crate::auth::AuthStatus::invalidate_cache();
+-    Ok(())
+-}
+-
+-/// Full browser-first device login. No email or secret is requested in the
+-/// terminal. A valid exchanged key is retained when hosted billing activation
+-/// times out or the user cancels activation polling.
+-pub(super) async fn login_jcode_device_flow(no_browser: bool) -> Result<LoginCompletion> {
+-    let client = crate::provider::shared_http_client();
+-    let api_base = subscription_api::configured_api_base();
+-    let device = subscription_api::request_device_authorization(&client, &api_base, None)
+-        .await
+-        .map_err(anyhow::Error::new)
+-        .context("Failed to start Jcode account login")?;
+-
+-    eprintln!("\nJcode Account Login");
+-    eprintln!("  Opening the secure account approval page:");
+-    eprintln!("  {}", device.verification_uri_complete);
+-    eprintln!("\n  Approve the request in that browser. No terminal email entry is needed.");
+-    super::maybe_open_browser(&device.verification_uri_complete, no_browser);
+-    eprintln!("  Waiting for browser approval. Press Ctrl-C to cancel...");
+-
+-    let approved = match poll_for_api_key(
+-        &client,
+-        &api_base,
+-        &device.device_code,
+-        device.interval,
+-        device.expires_in,
+-        tokio::signal::ctrl_c(),
+-    )
+-    .await?
+-    {
+-        KeyPollCompletion::Approved(approved) => approved,
+-        KeyPollCompletion::Canceled => {
+-            eprintln!("\n  Login canceled before approval. No credential was saved.");
+-            return Ok(LoginCompletion::CanceledBeforeApproval);
+-        }
+-    };
+-
+-    persist_approved_key(&approved)?;
+-    eprintln!("\n  Account approved for {}.", approved.email);
+-    eprintln!("  Credential saved securely with owner-only permissions.");
+-    eprintln!("  Waiting for hosted billing and your spending limit on /v1/me...");
+-
+-    let activation = tokio::select! {
+-        result = subscription_api::poll_for_paid_activation(
+-            &client,
+-            &api_base,
+-            &approved.api_key,
+-            subscription_api::ACTIVATION_TIMEOUT,
+-            Duration::from_secs(device.interval.max(2)),
+-        ) => Some(result),
+-        signal = tokio::signal::ctrl_c() => {
+-            signal.context("Failed to listen for Ctrl-C")?;
+-            None
+-        }
+-    };
+-
+-    let completion = match activation {
+-        Some(ActivationOutcome::Active(me)) => {
+-            crate::subscription_catalog::persist_account_credentials(
+-                &approved.api_key,
+-                Some(&me.account_id),
+-                Some(&me.email),
+-                Some(&me.tier),
+-            )?;
+-            eprintln!(
+-                "  ✓ Hosted models are ready with a ${:.2} monthly spending limit.",
+-                me.usage.budget_usd
+-            );
+-            LoginCompletion::Active
+-        }
+-        Some(ActivationOutcome::Canceled(_)) => {
+-            eprintln!(
+-                "  Billing setup was canceled. Your account key remains saved, but hosted usage is not enabled."
+-            );
+-            print_recovery_actions();
+-            LoginCompletion::KeySavedPlanPending
+-        }
+-        Some(ActivationOutcome::TimedOut {
+-            last_error_was_offline,
+-        }) => {
+-            if last_error_was_offline {
+-                eprintln!(
+-                    "  Hosted billing could not be confirmed before timeout because the account API remained unreachable."
+-                );
+-            } else {
+-                eprintln!("  A spending limit was not detected before timeout.");
+-            }
+-            eprintln!("  Your valid account key remains saved.");
+-            print_recovery_actions();
+-            LoginCompletion::KeySavedPlanPending
+-        }
+-        Some(ActivationOutcome::Revoked) => {
+-            crate::subscription_catalog::clear_account_credentials()?;
+-            anyhow::bail!(
+-                "The newly issued account key was revoked before hosted billing activation. Local credentials were cleared; run `jcode account login` again."
+-            );
+-        }
+-        Some(ActivationOutcome::Denied) => {
+-            crate::subscription_catalog::clear_account_credentials()?;
+-            anyhow::bail!(
+-                "The account server denied hosted billing checks. Local credentials were cleared; run `jcode account login` again."
+-            );
+-        }
+-        None => {
+-            eprintln!("\n  Activation wait canceled. Your valid account key remains saved.");
+-            print_recovery_actions();
+-            LoginCompletion::KeySavedPlanPending
+-        }
+-    };
+-
+-    crate::telemetry::record_auth_success("jcode-subscription", "device_code_browser");
+-    Ok(completion)
+-}
+-
+-fn print_recovery_actions() {
+-    eprintln!("  Check:   jcode account status");
+-    eprintln!("  Manage:  jcode account manage");
+-    eprintln!("  Log out: jcode account logout");
+-}
+-
+-#[cfg(test)]
+-mod tests;
+diff --git a/src/cli/mod.rs b/src/cli/mod.rs
+index ba4788c2f..bfef7670b 100644
+--- a/src/cli/mod.rs
++++ b/src/cli/mod.rs
+@@ -1,4 +1,3 @@
+-pub mod account;
+ pub mod acp;
+ pub mod args;
+ pub mod auth_import;
+diff --git a/src/cli/proctitle.rs b/src/cli/proctitle.rs
+index f90a5aa3f..deff03221 100644
+--- a/src/cli/proctitle.rs
++++ b/src/cli/proctitle.rs
+@@ -18,7 +18,6 @@ pub(crate) fn initial_title(args: &Args) -> String {
+         Some(Command::ApiBridge { .. }) => "jcode api-bridge".to_string(),
+         Some(Command::Run { .. }) => "jcode run".to_string(),
+         Some(Command::Login { .. }) => "jcode login".to_string(),
+-        Some(Command::Account { .. }) => "jcode account".to_string(),
+         Some(Command::Repl) => "jcode repl".to_string(),
+         Some(Command::Update) => "jcode update".to_string(),
+         Some(Command::Version { .. }) => "jcode version".to_string(),
+diff --git a/src/cli/startup.rs b/src/cli/startup.rs
+index ca235666f..a1bce5395 100644
+--- a/src/cli/startup.rs
++++ b/src/cli/startup.rs
+@@ -140,7 +140,6 @@ pub async fn run() -> Result<()> {
+     Ok(())
+ }
+ 
+-
+ /// Register provider runtimes that live downstream of `jcode-base` with the
+ /// base crate's external provider registry. Keep every downstream runtime
+ /// registration in this one function so the composition-root wiring stays
