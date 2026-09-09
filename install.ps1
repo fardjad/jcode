@@ -62,9 +62,46 @@ try {
         throw "Release archive did not contain the expected jcode binary."
     }
 
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item -LiteralPath $source -Destination (Join-Path $InstallDir "jcode.exe") -Force
+    $jcodeHome = if ([string]::IsNullOrWhiteSpace($env:JCODE_HOME)) {
+        Join-Path $HOME ".jcode"
+    }
+    else {
+        $env:JCODE_HOME
+    }
+    $buildsDir = Join-Path $jcodeHome "builds"
+    $version = $tag.TrimStart('v')
+    $versionDir = Join-Path (Join-Path $buildsDir "versions") $version
+    $stableDir = Join-Path $buildsDir "stable"
+    $currentDir = Join-Path $buildsDir "current"
+    $sharedServerDir = Join-Path $buildsDir "shared-server"
+
+    foreach ($directory in @($InstallDir, $versionDir, $stableDir, $currentDir, $sharedServerDir)) {
+        New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    }
+    $binaryName = "jcode.exe"
+    Copy-Item -LiteralPath $source -Destination (Join-Path $versionDir $binaryName) -Force
+    foreach ($channel in @($stableDir, $currentDir, $sharedServerDir)) {
+        Copy-Item -LiteralPath (Join-Path $versionDir $binaryName) -Destination (Join-Path $channel $binaryName) -Force
+    }
+    foreach ($marker in @("stable-version", "current-version", "shared-server-version")) {
+        Set-Content -LiteralPath (Join-Path $buildsDir $marker) -Value $version -NoNewline
+    }
+    Copy-Item -LiteralPath (Join-Path $currentDir $binaryName) -Destination (Join-Path $InstallDir $binaryName) -Force
     Write-Host "Installed jcode $tag to $(Join-Path $InstallDir 'jcode.exe')"
+
+    # The daemon resolves its reload target through the shared-server channel,
+    # not just the launcher. Promote all channels before requesting the handoff
+    # so it cannot retain an old server while the launcher uses the new client.
+    # Force is required when the old process still maps an in-place replacement.
+    try {
+        & (Join-Path $InstallDir "jcode.exe") server reload --force | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Reloaded the running jcode server onto $tag (if one was active)."
+        }
+    }
+    catch {
+        # Best effort only. The release client is already installed.
+    }
 }
 finally {
     if (Test-Path -LiteralPath $tempDir) {

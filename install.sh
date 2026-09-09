@@ -98,9 +98,32 @@ if [[ ! -f "$tmp_dir/jcode-$platform-$arch" ]]; then
   exit 1
 fi
 
-mkdir -p "$install_dir"
-install -m 755 "$tmp_dir/jcode-$platform-$arch" "$install_dir/jcode"
+builds_dir="${JCODE_HOME:-$HOME/.jcode}/builds"
+version="${tag#v}"
+version_dir="$builds_dir/versions/$version"
+stable_dir="$builds_dir/stable"
+current_dir="$builds_dir/current"
+shared_server_dir="$builds_dir/shared-server"
+
+mkdir -p "$install_dir" "$version_dir" "$stable_dir" "$current_dir" "$shared_server_dir"
+install -m 755 "$tmp_dir/jcode-$platform-$arch" "$version_dir/jcode"
+ln -sfn "$version_dir/jcode" "$stable_dir/jcode"
+ln -sfn "$version_dir/jcode" "$current_dir/jcode"
+ln -sfn "$version_dir/jcode" "$shared_server_dir/jcode"
+printf '%s\n' "$version" > "$builds_dir/stable-version"
+printf '%s\n' "$version" > "$builds_dir/current-version"
+printf '%s\n' "$version" > "$builds_dir/shared-server-version"
+ln -sfn "$current_dir/jcode" "$install_dir/jcode"
 printf 'Installed jcode %s to %s/jcode\n' "$tag" "$install_dir"
+
+# The daemon resolves its reload target through the shared-server channel, not
+# just the launcher. Promote all channels before requesting the handoff so it
+# cannot re-exec an old server while the newly installed launcher runs the new
+# client. Force is necessary because the old process can retain the prior image
+# even if it was launched from a path replaced by this installer.
+if "$install_dir/jcode" server reload --force </dev/null >/dev/null 2>&1; then
+  printf 'Reloaded the running jcode server onto %s (if one was active).\n' "$tag"
+fi
 
 case ":$PATH:" in
   *":$install_dir:"*) ;;
