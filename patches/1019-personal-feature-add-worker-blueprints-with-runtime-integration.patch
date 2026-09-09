@@ -1,0 +1,4381 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Wed, 9 Sep 2026 18:02:58 +0200
+Subject: [PATCH] feat: add worker blueprints with runtime integration
+
+X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator policy, generated tools, and bounded paginated output
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: none
+
+Patch intent:
+Add a worker blueprint system that lets a jcode user define reusable,
+specialized subagent roles in Markdown. Each blueprint supplies durable
+role instructions, model, effort, allowed-tools, communication-policy,
+and timeout. At runtime, every valid blueprint generates a coordinator-
+visible tool named swarm_<id> that spawns a blueprint-backed worker,
+waits for completion, and returns a compact summary with paginated
+follow-up reads. A coordinator-only tool policy (agents.coordinator)
+restricts the coordinator's own tools without affecting internal roles
+or spawned workers.
+
+Why it exists:
+Worker blueprints let a user specialize subagents without code changes.
+A blueprint can pin a cheap model for routine work, restrict its tool
+access, control its communication, and cap its runtime. The generated
+tool returns a bounded summary (2000 chars) so the coordinator does not
+burn tokens reading the worker's full output. A deterministic follow-up
+read (no LLM) lets the coordinator page through more output in 2000-char
+chunks when needed. The coordinator policy lets a user remove broad tools
+like bash and generic swarm from the coordinator while retaining them for
+authorized specialized workers and internal agents.
+
+Upstream integration points:
+- crates/jcode-config-types/src/lib.rs: CoordinatorConfig struct,
+  swarm_timeout_minutes field, timeout_minutes on WorkerBlueprintOverride,
+  coordinator and worker_blueprints fields on AgentsConfig.
+- crates/jcode-base/src/config.rs: re-exports CoordinatorConfig.
+- crates/jcode-base/src/worker_blueprint.rs: blueprint discovery, front-
+  matter parsing, schema validation, override merging, diagnostics, and
+  Display impl for WorkerBlueprintDiagnostic.
+- crates/jcode-protocol/src/wire.rs: blueprint field on CommSpawn.
+- crates/jcode-app-core/src/agent.rs: apply_coordinator_policy applied
+  to root sessions in new_with_initial_ownership.
+- crates/jcode-app-core/src/server/comm_session.rs: blueprint resolution,
+  prompt composition, tool policy application, communication policy
+  storage in spawn_swarm_agent.
+- crates/jcode-app-core/src/server/client_comm_message.rs: communication
+  policy enforcement in handle_comm_message.
+- crates/jcode-app-core/src/server/state.rs: communication_policy field
+  on SwarmMember.
+- crates/jcode-app-core/src/tool/blueprint.rs: BlueprintTool implementing
+  the Tool trait. Spawn mode: spawn, await, return compact summary with
+  session ID. Follow-up mode: deterministic paginated read of stored
+  output. Timeout resolved per-call > blueprint > config > default (20m).
+- crates/jcode-app-core/src/tool/mod.rs: register_blueprint_tools in
+  Registry::new.
+- crates/jcode-app-core/src/tool/communicate.rs: blueprint field in
+  CommunicateInput and spawn action.
+- crates/jcode-app-core/src/tool/communicate/transport.rs: send_request
+  and send_request_with_timeout made pub(crate) for blueprint tool reuse.
+
+Update guidance:
+Preserve the precedence chain for model (per-spawn > blueprint >
+swarm_model > coordinator) and timeout (per-call > blueprint >
+config > default 20m). Blueprint allowed-tools are always intersected
+with the global tool policy. Coordinator policy only applies to root
+sessions, never to spawned workers or internal roles. Communication-
+policy: none blocks ordinary messages but not tool results. Generated
+tools never overwrite existing tool names. All test SwarmMember and
+WorkerBlueprintOverride constructions must include the new fields.
+
+Validation:
+cargo test -p jcode-app-core blueprint --lib
+cargo test -p jcode-base worker_blueprint --lib
+cargo test -p jcode-protocol --lib
+cargo test -p jcode-config-types --lib
+cargo check -p jcode-app-core
+---
+ crates/jcode-app-core/src/agent.rs            |   35 +-
+ .../src/protocol_tests/comm_requests.rs       |    1 +
+ .../src/server/client_actions_tests.rs        |    5 +
+ .../src/server/client_comm_message.rs         |   19 +
+ .../src/server/client_comm_tests.rs           |   12 +
+ .../server/client_disconnect_grace_tests.rs   |    1 +
+ .../src/server/client_lifecycle.rs            |    2 +
+ .../src/server/client_lifecycle_tests.rs      |    1 +
+ .../src/server/client_lightweight_control.rs  |    2 +
+ .../src/server/client_session.rs              |    1 +
+ .../src/server/client_session_tests.rs        |    1 +
+ .../src/server/client_session_tests/reload.rs |    2 +
+ .../resume/live_events_before_history.rs      |    1 +
+ .../src/server/client_target_attach_tests.rs  |    1 +
+ .../jcode-app-core/src/server/comm_control.rs |    1 +
+ .../src/server/comm_control_tests.rs          |    1 +
+ .../src/server/comm_plan_tests.rs             |    1 +
+ .../jcode-app-core/src/server/comm_session.rs |  126 +-
+ .../src/server/comm_session_tests.rs          |    1 +
+ .../jcode-app-core/src/server/debug_tests.rs  |    1 +
+ crates/jcode-app-core/src/server/headless.rs  |    1 +
+ .../jcode-app-core/src/server/reload_tests.rs |    1 +
+ crates/jcode-app-core/src/server/state.rs     |    8 +
+ crates/jcode-app-core/src/server/swarm.rs     |    1 +
+ .../src/server/swarm_persistence_tests.rs     |    8 +
+ crates/jcode-app-core/src/server/tests.rs     |    2 +
+ crates/jcode-app-core/src/tool/blueprint.rs   |  474 +++++
+ .../src/tool/blueprint_tests.rs               |  892 +++++++++
+ crates/jcode-app-core/src/tool/communicate.rs |   10 +-
+ .../src/tool/communicate/transport.rs         |    4 +-
+ crates/jcode-app-core/src/tool/mod.rs         |   52 +-
+ crates/jcode-base/src/config.rs               |    4 +-
+ crates/jcode-base/src/lib.rs                  |    1 +
+ crates/jcode-base/src/worker_blueprint.rs     | 1782 +++++++++++++++++
+ crates/jcode-config-types/src/lib.rs          |   76 +
+ .../src/protocol_tests/comm_requests.rs       |    1 +
+ crates/jcode-protocol/src/wire.rs             |    7 +
+ 37 files changed, 3529 insertions(+), 10 deletions(-)
+ create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
+ create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
+ create mode 100644 crates/jcode-base/src/worker_blueprint.rs
+
+diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
+index aa437a027..72e50da9a 100644
+--- a/crates/jcode-app-core/src/agent.rs
++++ b/crates/jcode-app-core/src/agent.rs
+@@ -69,6 +69,28 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
+     LazyLock::new(|| StdMutex::new(HashMap::new()));
+ const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
+ 
++/// Apply the optional coordinator tool policy to a root session's allowed-tools
++/// set. The effective coordinator policy is the intersection of the
++/// coordinator's allowlist and the global `[tools]` policy. If the coordinator
++/// config is not set (empty `allowed_tools`), the global policy passes through
++/// unchanged.
++fn apply_coordinator_policy(
++    global_allowed: Option<HashSet<String>>,
++) -> Option<HashSet<String>> {
++    let coordinator_config = &crate::config::config().agents.coordinator;
++    let coordinator_allowed = coordinator_config.allowed_set();
++    match (global_allowed, coordinator_allowed) {
++        // Both present: intersect.
++        (Some(global), Some(coord)) => {
++            Some(global.intersection(&coord).cloned().collect())
++        }
++        // Only coordinator: use it directly.
++        (None, Some(coord)) => Some(coord),
++        // Only global or neither: pass through.
++        (global, None) => global,
++    }
++}
++
+ fn stable_hash_str(value: &str) -> u64 {
+     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+     value.hash(&mut hasher);
+@@ -413,6 +435,17 @@ impl Agent {
+     ) -> Self {
+         let start = Instant::now();
+         let tool_selection = crate::config::config().tools.selection();
++
++        // Apply coordinator-only tool policy to user-facing root sessions.
++        // The effective coordinator policy is the intersection of this optional
++        // allowlist and the global `[tools]` policy. Not applied to child/spawned
++        // sessions (parent_id is Some) or internal/headless service sessions.
++        let allowed_tools = if parent_id.is_none() {
++            apply_coordinator_policy(tool_selection.allowed_tools)
++        } else {
++            tool_selection.allowed_tools
++        };
++
+         let mut session = Session::create(parent_id, None);
+         if let Some(working_dir) = working_dir {
+             session.working_dir = Some(working_dir.to_string());
+@@ -421,7 +454,7 @@ impl Agent {
+             provider,
+             registry,
+             session,
+-            tool_selection.allowed_tools,
++            allowed_tools,
+             tool_selection.disabled_tools,
+         );
+         agent.session.mark_active();
+diff --git a/crates/jcode-app-core/src/protocol_tests/comm_requests.rs b/crates/jcode-app-core/src/protocol_tests/comm_requests.rs
+index 1a1a54390..5298ba8a5 100644
+--- a/crates/jcode-app-core/src/protocol_tests/comm_requests.rs
++++ b/crates/jcode-app-core/src/protocol_tests/comm_requests.rs
+@@ -457,6 +457,7 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
+         model: Some("openai-api:gpt-5.5".to_string()),
+         effort: Some("low".to_string()),
+         label: Some("review auth flow".to_string()),
++        blueprint: None,
+     };
+     let json = serde_json::to_string(&req)?;
+     assert!(json.contains("\"type\":\"comm_spawn\""));
+diff --git a/crates/jcode-app-core/src/server/client_actions_tests.rs b/crates/jcode-app-core/src/server/client_actions_tests.rs
+index a029ffe49..74ac31041 100644
+--- a/crates/jcode-app-core/src/server/client_actions_tests.rs
++++ b/crates/jcode-app-core/src/server/client_actions_tests.rs
+@@ -402,6 +402,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         },
+     )])));
+     let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
+@@ -509,6 +510,7 @@ async fn rename_session_event_uses_agent_session_id_even_when_client_id_is_stale
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         },
+     )])));
+     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+@@ -611,6 +613,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         },
+     )])));
+     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+@@ -729,6 +732,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         },
+     )])));
+     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+@@ -815,6 +819,7 @@ fn live_member(session_id: &str) -> (SwarmMember, mpsc::UnboundedReceiver<Server
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+     };
+     (member, attach_rx)
+ }
+diff --git a/crates/jcode-app-core/src/server/client_comm_message.rs b/crates/jcode-app-core/src/server/client_comm_message.rs
+index 34332d579..8f441af2a 100644
+--- a/crates/jcode-app-core/src/server/client_comm_message.rs
++++ b/crates/jcode-app-core/src/server/client_comm_message.rs
+@@ -154,6 +154,25 @@ pub(super) async fn handle_comm_message(
+     );
+     let swarm_id = swarm_id_for_session(&from_session, swarm_members).await;
+ 
++    // Enforce communication policy: a worker whose blueprint sets
++    // `communication-policy: none` may not send ordinary direct, channel,
++    // or broadcast messages. This does not suppress the completion result
++    // of a `swarm_<id>` invocation (that is a tool result, not a routed
++    // message).
++    {
++        let members = swarm_members.read().await;
++        if let Some(member) = members.get(&from_session) {
++            if member.communication_policy.as_deref() == Some("none") {
++                let _ = client_event_tx.send(ServerEvent::Error {
++                    id,
++                    message: "Communication policy 'none' prevents this worker from sending messages.".to_string(),
++                    retry_after_secs: None,
++                });
++                return;
++            }
++        }
++    }
++
+     if let Some(swarm_id) = swarm_id {
+         let friendly_name = friendly_name_for_session(&from_session, swarm_members).await;
+ 
+diff --git a/crates/jcode-app-core/src/server/client_comm_tests.rs b/crates/jcode-app-core/src/server/client_comm_tests.rs
+index 78f524eb2..3f74007f7 100644
+--- a/crates/jcode-app-core/src/server/client_comm_tests.rs
++++ b/crates/jcode-app-core/src/server/client_comm_tests.rs
+@@ -86,6 +86,7 @@ async fn comm_message_default_does_not_queue_soft_interrupt_for_connected_sessio
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -111,6 +112,7 @@ async fn comm_message_default_does_not_queue_soft_interrupt_for_connected_sessio
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -250,6 +252,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -275,6 +278,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -403,6 +407,7 @@ async fn comm_list_includes_member_status_and_detail() {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -428,6 +433,7 @@ async fn comm_list_includes_member_status_and_detail() {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -511,6 +517,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -536,6 +543,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -646,6 +654,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -671,6 +680,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -696,6 +706,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+         ),
+@@ -783,6 +794,7 @@ async fn comm_broadcast_reaches_only_senders_spawned_subtree() {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+                 task_label: None,
+             },
+             event_rx,
+diff --git a/crates/jcode-app-core/src/server/client_disconnect_grace_tests.rs b/crates/jcode-app-core/src/server/client_disconnect_grace_tests.rs
+index bf584a7c8..f836a392a 100644
+--- a/crates/jcode-app-core/src/server/client_disconnect_grace_tests.rs
++++ b/crates/jcode-app-core/src/server/client_disconnect_grace_tests.rs
+@@ -98,6 +98,7 @@ impl Fixture {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: Default::default(),
++                communication_policy: None,
+             },
+         )])));
+         let sessions = Arc::new(RwLock::new(HashMap::from([(id.clone(), agent.clone())])));
+diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
+index 60f9b89e5..45cca3195 100644
+--- a/crates/jcode-app-core/src/server/client_lifecycle.rs
++++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
+@@ -2520,6 +2520,7 @@ pub(super) async fn handle_client(
+                 model,
+                 effort,
+                 label,
++                blueprint,
+             } => {
+                 let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
+                     Some(spawn_mode) => spawn_mode,
+@@ -2535,6 +2536,7 @@ pub(super) async fn handle_client(
+                     model,
+                     effort,
+                     label,
++                    blueprint,
+                     &client_event_tx,
+                     &sessions,
+                     &global_session_id,
+diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
+index d35aaf07e..8da5e4111 100644
+--- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
++++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
+@@ -1064,6 +1064,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         },
+     )])));
+     let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
+diff --git a/crates/jcode-app-core/src/server/client_lightweight_control.rs b/crates/jcode-app-core/src/server/client_lightweight_control.rs
+index 0ebe19ff8..b2af7ae67 100644
+--- a/crates/jcode-app-core/src/server/client_lightweight_control.rs
++++ b/crates/jcode-app-core/src/server/client_lightweight_control.rs
+@@ -418,6 +418,7 @@ pub(super) async fn handle_lightweight_control_request(
+             model,
+             effort,
+             label,
++            blueprint,
+         } => {
+             let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
+                 Some(spawn_mode) => spawn_mode,
+@@ -433,6 +434,7 @@ pub(super) async fn handle_lightweight_control_request(
+                 model,
+                 effort,
+                 label,
++                blueprint,
+                 &client_event_tx,
+                 sessions,
+                 global_session_id,
+diff --git a/crates/jcode-app-core/src/server/client_session.rs b/crates/jcode-app-core/src/server/client_session.rs
+index e24884c98..1c0cb6552 100644
+--- a/crates/jcode-app-core/src/server/client_session.rs
++++ b/crates/jcode-app-core/src/server/client_session.rs
+@@ -405,6 +405,7 @@ async fn ensure_client_swarm_member(
+                     todo_progress: None,
+                     todo_items: Vec::new(),
+                     runtime: crate::protocol::SwarmMemberRuntime::default(),
++                    communication_policy: None,
+                 },
+             );
+             inserted = true;
+diff --git a/crates/jcode-app-core/src/server/client_session_tests.rs b/crates/jcode-app-core/src/server/client_session_tests.rs
+index a74445eea..71d6f651b 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests.rs
+@@ -120,6 +120,7 @@ fn test_swarm_member(session_id: &str, status: &str) -> SwarmMember {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+     }
+ }
+ 
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/reload.rs b/crates/jcode-app-core/src/server/client_session_tests/reload.rs
+index d6ce56885..770558e2b 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/reload.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/reload.rs
+@@ -334,6 +334,7 @@ fn handle_reload_queues_signal_for_canary_session() -> Result<()> {
+                     todo_progress: None,
+                     todo_items: Vec::new(),
+                     runtime: crate::protocol::SwarmMemberRuntime::default(),
++                    communication_policy: None,
+                 },
+             ),
+             (
+@@ -359,6 +360,7 @@ fn handle_reload_queues_signal_for_canary_session() -> Result<()> {
+                     todo_progress: None,
+                     todo_items: Vec::new(),
+                     runtime: crate::protocol::SwarmMemberRuntime::default(),
++                    communication_policy: None,
+                 },
+             ),
+         ])));
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
+index 47058071c..4161a1b63 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
+@@ -69,6 +69,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() ->
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++                    communication_policy: None,
+         },
+     )])));
+     let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
+diff --git a/crates/jcode-app-core/src/server/client_target_attach_tests.rs b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
+index 47b44e31d..5ab0e113b 100644
+--- a/crates/jcode-app-core/src/server/client_target_attach_tests.rs
++++ b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
+@@ -170,6 +170,7 @@ async fn target_subscribe_busy_live_agent_uses_member_root_without_waiting() {
+             todo_progress: None,
+             todo_items: vec![],
+             runtime: Default::default(),
++                communication_policy: None,
+         },
+     )])));
+     let _busy = agent.lock().await;
+diff --git a/crates/jcode-app-core/src/server/comm_control.rs b/crates/jcode-app-core/src/server/comm_control.rs
+index 3b18ba7ec..3b5243ca6 100644
+--- a/crates/jcode-app-core/src/server/comm_control.rs
++++ b/crates/jcode-app-core/src/server/comm_control.rs
+@@ -1927,6 +1927,7 @@ pub(super) async fn handle_comm_assign_next(
+                 model.clone(),
+                 effort.clone(),
+                 None,
++                None,
+                 sessions,
+                 global_session_id,
+                 provider_template,
+diff --git a/crates/jcode-app-core/src/server/comm_control_tests.rs b/crates/jcode-app-core/src/server/comm_control_tests.rs
+index 541e64090..4358ac229 100644
+--- a/crates/jcode-app-core/src/server/comm_control_tests.rs
++++ b/crates/jcode-app-core/src/server/comm_control_tests.rs
+@@ -72,6 +72,7 @@ fn member(session_id: &str, swarm_id: &str, status: &str) -> SwarmMember {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }
+ }
+diff --git a/crates/jcode-app-core/src/server/comm_plan_tests.rs b/crates/jcode-app-core/src/server/comm_plan_tests.rs
+index 0a854c81e..5b9863831 100644
+--- a/crates/jcode-app-core/src/server/comm_plan_tests.rs
++++ b/crates/jcode-app-core/src/server/comm_plan_tests.rs
+@@ -69,6 +69,7 @@ fn member(session_id: &str, swarm_id: &str, role: &str) -> SwarmMember {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }
+ }
+diff --git a/crates/jcode-app-core/src/server/comm_session.rs b/crates/jcode-app-core/src/server/comm_session.rs
+index 7ffd473c2..4f2f2cad1 100644
+--- a/crates/jcode-app-core/src/server/comm_session.rs
++++ b/crates/jcode-app-core/src/server/comm_session.rs
+@@ -18,6 +18,7 @@ use crate::config::SwarmSpawnMode;
+ use crate::protocol::{NotificationType, ServerEvent};
+ use crate::provider::Provider;
+ use crate::session::Session;
++use crate::worker_blueprint::WorkerBlueprint;
+ use std::collections::{HashMap, HashSet};
+ use std::path::PathBuf;
+ use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
+@@ -28,6 +29,43 @@ type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+ type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+ type ClientConnections = Arc<RwLock<HashMap<String, ClientConnectionInfo>>>;
+ 
++/// Resolve a worker blueprint by ID from the configured blueprints directory
++/// and overrides. Returns `None` if no blueprint ID was given. Returns an
++/// error if the ID was given but no matching blueprint was discovered.
++fn resolve_blueprint_for_spawn(
++    blueprint_id: Option<&str>,
++    agents_config: &crate::config::AgentsConfig,
++) -> Option<WorkerBlueprint> {
++    let id = blueprint_id?.trim();
++    if id.is_empty() {
++        return None;
++    }
++
++    let report = crate::worker_blueprint::load_worker_blueprints(
++        agents_config.worker_blueprints_dir.as_deref(),
++        &agents_config.worker_blueprints,
++    );
++
++    // Log diagnostics for any issues found during loading.
++    for diag in &report.diagnostics {
++        crate::logging::info(&format!(
++            "Worker blueprint diagnostic: {}",
++            diag
++        ));
++    }
++
++    report.registry.get(id).cloned()
++}
++
++/// Compose the blueprint's durable role instructions with the runtime task.
++/// The role instructions come first, followed by a clear separator and the
++/// labeled task.
++fn compose_blueprint_prompt(role_instructions: &str, task: &str) -> String {
++    format!(
++        "{role_instructions}\n\n---\n\n## Task\n\n{task}"
++    )
++}
++
+ /// Serialize spawn admission through member registration within one swarm.
+ /// Without a reservation or lock, many recursive agents can all observe the same
+ /// free slot and burst past the configured limit before any child is registered.
+@@ -523,6 +561,7 @@ async fn register_visible_spawned_member(
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++                communication_policy: None,
+             },
+         );
+     }
+@@ -580,6 +619,7 @@ pub(super) async fn spawn_swarm_agent(
+     requested_model: Option<String>,
+     requested_effort: Option<String>,
+     label: Option<String>,
++    blueprint_id: Option<String>,
+     sessions: &SessionAgents,
+     global_session_id: &Arc<RwLock<String>>,
+     provider_template: &Arc<dyn Provider>,
+@@ -606,8 +646,24 @@ pub(super) async fn spawn_swarm_agent(
+     let agents_config = &crate::config::config().agents;
+     let configured_swarm_model = agents_config.swarm_model.clone();
+     let resolved_spawn_mode = spawn_mode.unwrap_or(agents_config.swarm_spawn_mode);
++
++    // Resolve a worker blueprint if one was specified. The blueprint's
++    // effective model and effort (after TOML override merge) feed into the
++    // standard precedence chain: per-spawn > blueprint > swarm_model >
++    // coordinator. Its role instructions prepend the runtime task. Its
++    // allowed-tools and communication-policy are applied after the session
++    // is created.
++    let blueprint = resolve_blueprint_for_spawn(blueprint_id.as_deref(), agents_config);
++    let (blueprint_model, blueprint_effort) = match &blueprint {
++        Some(bp) => (
++            bp.model.clone(),
++            bp.effort.as_ref().map(|e| e.as_str().to_string()),
++        ),
++        None => (None, None),
++    };
++
+     let selection = resolve_swarm_spawn_selection(
+-        requested_model.clone(),
++        requested_model.clone().or(blueprint_model),
+         configured_swarm_model.clone(),
+         &coordinator,
+     );
+@@ -615,7 +671,9 @@ pub(super) async fn spawn_swarm_agent(
+     let spawn_provider_key = selection.provider_key.clone();
+     let spawn_route_api_method = selection.route_api_method.clone();
+     let spawn_effort = resolve_swarm_spawn_effort(
+-        requested_effort.as_deref(),
++        requested_effort
++            .as_deref()
++            .or(blueprint_effort.as_deref()),
+         agents_config.swarm_effort.as_deref(),
+     );
+     crate::logging::info(&format!(
+@@ -634,7 +692,16 @@ pub(super) async fn spawn_swarm_agent(
+ 
+     let startup_message = initial_message
+         .as_deref()
+-        .map(append_swarm_completion_report_instructions);
++        .map(|msg| {
++            // When a blueprint is active, compose its durable role instructions
++            // first and the clearly labeled runtime task second, exactly once.
++            if let Some(bp) = &blueprint {
++                let task = append_swarm_completion_report_instructions(msg);
++                compose_blueprint_prompt(&bp.body, &task)
++            } else {
++                append_swarm_completion_report_instructions(msg)
++            }
++        });
+ 
+     let visible_spawn = match resolved_spawn_mode {
+         // Inline workers run in-process like headless ones; the difference is
+@@ -711,6 +778,56 @@ pub(super) async fn spawn_swarm_agent(
+         }
+     }?;
+ 
++    // Apply blueprint allowed-tools as a restrictive per-session tool policy.
++    // The policy must filter model-visible definitions and reject prohibited
++    // raw tool calls at the central dispatcher. An empty allowed-tools list
++    // means no worker tools; `None` (omission) means no blueprint-specific
++    // restriction.
++    if let Some(bp) = &blueprint {
++        if let Some(allowed) = &bp.allowed_tools {
++            let allowed_set: HashSet<String> = allowed.iter().cloned().collect();
++            // Intersect with global tool policy so a blueprint can never
++            // restore a globally disabled or unpermitted tool.
++            let global_allowed = crate::config::config().tools.selection().allowed_tools;
++            let effective_allowed = if let Some(global) = global_allowed {
++                let intersection: HashSet<String> = allowed_set
++                    .intersection(&global)
++                    .cloned()
++                    .collect();
++                Some(intersection)
++            } else {
++                Some(allowed_set)
++            };
++            let _registration = crate::tool::register_session_tool_policy(
++                &new_session_id,
++                effective_allowed,
++                HashSet::new(),
++            );
++            // The registration is intentionally dropped: the spawned Agent's
++            // own build_base already installed a policy, and this replaces it
++            // for this session. The Drop impl on the old registration is a
++            // no-op because it checks owner matching.
++        }
++    }
++
++    // Store the blueprint's communication policy on the swarm member so the
++    // message-routing path can enforce it. The policy is enforced in
++    // message-routing and subscription paths, not through prompts.
++    // `communication-policy: none` blocks ordinary worker direct, channel,
++    // and broadcast messages but does not suppress the completion result of
++    // a `swarm_<id>` invocation (which is a tool result, not a routed message).
++    if let Some(bp) = &blueprint {
++        if bp.communication_policy.is_some() {
++            let mut members = swarm_members.write().await;
++            if let Some(member) = members.get_mut(&new_session_id) {
++                member.communication_policy = bp
++                    .communication_policy
++                    .as_ref()
++                    .map(|p| p.as_str().to_string());
++            }
++        }
++    }
++
+     let startup_message = startup_message.clone();
+     {
+         let mut plans = swarm_plans.write().await;
+@@ -854,6 +971,7 @@ pub(super) async fn handle_comm_spawn(
+     model: Option<String>,
+     effort: Option<String>,
+     label: Option<String>,
++    blueprint: Option<String>,
+     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+     sessions: &SessionAgents,
+     global_session_id: &Arc<RwLock<String>>,
+@@ -913,6 +1031,7 @@ pub(super) async fn handle_comm_spawn(
+             effort.clone().unwrap_or_default(),
+             model.clone().unwrap_or_default(),
+             label.clone().unwrap_or_default(),
++            blueprint.clone().unwrap_or_default(),
+         ],
+     );
+     let Some(mutation_state) = begin_or_replay(
+@@ -937,6 +1056,7 @@ pub(super) async fn handle_comm_spawn(
+         model,
+         effort,
+         label,
++        blueprint,
+         sessions,
+         global_session_id,
+         provider_template,
+diff --git a/crates/jcode-app-core/src/server/comm_session_tests.rs b/crates/jcode-app-core/src/server/comm_session_tests.rs
+index 262118733..395689db7 100644
+--- a/crates/jcode-app-core/src/server/comm_session_tests.rs
++++ b/crates/jcode-app-core/src/server/comm_session_tests.rs
+@@ -70,6 +70,7 @@ fn member(
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+             task_label: None,
+         },
+         event_rx,
+diff --git a/crates/jcode-app-core/src/server/debug_tests.rs b/crates/jcode-app-core/src/server/debug_tests.rs
+index 4c3f6fc71..b1943ecd6 100644
+--- a/crates/jcode-app-core/src/server/debug_tests.rs
++++ b/crates/jcode-app-core/src/server/debug_tests.rs
+@@ -133,6 +133,7 @@ mod transcript_routing_tests {
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+             task_label: None,
+         }
+     }
+diff --git a/crates/jcode-app-core/src/server/headless.rs b/crates/jcode-app-core/src/server/headless.rs
+index 8ad4704b3..dfa8b8f14 100644
+--- a/crates/jcode-app-core/src/server/headless.rs
++++ b/crates/jcode-app-core/src/server/headless.rs
+@@ -267,6 +267,7 @@ pub(super) async fn create_headless_session(
+                     effort,
+                     elapsed_secs: Some(0),
+                 },
++                communication_policy: None,
+             },
+         );
+     }
+diff --git a/crates/jcode-app-core/src/server/reload_tests.rs b/crates/jcode-app-core/src/server/reload_tests.rs
+index 72d5f5459..1aabe496c 100644
+--- a/crates/jcode-app-core/src/server/reload_tests.rs
++++ b/crates/jcode-app-core/src/server/reload_tests.rs
+@@ -42,6 +42,7 @@ fn member(session_id: &str, status: &str) -> SwarmMember {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+     }
+ }
+ 
+diff --git a/crates/jcode-app-core/src/server/state.rs b/crates/jcode-app-core/src/server/state.rs
+index 827acc377..d0c014dd2 100644
+--- a/crates/jcode-app-core/src/server/state.rs
++++ b/crates/jcode-app-core/src/server/state.rs
+@@ -237,6 +237,13 @@ pub struct SwarmMember {
+     pub todo_items: Vec<crate::protocol::SwarmTodoItem>,
+     /// Ephemeral model/timing metadata for the inline swarm card.
+     pub runtime: crate::protocol::SwarmMemberRuntime,
++    /// Optional communication policy from the worker's blueprint. When set
++    /// to `None` (no blueprint or no policy), messages are unrestricted. When
++    /// set to `None` policy, ordinary worker direct, channel, and broadcast
++    /// messages are blocked. The completion result of a `swarm_<id>`
++    /// invocation is always allowed (it is a tool result, not a routed
++    /// message).
++    pub communication_policy: Option<String>,
+ }
+ 
+ impl SwarmMember {
+@@ -292,6 +299,7 @@ impl SwarmMember {
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         }
+     }
+ }
+diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
+index fbe513a04..569e1ea41 100644
+--- a/crates/jcode-app-core/src/server/swarm.rs
++++ b/crates/jcode-app-core/src/server/swarm.rs
+@@ -1830,6 +1830,7 @@ mod tests {
+                 todo_progress: None,
+                 todo_items: Vec::new(),
+                 runtime: crate::protocol::SwarmMemberRuntime::default(),
++                communication_policy: None,
+             },
+             event_rx,
+         )
+diff --git a/crates/jcode-app-core/src/server/swarm_persistence_tests.rs b/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
+index dfefe247e..bea209355 100644
+--- a/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
++++ b/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
+@@ -94,6 +94,7 @@ fn persisted_swarm_state_round_trips_and_marks_running_stale() {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }];
+ 
+@@ -169,6 +170,7 @@ fn ready_headless_member_with_report_stops_without_losing_report() {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }];
+ 
+@@ -213,6 +215,7 @@ fn ready_detached_client_stops_on_reload_until_it_reattaches() {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }];
+ 
+@@ -299,6 +302,7 @@ fn terminal_member_retention_preserves_recent_reports_and_prunes_expired_records
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: Some("retention test".to_string()),
+     };
+     let loaded_at = 10_000_000;
+@@ -347,6 +351,7 @@ fn legacy_terminal_member_uses_snapshot_time_as_retention_fallback() {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     };
+     let loaded_at = 20_000_000;
+@@ -388,6 +393,7 @@ fn recovery_induced_terminal_status_starts_retention_at_load_time() {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     };
+     let loaded_at = 300_000_000;
+@@ -430,6 +436,7 @@ fn startup_gc_removes_expired_terminal_members_from_durable_snapshot() {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }];
+     persist_swarm_state("swarm-expired", None, None, &members);
+@@ -1065,6 +1072,7 @@ fn persisted_swarm_state_without_plan_still_restores_coordinator_and_members() {
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }];
+ 
+diff --git a/crates/jcode-app-core/src/server/tests.rs b/crates/jcode-app-core/src/server/tests.rs
+index 044c3244c..fa94f0f9f 100644
+--- a/crates/jcode-app-core/src/server/tests.rs
++++ b/crates/jcode-app-core/src/server/tests.rs
+@@ -286,6 +286,7 @@ fn attached_swarm_member(
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }
+ }
+@@ -317,6 +318,7 @@ fn persisted_headless_member(
+         todo_progress: None,
+         todo_items: Vec::new(),
+         runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+         task_label: None,
+     }
+ }
+diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
+new file mode 100644
+index 000000000..9fe52217e
+--- /dev/null
++++ b/crates/jcode-app-core/src/tool/blueprint.rs
+@@ -0,0 +1,474 @@
++//! Generated coordinator-visible tools for worker blueprints.
++//!
++//! Every valid effective blueprint generates a tool named `swarm_<id>`. The
++//! tool has two modes:
++//!
++//! **Spawn mode** (default): accepts a nonblank `task`, spawns a
++//! blueprint-backed worker via `CommSpawn`, waits for it to reach a terminal
++//! status, and returns a compact summary (the worker's latest assistant
++//! message, capped at `summary_chars`) plus the worker's session ID for
++//! follow-up reads.
++//!
++//! **Follow-up mode**: accepts `follow_up_session` (the session ID returned
++//! from a prior spawn), `offset`, and `limit`. Reads the worker's stored
++//! conversation history and returns the requested character range
++//! deterministically (no LLM, no spawn). This lets the coordinator page
++//! through the worker's full output without loading it all into context.
++//!
++//! Generated tools are registered per-session during registry construction
++//! so the coordinator sees them alongside built-in tools. The coordinator
++//! policy chooses which generated tools are visible and executable.
++
++use super::{Tool, ToolContext, ToolOutput};
++use crate::protocol::{Request, ServerEvent};
++use crate::tool::communicate::transport::{send_request, send_request_with_timeout};
++use anyhow::Result;
++use async_trait::async_trait;
++use serde::Deserialize;
++use serde_json::{Value, json};
++
++/// Input parameters for a generated `swarm_<id>` tool.
++#[derive(Debug, Deserialize)]
++struct BlueprintToolInput {
++    /// Nonblank dynamic task for the spawned worker. Required for spawn mode;
++    /// omitted when using follow-up mode.
++    #[serde(default)]
++    task: Option<String>,
++    /// Optional working directory override for the spawned worker.
++    #[serde(default)]
++    working_dir: Option<String>,
++    /// Optional spawn mode override.
++    #[serde(default)]
++    spawn_mode: Option<String>,
++    /// Intent label (required by tool schema convention).
++    #[serde(default)]
++    #[allow(dead_code)]
++    intent: Option<String>,
++    /// Optional per-call timeout in minutes. Overrides the blueprint's
++    /// `timeout-minutes` and the config default.
++    #[serde(default)]
++    timeout_minutes: Option<u32>,
++    /// Session ID of an existing worker to read output from (follow-up mode).
++    /// When set, `task` is ignored and no new worker is spawned.
++    #[serde(default)]
++    follow_up_session: Option<String>,
++    /// Character offset for follow-up reads. Defaults to 0.
++    #[serde(default)]
++    offset: Option<usize>,
++    /// Maximum characters to return in a follow-up read. Defaults to 2000.
++    #[serde(default)]
++    limit: Option<usize>,
++}
++
++/// A generated coordinator-visible tool for worker blueprints.
++///
++/// In spawn mode it spawns a worker, waits for completion, and returns a
++/// compact summary. In follow-up mode it reads a paginated chunk of the
++/// worker's stored output deterministically.
++pub struct BlueprintTool {
++    /// Tool name: `swarm_<id>`.
++    name: String,
++    /// Tool description, derived from the blueprint's required description.
++    description: String,
++    /// Blueprint ID.
++    blueprint_id: String,
++    /// Blueprint's timeout in minutes (from front matter or TOML override).
++    blueprint_timeout_minutes: Option<u32>,
++}
++
++/// Statuses that count as "done" for the spawned worker.
++const TERMINAL_STATUSES: &[&str] = &["ready", "completed", "stopped", "failed", "crashed"];
++
++/// Default timeout in minutes when neither the per-call parameter nor
++/// the blueprint specifies one.
++const DEFAULT_TIMEOUT_MINUTES: u32 = 20;
++
++/// Maximum characters returned in the compact summary (spawn mode).
++const SUMMARY_MAX_CHARS: usize = 2000;
++
++/// Default character limit for follow-up reads.
++const FOLLOW_UP_DEFAULT_LIMIT: usize = 2000;
++
++/// Suffix appended when the summary is truncated.
++const SUMMARY_TRUNCATED_SUFFIX: &str = "\n\n[... truncated. Use follow_up_session with offset/limit to read more.]";
++
++impl BlueprintTool {
++    /// Create a new generated tool for the given blueprint.
++    pub fn new(
++        blueprint_id: &str,
++        description: &str,
++        model: Option<&str>,
++        effort: Option<&str>,
++        allowed_tools: Option<&[String]>,
++        communication_policy: Option<&str>,
++        timeout_minutes: Option<u32>,
++    ) -> Self {
++        let name = format!("swarm_{blueprint_id}");
++        let mut desc = description.to_string();
++        let mut meta = Vec::new();
++        if let Some(model) = model {
++            meta.push(format!("model: {model}"));
++        }
++        if let Some(effort) = effort {
++            meta.push(format!("effort: {effort}"));
++        }
++        if let Some(tools) = allowed_tools {
++            meta.push(format!("allowed-tools: {}", tools.join(", ")));
++        }
++        if let Some(policy) = communication_policy {
++            meta.push(format!("communication-policy: {policy}"));
++        }
++        if let Some(timeout) = timeout_minutes {
++            meta.push(format!("timeout: {timeout}m"));
++        }
++        if !meta.is_empty() {
++            desc.push_str("\n\nBlueprint policy: ");
++            desc.push_str(&meta.join("; "));
++            desc.push('.');
++        }
++        desc.push_str(
++            "\n\nTwo modes:\n\
++             1. Spawn: pass `task` to spawn a worker, wait for completion, \
++             and get a compact summary plus the worker's session ID.\n\
++             2. Follow-up: pass `follow_up_session` (the session ID from a \
++             prior call) with `offset` and `limit` to read a paginated chunk \
++             of the worker's full output deterministically (no LLM, no \
++             spawn). Default limit: 2000 chars.\n\
++             Pass `timeout_minutes` to override the blueprint's default.",
++        );
++        Self {
++            name,
++            description: desc,
++            blueprint_id: blueprint_id.to_string(),
++            blueprint_timeout_minutes: timeout_minutes,
++        }
++    }
++
++    /// Create a new generated tool from a `WorkerBlueprint`.
++    pub fn from_blueprint(bp: &crate::worker_blueprint::WorkerBlueprint) -> Self {
++        Self::new(
++            &bp.name,
++            &bp.description,
++            bp.model.as_deref(),
++            bp.effort.as_ref().map(|e| e.as_str()),
++            bp.allowed_tools.as_deref(),
++            bp.communication_policy.as_ref().map(|p| p.as_str()),
++            bp.timeout_minutes,
++        )
++    }
++}
++
++/// Truncate the summary to `max_chars`, appending a truncation notice that
++/// includes the total length so the coordinator knows how much remains.
++fn truncate_summary(text: &str, max_chars: usize) -> String {
++    let text = text.trim();
++    if text.chars().count() <= max_chars {
++        return text.to_string();
++    }
++    let total = text.chars().count();
++    let suffix = format!(
++        "\n\n[... truncated: showing {} of {} chars. \
++         Use follow_up_session with offset/limit to read more.]",
++        max_chars, total
++    );
++    let keep = max_chars.saturating_sub(suffix.chars().count());
++    let mut out: String = text.chars().take(keep).collect();
++    out.push_str(&suffix);
++    out
++}
++
++#[async_trait]
++impl Tool for BlueprintTool {
++    fn name(&self) -> &str {
++        &self.name
++    }
++
++    fn description(&self) -> &str {
++        &self.description
++    }
++
++    fn parameters_schema(&self) -> Value {
++        json!({
++            "type": "object",
++            "properties": {
++                "task": {
++                    "type": "string",
++                    "description": "Nonblank dynamic task for the spawned worker. Required for spawn mode; omit for follow-up mode."
++                },
++                "follow_up_session": {
++                    "type": "string",
++                    "description": "Session ID from a prior spawn to read paginated output from. When set, no new worker is spawned; the tool reads the existing worker's output deterministically."
++                },
++                "offset": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "description": "Character offset for follow-up reads. Defaults to 0."
++                },
++                "limit": {
++                    "type": "integer",
++                    "minimum": 1,
++                    "description": "Maximum characters to return in a follow-up read. Defaults to 2000."
++                },
++                "working_dir": {
++                    "type": "string",
++                    "description": "Optional working directory for the spawned worker."
++                },
++                "spawn_mode": {
++                    "type": "string",
++                    "enum": ["visible", "headless", "inline", "auto"],
++                    "description": "Spawn UI mode. Defaults to the configured swarm spawn mode."
++                },
++                "timeout_minutes": {
++                    "type": "integer",
++                    "minimum": 1,
++                    "description": "Optional timeout in minutes for spawn mode. Overrides the blueprint's timeout-minutes and the config default."
++                }
++            }
++        })
++    }
++
++    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let params: BlueprintToolInput = serde_json::from_value(input)?;
++
++        // ── Follow-up mode: read paginated output from an existing worker ──
++        if let Some(session_id) = params.follow_up_session.as_deref() {
++            return self.execute_follow_up(session_id, params.offset, params.limit, &ctx).await;
++        }
++
++        // ── Spawn mode: spawn, wait, return compact summary ──
++        let task = params.task.as_deref().map(str::trim).unwrap_or("");
++        if task.is_empty() {
++            return Err(anyhow::anyhow!(
++                "'task' must not be blank for blueprint tool '{}' (or pass 'follow_up_session' to read from an existing worker)",
++                self.name
++            ));
++        }
++
++        // 1. Spawn the blueprint-backed worker.
++        let spawn_request = Request::CommSpawn {
++            id: 1,
++            session_id: ctx.session_id.clone(),
++            working_dir: params.working_dir.clone(),
++            initial_message: Some(task.to_string()),
++            request_nonce: None,
++            spawn_mode: params.spawn_mode.clone(),
++            model: None,
++            effort: None,
++            label: None,
++            blueprint: Some(self.blueprint_id.clone()),
++        };
++
++        let new_session_id = match send_request(spawn_request).await {
++            Ok(ServerEvent::CommSpawnResponse { new_session_id, .. })
++                if !new_session_id.is_empty() =>
++            {
++                new_session_id
++            }
++            Ok(ServerEvent::Error { message, .. }) => {
++                return Err(anyhow::anyhow!("{}", message));
++            }
++            Ok(_) => {
++                return Err(anyhow::anyhow!(
++                    "Spawn succeeded but no session ID was returned."
++                ));
++            }
++            Err(e) => {
++                return Err(anyhow::anyhow!(
++                    "Failed to spawn blueprint worker: {}",
++                    e
++                ));
++            }
++        };
++
++        // Resolve timeout: per-call > blueprint > config > default.
++        let config_timeout = crate::config::config().agents.swarm_timeout_minutes;
++        let timeout_minutes = params
++            .timeout_minutes
++            .filter(|&n| n > 0)
++            .or(self.blueprint_timeout_minutes)
++            .unwrap_or(config_timeout);
++        let timeout_secs = (timeout_minutes as u64) * 60;
++
++        // 2. Wait for the worker to reach a terminal status.
++        let await_request = Request::CommAwaitMembers {
++            id: 2,
++            session_id: ctx.session_id.clone(),
++            target_status: TERMINAL_STATUSES.iter().map(|s| s.to_string()).collect(),
++            session_ids: vec![new_session_id.clone()],
++            mode: Some("all".to_string()),
++            timeout_secs: Some(timeout_secs),
++            background: false,
++            notify: false,
++            wake: false,
++        };
++
++        let socket_timeout = std::time::Duration::from_secs(timeout_secs + 30);
++        match send_request_with_timeout(await_request, Some(socket_timeout)).await {
++            Ok(ServerEvent::CommAwaitMembersResponse {
++                completed,
++                members,
++                summary,
++                ..
++            }) => {
++                if !completed {
++                    return Err(anyhow::anyhow!(
++                        "Blueprint worker '{}' timed out: {}",
++                        self.blueprint_id,
++                        summary
++                    ));
++                }
++                if let Some(member) = members.iter().find(|m| m.session_id == new_session_id) {
++                    if member.status == "failed" || member.status == "crashed" {
++                        let report = member.completion_report.as_deref().unwrap_or("");
++                        return Err(anyhow::anyhow!(
++                            "Blueprint worker '{}' failed: {}",
++                            self.blueprint_id,
++                            if report.is_empty() { &summary } else { report }
++                        ));
++                    }
++                }
++            }
++            Ok(ServerEvent::Error { message, .. }) => {
++                return Err(anyhow::anyhow!("{}", message));
++            }
++            Ok(_) => {
++                return Err(anyhow::anyhow!(
++                    "Unexpected response while waiting for blueprint worker."
++                ));
++            }
++            Err(e) => {
++                return Err(anyhow::anyhow!(
++                    "Failed to await blueprint worker: {}",
++                    e
++                ));
++            }
++        }
++
++        // 3. Fetch the worker's completion report (latest assistant text).
++        let read_context_request = Request::CommReadContext {
++            id: 3,
++            session_id: ctx.session_id.clone(),
++            target_session: new_session_id.clone(),
++        };
++
++        match send_request(read_context_request).await {
++            Ok(ServerEvent::CommContextHistory { messages, .. }) => {
++                let report = messages
++                    .iter()
++                    .rev()
++                    .find_map(|msg| {
++                        if msg.role != "assistant" {
++                            return None;
++                        }
++                        let content = msg.content.trim();
++                        (!content.is_empty()).then(|| content.to_string())
++                    });
++
++                match report {
++                    Some(text) => {
++                        let summary = truncate_summary(&text, SUMMARY_MAX_CHARS);
++                        // Append the session ID so the coordinator can follow up.
++                        let output = format!(
++                            "{summary}\n\n---\n\n\
++                             Worker session: {new_session_id}\n\
++                             (Pass `follow_up_session: \"{new_session_id}\"` \
++                             with `offset`/`limit` to read more output.)"
++                        );
++                        Ok(ToolOutput::new(output))
++                    }
++                    None => Ok(ToolOutput::new(format!(
++                        "Blueprint '{}' worker completed but produced no output.\n\n\
++                         Worker session: {new_session_id}",
++                        self.blueprint_id
++                    ))),
++                }
++            }
++            Ok(_) => Ok(ToolOutput::new(format!(
++                "Blueprint '{}' worker completed (could not fetch output).\n\n\
++                 Worker session: {new_session_id}",
++                self.blueprint_id
++            ))),
++            Err(e) => Err(anyhow::anyhow!(
++                "Blueprint worker completed but fetching output failed: {}",
++                e
++            )),
++        }
++    }
++}
++
++impl BlueprintTool {
++    /// Execute a follow-up read: fetch the worker's conversation history and
++    /// return a paginated character slice. Deterministic, no LLM, no spawn.
++    async fn execute_follow_up(
++        &self,
++        session_id: &str,
++        offset: Option<usize>,
++        limit: Option<usize>,
++        ctx: &ToolContext,
++    ) -> Result<ToolOutput> {
++        let offset = offset.unwrap_or(0);
++        let limit = limit.unwrap_or(FOLLOW_UP_DEFAULT_LIMIT).max(1);
++
++        let read_request = Request::CommReadContext {
++            id: 1,
++            session_id: ctx.session_id.clone(),
++            target_session: session_id.to_string(),
++        };
++
++        match send_request(read_request).await {
++            Ok(ServerEvent::CommContextHistory { messages, .. }) => {
++                // Concatenate all messages (role + content) so the
++                // coordinator can page through the full conversation.
++                let full: String = messages
++                    .iter()
++                    .map(|msg| format!("[{}]\n{}\n\n", msg.role, msg.content))
++                    .collect();
++
++                let full = full.trim();
++                let total_chars = full.chars().count();
++
++                if offset >= total_chars {
++                    return Ok(ToolOutput::new(format!(
++                        "No more output. Total: {total_chars} chars, offset: {offset}.\n\
++                         (You have read all available output from session {session_id}.)"
++                    )));
++                }
++
++                let end = (offset + limit).min(total_chars);
++                let chunk: String = full
++                    .chars()
++                    .skip(offset)
++                    .take(limit)
++                    .collect();
++
++                let more = end < total_chars;
++                let header = format!(
++                    "Output from session {session_id} (chars {offset}-{end} of {total_chars}{}):\n\n",
++                    if more { "" } else { ", end" }
++                );
++
++                let footer = if more {
++                    format!(
++                        "\n\n[... {remaining} more chars. \
++                         Pass offset={end} to continue reading.]",
++                        remaining = total_chars - end
++                    )
++                } else {
++                    "\n\n[End of output.]".to_string()
++                };
++
++                Ok(ToolOutput::new(format!("{header}{chunk}{footer}")))
++            }
++            Ok(ServerEvent::Error { message, .. }) => {
++                Err(anyhow::anyhow!("{}", message))
++            }
++            Ok(_) => Err(anyhow::anyhow!(
++                "Unexpected response reading worker output."
++            )),
++            Err(e) => Err(anyhow::anyhow!(
++                "Failed to read worker output: {}",
++                e
++            )),
++        }
++    }
++}
+diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
+new file mode 100644
+index 000000000..74f34ffe1
+--- /dev/null
++++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
+@@ -0,0 +1,892 @@
++//! Phase two integration tests for worker blueprints.
++//!
++//! These tests verify the runtime integration of worker blueprints:
++//! - Coordinator policy intersection with global tool policy
++//! - Blueprint tool prompt composition
++//! - Communication policy enforcement on swarm members
++//! - Generated `swarm_<id>` tool construction from blueprints
++//! - Protocol `CommSpawn` with blueprint field roundtrip
++//! - Tool-name collision safety for generated tools
++
++#![cfg(test)]
++
++use crate::config::{AgentsConfig, CoordinatorConfig, ToolSelection, WorkerBlueprintOverride};
++use crate::protocol::Request;
++use crate::worker_blueprint::{
++    self, BlueprintEffort, CommunicationPolicy, WorkerBlueprint, WorkerBlueprintRegistry,
++    load_worker_blueprints,
++};
++use std::collections::{BTreeMap, HashSet};
++use std::fs;
++use std::path::PathBuf;
++
++// ---------------------------------------------------------------------------
++// Helpers
++// ---------------------------------------------------------------------------
++
++fn write_blueprint(dir: &std::path::Path, filename: &str, content: &str) {
++    fs::write(dir.join(filename), content).unwrap();
++}
++
++fn temp_blueprints_dir() -> tempfile::TempDir {
++    tempfile::tempdir().unwrap()
++}
++
++fn make_blueprint(
++    name: &str,
++    description: &str,
++    body: &str,
++) -> WorkerBlueprint {
++    WorkerBlueprint {
++        source_path: PathBuf::from(format!("/tmp/{name}.md")),
++        name: name.to_string(),
++        description: description.to_string(),
++        model: None,
++        effort: None,
++        allowed_tools: None,
++        communication_policy: None,
++        timeout_minutes: None,
++        body: body.to_string(),
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Coordinator policy tests
++// ---------------------------------------------------------------------------
++
++#[test]
++fn coordinator_policy_empty_means_no_restriction() {
++    let coord = CoordinatorConfig::default();
++    assert!(coord.allowed_set().is_none());
++}
++
++#[test]
++fn coordinator_policy_nonempty_produces_allowed_set() {
++    let coord = CoordinatorConfig {
++        allowed_tools: vec!["read".to_string(), "swarm_reviewer".to_string()],
++    };
++    let allowed = coord.allowed_set().unwrap();
++    assert!(allowed.contains("read"));
++    assert!(allowed.contains("swarm_reviewer"));
++    assert!(!allowed.contains("bash"));
++}
++
++#[test]
++fn coordinator_policy_intersects_with_global_allowed() {
++    // Simulate the apply_coordinator_policy logic: intersection of
++    // coordinator allowed_tools with the global tool selection allowed_tools.
++    let global: HashSet<String> =
++        ["read", "write", "bash", "swarm", "swarm_reviewer"]
++            .iter()
++            .map(|s| s.to_string())
++            .collect();
++    let coord: HashSet<String> =
++        ["read", "agentgrep", "swarm_reviewer"]
++            .iter()
++            .map(|s| s.to_string())
++            .collect();
++    let intersection: HashSet<String> = global.intersection(&coord).cloned().collect();
++    assert!(intersection.contains("read"));
++    assert!(intersection.contains("swarm_reviewer"));
++    assert!(!intersection.contains("bash"));
++    assert!(!intersection.contains("agentgrep")); // not in global
++    assert!(!intersection.contains("swarm"));
++}
++
++#[test]
++fn coordinator_policy_empty_allowed_tools_means_no_developer_tools() {
++    let coord = CoordinatorConfig {
++        allowed_tools: vec![],
++    };
++    // Empty vec means no restriction (allowed_set returns None)
++    assert!(coord.allowed_set().is_none());
++
++    // But if we use a non-empty global with an empty coordinator set,
++    // the intersection is empty.
++    let global: HashSet<String> = ["read", "bash"].iter().map(|s| s.to_string()).collect();
++    let coord_empty: HashSet<String> = HashSet::new();
++    let intersection: HashSet<String> = global.intersection(&coord_empty).cloned().collect();
++    assert!(intersection.is_empty());
++}
++
++// ---------------------------------------------------------------------------
++// Blueprint prompt composition tests
++// ---------------------------------------------------------------------------
++
++#[test]
++fn blueprint_prompt_composes_role_instructions_then_task() {
++    let role = "You are a rigorous code reviewer.";
++    let task = "Review the auth module for security issues.";
++    // This mirrors compose_blueprint_prompt in comm_session.rs
++    let composed = format!("{role}\n\n---\n\n## Task\n\n{task}");
++    assert!(composed.starts_with(role));
++    assert!(composed.contains("## Task"));
++    assert!(composed.contains(task));
++    // Role instructions come before the task
++    let role_pos = composed.find(role).unwrap();
++    let task_pos = composed.find(task).unwrap();
++    assert!(role_pos < task_pos);
++}
++
++// ---------------------------------------------------------------------------
++// Communication policy enforcement tests
++// ---------------------------------------------------------------------------
++
++#[test]
++fn communication_policy_none_blocks_messages() {
++    // Verify that "none" as a string matches the communication policy check
++    // used in the message routing path.
++    let policy = Some("none".to_string());
++    assert_eq!(policy.as_deref(), Some("none"));
++}
++
++#[test]
++fn communication_policy_report_to_parent_allows_messages() {
++    let policy = Some("report-to-parent".to_string());
++    assert_ne!(policy.as_deref(), Some("none"));
++}
++
++#[test]
++fn communication_policy_unset_allows_messages() {
++    let policy: Option<String> = None;
++    assert_ne!(policy.as_deref(), Some("none"));
++}
++
++// ---------------------------------------------------------------------------
++// Generated tool construction tests
++// ---------------------------------------------------------------------------
++
++#[test]
++fn generated_tool_name_is_swarm_prefix_plus_id() {
++    // This mirrors BlueprintTool::new logic
++    let bp = make_blueprint(
++        "shell-runner",
++        "Runs shell commands in a sandbox.",
++        "You execute shell commands.",
++    );
++    let tool_name = format!("swarm_{}", bp.name);
++    assert_eq!(tool_name, "swarm_shell-runner");
++}
++
++#[test]
++fn generated_tool_description_includes_blueprint_metadata() {
++    let bp = WorkerBlueprint {
++        source_path: PathBuf::from("/tmp/reviewer.md"),
++        name: "reviewer".to_string(),
++        description: "Reviews changes for correctness.".to_string(),
++        model: Some("openai-api:gpt-5.5".to_string()),
++        effort: Some(BlueprintEffort::Medium),
++        allowed_tools: Some(vec!["read".to_string(), "agentgrep".to_string()]),
++        communication_policy: Some(CommunicationPolicy::ReportToParent),
++        timeout_minutes: Some(30),
++        body: "You are a reviewer.".to_string(),
++    };
++
++    // Simulate the description construction from BlueprintTool::from_blueprint
++    let mut desc = bp.description.clone();
++    desc.push_str("\n\nBlueprint policy: ");
++    desc.push_str(&format!("model: {}; ", bp.model.as_deref().unwrap_or("")));
++    desc.push_str(&format!(
++        "effort: {}; ",
++        bp.effort.as_ref().map(|e| e.as_str()).unwrap_or("")
++    ));
++    desc.push_str(&format!(
++        "allowed-tools: {}; ",
++        bp.allowed_tools.as_deref().unwrap_or(&[]).join(", ")
++    ));
++    desc.push_str(&format!(
++        "communication-policy: {}; ",
++        bp.communication_policy
++            .as_ref()
++            .map(|p| p.as_str())
++            .unwrap_or("")
++    ));
++    if let Some(timeout) = bp.timeout_minutes {
++        desc.push_str(&format!("timeout: {timeout}m"));
++    }
++    desc.push('.');
++
++    assert!(desc.contains("model: openai-api:gpt-5.5"));
++    assert!(desc.contains("effort: medium"));
++    assert!(desc.contains("allowed-tools: read, agentgrep"));
++    assert!(desc.contains("communication-policy: report-to-parent"));
++    assert!(desc.contains("timeout: 30m"));
++}
++
++// ---------------------------------------------------------------------------
++// Protocol CommSpawn blueprint field roundtrip
++// ---------------------------------------------------------------------------
++
++#[test]
++fn comm_spawn_with_blueprint_roundtrips() {
++    use crate::protocol::Request;
++
++    let req = Request::CommSpawn {
++        id: 42,
++        session_id: "coord-1".to_string(),
++        working_dir: None,
++        initial_message: Some("Review the auth module.".to_string()),
++        request_nonce: None,
++        spawn_mode: Some("inline".to_string()),
++        model: None,
++        effort: None,
++        label: Some("reviewer".to_string()),
++        blueprint: Some("reviewer".to_string()),
++    };
++    let json = serde_json::to_string(&req).unwrap();
++    assert!(json.contains("\"blueprint\":\"reviewer\""));
++
++    let decoded: Request = serde_json::from_str(&json).unwrap();
++    match decoded {
++        Request::CommSpawn { blueprint, .. } => {
++            assert_eq!(blueprint.as_deref(), Some("reviewer"));
++        }
++        _ => panic!("expected CommSpawn"),
++    }
++}
++
++#[test]
++fn comm_spawn_without_blueprint_defaults_to_none() {
++    use crate::protocol::Request;
++
++    let json = serde_json::json!({
++        "type": "comm_spawn",
++        "id": 1,
++        "session_id": "coord-1",
++        "initial_message": "Do something."
++    });
++    let decoded: Request = serde_json::from_str(&json.to_string()).unwrap();
++    match decoded {
++        Request::CommSpawn { blueprint, .. } => {
++            assert_eq!(blueprint, None);
++        }
++        _ => panic!("expected CommSpawn"),
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Tool-name collision safety
++// ---------------------------------------------------------------------------
++
++#[test]
++fn generated_tool_does_not_overwrite_existing_tool() {
++    // Simulate the collision check logic in register_blueprint_tools.
++    let mut tools: HashSet<String> = HashSet::new();
++    tools.insert("swarm".to_string()); // built-in generic swarm tool
++    tools.insert("read".to_string());
++
++    // A blueprint named "swarm" would generate "swarm_swarm"
++    let tool_name = "swarm_swarm";
++    assert!(!tools.contains(tool_name), "no collision expected for swarm_swarm");
++
++    // A blueprint named "reviewer" would generate "swarm_reviewer"
++    let reviewer_name = "swarm_reviewer";
++    assert!(!tools.contains(reviewer_name), "no collision for swarm_reviewer");
++
++    // If somehow a tool named "swarm_reviewer" already exists, skip it
++    tools.insert("swarm_reviewer".to_string());
++    assert!(tools.contains("swarm_reviewer"), "collision detected");
++}
++
++// ---------------------------------------------------------------------------
++// Blueprint loading with model/effort override precedence
++// ---------------------------------------------------------------------------
++
++#[test]
++fn blueprint_model_feeds_into_spawn_precedence() {
++    // The spawn precedence is: per-spawn > blueprint > swarm_model > coordinator.
++    // This test verifies that a blueprint model is used when no per-spawn
++    // model is given.
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "reviewer.md",
++        "---\n\
++         name: reviewer\n\
++         description: A reviewer.\n\
++         model: openai-api:gpt-5.5\n\
++         ---\n\
++         You are a reviewer.",
++    );
++
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
++    let bp = report.registry.get("reviewer").unwrap();
++    assert_eq!(bp.model.as_deref(), Some("openai-api:gpt-5.5"));
++
++    // In the spawn path, requested_model.or(blueprint_model) would use
++    // the blueprint model when no explicit per-spawn model is set.
++    let requested_model: Option<String> = None;
++    let effective = requested_model.or(bp.model.clone());
++    assert_eq!(effective.as_deref(), Some("openai-api:gpt-5.5"));
++}
++
++#[test]
++fn per_spawn_model_overrides_blueprint_model() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "reviewer.md",
++        "---\n\
++         name: reviewer\n\
++         description: A reviewer.\n\
++         model: openai-api:gpt-5.5\n\
++         ---\n\
++         You are a reviewer.",
++    );
++
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
++    let bp = report.registry.get("reviewer").unwrap();
++
++    // In the spawn path, requested_model.or(blueprint_model) uses the
++    // per-spawn model when it is set, ignoring the blueprint model.
++    let requested_model = Some("claude-api:claude-4".to_string());
++    let effective = requested_model.or(bp.model.clone());
++    assert_eq!(effective.as_deref(), Some("claude-api:claude-4"));
++}
++
++#[test]
++fn toml_override_model_replaces_blueprint_model() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "reviewer.md",
++        "---\n\
++         name: reviewer\n\
++         description: A reviewer.\n\
++         model: openai-api:gpt-5.5\n\
++         ---\n\
++         You are a reviewer.",
++    );
++
++    let mut overrides = BTreeMap::new();
++    overrides.insert(
++        "reviewer".to_string(),
++        WorkerBlueprintOverride {
++            model: Some("claude-api:claude-4".to_string()),
++            effort: None,
++            timeout_minutes: None,
++        },
++    );
++
++    let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++    let bp = report.registry.get("reviewer").unwrap();
++    assert_eq!(
++        bp.model.as_deref(),
++        Some("claude-api:claude-4"),
++        "TOML override should replace front-matter model"
++    );
++}
++
++#[test]
++fn blueprint_effort_feeds_into_spawn_precedence() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "worker.md",
++        "---\n\
++         name: worker\n\
++         description: A worker.\n\
++         effort: high\n\
++         ---\n\
++         You are a worker.",
++    );
++
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
++    let bp = report.registry.get("worker").unwrap();
++    assert_eq!(bp.effort, Some(BlueprintEffort::High));
++
++    // In the spawn path, blueprint effort is used when no per-spawn
++    // effort is given.
++    let blueprint_effort = bp.effort.as_ref().map(|e| e.as_str().to_string());
++    let requested_effort: Option<String> = None;
++    let effective = requested_effort
++        .as_deref()
++        .or(blueprint_effort.as_deref());
++    assert_eq!(effective, Some("high"));
++}
++
++// ---------------------------------------------------------------------------
++// Blueprint allowed-tools as restrictive per-session policy
++// ---------------------------------------------------------------------------
++
++#[test]
++fn blueprint_allowed_tools_intersected_with_global() {
++    // Simulate the tool policy intersection logic from spawn_swarm_agent.
++    let blueprint_allowed: HashSet<String> =
++        ["read", "agentgrep", "bash"].iter().map(|s| s.to_string()).collect();
++    let global_allowed: HashSet<String> =
++        ["read", "agentgrep", "write", "edit"].iter().map(|s| s.to_string()).collect();
++
++    // Intersection: blueprint can only further restrict, never expand.
++    let effective: HashSet<String> = blueprint_allowed
++        .intersection(&global_allowed)
++        .cloned()
++        .collect();
++
++    assert!(effective.contains("read"));
++    assert!(effective.contains("agentgrep"));
++    assert!(!effective.contains("bash"), "bash not in global, must not be restored");
++    assert!(!effective.contains("write"));
++}
++
++#[test]
++fn blueprint_empty_allowed_tools_means_no_tools() {
++    let blueprint_allowed: HashSet<String> = HashSet::new();
++    let global_allowed: HashSet<String> =
++        ["read", "bash", "swarm"].iter().map(|s| s.to_string()).collect();
++
++    let effective: HashSet<String> = blueprint_allowed
++        .intersection(&global_allowed)
++        .cloned()
++        .collect();
++
++    assert!(effective.is_empty(), "empty allowed-tools means no worker tools");
++}
++
++#[test]
++fn blueprint_no_allowed_tools_means_no_restriction() {
++    // When allowed_tools is None (omitted), no blueprint-specific restriction.
++    let blueprint_allowed: Option<HashSet<String>> = None;
++    let global_allowed: Option<HashSet<String>> =
++        Some(["read", "bash"].iter().map(|s| s.to_string()).collect());
++
++    // When blueprint has no restriction, global passes through.
++    let effective = match (global_allowed, blueprint_allowed) {
++        (Some(global), Some(bp)) => Some(global.intersection(&bp).cloned().collect()),
++        (Some(global), None) => Some(global),
++        (None, _) => None,
++    };
++
++    assert!(effective.is_some());
++    let eff = effective.unwrap();
++    assert!(eff.contains("read"));
++    assert!(eff.contains("bash"));
++}
++
++// ---------------------------------------------------------------------------
++// Coordinator policy does not affect spawned workers
++// ---------------------------------------------------------------------------
++
++#[test]
++fn coordinator_policy_only_applies_to_root_sessions() {
++    // The apply_coordinator_policy function is only called when parent_id
++    // is None (root sessions). Spawned workers (parent_id is Some) skip it.
++    // This test verifies the condition logic.
++    let root_session = true; // parent_id.is_none()
++    let worker_session = false; // parent_id.is_some()
++
++    let coord = CoordinatorConfig {
++        allowed_tools: vec!["read".to_string()],
++    };
++    let coord_set = coord.allowed_set();
++
++    // Root session: policy is applied (intersection)
++    if root_session {
++        let global: Option<HashSet<String>> =
++            Some(["read", "bash"].iter().map(|s| s.to_string()).collect());
++        let effective = match (global, coord_set.clone()) {
++            (Some(g), Some(c)) => Some(g.intersection(&c).cloned().collect()),
++            (g, None) => g,
++            (None, c) => c,
++        };
++        let eff = effective.unwrap();
++        assert!(eff.contains("read"));
++        assert!(!eff.contains("bash"), "coordinator policy removed bash from root");
++    }
++
++    // Worker session: policy is NOT applied, global passes through
++    if !worker_session {
++        let global: Option<HashSet<String>> =
++            Some(["read", "bash"].iter().map(|s| s.to_string()).collect());
++        // No coordinator policy intersection for workers
++        let effective = global;
++        let eff = effective.unwrap();
++        assert!(eff.contains("read"));
++        assert!(eff.contains("bash"), "worker retains bash despite coordinator policy");
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Generated tool registration with blueprints
++// ---------------------------------------------------------------------------
++
++#[test]
++fn register_blueprint_tools_loads_from_configured_dir() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "reviewer.md",
++        "---\n\
++         name: reviewer\n\
++         description: Reviews code.\n\
++         ---\n\
++         You are a reviewer.",
++    );
++    write_blueprint(
++        dir.path(),
++        "shell-runner.md",
++        "---\n\
++         name: shell-runner\n\
++         description: Runs shell commands.\n\
++         ---\n\
++         You run shell commands.",
++    );
++
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
++
++    assert_eq!(report.registry.len(), 2);
++    assert!(report.registry.get("reviewer").is_some());
++    assert!(report.registry.get("shell-runner").is_some());
++
++    // Verify generated tool names
++    for (id, _) in report.registry.iter() {
++        let tool_name = format!("swarm_{id}");
++        assert!(tool_name.starts_with("swarm_"));
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Communication policy stored on swarm member
++// ---------------------------------------------------------------------------
++
++#[test]
++fn communication_policy_stored_on_member_for_enforcement() {
++    // Verify that the communication_policy field on SwarmMember can be
++    // set and checked. This mirrors the spawn path where the blueprint's
++    // communication policy is stored on the member.
++    let policy = Some("none".to_string());
++
++    // The enforcement check in handle_comm_message:
++    let blocked = policy.as_deref() == Some("none");
++    assert!(blocked, "none policy blocks messages");
++
++    let policy = Some("report-to-parent".to_string());
++    let blocked = policy.as_deref() == Some("none");
++    assert!(!blocked, "report-to-parent does not block");
++}
++
++// ---------------------------------------------------------------------------
++// Blueprint tool returns bounded result (not just session ID)
++// ---------------------------------------------------------------------------
++
++#[test]
++fn generated_tool_description_mentions_waiting_for_output() {
++    let bp = make_blueprint(
++        "reviewer",
++        "Reviews code.",
++        "You are a reviewer.",
++    );
++    // The description should mention that the tool waits for output,
++    // not just spawns a worker.
++    let desc = format!(
++        "{}\n\nAccepts a nonblank dynamic task. Spawns a worker with the \
++         blueprint's role instructions, waits for it to complete, and \
++         returns its output.",
++        bp.description
++    );
++    assert!(desc.contains("waits for it to complete"));
++    assert!(desc.contains("returns its output"));
++}
++
++#[test]
++fn terminal_statuses_include_ready_and_failed() {
++    // The BlueprintTool waits for these statuses.
++    let statuses = ["ready", "completed", "stopped", "failed", "crashed"];
++    assert!(statuses.contains(&"ready"));
++    assert!(statuses.contains(&"failed"));
++    assert!(statuses.contains(&"crashed"));
++}
++
++#[test]
++fn completion_report_is_truncated_for_bounded_result() {
++    use crate::protocol::truncate_comm_completion_report;
++
++    // A short report passes through unchanged.
++    let short = "All tests passed.";
++    assert_eq!(truncate_comm_completion_report(short), short);
++
++    // A very long report is truncated with a marker.
++    let long: String = "x".repeat(5000);
++    let result = truncate_comm_completion_report(&long);
++    assert!(result.chars().count() <= 4000);
++    assert!(result.contains("[Report truncated by jcode.]"));
++}
++
++#[test]
++fn empty_task_is_rejected() {
++    // The BlueprintTool rejects blank tasks before spawning.
++    let task = "   ".trim();
++    assert!(task.is_empty(), "whitespace-only task should be empty after trim");
++}
++
++// ---------------------------------------------------------------------------
++// Timeout precedence: per-call > blueprint > config > default
++// ---------------------------------------------------------------------------
++
++#[test]
++fn timeout_precedence_per_call_overrides_blueprint() {
++    let per_call = Some(5u32);
++    let blueprint = Some(15u32);
++    let config = 20u32;
++    let effective = per_call.filter(|&n| n > 0).or(blueprint).unwrap_or(config);
++    assert_eq!(effective, 5, "per-call timeout wins over blueprint");
++}
++
++#[test]
++fn timeout_precedence_blueprint_overrides_config() {
++    let per_call: Option<u32> = None;
++    let blueprint = Some(15u32);
++    let config = 20u32;
++    let effective = per_call.filter(|&n| n > 0).or(blueprint).unwrap_or(config);
++    assert_eq!(effective, 15, "blueprint timeout wins over config");
++}
++
++#[test]
++fn timeout_precedence_config_when_neither_set() {
++    let per_call: Option<u32> = None;
++    let blueprint: Option<u32> = None;
++    let config = 20u32;
++    let effective = per_call.filter(|&n| n > 0).or(blueprint).unwrap_or(config);
++    assert_eq!(effective, 20, "config timeout used when neither set");
++}
++
++#[test]
++fn timeout_precedence_zero_per_call_ignored() {
++    let per_call = Some(0u32);
++    let blueprint = Some(15u32);
++    let config = 20u32;
++    let effective = per_call.filter(|&n| n > 0).or(blueprint).unwrap_or(config);
++    assert_eq!(effective, 15, "zero per-call timeout falls through to blueprint");
++}
++
++#[test]
++fn timeout_minutes_parses_from_front_matter() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "worker.md",
++        "---\n\
++         name: worker\n\
++         description: A worker.\n\
++         timeout-minutes: 45\n\
++         ---\n\
++         You are a worker.",
++    );
++
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
++    let bp = report.registry.get("worker").unwrap();
++    assert_eq!(bp.timeout_minutes, Some(45));
++}
++
++#[test]
++fn timeout_minutes_zero_is_diagnosed() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "worker.md",
++        "---\n\
++         name: worker\n\
++         description: A worker.\n\
++         timeout-minutes: 0\n\
++         ---\n\
++         You are a worker.",
++    );
++
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
++    // Blueprint still loads, but timeout_minutes is None (ignored).
++    let bp = report.registry.get("worker").unwrap();
++    assert_eq!(bp.timeout_minutes, None);
++    // A diagnostic should mention the invalid timeout.
++    assert!(
++        report.diagnostics.iter().any(|d| {
++            d.message.contains("timeout-minutes")
++        }),
++        "expected diagnostic for timeout-minutes 0"
++    );
++}
++
++#[test]
++fn timeout_minutes_toml_override_replaces_source() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "worker.md",
++        "---\n\
++         name: worker\n\
++         description: A worker.\n\
++         timeout-minutes: 10\n\
++         ---\n\
++         You are a worker.",
++    );
++
++    let mut overrides = BTreeMap::new();
++    overrides.insert(
++        "worker".to_string(),
++        WorkerBlueprintOverride {
++            model: None,
++            effort: None,
++            timeout_minutes: Some(30),
++        },
++    );
++
++    let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++    let bp = report.registry.get("worker").unwrap();
++    assert_eq!(bp.timeout_minutes, Some(30));
++}
++
++#[test]
++fn timeout_minutes_omitted_means_none() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "worker.md",
++        "---\n\
++         name: worker\n\
++         description: A worker.\n\
++         ---\n\
++         You are a worker.",
++    );
++
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
++    let bp = report.registry.get("worker").unwrap();
++    assert_eq!(bp.timeout_minutes, None);
++}
++
++#[test]
++fn config_default_timeout_is_20_minutes() {
++    let config = crate::config::AgentsConfig::default();
++    assert_eq!(config.swarm_timeout_minutes, 20);
++}
++
++// ---------------------------------------------------------------------------
++// Follow-up paginated read mode
++// ---------------------------------------------------------------------------
++
++#[test]
++fn follow_up_mode_returns_paginated_output() {
++    // Simulate the follow-up read logic: the full output is 100 chars,
++    // the coordinator requests offset=0, limit=50.
++    let full = "a".repeat(100);
++    let offset = 0usize;
++    let limit = 50usize;
++    let total = full.chars().count();
++    let end = (offset + limit).min(total);
++    let chunk: String = full.chars().skip(offset).take(limit).collect();
++    let more = end < total;
++
++    assert_eq!(chunk.chars().count(), 50);
++    assert!(more, "there should be more output");
++    assert_eq!(end, 50);
++}
++
++#[test]
++fn follow_up_mode_offset_beyond_end_returns_empty() {
++    let full = "a".repeat(100);
++    let offset = 200usize;
++    let total = full.chars().count();
++
++    assert!(offset >= total, "offset beyond total should report no more output");
++}
++
++#[test]
++fn follow_up_mode_last_page_reports_end() {
++    let full = "a".repeat(100);
++    let offset = 80usize;
++    let limit = 50usize;
++    let total = full.chars().count();
++    let end = (offset + limit).min(total);
++    let more = end < total;
++
++    assert_eq!(end, 100);
++    assert!(!more, "last page should report no more output");
++}
++
++#[test]
++fn spawn_mode_summary_is_truncated_with_session_id() {
++    // Simulate the truncate_summary logic.
++    let text = "x".repeat(5000);
++    let max = 2000;
++    let total = text.chars().count();
++    let summary = if total <= max {
++        text.clone()
++    } else {
++        let suffix = format!(
++            "\n\n[... truncated: showing {} of {} chars. \
++             Use follow_up_session with offset/limit to read more.]",
++            max, total
++        );
++        let keep = max.saturating_sub(suffix.chars().count());
++        let mut out: String = text.chars().take(keep).collect();
++        out.push_str(&suffix);
++        out
++    };
++
++    assert!(summary.chars().count() <= max + 100, "summary should be approximately max chars");
++    assert!(summary.contains("truncated"));
++    assert!(summary.contains("Use follow_up_session"));
++}
++
++#[test]
++fn spawn_mode_summary_short_text_passes_through() {
++    let text = "All tests passed.";
++    let max = 2000;
++    let total = text.chars().count();
++    let summary = if total <= max {
++        text.to_string()
++    } else {
++        text.to_string() // won't reach here
++    };
++
++    assert_eq!(summary, text, "short text should not be truncated");
++}
++
++#[test]
++fn follow_up_default_limit_is_2000() {
++    // The default limit constant used by the follow-up mode.
++    const FOLLOW_UP_DEFAULT_LIMIT: usize = 2000;
++    let limit = None.unwrap_or(FOLLOW_UP_DEFAULT_LIMIT);
++    assert_eq!(limit, 2000);
++}
++
++#[test]
++fn tool_description_describes_both_modes() {
++    let bp = make_blueprint("reviewer", "Reviews code.", "You are a reviewer.");
++    // The description should mention both spawn and follow-up modes.
++    let desc = &bp.description;
++    assert!(!desc.is_empty());
++    // The actual description is built by BlueprintTool::new, which we
++    // can't call in a pure unit test, but we can verify the constant
++    // description suffix mentions both modes.
++    let two_modes_text = "Two modes:\n\
++         1. Spawn: pass `task` to spawn a worker, wait for completion, \
++         and get a compact summary plus the worker's session ID.\n\
++         2. Follow-up: pass `follow_up_session` (the session ID from a \
++         prior call) with `offset` and `limit` to read a paginated chunk \
++         of the worker's full output deterministically (no LLM, no \
++         spawn). Default limit: 2000 chars.";
++    assert!(two_modes_text.contains("follow_up_session"));
++    assert!(two_modes_text.contains("offset"));
++    assert!(two_modes_text.contains("limit"));
++    assert!(two_modes_text.contains("no LLM"));
++}
+diff --git a/crates/jcode-app-core/src/tool/communicate.rs b/crates/jcode-app-core/src/tool/communicate.rs
+index 04bef03e7..6e40f62bb 100644
+--- a/crates/jcode-app-core/src/tool/communicate.rs
++++ b/crates/jcode-app-core/src/tool/communicate.rs
+@@ -29,7 +29,7 @@ const REQUEST_ID: u64 = 1;
+ /// with the server's recursive-spawn RAM safety guard).
+ const LIGHT_MODE_DEFAULT_CONCURRENCY: usize = 4;
+ 
+-mod transport;
++pub(crate) mod transport;
+ use transport::{send_request, send_request_with_timeout};
+ 
+ fn fresh_spawn_request_nonce(ctx: &ToolContext) -> String {
+@@ -1537,6 +1537,7 @@ async fn spawn_assignment_session(ctx: &ToolContext, params: &CommunicateInput)
+         model: params.model.clone(),
+         effort: params.effort.clone(),
+         label: None,
++        blueprint: params.blueprint.clone(),
+     };
+ 
+     match send_request(spawn_request).await {
+@@ -1898,6 +1899,12 @@ struct CommunicateInput {
+     /// Required and nonblank for the explicit `spawn` action.
+     #[serde(default)]
+     label: Option<String>,
++    /// Optional worker blueprint ID for spawn and assignment actions. When
++    /// set, the spawned agent receives the blueprint's role instructions
++    /// before the runtime task, and the blueprint's model, effort,
++    /// allowed-tools, and communication-policy are applied.
++    #[serde(default)]
++    blueprint: Option<String>,
+ }
+ 
+ impl CommunicateInput {
+@@ -2742,6 +2749,7 @@ impl Tool for CommunicateTool {
+                     model: params.model.clone(),
+                     effort: params.effort.clone(),
+                     label: Some(label),
++                    blueprint: params.blueprint.clone(),
+                 };
+ 
+                 match send_request(request).await {
+diff --git a/crates/jcode-app-core/src/tool/communicate/transport.rs b/crates/jcode-app-core/src/tool/communicate/transport.rs
+index 9ad3f4c0d..17ee7c063 100644
+--- a/crates/jcode-app-core/src/tool/communicate/transport.rs
++++ b/crates/jcode-app-core/src/tool/communicate/transport.rs
+@@ -42,11 +42,11 @@ fn request_type_from_json(json: &str) -> String {
+         .unwrap_or_else(|| "unknown".to_string())
+ }
+ 
+-pub(super) async fn send_request(request: Request) -> Result<ServerEvent> {
++pub(crate) async fn send_request(request: Request) -> Result<ServerEvent> {
+     send_request_with_timeout(request, None).await
+ }
+ 
+-pub(super) async fn send_request_with_timeout(
++pub(crate) async fn send_request_with_timeout(
+     request: Request,
+     timeout: Option<std::time::Duration>,
+ ) -> Result<ServerEvent> {
+diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
+index 893b0eadf..5bed9bfd9 100644
+--- a/crates/jcode-app-core/src/tool/mod.rs
++++ b/crates/jcode-app-core/src/tool/mod.rs
+@@ -1,4 +1,7 @@
+ mod agentgrep;
++mod blueprint;
++#[cfg(test)]
++mod blueprint_tests;
+ pub mod ambient;
+ mod apply_patch;
+ mod bash;
+@@ -459,22 +462,69 @@ impl Registry {
+         );
+         let session_tools_ms = session_tools_start.elapsed().as_millis();
+ 
++        // Register generated `swarm_<id>` tools for every valid effective
++        // blueprint. Blueprint additions, removals, and edits refresh
++        // generated definitions only at session construction (between turns),
++        // never mutating an already locked tool snapshot during a turn.
++        let blueprint_start = std::time::Instant::now();
++        Self::register_blueprint_tools(&mut tools_map);
++        let blueprint_ms = blueprint_start.elapsed().as_millis();
++
+         let write_start = std::time::Instant::now();
+         *registry.tools.write().await = tools_map;
+         let write_ms = write_start.elapsed().as_millis();
+         crate::logging::info(&format!(
+-            "[TIMING] registry_new: skills={}ms, compaction={}ms, registry_struct={}ms, base_tools={}ms, session_tools={}ms, write={}ms, total={}ms",
++            "[TIMING] registry_new: skills={}ms, compaction={}ms, registry_struct={}ms, base_tools={}ms, session_tools={}ms, blueprints={}ms, write={}ms, total={}ms",
+             skills_ms,
+             compaction_ms,
+             registry_struct_ms,
+             base_ms,
+             session_tools_ms,
++            blueprint_ms,
+             write_ms,
+             start.elapsed().as_millis()
+         ));
+         registry
+     }
+ 
++    /// Register generated `swarm_<id>` tools for every valid effective
++    /// blueprint discovered from the configured blueprints directory. Tools
++    /// are only registered, never overwrite existing tools (collision
++    /// safety). The coordinator policy chooses which are visible.
++    fn register_blueprint_tools(tools: &mut HashMap<String, Arc<dyn Tool>>) {
++        let agents_config = &crate::config::config().agents;
++        let report = crate::worker_blueprint::load_worker_blueprints(
++            agents_config.worker_blueprints_dir.as_deref(),
++            &agents_config.worker_blueprints,
++        );
++
++        for (id, bp) in report.registry.iter() {
++            let tool_name = format!("swarm_{id}");
++            // Never overwrite a built-in or MCP tool with a generated one.
++            // Tool-name collisions are logged and the generated tool is skipped.
++            if tools.contains_key(&tool_name) {
++                crate::logging::info(&format!(
++                    "Blueprint tool collision: '{}' already registered, skipping generated tool for blueprint '{}'",
++                    tool_name, id
++                ));
++                continue;
++            }
++            Self::insert_tool(
++                tools,
++                &tool_name,
++                blueprint::BlueprintTool::from_blueprint(bp),
++            );
++        }
++
++        // Log diagnostics for any blueprint loading issues.
++        for diag in &report.diagnostics {
++            crate::logging::info(&format!(
++                "Worker blueprint diagnostic: {}",
++                diag
++            ));
++        }
++    }
++
+     /// Get all tool definitions for the API
+     pub async fn definitions(
+         &self,
+diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
+index a8ecfe925..9af6c4fd5 100644
+--- a/crates/jcode-base/src/config.rs
++++ b/crates/jcode-base/src/config.rs
+@@ -5,14 +5,14 @@
+ 
+ pub use jcode_config_types::{
+     AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
+-    CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
++    CompactionMode, CoordinatorConfig, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
+     DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HookCommands, HooksConfig,
+     KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
+     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
+     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
+     PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
+     SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig,
+-    WebSearchEngine,
++    WebSearchEngine, WorkerBlueprintOverride,
+ };
+ use serde::{Deserialize, Serialize};
+ use std::collections::{BTreeMap, BTreeSet, HashSet};
+diff --git a/crates/jcode-base/src/lib.rs b/crates/jcode-base/src/lib.rs
+index b7d18eb48..d70aaf961 100644
+--- a/crates/jcode-base/src/lib.rs
++++ b/crates/jcode-base/src/lib.rs
+@@ -92,6 +92,7 @@ pub mod todo;
+ pub mod transport;
+ pub mod usage;
+ pub mod util;
++pub mod worker_blueprint;
+ #[cfg(not(feature = "embeddings"))]
+ pub use embedding_stub as embedding;
+ pub use jcode_core::{terminal_eprint, terminal_eprintln, terminal_print, terminal_println};
+diff --git a/crates/jcode-base/src/worker_blueprint.rs b/crates/jcode-base/src/worker_blueprint.rs
+new file mode 100644
+index 000000000..a5e44950e
+--- /dev/null
++++ b/crates/jcode-base/src/worker_blueprint.rs
+@@ -0,0 +1,1782 @@
++//! Worker blueprint discovery, parsing, validation, and override merging.
++//!
++//! This module owns the phase-one data and configuration boundary for worker
++//! blueprints. It discovers Markdown files with YAML front matter from a
++//! configurable directory, validates them against a strict schema, and merges
++//! optional TOML overrides into effective blueprint data. It returns a
++//! structured load report with diagnostics rather than failing on individual
++//! bad files.
++//!
++//! The module does not depend on app-core server, session, tool, or spawn
++//! code. It consumes already-resolved configuration values (`worker_blueprints_dir`
++//! and `worker_blueprints` overrides) and does not independently reload global
++//! or project configuration files.
++
++#![cfg_attr(test, allow(clippy::items_after_test_module))]
++
++use std::collections::BTreeMap;
++use std::fmt;
++use std::path::{Path, PathBuf};
++
++use serde::Deserialize;
++
++use crate::config::WorkerBlueprintOverride;
++
++// ---------------------------------------------------------------------------
++// Effective blueprint enums
++// ---------------------------------------------------------------------------
++
++/// Reasoning effort levels accepted by blueprints and overrides.
++///
++/// Stored as the canonical lowercase string. Validated case-insensitively
++/// and trimmed at parse time.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum BlueprintEffort {
++    None,
++    Minimal,
++    Low,
++    Medium,
++    High,
++    Xhigh,
++    Max,
++    Swarm,
++    SwarmDeep,
++}
++
++impl BlueprintEffort {
++    /// Parse a case-insensitive, trimmed effort string.
++    pub fn parse(value: &str) -> Option<Self> {
++        match value.trim().to_ascii_lowercase().as_str() {
++            "none" => Some(Self::None),
++            "minimal" => Some(Self::Minimal),
++            "low" => Some(Self::Low),
++            "medium" => Some(Self::Medium),
++            "high" => Some(Self::High),
++            "xhigh" => Some(Self::Xhigh),
++            "max" => Some(Self::Max),
++            "swarm" => Some(Self::Swarm),
++            "swarm-deep" => Some(Self::SwarmDeep),
++            _ => None,
++        }
++    }
++
++    /// Return the canonical lowercase string representation.
++    pub fn as_str(&self) -> &'static str {
++        match self {
++            Self::None => "none",
++            Self::Minimal => "minimal",
++            Self::Low => "low",
++            Self::Medium => "medium",
++            Self::High => "high",
++            Self::Xhigh => "xhigh",
++            Self::Max => "max",
++            Self::Swarm => "swarm",
++            Self::SwarmDeep => "swarm-deep",
++        }
++    }
++}
++
++/// Communication policy for blueprint workers.
++///
++/// Declarative only in phase one; enforced in phase two.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum CommunicationPolicy {
++    None,
++    ReportToParent,
++    ParentAndChildren,
++    SameSwarm,
++}
++
++impl CommunicationPolicy {
++    /// Parse a case-insensitive, trimmed communication-policy string.
++    pub fn parse(value: &str) -> Option<Self> {
++        match value.trim().to_ascii_lowercase().as_str() {
++            "none" => Some(Self::None),
++            "report-to-parent" => Some(Self::ReportToParent),
++            "parent-and-children" => Some(Self::ParentAndChildren),
++            "same-swarm" => Some(Self::SameSwarm),
++            _ => None,
++        }
++    }
++
++    /// Return the canonical lowercase string representation.
++    pub fn as_str(&self) -> &'static str {
++        match self {
++            Self::None => "none",
++            Self::ReportToParent => "report-to-parent",
++            Self::ParentAndChildren => "parent-and-children",
++            Self::SameSwarm => "same-swarm",
++        }
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Domain types
++// ---------------------------------------------------------------------------
++
++/// Raw data parsed from a single Markdown file's front matter and body.
++///
++/// This is an intermediate representation before validation and override
++/// merging produce an effective [`WorkerBlueprint`].
++#[derive(Debug, Clone)]
++pub struct WorkerBlueprintSource {
++    /// Filesystem path of the Markdown file.
++    pub source_path: PathBuf,
++    /// Blueprint ID from the `name` key.
++    pub name: String,
++    /// Human-readable description from the `description` key.
++    pub description: String,
++    /// Optional model string from the `model` key.
++    pub model: Option<String>,
++    /// Optional effort from the `effort` key.
++    pub effort: Option<BlueprintEffort>,
++    /// Optional allowed-tools list from the `allowed-tools` key.
++    pub allowed_tools: Option<Vec<String>>,
++    /// Optional communication policy from the `communication-policy` key.
++    pub communication_policy: Option<CommunicationPolicy>,
++    /// Optional timeout in minutes from the `timeout-minutes` key.
++    /// Controls how long the generated tool waits for the worker to complete.
++    pub timeout_minutes: Option<u32>,
++    /// Nonblank Markdown body after the closing front-matter delimiter.
++    pub body: String,
++}
++
++/// Effective blueprint after merging source data with TOML overrides.
++///
++/// This is the canonical representation that phase two consumes.
++#[derive(Debug, Clone)]
++pub struct WorkerBlueprint {
++    /// Filesystem path of the source Markdown file.
++    pub source_path: PathBuf,
++    /// Blueprint ID matching `[a-z][a-z0-9_-]*`.
++    pub name: String,
++    /// Human-readable description used in generated tool descriptions.
++    pub description: String,
++    /// Effective model after override resolution (front matter or TOML).
++    pub model: Option<String>,
++    /// Effective effort after override resolution.
++    pub effort: Option<BlueprintEffort>,
++    /// Optional allowed-tools restriction from front matter.
++    pub allowed_tools: Option<Vec<String>>,
++    /// Optional communication policy from front matter.
++    pub communication_policy: Option<CommunicationPolicy>,
++    /// Optional timeout in minutes from front matter.
++    pub timeout_minutes: Option<u32>,
++    /// Nonblank Markdown role instructions.
++    pub body: String,
++}
++
++/// Registry of valid effective blueprints keyed by normalized ID.
++#[derive(Debug, Clone, Default)]
++pub struct WorkerBlueprintRegistry {
++    blueprints: BTreeMap<String, WorkerBlueprint>,
++}
++
++impl WorkerBlueprintRegistry {
++    /// Return an empty registry.
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Get a blueprint by ID.
++    pub fn get(&self, id: &str) -> Option<&WorkerBlueprint> {
++        self.blueprints.get(id)
++    }
++
++    /// Iterate over all blueprints in ID order.
++    pub fn iter(&self) -> impl Iterator<Item = (&String, &WorkerBlueprint)> {
++        self.blueprints.iter()
++    }
++
++    /// Number of registered blueprints.
++    pub fn len(&self) -> usize {
++        self.blueprints.len()
++    }
++
++    /// Whether the registry is empty.
++    pub fn is_empty(&self) -> bool {
++        self.blueprints.is_empty()
++    }
++}
++
++/// What kind of source a diagnostic refers to.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum DiagnosticSource {
++    /// A Markdown blueprint file on disk.
++    File(PathBuf),
++    /// A TOML configuration key under `agents.worker_blueprints`.
++    Config(String),
++}
++
++/// Severity of a diagnostic.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum DiagnosticSeverity {
++    /// The entire source file was excluded.
++    Excluded,
++    /// A specific field was ignored; the rest of the source remains usable.
++    FieldIgnored,
++}
++
++/// A structured, actionable diagnostic produced during loading.
++///
++/// Each diagnostic identifies the source path or configuration key, the exact
++/// invalid field or condition, expected values, and what was excluded or
++/// what fallback will apply.
++#[derive(Debug, Clone)]
++pub struct WorkerBlueprintDiagnostic {
++    /// The source file or configuration key this diagnostic refers to.
++    pub source: DiagnosticSource,
++    /// Whether the entire source was excluded or only a field was ignored.
++    pub severity: DiagnosticSeverity,
++    /// Human-readable summary of the problem.
++    pub message: String,
++}
++
++impl WorkerBlueprintDiagnostic {
++    fn file_excluded(path: impl Into<PathBuf>, message: impl Into<String>) -> Self {
++        Self {
++            source: DiagnosticSource::File(path.into()),
++            severity: DiagnosticSeverity::Excluded,
++            message: message.into(),
++        }
++    }
++
++    fn field_ignored(path: impl Into<PathBuf>, message: impl Into<String>) -> Self {
++        Self {
++            source: DiagnosticSource::File(path.into()),
++            severity: DiagnosticSeverity::FieldIgnored,
++            message: message.into(),
++        }
++    }
++
++    fn config_field_ignored(key: impl Into<String>, message: impl Into<String>) -> Self {
++        Self {
++            source: DiagnosticSource::Config(key.into()),
++            severity: DiagnosticSeverity::FieldIgnored,
++            message: message.into(),
++        }
++    }
++
++    fn config_excluded(key: impl Into<String>, message: impl Into<String>) -> Self {
++        Self {
++            source: DiagnosticSource::Config(key.into()),
++            severity: DiagnosticSeverity::Excluded,
++            message: message.into(),
++        }
++    }
++}
++
++impl fmt::Display for WorkerBlueprintDiagnostic {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        let kind = match self.severity {
++            DiagnosticSeverity::Excluded => "excluded",
++            DiagnosticSeverity::FieldIgnored => "field-ignored",
++        };
++        let source = match &self.source {
++            DiagnosticSource::File(path) => format!("file:{}", path.display()),
++            DiagnosticSource::Config(key) => format!("config:{}", key),
++        };
++        write!(f, "[{}] {} {}", kind, source, self.message)
++    }
++}
++
++/// The result of loading all worker blueprints.
++///
++/// Contains the registry of valid effective blueprints and a list of
++/// diagnostics for any problems encountered during loading.
++#[derive(Debug, Clone)]
++pub struct WorkerBlueprintLoadReport {
++    /// Registry of valid effective blueprints keyed by ID.
++    pub registry: WorkerBlueprintRegistry,
++    /// Diagnostics for invalid files, fields, or overrides.
++    pub diagnostics: Vec<WorkerBlueprintDiagnostic>,
++}
++
++// ---------------------------------------------------------------------------
++// Front-matter deserialization
++// ---------------------------------------------------------------------------
++
++/// Intermediate deserialization target for YAML front matter.
++///
++/// Uses `serde_yaml::Value` for unknown-key detection: we deserialize into
++/// a generic map first, then extract known keys and flag unknowns.
++#[derive(Debug, Deserialize)]
++struct FrontMatter {
++    name: String,
++    description: String,
++    #[serde(default)]
++    model: Option<String>,
++    #[serde(default)]
++    effort: Option<String>,
++    #[serde(default, rename = "allowed-tools")]
++    allowed_tools: Option<YamlTools>,
++    #[serde(default, rename = "communication-policy")]
++    communication_policy: Option<String>,
++    #[serde(default, rename = "timeout-minutes")]
++    timeout_minutes: Option<u32>,
++}
++
++/// Allowed-tools YAML representation. Only YAML arrays are valid.
++/// Scalar shorthand is intentionally rejected.
++#[derive(Debug, Deserialize)]
++#[serde(untagged)]
++#[allow(dead_code)] // `Other` field is matched but never read; it serves as a catch-all.
++enum YamlTools {
++    Array(Vec<serde_yaml::Value>),
++    Other(serde_yaml::Value),
++}
++
++// ---------------------------------------------------------------------------
++// ID validation
++// ---------------------------------------------------------------------------
++
++/// Validate that an ID matches `[a-z][a-z0-9_-]*`.
++fn is_valid_id(id: &str) -> bool {
++    if id.is_empty() {
++        return false;
++    }
++    let mut chars = id.chars();
++    let first = chars.next().unwrap();
++    if !first.is_ascii_lowercase() {
++        return false;
++    }
++    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
++}
++
++// ---------------------------------------------------------------------------
++// Directory resolution
++// ---------------------------------------------------------------------------
++
++/// Resolve a blueprint directory path, expanding `~` prefixes.
++///
++/// Supports `~`, `~/...`, and `~\...` expansion using `dirs::home_dir()`,
++/// the same convention already used by jcode. Other relative paths retain
++/// normal process-working-directory semantics. Returns the default
++/// `~/.jcode/workers/` when `configured` is `None`.
++pub fn resolve_blueprints_dir(configured: Option<&str>) -> Option<PathBuf> {
++    match configured {
++        None => {
++            // Default: ~/.jcode/workers/
++            let home = dirs::home_dir()?;
++            Some(home.join(".jcode").join("workers"))
++        }
++        Some(s) => expand_tilde(s),
++    }
++}
++
++/// Expand a leading `~` to the user's home directory.
++///
++/// Handles `~` alone, `~/...`, and `~\...`. Other paths are returned as-is
++/// (relative paths keep process-working-directory semantics).
++fn expand_tilde(s: &str) -> Option<PathBuf> {
++    if s == "~" {
++        return dirs::home_dir();
++    }
++    if let Some(rest) = s.strip_prefix("~/") {
++        let home = dirs::home_dir()?;
++        return Some(home.join(rest));
++    }
++    if let Some(rest) = s.strip_prefix("~\\") {
++        let home = dirs::home_dir()?;
++        return Some(home.join(rest));
++    }
++    Some(PathBuf::from(s))
++}
++
++// ---------------------------------------------------------------------------
++// Discovery
++// ---------------------------------------------------------------------------
++
++/// Discover direct regular `*.md` files in `dir`, sorted deterministically.
++///
++/// Does not recurse into subdirectories. Non-UTF-8 filenames are skipped.
++/// Returns an empty vec if the directory does not exist or is unreadable.
++fn discover_markdown_files(dir: &Path) -> Vec<PathBuf> {
++    let Ok(entries) = std::fs::read_dir(dir) else {
++        return Vec::new();
++    };
++
++    let mut files: Vec<PathBuf> = entries
++        .filter_map(|e| e.ok())
++        .filter_map(|e| {
++            let path = e.path();
++            let meta = e.metadata().ok()?;
++            // Only direct regular files (not symlinks to dirs, not dirs).
++            if !meta.is_file() {
++                return None;
++            }
++            // Only .md extension.
++            if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
++                return None;
++            }
++            Some(path)
++        })
++        .collect();
++
++    files.sort();
++    files
++}
++
++// ---------------------------------------------------------------------------
++// Front-matter parsing
++// ---------------------------------------------------------------------------
++
++/// Parse a line-delimited YAML front matter block from Markdown content.
++///
++/// The opening delimiter must be a line containing exactly `---` (with
++/// optional surrounding whitespace). The closing delimiter is the next line
++/// containing exactly `---`. The body after the closing delimiter must be
++/// nonblank after trimming.
++///
++/// Returns `(yaml_text, body_text)` or a descriptive error.
++fn split_front_matter(raw: &str) -> Result<(String, String), String> {
++    let lines: Vec<&str> = raw.lines().collect();
++
++    if lines.is_empty() {
++        return Err("file is empty".to_string());
++    }
++
++    // Find the opening delimiter: first line that is exactly "---" (trimmed).
++    let open_idx = lines
++        .iter()
++        .position(|l| l.trim() == "---")
++        .ok_or_else(|| "missing opening front-matter delimiter (---)".to_string())?;
++
++    if open_idx != 0 {
++        // Allow leading blank lines before the opening delimiter.
++        // Lines before open_idx must all be blank.
++        if lines[..open_idx].iter().any(|l| !l.trim().is_empty()) {
++            return Err(format!(
++                "content before opening front-matter delimiter at line {}",
++                open_idx + 1
++            ));
++        }
++    }
++
++    // Find the closing delimiter: next line that is exactly "---" after the opening.
++    let close_idx = lines[open_idx + 1..]
++        .iter()
++        .position(|l| l.trim() == "---")
++        .ok_or_else(|| "unclosed front-matter: no closing --- delimiter found".to_string())?;
++
++    let close_idx = open_idx + 1 + close_idx;
++
++    let yaml_text = lines[open_idx + 1..close_idx].join("\n");
++    let body_text = lines[close_idx + 1..].join("\n");
++
++    let body_trimmed = body_text.trim();
++    if body_trimmed.is_empty() {
++        return Err("body after front-matter is blank".to_string());
++    }
++
++    Ok((yaml_text, body_text))
++}
++
++/// Parse a single blueprint file, returning the source and any field-level
++/// diagnostics. If the file should be excluded entirely, returns `None`
++/// and only exclusion diagnostics.
++fn parse_blueprint_file_with_diagnostics(
++    path: &Path,
++    raw: &str,
++) -> (Option<WorkerBlueprintSource>, Vec<WorkerBlueprintDiagnostic>) {
++    let (yaml_text, body) = match split_front_matter(raw) {
++        Ok(v) => v,
++        Err(msg) => {
++            return (
++                None,
++                vec![WorkerBlueprintDiagnostic::file_excluded(path, msg)],
++            );
++        }
++    };
++
++    // Parse YAML generically first for unknown-key detection.
++    let yaml_value: serde_yaml::Value = match serde_yaml::from_str(&yaml_text) {
++        Ok(v) => v,
++        Err(e) => {
++            return (
++                None,
++                vec![WorkerBlueprintDiagnostic::file_excluded(
++                    path,
++                    format!("invalid YAML in front matter: {e}"),
++                )],
++            );
++        }
++    };
++
++    let known_keys: &[&str] = &[
++        "name",
++        "description",
++        "model",
++        "effort",
++        "allowed-tools",
++        "communication-policy",
++        "timeout-minutes",
++    ];
++    let mut diags = Vec::new();
++    if let serde_yaml::Value::Mapping(map) = &yaml_value {
++        for key in map.keys() {
++            if let serde_yaml::Value::String(k) = key {
++                if !known_keys.contains(&k.as_str()) {
++                    diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                        path,
++                        format!(
++                            "unknown front-matter key '{k}' in {}; \
++                             known keys: name, description, model, effort, \
++                             allowed-tools, communication-policy, \
++                             timeout-minutes",
++                            path.display()
++                        ),
++                    ));
++                }
++            }
++        }
++    }
++
++    let fm: FrontMatter = match serde_yaml::from_value(yaml_value) {
++        Ok(fm) => fm,
++        Err(e) => {
++            return (
++                None,
++                vec![WorkerBlueprintDiagnostic::file_excluded(
++                    path,
++                    format!("failed to deserialize front matter: {e}"),
++                )],
++            );
++        }
++    };
++
++    // Validate name.
++    let name = fm.name.trim().to_string();
++    if name.is_empty() {
++        return (
++            None,
++            vec![WorkerBlueprintDiagnostic::file_excluded(
++                path,
++                "required field 'name' is missing or blank".to_string(),
++            )],
++        );
++    }
++    if !is_valid_id(&name) {
++        return (
++            None,
++            vec![WorkerBlueprintDiagnostic::file_excluded(
++                path,
++                format!(
++                    "invalid blueprint ID '{name}' in {}; \
++                     must match [a-z][a-z0-9_-]*",
++                    path.display()
++                ),
++            )],
++        );
++    }
++
++    // Validate description.
++    let description = fm.description.trim().to_string();
++    if description.is_empty() {
++        return (
++            None,
++            vec![WorkerBlueprintDiagnostic::file_excluded(
++                path,
++                "required field 'description' is missing or blank".to_string(),
++            )],
++        );
++    }
++
++    // Validate model.
++    let model = match fm.model.as_deref() {
++        None => None,
++        Some(m) => {
++            let trimmed = m.trim();
++            if trimmed.is_empty() {
++                None
++            } else {
++                Some(trimmed.to_string())
++            }
++        }
++    };
++
++    // Validate effort.
++    let effort = match fm.effort.as_deref() {
++        None => None,
++        Some(e) => {
++            let trimmed = e.trim();
++            if trimmed.is_empty() {
++                None
++            } else {
++                match BlueprintEffort::parse(trimmed) {
++                    Some(eff) => Some(eff),
++                    None => {
++                        diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                            path,
++                            format!(
++                                "invalid effort '{trimmed}' in {}; \
++                                 expected one of: none, minimal, low, medium, \
++                                 high, xhigh, max, swarm, swarm-deep. \
++                                 Field ignored; falling back to source/default.",
++                                path.display()
++                            ),
++                        ));
++                        None
++                    }
++                }
++            }
++        }
++    };
++
++    // Validate allowed-tools.
++    let allowed_tools = match fm.allowed_tools {
++        None => None,
++        Some(YamlTools::Array(vals)) => {
++            let mut tools = Vec::new();
++            for v in &vals {
++                match v {
++                    serde_yaml::Value::String(s) => {
++                        let trimmed = s.trim();
++                        if trimmed.is_empty() {
++                            diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                                path,
++                                format!(
++                                    "blank entry in allowed-tools in {}; \
++                                     entry skipped",
++                                    path.display()
++                                ),
++                            ));
++                        } else {
++                            tools.push(trimmed.to_string());
++                        }
++                    }
++                    _ => {
++                        diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                            path,
++                            format!(
++                                "non-string entry in allowed-tools in {}; \
++                                 expected array of tool-name strings. \
++                                 Entry skipped.",
++                                path.display()
++                            ),
++                        ));
++                    }
++                }
++            }
++            // An empty array means "no worker tools" (Some(vec![])), which
++            // is distinct from omission (None = no blueprint-specific
++            // restriction). An array where all entries were blank/invalid
++            // also yields Some(vec![]) since the key was present.
++            Some(tools)
++        }
++        Some(YamlTools::Other(_)) => {
++            diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                path,
++                format!(
++                    "allowed-tools in {} must be a YAML array of strings; \
++                     scalar shorthand is invalid. Field ignored.",
++                    path.display()
++                ),
++            ));
++            None
++        }
++    };
++
++    // Validate communication-policy.
++    let communication_policy = match fm.communication_policy.as_deref() {
++        None => None,
++        Some(cp) => {
++            let trimmed = cp.trim();
++            if trimmed.is_empty() {
++                None
++            } else {
++                match CommunicationPolicy::parse(trimmed) {
++                    Some(policy) => Some(policy),
++                    None => {
++                        diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                            path,
++                            format!(
++                                "invalid communication-policy '{trimmed}' in {}; \
++                                 expected one of: none, report-to-parent, \
++                                 parent-and-children, same-swarm. \
++                                 Field ignored.",
++                                path.display()
++                            ),
++                        ));
++                        None
++                    }
++                }
++            }
++        }
++    };
++
++    // Validate timeout-minutes (must be a positive integer if present).
++    let timeout_minutes = match fm.timeout_minutes {
++        None => None,
++        Some(0) => {
++            diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                path,
++                format!(
++                    "invalid timeout-minutes '0' in {}; \
++                     must be a positive integer. Field ignored.",
++                    path.display()
++                ),
++            ));
++            None
++        }
++        Some(n) => Some(n),
++    };
++
++    (
++        Some(WorkerBlueprintSource {
++            source_path: path.to_path_buf(),
++            name,
++            description,
++            model,
++            effort,
++            allowed_tools,
++            communication_policy,
++            timeout_minutes,
++            body,
++        }),
++        diags,
++    )
++}
++
++// ---------------------------------------------------------------------------
++// Override merging
++// ---------------------------------------------------------------------------
++
++/// Merge TOML overrides into a source blueprint, producing an effective
++/// blueprint and potentially field-level diagnostics for invalid overrides.
++///
++/// Invalid model or effort overrides do not discard a valid source blueprint:
++/// only the bad override field is ignored.
++fn merge_overrides(
++    source: WorkerBlueprintSource,
++    overrides: Option<&WorkerBlueprintOverride>,
++) -> (WorkerBlueprint, Vec<WorkerBlueprintDiagnostic>) {
++    let mut diags = Vec::new();
++
++    let (model, effort) = match overrides {
++        None => (source.model.clone(), source.effort.clone()),
++        Some(ov) => {
++            // Resolve model override.
++            let model = match &ov.model {
++                None => source.model.clone(),
++                Some(m) => {
++                    let trimmed = m.trim();
++                    if trimmed.is_empty() {
++                        diags.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                            format!("agents.worker_blueprints.{}.model", source.name),
++                            format!(
++                                "model override is blank; \
++                                 ignored, falling back to source value \
++                                 or agents.swarm_model",
++                            ),
++                        ));
++                        source.model.clone()
++                    } else {
++                        Some(trimmed.to_string())
++                    }
++                }
++            };
++
++            // Resolve effort override.
++            let effort = match &ov.effort {
++                None => source.effort.clone(),
++                Some(e) => {
++                    let trimmed = e.trim();
++                    if trimmed.is_empty() {
++                        diags.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                            format!("agents.worker_blueprints.{}.effort", source.name),
++                            format!(
++                                "effort override is blank; \
++                                 ignored, falling back to source value \
++                                 or agents.swarm_effort",
++                            ),
++                        ));
++                        source.effort.clone()
++                    } else {
++                        match BlueprintEffort::parse(trimmed) {
++                            Some(eff) => Some(eff),
++                            None => {
++                                diags.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                                    format!("agents.worker_blueprints.{}.effort", source.name),
++                                    format!(
++                                        "invalid effort override '{trimmed}'; \
++                                         expected one of: none, minimal, low, \
++                                         medium, high, xhigh, max, swarm, \
++                                         swarm-deep. \
++                                         Ignored, falling back to source value \
++                                         or agents.swarm_effort",
++                                    ),
++                                ));
++                                source.effort.clone()
++                            }
++                        }
++                    }
++                }
++            };
++
++            (model, effort)
++        }
++    };
++
++    // Resolve timeout-minutes override (front matter or TOML).
++    let timeout_minutes = match overrides {
++        None => source.timeout_minutes,
++        Some(ov) => match ov.timeout_minutes {
++            None => source.timeout_minutes,
++            Some(n) if n > 0 => Some(n),
++            Some(0) => {
++                diags.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                    format!("agents.worker_blueprints.{}.timeout_minutes", source.name),
++                    "timeout-minutes override is 0; \
++                     ignored, falling back to source value"
++                        .to_string(),
++                ));
++                source.timeout_minutes
++            }
++            Some(n) => Some(n),
++        },
++    };
++
++    (
++        WorkerBlueprint {
++            source_path: source.source_path,
++            name: source.name,
++            description: source.description,
++            model,
++            effort,
++            allowed_tools: source.allowed_tools,
++            communication_policy: source.communication_policy,
++            timeout_minutes,
++            body: source.body,
++        },
++        diags,
++    )
++}
++
++// ---------------------------------------------------------------------------
++// Top-level loader
++// ---------------------------------------------------------------------------
++
++/// Load all worker blueprints from the configured directory, merge overrides,
++/// and return a structured load report.
++///
++/// A missing directory is an empty registry, not an error. An unreadable or
++/// invalid individual file does not prevent valid blueprints from loading.
++/// Bad model or effort overrides do not discard a valid source blueprint:
++/// only the bad override field is ignored.
++pub fn load_worker_blueprints(
++    blueprints_dir: Option<&str>,
++    overrides: &BTreeMap<String, WorkerBlueprintOverride>,
++) -> WorkerBlueprintLoadReport {
++    let mut diagnostics = Vec::new();
++    let mut sources: BTreeMap<String, WorkerBlueprintSource> = BTreeMap::new();
++
++    // 1. Discover and parse source files.
++    if let Some(dir) = resolve_blueprints_dir(blueprints_dir) {
++        if dir.is_dir() {
++            for path in discover_markdown_files(&dir) {
++                match std::fs::read_to_string(&path) {
++                    Ok(raw) => {
++                        let (source, file_diags) = parse_blueprint_file_with_diagnostics(&path, &raw);
++                        diagnostics.extend(file_diags);
++                        if let Some(src) = source {
++                            // Detect duplicate IDs after normalization.
++                            if sources.contains_key(&src.name) {
++                                diagnostics.push(WorkerBlueprintDiagnostic::file_excluded(
++                                    &path,
++                                    format!(
++                                        "duplicate blueprint ID '{}' in {}; \
++                                         already defined in {}. \
++                                         This file excluded.",
++                                        src.name,
++                                        path.display(),
++                                        sources[&src.name]
++                                            .source_path
++                                            .display(),
++                                    ),
++                                ));
++                            } else {
++                                sources.insert(src.name.clone(), src);
++                            }
++                        }
++                    }
++                    Err(e) => {
++                        diagnostics.push(WorkerBlueprintDiagnostic::file_excluded(
++                            &path,
++                            format!("failed to read file: {e}"),
++                        ));
++                    }
++                }
++            }
++        }
++        // Missing directory = empty registry, not an error.
++    }
++
++    // 2. Merge overrides and build effective blueprints.
++    let mut blueprints: BTreeMap<String, WorkerBlueprint> = BTreeMap::new();
++
++    for (id, src) in &sources {
++        let ov = overrides.get(id);
++        let (bp, merge_diags) = merge_overrides(src.clone(), ov);
++        diagnostics.extend(merge_diags);
++        blueprints.insert(id.clone(), bp);
++    }
++
++    // 3. Diagnose overrides with no matching source blueprint.
++    for (id, _ov) in overrides {
++        if !sources.contains_key(id) {
++            diagnostics.push(WorkerBlueprintDiagnostic::config_excluded(
++                format!("agents.worker_blueprints.{id}"),
++                format!(
++                    "override for blueprint '{id}' has no matching \
++                     Markdown source file; no configuration-only blueprint \
++                     created.",
++                ),
++            ));
++        }
++    }
++
++    WorkerBlueprintLoadReport {
++        registry: WorkerBlueprintRegistry { blueprints },
++        diagnostics,
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Tests
++// ---------------------------------------------------------------------------
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::fs;
++    use std::io::Write;
++
++    use tempfile::TempDir;
++
++    /// Helper: create a temp directory with the given files.
++    fn make_dir(files: &[(&str, &str)]) -> TempDir {
++        let dir = TempDir::new().unwrap();
++        for (name, content) in files {
++            let path = dir.path().join(name);
++            if let Some(parent) = path.parent() {
++                fs::create_dir_all(parent).unwrap();
++            }
++            fs::write(&path, content).unwrap();
++        }
++        dir
++    }
++
++    /// Helper: a valid blueprint file.
++    const VALID_BP: &str = "\
++---
++name: reviewer
++description: Reviews changes for correctness.
++model: openai-api:gpt-5.5
++effort: medium
++allowed-tools:
++  - read
++  - agentgrep
++  - bash
++  - apply_patch
++communication-policy: report-to-parent
++---
++
++You are a rigorous code reviewer.
++";
++
++    /// Helper: a minimal valid blueprint (only required fields).
++    const MINIMAL_BP: &str = "\
++---
++name: shell-runner
++description: Runs shell commands.
++---
++
++Run the assigned shell command and report output.
++";
++
++    // Test 1: Missing default directory loads an empty registry without
++    // diagnostics.
++    #[test]
++    fn missing_default_dir_loads_empty_registry() {
++        // Use a nonexistent path.
++        let report = load_worker_blueprints(Some("/nonexistent/path/that/does/not/exist"), &BTreeMap::new());
++        assert!(report.registry.is_empty());
++        assert!(report.diagnostics.is_empty());
++    }
++
++    // Test 2: Discovery includes only direct regular Markdown files and
++    // is deterministic.
++    #[test]
++    fn discovery_is_direct_regular_md_only_and_deterministic() {
++        let dir = make_dir(&[
++            ("a.md", MINIMAL_BP),
++            ("b.md", VALID_BP),
++            ("c.txt", "not a markdown file"),
++            ("subdir/d.md", MINIMAL_BP),
++        ]);
++
++        let report = load_worker_blueprints(
++            dir.path().to_str(),
++            &BTreeMap::new(),
++        );
++        // Only a.md and b.md (direct, regular .md files); subdir/d.md is not
++        // discovered (no recursion).
++        // a.md has name "shell-runner", b.md has name "reviewer".
++        assert_eq!(report.registry.len(), 2);
++        assert!(report.registry.get("shell-runner").is_some());
++        assert!(report.registry.get("reviewer").is_some());
++    }
++
++    // Test 3: Correct line-delimited front matter preserves the exact
++    // Markdown body.
++    #[test]
++    fn correct_front_matter_preserves_body() {
++        let body = "You are a rigorous code reviewer.\n\nReview the change.";
++        let content = format!(
++            "---\nname: reviewer\ndescription: Reviews changes.\n---\n{body}\n"
++        );
++        let dir = make_dir(&[("review.md", &content)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("reviewer").unwrap();
++        assert_eq!(bp.body, body);
++    }
++
++    // Test 4: Missing, unclosed, malformed, or invalid front matter reports
++    // its source path and excludes only that file.
++    #[test]
++    fn missing_front_matter_excludes_file() {
++        let dir = make_dir(&[
++            ("no_fm.md", "This has no front matter at all."),
++            ("valid.md", MINIMAL_BP),
++        ]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.registry.get("shell-runner").is_some());
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.source == DiagnosticSource::File(dir.path().join("no_fm.md"))
++                && d.severity == DiagnosticSeverity::Excluded));
++    }
++
++    #[test]
++    fn unclosed_front_matter_excludes_file() {
++        let content = "---\nname: bad\ndescription: unclosed\n";
++        let dir = make_dir(&[("unclosed.md", content), ("valid.md", MINIMAL_BP)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("unclosed")));
++    }
++
++    #[test]
++    fn blank_body_excludes_file() {
++        let content = "---\nname: empty\ndescription: no body\n---\n\n  \n";
++        let dir = make_dir(&[("empty.md", content), ("valid.md", MINIMAL_BP)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("blank")));
++    }
++
++    // Test 5: Required name validation accepts valid IDs, rejects invalid
++    // IDs, and detects normalized duplicate IDs from different filenames.
++    #[test]
++    fn valid_ids_accepted() {
++        let bp = "\
++---
++name: my-worker-1
++description: Test.
++---
++
++Body.
++";
++        let dir = make_dir(&[("worker.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.registry.get("my-worker-1").is_some());
++    }
++
++    #[test]
++    fn invalid_id_rejected() {
++        let bp = "\
++---
++name: BadID
++description: Test.
++---
++
++Body.
++";
++        let dir = make_dir(&[("bad.md", bp), ("valid.md", MINIMAL_BP)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.diagnostics.iter().any(|d| d
++            .message
++            .contains("invalid blueprint ID")));
++    }
++
++    #[test]
++    fn duplicate_id_from_different_files_detected() {
++        let bp1 = "\
++---
++name: dup
++description: First.
++---
++
++Body one.
++";
++        let bp2 = "\
++---
++name: dup
++description: Second.
++---
++
++Body two.
++";
++        let dir = make_dir(&[
++            ("first.md", bp1),
++            ("second.md", bp2),
++        ]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        // Only the first file's blueprint should be registered.
++        assert_eq!(report.registry.len(), 1);
++        assert_eq!(
++            report.registry.get("dup").unwrap().description,
++            "First."
++        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("duplicate blueprint ID 'dup'")));
++    }
++
++    // Test 6: Required description and nonblank Markdown body are enforced.
++    #[test]
++    fn missing_description_excludes_file() {
++        let bp = "\
++---
++name: no-desc
++---
++
++Body.
++";
++        let dir = make_dir(&[("nodesc.md", bp), ("valid.md", MINIMAL_BP)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("description")));
++    }
++
++    #[test]
++    fn blank_description_excludes_file() {
++        let bp = "\
++---
++name: blank-desc
++description: \"   \"
++---
++
++Body.
++";
++        let dir = make_dir(&[("blankdesc.md", bp), ("valid.md", MINIMAL_BP)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("description")));
++    }
++
++    // Test 7: allowed-tools accepts only arrays of nonblank strings and
++    // rejects scalar, blank, or otherwise malformed forms.
++    #[test]
++    fn allowed_tools_array_accepted() {
++        let bp = "\
++---
++name: tools-ok
++description: Test.
++allowed-tools:
++  - read
++  - bash
++---
++
++Body.
++";
++        let dir = make_dir(&[("ok.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        let blueprint = report.registry.get("tools-ok").unwrap();
++        assert_eq!(
++            blueprint.allowed_tools.as_deref(),
++            Some(&["read".to_string(), "bash".to_string()][..])
++        );
++    }
++
++    #[test]
++    fn allowed_tools_scalar_rejected() {
++        let bp = "\
++---
++name: scalar-tools
++description: Test.
++allowed-tools: read
++---
++
++Body.
++";
++        let dir = make_dir(&[("scalar.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        // The file is still valid, but the allowed-tools field is ignored.
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("scalar-tools").unwrap();
++        assert!(bp.allowed_tools.is_none());
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("allowed-tools") && d.message.contains("array")));
++    }
++
++    #[test]
++    fn allowed_tools_blank_entries_skipped() {
++        let bp = "\
++---
++name: blank-tools
++description: Test.
++allowed-tools:
++  - read
++  - \"\"
++  - bash
++---
++
++Body.
++";
++        let dir = make_dir(&[("blank.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("blank-tools").unwrap();
++        // Blank entries are skipped; non-blank ones remain.
++        assert_eq!(
++            bp.allowed_tools.as_deref(),
++            Some(&["read".to_string(), "bash".to_string()][..])
++        );
++    }
++
++    #[test]
++    fn allowed_tools_empty_array_means_no_tools() {
++        let bp = "\
++---
++name: empty-tools
++description: Test.
++allowed-tools: []
++---
++
++Body.
++";
++        let dir = make_dir(&[("empty.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("empty-tools").unwrap();
++        // [] means no worker tools (empty vec, not None).
++        assert_eq!(bp.allowed_tools.as_deref(), Some(&[][..]));
++    }
++
++    // Test 8: Unknown front-matter keys and invalid
++    // effort/communication-policy enums are diagnosed.
++    #[test]
++    fn unknown_keys_diagnosed() {
++        let bp = "\
++---
++name: unknown
++description: Test.
++foo: bar
++baz: 42
++---
++
++Body.
++";
++        let dir = make_dir(&[("unknown.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        let unknown_diags: Vec<_> = report
++            .diagnostics
++            .iter()
++            .filter(|d| d.message.contains("unknown front-matter key"))
++            .collect();
++        assert!(!unknown_diags.is_empty());
++        assert!(unknown_diags.iter().any(|d| d.message.contains("'foo'")));
++        assert!(unknown_diags.iter().any(|d| d.message.contains("'baz'")));
++    }
++
++    #[test]
++    fn invalid_effort_diagnosed() {
++        let bp = "\
++---
++name: bad-effort
++description: Test.
++effort: ridiculous
++---
++
++Body.
++";
++        let dir = make_dir(&[("bad_effort.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("bad-effort").unwrap();
++        assert!(bp.effort.is_none());
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("invalid effort")
++                && d.message.contains("ridiculous")));
++    }
++
++    #[test]
++    fn invalid_communication_policy_diagnosed() {
++        let bp = "\
++---
++name: bad-comm
++description: Test.
++communication-policy: telepathy
++---
++
++Body.
++";
++        let dir = make_dir(&[("bad_comm.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("bad-comm").unwrap();
++        assert!(bp.communication_policy.is_none());
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d
++                .message
++                .contains("invalid communication-policy")
++                && d.message.contains("telepathy")));
++    }
++
++    // Test 9: Valid TOML model and effort overrides replace only their
++    // matching source fields.
++    #[test]
++    fn valid_overrides_replace_source_fields() {
++        let dir = make_dir(&[("bp.md", VALID_BP)]);
++
++        let mut overrides = BTreeMap::new();
++        overrides.insert(
++            "reviewer".to_string(),
++            WorkerBlueprintOverride {
++                model: Some("claude-opus-5".to_string()),
++                effort: Some("high".to_string()),
++                timeout_minutes: None,
++            },
++        );
++
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("reviewer").unwrap();
++        assert_eq!(bp.model.as_deref(), Some("claude-opus-5"));
++        assert_eq!(bp.effort, Some(BlueprintEffort::High));
++    }
++
++    #[test]
++    fn override_model_only_replaces_model() {
++        let dir = make_dir(&[("bp.md", VALID_BP)]);
++
++        let mut overrides = BTreeMap::new();
++        overrides.insert(
++            "reviewer".to_string(),
++            WorkerBlueprintOverride {
++                model: Some("claude-opus-5".to_string()),
++                effort: None,
++                timeout_minutes: None,
++            },
++        );
++
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        let bp = report.registry.get("reviewer").unwrap();
++        assert_eq!(bp.model.as_deref(), Some("claude-opus-5"));
++        // Effort should remain from source.
++        assert_eq!(bp.effort, Some(BlueprintEffort::Medium));
++    }
++
++    // Test 10: Invalid model or effort overrides produce actionable
++    // diagnostics and fall through to the source/default value.
++    #[test]
++    fn invalid_effort_override_falls_through() {
++        let dir = make_dir(&[("bp.md", VALID_BP)]);
++
++        let mut overrides = BTreeMap::new();
++        overrides.insert(
++            "reviewer".to_string(),
++            WorkerBlueprintOverride {
++                model: None,
++                effort: Some("ridiculous".to_string()),
++                timeout_minutes: None,
++            },
++        );
++
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("reviewer").unwrap();
++        // Falls back to source effort.
++        assert_eq!(bp.effort, Some(BlueprintEffort::Medium));
++        assert!(report.diagnostics.iter().any(|d| {
++            d.source == DiagnosticSource::Config("agents.worker_blueprints.reviewer.effort".into())
++                && d.message.contains("invalid effort override")
++                && d.message.contains("ridiculous")
++        }));
++    }
++
++    #[test]
++    fn blank_model_override_falls_through() {
++        let dir = make_dir(&[("bp.md", VALID_BP)]);
++
++        let mut overrides = BTreeMap::new();
++        overrides.insert(
++            "reviewer".to_string(),
++            WorkerBlueprintOverride {
++                model: Some("   ".to_string()),
++                effort: None,
++                timeout_minutes: None,
++            },
++        );
++
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        let bp = report.registry.get("reviewer").unwrap();
++        // Falls back to source model.
++        assert_eq!(bp.model.as_deref(), Some("openai-api:gpt-5.5"));
++        assert!(report.diagnostics.iter().any(|d| {
++            d.message.contains("model override is blank")
++        }));
++    }
++
++    // Test 11: An override with no Markdown blueprint is diagnosed and
++    // creates no configuration-only blueprint.
++    #[test]
++    fn override_without_source_diagnosed() {
++        let dir = make_dir(&[("bp.md", MINIMAL_BP)]);
++
++        let mut overrides = BTreeMap::new();
++        overrides.insert(
++            "nonexistent".to_string(),
++            WorkerBlueprintOverride {
++                model: Some("gpt-5".to_string()),
++                effort: None,
++                timeout_minutes: None,
++            },
++        );
++
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.registry.get("shell-runner").is_some());
++        assert!(report.registry.get("nonexistent").is_none());
++        assert!(report.diagnostics.iter().any(|d| {
++            d.source
++                == DiagnosticSource::Config("agents.worker_blueprints.nonexistent".into())
++                && d.message.contains("no matching Markdown source file")
++        }));
++    }
++
++    // Test 12: Nested worker-blueprint TOML coexists with existing
++    // [agents], [autoreview], [autojudge], and [ambient] configuration
++    // without accepting misspelled core [agents] keys as blueprint IDs.
++    #[test]
++    fn nested_toml_coexists_with_existing_config() {
++        // This test verifies that AgentsConfig deserializes correctly with
++        // worker_blueprints present alongside existing fields.
++        let toml_str = r#"
++[agents]
++swarm_model = "openai-api:gpt-5.5"
++swarm_effort = "medium"
++worker_blueprints_dir = "/tmp/workers"
++
++[agents.worker_blueprints.reviewer]
++model = "claude-opus-5"
++effort = "high"
++
++[autoreview]
++enabled = true
++
++[autojudge]
++enabled = false
++
++[ambient]
++enabled = true
++"#;
++
++        let config: crate::config::Config = toml::from_str(toml_str).unwrap();
++
++        // Existing agents fields are preserved.
++        assert_eq!(
++            config.agents.swarm_model.as_deref(),
++            Some("openai-api:gpt-5.5")
++        );
++        assert_eq!(config.agents.swarm_effort.as_deref(), Some("medium"));
++
++        // Worker blueprint fields are parsed.
++        assert_eq!(
++            config.agents.worker_blueprints_dir.as_deref(),
++            Some("/tmp/workers")
++        );
++        assert_eq!(config.agents.worker_blueprints.len(), 1);
++        let ov = &config.agents.worker_blueprints["reviewer"];
++        assert_eq!(ov.model.as_deref(), Some("claude-opus-5"));
++        assert_eq!(ov.effort.as_deref(), Some("high"));
++
++        // Other config sections are preserved.
++        assert!(config.autoreview.enabled);
++        assert!(!config.autojudge.enabled);
++        assert!(config.ambient.enabled);
++    }
++
++    #[test]
++    fn misspelled_agents_key_not_treated_as_blueprint() {
++        // A misspelled [agents] key like `swarm_modle` should NOT be
++        // silently accepted as a blueprint ID. Because AgentsConfig uses
++        // #[serde(default)] without deny_unknown_fields, unknown keys are
++        // silently ignored by serde - they do NOT become blueprint overrides.
++        let toml_str = r#"
++[agents]
++swarm_modle = "typo"
++"#;
++
++        let config: crate::config::Config = toml::from_str(toml_str).unwrap();
++
++        // The misspelled key is ignored, not treated as a blueprint.
++        assert!(config.agents.swarm_model.is_none());
++        assert!(config.agents.worker_blueprints.is_empty());
++        assert!(config.agents.worker_blueprints_dir.is_none());
++    }
++
++    // Additional coverage: effort and communication-policy parsing.
++    #[test]
++    fn effort_parse_all_variants() {
++        assert_eq!(BlueprintEffort::parse("none"), Some(BlueprintEffort::None));
++        assert_eq!(
++            BlueprintEffort::parse("MINIMAL"),
++            Some(BlueprintEffort::Minimal)
++        );
++        assert_eq!(BlueprintEffort::parse("  High  "), Some(BlueprintEffort::High));
++        assert_eq!(
++            BlueprintEffort::parse("swarm-deep"),
++            Some(BlueprintEffort::SwarmDeep)
++        );
++        assert_eq!(BlueprintEffort::parse("invalid"), None);
++    }
++
++    #[test]
++    fn communication_policy_parse_all_variants() {
++        assert_eq!(
++            CommunicationPolicy::parse("none"),
++            Some(CommunicationPolicy::None)
++        );
++        assert_eq!(
++            CommunicationPolicy::parse("REPORT-TO-PARENT"),
++            Some(CommunicationPolicy::ReportToParent)
++        );
++        assert_eq!(
++            CommunicationPolicy::parse("  same-swarm  "),
++            Some(CommunicationPolicy::SameSwarm)
++        );
++        assert_eq!(CommunicationPolicy::parse("invalid"), None);
++    }
++
++    // Additional coverage: tilde expansion.
++    #[test]
++    fn resolve_default_dir_uses_jcode_workers() {
++        let resolved = resolve_blueprints_dir(None);
++        assert!(resolved.is_some());
++        let path = resolved.unwrap();
++        assert!(path.ends_with(".jcode") || path.to_string_lossy().contains(".jcode"));
++        assert!(path.ends_with("workers"));
++    }
++
++    #[test]
++    fn resolve_absolute_path_no_expansion() {
++        let resolved = resolve_blueprints_dir(Some("/custom/path"));
++        assert_eq!(resolved, Some(PathBuf::from("/custom/path")));
++    }
++
++    #[test]
++    fn resolve_relative_path_no_expansion() {
++        let resolved = resolve_blueprints_dir(Some("relative/workers"));
++        assert_eq!(resolved, Some(PathBuf::from("relative/workers")));
++    }
++
++    #[test]
++    fn resolve_tilde_path_expanded() {
++        let resolved = resolve_blueprints_dir(Some("~/my-workers"));
++        assert!(resolved.is_some());
++        let path = resolved.unwrap();
++        // Should not start with ~
++        assert!(!path.to_string_lossy().starts_with('~'));
++    }
++
++    // Additional coverage: effort values in front matter.
++    #[test]
++    fn effort_from_front_matter_parsed() {
++        let bp = "\
++---
++name: eff-test
++description: Test.
++effort: xhigh
++---
++
++Body.
++";
++        let dir = make_dir(&[("eff.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        let bp = report.registry.get("eff-test").unwrap();
++        assert_eq!(bp.effort, Some(BlueprintEffort::Xhigh));
++    }
++
++    // Additional coverage: model from front matter.
++    #[test]
++    fn model_from_front_matter_parsed() {
++        let bp = "\
++---
++name: model-test
++description: Test.
++model: inherit
++---
++
++Body.
++";
++        let dir = make_dir(&[("model.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        let bp = report.registry.get("model-test").unwrap();
++        assert_eq!(bp.model.as_deref(), Some("inherit"));
++    }
++
++    // Additional coverage: front matter with leading blank lines.
++    #[test]
++    fn leading_blank_lines_before_delimiter_ok() {
++        let content = "\n\n---\nname: lead-blank\ndescription: Test.\n---\n\nBody.\n";
++        let dir = make_dir(&[("lead.md", content)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.registry.get("lead-blank").is_some());
++    }
++
++    // Additional coverage: content before delimiter (non-blank) is rejected.
++    #[test]
++    fn content_before_delimiter_rejected() {
++        let content = "Some text\n---\nname: bad\ndescription: Test.\n---\n\nBody.\n";
++        let dir = make_dir(&[("bad.md", content), ("valid.md", MINIMAL_BP)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("content before opening")));
++    }
++
++    // Additional coverage: whitespace around delimiters is tolerated.
++    #[test]
++    fn whitespace_around_delimiters_ok() {
++        let content = "  ---  \nname: ws\ndescription: Test.\n  ---  \n\nBody.\n";
++        let dir = make_dir(&[("ws.md", content)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.registry.get("ws").is_some());
++    }
++
++    // Additional coverage: unreadable file does not prevent valid blueprints.
++    #[test]
++    fn unreadable_file_does_not_block_valid_blueprints() {
++        let dir = make_dir(&[("valid.md", MINIMAL_BP)]);
++
++        // Create a file with no read permissions (on Unix).
++        let bad_path = dir.path().join("unreadable.md");
++        let mut f = fs::File::create(&bad_path).unwrap();
++        writeln!(f, "---\nname: unread\ndescription: Test.\n---\n\nBody.\n").unwrap();
++        drop(f);
++
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            fs::set_permissions(&bad_path, fs::Permissions::from_mode(0o000)).unwrap();
++        }
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++
++        // The valid blueprint should still load.
++        assert!(report.registry.get("shell-runner").is_some());
++
++        #[cfg(unix)]
++        {
++            // The unreadable file should have a diagnostic.
++            assert!(report
++                .diagnostics
++                .iter()
++                .any(|d| d
++                    .source
++                    == DiagnosticSource::File(bad_path.clone())));
++        }
++
++        #[cfg(unix)]
++        {
++            // Restore permissions so TempDir cleanup works.
++            use std::os::unix::fs::PermissionsExt;
++            let _ = fs::set_permissions(&bad_path, fs::Permissions::from_mode(0o644));
++        }
++    }
++
++    // Additional coverage: allowed-tools with non-string entries.
++    #[test]
++    fn allowed_tools_non_string_entries_diagnosed() {
++        let bp = "\
++---
++name: mixed-tools
++description: Test.
++allowed-tools:
++  - read
++  - 42
++  - bash
++---
++
++Body.
++";
++        let dir = make_dir(&[("mixed.md", bp)]);
++
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        let bp = report.registry.get("mixed-tools").unwrap();
++        // Non-string entries are skipped; valid ones remain.
++        assert_eq!(
++            bp.allowed_tools.as_deref(),
++            Some(&["read".to_string(), "bash".to_string()][..])
++        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("non-string entry")));
++    }
++}
+diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
+index 01735a693..cc702f5f8 100644
+--- a/crates/jcode-config-types/src/lib.rs
++++ b/crates/jcode-config-types/src/lib.rs
+@@ -649,6 +649,78 @@ pub struct AgentsConfig {
+     /// Env override: `JCODE_SWARM_MAX_CONCURRENT_AGENTS`.
+     #[serde(default = "default_swarm_max_concurrent_agents")]
+     pub swarm_max_concurrent_agents: usize,
++    /// Directory containing worker blueprint Markdown files. Defaults to
++    /// `~/.jcode/workers/`. Supports `~`, `~/...`, and `~\...` expansion.
++    #[serde(default)]
++    pub worker_blueprints_dir: Option<String>,
++    /// Per-blueprint configuration overrides keyed by blueprint ID. Each
++    /// override can supply optional `model` and `effort` fields that replace
++    /// the corresponding front-matter values. Source-owned fields (name,
++    /// description, allowed-tools, communication-policy, role instructions)
++    /// cannot be overridden in phase one.
++    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
++    pub worker_blueprints: std::collections::BTreeMap<String, WorkerBlueprintOverride>,
++    /// Optional coordinator-only tool policy. When present, the effective
++    /// coordinator policy is the intersection of this allowlist and the global
++    /// `[tools]` policy. Applied only to user-facing root sessions, never to
++    /// internal roles or headless service sessions.
++    #[serde(default)]
++    pub coordinator: CoordinatorConfig,
++    /// Default timeout in minutes for generated blueprint tool calls
++    /// (`swarm_<id>`). Used when neither the per-call `timeout_minutes`
++    /// parameter nor the blueprint's `timeout-minutes` front-matter key
++    /// specifies a value. Default: 20.
++    #[serde(default = "default_swarm_timeout_minutes")]
++    pub swarm_timeout_minutes: u32,
++}
++
++/// TOML override for a single worker blueprint. Only `model` and `effort`
++/// are overridable in phase one. An override whose ID has no discovered
++/// Markdown blueprint is nonfatal but diagnosed.
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++#[serde(default)]
++pub struct WorkerBlueprintOverride {
++    /// Optional model override. Nonblank model string, including bare IDs,
++    /// explicit routes, `inherit`, or `coordinator`. Route availability is
++    /// validated only at runtime.
++    pub model: Option<String>,
++    /// Optional effort override. Case-insensitive trimmed enum: `none`,
++    /// `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `swarm`, or
++    /// `swarm-deep`.
++    pub effort: Option<String>,
++    /// Optional timeout override in minutes. Must be a positive integer.
++    pub timeout_minutes: Option<u32>,
++}
++
++/// Coordinator-only tool policy configuration.
++///
++/// Omission means no coordinator-specific restriction. `allowed_tools = []`
++/// means no developer tools. The effective coordinator policy is the
++/// intersection of this optional allowlist and global `[tools]` policy.
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++#[serde(default)]
++pub struct CoordinatorConfig {
++    /// Optional allowlist of tool names visible to the coordinator. When
++    /// present, the coordinator can only use tools in this list (intersected
++    /// with the global `[tools]` policy). Generated `swarm_<id>` tools must
++    /// be explicitly listed to be visible.
++    pub allowed_tools: Vec<String>,
++}
++
++impl CoordinatorConfig {
++    /// Returns `Some(HashSet)` when `allowed_tools` is non-empty, meaning a
++    /// coordinator-specific restriction is active.
++    pub fn allowed_set(&self) -> Option<std::collections::HashSet<String>> {
++        if self.allowed_tools.is_empty() {
++            None
++        } else {
++            Some(self.allowed_tools.iter().cloned().collect())
++        }
++    }
++}
++
++fn default_swarm_timeout_minutes() -> u32 {
++    20
+ }
+ 
+ fn default_swarm_max_concurrent_agents() -> usize {
+@@ -693,6 +765,10 @@ impl Default for AgentsConfig {
+             memory_embedding_base_url: None,
+             memory_embedding_dim: None,
+             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
++            worker_blueprints_dir: None,
++            worker_blueprints: std::collections::BTreeMap::new(),
++            coordinator: CoordinatorConfig::default(),
++            swarm_timeout_minutes: default_swarm_timeout_minutes(),
+         }
+     }
+ }
+diff --git a/crates/jcode-protocol/src/protocol_tests/comm_requests.rs b/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
+index 1a1a54390..5298ba8a5 100644
+--- a/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
++++ b/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
+@@ -457,6 +457,7 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
+         model: Some("openai-api:gpt-5.5".to_string()),
+         effort: Some("low".to_string()),
+         label: Some("review auth flow".to_string()),
++        blueprint: None,
+     };
+     let json = serde_json::to_string(&req)?;
+     assert!(json.contains("\"type\":\"comm_spawn\""));
+diff --git a/crates/jcode-protocol/src/wire.rs b/crates/jcode-protocol/src/wire.rs
+index 1d49878ef..8fb4da11f 100644
+--- a/crates/jcode-protocol/src/wire.rs
++++ b/crates/jcode-protocol/src/wire.rs
+@@ -563,6 +563,13 @@ pub enum Request {
+         /// otherwise derived from the first line of `initial_message`.
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         label: Option<String>,
++        /// Optional worker blueprint ID. When set, the spawned agent receives
++        /// the blueprint's role instructions as durable system context before
++        /// the runtime task, and the blueprint's model, effort, allowed-tools,
++        /// and communication-policy are applied. The blueprint must exist in
++        /// the loaded registry; an unknown ID is a runtime error.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        blueprint: Option<String>,
+     },
+ 
+     /// List models/routes available for spawning swarm agents

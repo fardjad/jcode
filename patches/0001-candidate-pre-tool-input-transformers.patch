@@ -1,4 +1,4 @@
-From b8e040d2c6d7c02070c50d7ceccefbf33dadc3fa Mon Sep 17 00:00:00 2001
+From ae607c9314c7c60bbb510026cb1c1beaade471c8 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Tue, 18 Aug 2026 10:20:23 +0200
 Subject: [PATCH] feat: add pre-tool input transformers
