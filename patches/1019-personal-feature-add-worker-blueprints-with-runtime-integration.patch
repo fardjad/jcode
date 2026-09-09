@@ -5,72 +5,89 @@ Subject: [PATCH] feat: add worker blueprints with runtime integration
 
 X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator policy, generated tools, and bounded paginated output
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-Depends-On: 0001-candidate-pre-tool-input-transformers.patch, 1001-personal-release-installer-path-opt-in.patch, 1002-personal-provider-family-allowlist.patch, 1003-personal-feature-configure-session-picker-sorting.patch, 1004-personal-feature-configure-session-picker-default-filter.patch, 1005-personal-feature-delete-sessions-from-picker.patch, 1006-personal-openrouter-eu.patch, 1007-personal-feature-disable-telemetry-delivery-and-remove-telemetry-controls.patch, 1008-personal-feature-remove-hosted-subscription-and-promotional-commands.patch, 1009-personal-feature-remove-promotional-onboarding-content.patch, 1010-personal-feature-remove-sponsored-integration-discovery.patch, 1011-personal-feature-disable-automatic-onboarding.patch, 1012-personal-feature-remove-hosted-account-cli-commands.patch, 1013-personal-feature-remove-hosted-account-tui-commands.patch, 1014-personal-feature-docs-remove-sponsored-discovery-documentation.patch, 1015-personal-feature-refactor-remove-hosted-subscription-account-api.patch, 1016-personal-feature-docs-remove-hosted-account-and-cloud-documentation.patch, 1017-personal-feature-refactor-route-jcode-choice-through-direct-endpoin.patch, 1018-personal-feature-allow-selecting-the-self-update-repository.patch
 
 Patch intent:
 Add a worker blueprint system that lets a jcode user define reusable,
-specialized subagent roles in Markdown. Each blueprint supplies durable
-role instructions, model, effort, allowed-tools, communication-policy,
-and timeout. At runtime, every valid blueprint generates a coordinator-
-visible tool named swarm_<id> that spawns a blueprint-backed worker,
-waits for completion, and returns a compact summary with paginated
-follow-up reads. A coordinator-only tool policy (agents.coordinator)
-restricts the coordinator's own tools without affecting internal roles
-or spawned workers.
+specialized subagent roles in Markdown. Each blueprint supplies durable role
+instructions, model, effort, allowed-tools, communication-policy, and timeout.
+At runtime, every valid blueprint generates a coordinator-visible tool named
+swarm_<id> that spawns a blueprint-backed worker, waits for completion, and
+returns a compact summary with paginated follow-up reads. Runtime resolution
+uses the documented default blueprint directory, including symlinked directories
+and Markdown files, and rejects nonblank blueprint IDs that are unavailable or
+invalid instead of spawning a generic worker. A
+coordinator-only tool policy (agents.coordinator) restricts the coordinator's
+own tools without affecting internal roles or spawned workers.
 
 Why it exists:
-Worker blueprints let a user specialize subagents without code changes.
-A blueprint can pin a cheap model for routine work, restrict its tool
-access, control its communication, and cap its runtime. The generated
-tool returns a bounded summary (2000 chars) so the coordinator does not
-burn tokens reading the worker's full output. A deterministic follow-up
-read (no LLM) lets the coordinator page through more output in 2000-char
-chunks when needed. The coordinator policy lets a user remove broad tools
-like bash and generic swarm from the coordinator while retaining them for
-authorized specialized workers and internal agents.
+Worker blueprints let a user specialize subagents without code changes. A
+blueprint can pin a cheap model for routine work, restrict its tool access,
+control its communication, and cap its runtime. The generated tool returns a
+bounded summary (2000 chars) so the coordinator does not burn tokens reading
+the worker's full output. A deterministic follow-up read (no LLM) lets the
+coordinator page through more output in 2000-char chunks when needed. The
+coordinator policy lets a user remove broad tools like bash and generic swarm
+from the coordinator while retaining them for authorized specialized workers
+and internal agents.
 
 Upstream integration points:
 - crates/jcode-config-types/src/lib.rs: CoordinatorConfig struct,
   swarm_timeout_minutes field, timeout_minutes on WorkerBlueprintOverride,
   coordinator and worker_blueprints fields on AgentsConfig.
 - crates/jcode-base/src/config.rs: re-exports CoordinatorConfig.
-- crates/jcode-base/src/worker_blueprint.rs: blueprint discovery, front-
-  matter parsing, schema validation, override merging, diagnostics, and
-  Display impl for WorkerBlueprintDiagnostic.
+- crates/jcode-base/src/worker_blueprint.rs: blueprint discovery from the
+  documented ~/.jcode/worker-blueprints/ default, including symlinked files and
+  directories, front-matter parsing, schema validation, override merging,
+  diagnostics, and Display impl for WorkerBlueprintDiagnostic.
 - crates/jcode-protocol/src/wire.rs: blueprint field on CommSpawn.
-- crates/jcode-app-core/src/agent.rs: apply_coordinator_policy applied
-  to root sessions in new_with_initial_ownership.
-- crates/jcode-app-core/src/server/comm_session.rs: blueprint resolution,
-  prompt composition, tool policy application, communication policy
-  storage in spawn_swarm_agent.
+- crates/jcode-app-core/src/agent.rs: apply_coordinator_policy applied to root
+  sessions in new_with_initial_ownership.
+- crates/jcode-app-core/src/server/comm_session.rs: fallible blueprint
+  resolution that rejects requested unavailable or invalid IDs, prompt
+  composition, tool policy application, communication policy storage in
+  spawn_swarm_agent.
 - crates/jcode-app-core/src/server/client_comm_message.rs: communication
   policy enforcement in handle_comm_message.
-- crates/jcode-app-core/src/server/state.rs: communication_policy field
-  on SwarmMember.
-- crates/jcode-app-core/src/tool/blueprint.rs: BlueprintTool implementing
-  the Tool trait. Spawn mode: spawn, await, return compact summary with
-  session ID. Follow-up mode: deterministic paginated read of stored
-  output. Timeout resolved per-call > blueprint > config > default (20m).
+- crates/jcode-app-core/src/server/state.rs: communication_policy field on
+  SwarmMember.
+- crates/jcode-app-core/src/tool/blueprint.rs: BlueprintTool implementing the
+  Tool trait. Spawn mode: spawn, await, return compact summary with session ID.
+  Follow-up mode: deterministic paginated read of stored output. Timeout
+  resolved per-call > blueprint > config > default (20m).
+- crates/jcode-app-core/src/tool/tests.rs: excludes user-owned generated
+  swarm_<id> descriptions from the static built-in tool-description token cap.
 - crates/jcode-app-core/src/tool/mod.rs: register_blueprint_tools in
   Registry::new.
 - crates/jcode-app-core/src/tool/communicate.rs: blueprint field in
   CommunicateInput and spawn action.
-- crates/jcode-app-core/src/tool/communicate/transport.rs: send_request
-  and send_request_with_timeout made pub(crate) for blueprint tool reuse.
+- crates/jcode-app-core/src/tool/communicate/transport.rs: send_request and
+  send_request_with_timeout made pub(crate) for blueprint tool reuse.
 
 Update guidance:
-Preserve the precedence chain for model (per-spawn > blueprint >
-swarm_model > coordinator) and timeout (per-call > blueprint >
-config > default 20m). Blueprint allowed-tools are always intersected
-with the global tool policy. Coordinator policy only applies to root
-sessions, never to spawned workers or internal roles. Communication-
-policy: none blocks ordinary messages but not tool results. Generated
-tools never overwrite existing tool names. All test SwarmMember and
-WorkerBlueprintOverride constructions must include the new fields.
+Preserve the documented ~/.jcode/worker-blueprints/ default, including
+symlinked directories and Markdown files, and reject every nonblank requested
+blueprint ID that cannot resolve. Preserve the precedence chain for model
+(per-spawn > blueprint > swarm_model > coordinator) and timeout (per-call >
+blueprint > config > default 20m). Generated swarm_<id> descriptions are
+user-owned and exempt from the static built-in description token cap. Blueprint
+allowed-tools are always intersected with the global tool policy. Coordinator
+policy only applies to root sessions, never to spawned workers or internal
+roles. Communication-policy: none blocks ordinary messages but not tool
+results. Generated tools never overwrite existing tool names. All test
+SwarmMember and WorkerBlueprintOverride constructions must include the new
+fields.
 
 Validation:
 cargo test -p jcode-app-core blueprint --lib
+cargo test -p jcode-app-core blank_follow_up_session_selects_spawn_mode --lib
+cargo test -p jcode-app-core requested_unknown_blueprint_is_rejected_before_generic_swarm_spawn --lib
+cargo test -p jcode-app-core generated_blueprint_id_resolves_model_or_configured_luna_at_runtime --lib
+cargo test -p jcode-app-core tool_descriptions_stay_under_token_cap --lib
 cargo test -p jcode-base worker_blueprint --lib
+cargo test -p jcode-base discovery_follows_symlinked_markdown_files --lib
+cargo test -p jcode-base discovery_follows_a_symlinked_blueprint_directory --lib
+cargo test -p jcode-base resolve_default_dir_uses_documented_worker_blueprints_path --lib
 cargo test -p jcode-protocol --lib
 cargo test -p jcode-config-types --lib
 cargo check -p jcode-app-core
@@ -92,8 +109,8 @@ cargo check -p jcode-app-core
  .../jcode-app-core/src/server/comm_control.rs |    1 +
  .../src/server/comm_control_tests.rs          |    1 +
  .../src/server/comm_plan_tests.rs             |    1 +
- .../jcode-app-core/src/server/comm_session.rs |  126 +-
- .../src/server/comm_session_tests.rs          |    1 +
+ .../jcode-app-core/src/server/comm_session.rs |  131 +-
+ .../src/server/comm_session_tests.rs          |   42 +-
  .../jcode-app-core/src/server/debug_tests.rs  |    1 +
  crates/jcode-app-core/src/server/headless.rs  |    1 +
  .../jcode-app-core/src/server/reload_tests.rs |    1 +
@@ -101,18 +118,19 @@ cargo check -p jcode-app-core
  crates/jcode-app-core/src/server/swarm.rs     |    1 +
  .../src/server/swarm_persistence_tests.rs     |    8 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  474 +++++
- .../src/tool/blueprint_tests.rs               |  892 +++++++++
+ crates/jcode-app-core/src/tool/blueprint.rs   |  483 +++++
+ .../src/tool/blueprint_tests.rs               |  909 ++++++++
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
  crates/jcode-app-core/src/tool/mod.rs         |   52 +-
+ crates/jcode-app-core/src/tool/tests.rs       |    7 +-
  crates/jcode-base/src/config.rs               |    4 +-
  crates/jcode-base/src/lib.rs                  |    1 +
- crates/jcode-base/src/worker_blueprint.rs     | 1782 +++++++++++++++++
+ crates/jcode-base/src/worker_blueprint.rs     | 1823 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   76 +
  .../src/protocol_tests/comm_requests.rs       |    1 +
  crates/jcode-protocol/src/wire.rs             |    7 +
- 37 files changed, 3529 insertions(+), 10 deletions(-)
+ 38 files changed, 3646 insertions(+), 13 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
@@ -532,7 +550,7 @@ index 0a854c81e..5b9863831 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/server/comm_session.rs b/crates/jcode-app-core/src/server/comm_session.rs
-index 7ffd473c2..4f2f2cad1 100644
+index 7ffd473c2..c2f276e6a 100644
 --- a/crates/jcode-app-core/src/server/comm_session.rs
 +++ b/crates/jcode-app-core/src/server/comm_session.rs
 @@ -18,6 +18,7 @@ use crate::config::SwarmSpawnMode;
@@ -543,21 +561,21 @@ index 7ffd473c2..4f2f2cad1 100644
  use std::collections::{HashMap, HashSet};
  use std::path::PathBuf;
  use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
-@@ -28,6 +29,43 @@ type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+@@ -28,6 +29,48 @@ type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
  type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
  type ClientConnections = Arc<RwLock<HashMap<String, ClientConnectionInfo>>>;
  
 +/// Resolve a worker blueprint by ID from the configured blueprints directory
-+/// and overrides. Returns `None` if no blueprint ID was given. Returns an
-+/// error if the ID was given but no matching blueprint was discovered.
++/// and overrides. A blank or absent ID selects no blueprint. A nonblank ID
++/// must resolve to a valid discovered blueprint so a requested specialized
++/// worker never silently becomes a generic swarm worker.
 +fn resolve_blueprint_for_spawn(
 +    blueprint_id: Option<&str>,
 +    agents_config: &crate::config::AgentsConfig,
-+) -> Option<WorkerBlueprint> {
-+    let id = blueprint_id?.trim();
-+    if id.is_empty() {
-+        return None;
-+    }
++) -> anyhow::Result<Option<WorkerBlueprint>> {
++    let Some(id) = blueprint_id.map(str::trim).filter(|id| !id.is_empty()) else {
++        return Ok(None);
++    };
 +
 +    let report = crate::worker_blueprint::load_worker_blueprints(
 +        agents_config.worker_blueprints_dir.as_deref(),
@@ -572,7 +590,12 @@ index 7ffd473c2..4f2f2cad1 100644
 +        ));
 +    }
 +
-+    report.registry.get(id).cloned()
++    report.registry.get(id).cloned().map(Some).ok_or_else(|| {
++        anyhow::anyhow!(
++            "Worker blueprint '{id}' was requested but is unavailable or invalid. \
++             Check agents.worker_blueprints_dir and the blueprint diagnostics."
++        )
++    })
 +}
 +
 +/// Compose the blueprint's durable role instructions with the runtime task.
@@ -587,7 +610,7 @@ index 7ffd473c2..4f2f2cad1 100644
  /// Serialize spawn admission through member registration within one swarm.
  /// Without a reservation or lock, many recursive agents can all observe the same
  /// free slot and burst past the configured limit before any child is registered.
-@@ -523,6 +561,7 @@ async fn register_visible_spawned_member(
+@@ -523,6 +566,7 @@ async fn register_visible_spawned_member(
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -595,7 +618,7 @@ index 7ffd473c2..4f2f2cad1 100644
              },
          );
      }
-@@ -580,6 +619,7 @@ pub(super) async fn spawn_swarm_agent(
+@@ -580,6 +624,7 @@ pub(super) async fn spawn_swarm_agent(
      requested_model: Option<String>,
      requested_effort: Option<String>,
      label: Option<String>,
@@ -603,7 +626,7 @@ index 7ffd473c2..4f2f2cad1 100644
      sessions: &SessionAgents,
      global_session_id: &Arc<RwLock<String>>,
      provider_template: &Arc<dyn Provider>,
-@@ -606,8 +646,24 @@ pub(super) async fn spawn_swarm_agent(
+@@ -606,8 +651,24 @@ pub(super) async fn spawn_swarm_agent(
      let agents_config = &crate::config::config().agents;
      let configured_swarm_model = agents_config.swarm_model.clone();
      let resolved_spawn_mode = spawn_mode.unwrap_or(agents_config.swarm_spawn_mode);
@@ -614,7 +637,7 @@ index 7ffd473c2..4f2f2cad1 100644
 +    // coordinator. Its role instructions prepend the runtime task. Its
 +    // allowed-tools and communication-policy are applied after the session
 +    // is created.
-+    let blueprint = resolve_blueprint_for_spawn(blueprint_id.as_deref(), agents_config);
++    let blueprint = resolve_blueprint_for_spawn(blueprint_id.as_deref(), agents_config)?;
 +    let (blueprint_model, blueprint_effort) = match &blueprint {
 +        Some(bp) => (
 +            bp.model.clone(),
@@ -629,7 +652,7 @@ index 7ffd473c2..4f2f2cad1 100644
          configured_swarm_model.clone(),
          &coordinator,
      );
-@@ -615,7 +671,9 @@ pub(super) async fn spawn_swarm_agent(
+@@ -615,7 +676,9 @@ pub(super) async fn spawn_swarm_agent(
      let spawn_provider_key = selection.provider_key.clone();
      let spawn_route_api_method = selection.route_api_method.clone();
      let spawn_effort = resolve_swarm_spawn_effort(
@@ -640,7 +663,7 @@ index 7ffd473c2..4f2f2cad1 100644
          agents_config.swarm_effort.as_deref(),
      );
      crate::logging::info(&format!(
-@@ -634,7 +692,16 @@ pub(super) async fn spawn_swarm_agent(
+@@ -634,7 +697,16 @@ pub(super) async fn spawn_swarm_agent(
  
      let startup_message = initial_message
          .as_deref()
@@ -658,7 +681,7 @@ index 7ffd473c2..4f2f2cad1 100644
  
      let visible_spawn = match resolved_spawn_mode {
          // Inline workers run in-process like headless ones; the difference is
-@@ -711,6 +778,56 @@ pub(super) async fn spawn_swarm_agent(
+@@ -711,6 +783,56 @@ pub(super) async fn spawn_swarm_agent(
          }
      }?;
  
@@ -715,7 +738,7 @@ index 7ffd473c2..4f2f2cad1 100644
      let startup_message = startup_message.clone();
      {
          let mut plans = swarm_plans.write().await;
-@@ -854,6 +971,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -854,6 +976,7 @@ pub(super) async fn handle_comm_spawn(
      model: Option<String>,
      effort: Option<String>,
      label: Option<String>,
@@ -723,7 +746,7 @@ index 7ffd473c2..4f2f2cad1 100644
      client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
      sessions: &SessionAgents,
      global_session_id: &Arc<RwLock<String>>,
-@@ -913,6 +1031,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -913,6 +1036,7 @@ pub(super) async fn handle_comm_spawn(
              effort.clone().unwrap_or_default(),
              model.clone().unwrap_or_default(),
              label.clone().unwrap_or_default(),
@@ -731,7 +754,7 @@ index 7ffd473c2..4f2f2cad1 100644
          ],
      );
      let Some(mutation_state) = begin_or_replay(
-@@ -937,6 +1056,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -937,6 +1061,7 @@ pub(super) async fn handle_comm_spawn(
          model,
          effort,
          label,
@@ -740,10 +763,24 @@ index 7ffd473c2..4f2f2cad1 100644
          global_session_id,
          provider_template,
 diff --git a/crates/jcode-app-core/src/server/comm_session_tests.rs b/crates/jcode-app-core/src/server/comm_session_tests.rs
-index 262118733..395689db7 100644
+index 262118733..aae87cb2e 100644
 --- a/crates/jcode-app-core/src/server/comm_session_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_session_tests.rs
-@@ -70,6 +70,7 @@ fn member(
+@@ -2,11 +2,12 @@
+ 
+ use super::{
+     CoordinatorSpawnIdentity, ensure_spawn_coordinator_swarm, prepare_visible_spawn_session,
+-    register_visible_spawned_member, resolve_coordinator_spawn_identity, resolve_spawn_working_dir,
++    register_visible_spawned_member, resolve_blueprint_for_spawn, resolve_coordinator_spawn_identity, resolve_spawn_working_dir,
+     resolve_stop_target_session, resolve_swarm_spawn_selection, spawn_admission_lock,
+     swarm_stop_allowed_by_owner,
+ };
+ use crate::agent::Agent;
++use crate::config::AgentsConfig;
+ use crate::message::{Message, ToolDefinition};
+ use crate::protocol::{NotificationType, ServerEvent};
+ use crate::provider::{EventStream, Provider};
+@@ -70,6 +71,7 @@ fn member(
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -751,6 +788,51 @@ index 262118733..395689db7 100644
              task_label: None,
          },
          event_rx,
+@@ -464,6 +466,44 @@ fn coordinator_identity(
+     }
+ }
+ 
++#[test]
++fn requested_unknown_blueprint_is_rejected_before_generic_swarm_spawn() {
++    let dir = tempfile::tempdir().unwrap();
++    let mut agents_config = AgentsConfig::default();
++    agents_config.worker_blueprints_dir = Some(dir.path().display().to_string());
++
++    let error = resolve_blueprint_for_spawn(Some("missing"), &agents_config)
++        .expect_err("a requested blueprint must not fall back to generic swarm spawning");
++
++    assert!(error.to_string().contains("Worker blueprint 'missing'"));
++    assert!(error.to_string().contains("unavailable or invalid"));
++}
++
++#[test]
++fn generated_blueprint_id_resolves_model_or_configured_luna_at_runtime() {
++    let dir = tempfile::tempdir().unwrap();
++    std::fs::write(
++        dir.path().join("research.md"),
++        "---\nname: research\ndescription: Research worker.\n---\nResearch carefully.",
++    )
++    .unwrap();
++    let mut agents_config = AgentsConfig::default();
++    agents_config.worker_blueprints_dir = Some(dir.path().display().to_string());
++    agents_config.swarm_model = Some("openrouter-eu:gpt-5.6-luna".to_string());
++
++    let blueprint = resolve_blueprint_for_spawn(Some("research"), &agents_config)
++        .unwrap()
++        .expect("the generated tool's blueprint ID should resolve");
++    assert!(blueprint.model.is_none());
++    let selection = resolve_swarm_spawn_selection(
++        blueprint.model.clone(), agents_config.swarm_model.clone(),
++        &coordinator_identity(Some("other-model"), Some("other"), None),
++    );
++
++    assert_eq!(selection.model.as_deref(), Some("openrouter-eu:gpt-5.6-luna"));
++    assert_eq!(selection.provider_key.as_deref(), Some("openrouter-eu"));
++}
++
+ #[test]
+ fn resolve_swarm_spawn_model_prefers_configured_model_over_coordinator_model() {
+     let selection = resolve_swarm_spawn_selection(
 diff --git a/crates/jcode-app-core/src/server/debug_tests.rs b/crates/jcode-app-core/src/server/debug_tests.rs
 index 4c3f6fc71..b1943ecd6 100644
 --- a/crates/jcode-app-core/src/server/debug_tests.rs
@@ -915,10 +997,10 @@ index 044c3244c..fa94f0f9f 100644
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
 new file mode 100644
-index 000000000..9fe52217e
+index 000000000..205ca9e54
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
-@@ -0,0 +1,474 @@
+@@ -0,0 +1,483 @@
 +//! Generated coordinator-visible tools for worker blueprints.
 +//!
 +//! Every valid effective blueprint generates a tool named `swarm_<id>`. The
@@ -1012,6 +1094,15 @@ index 000000000..9fe52217e
 +
 +/// Suffix appended when the summary is truncated.
 +const SUMMARY_TRUNCATED_SUFFIX: &str = "\n\n[... truncated. Use follow_up_session with offset/limit to read more.]";
++
++/// Return a follow-up session ID only when a caller supplied a meaningful one.
++///
++/// Some strict tool-schema transports must represent every property and use an
++/// empty string for an omitted optional string. Treat that placeholder as
++/// absent so it selects spawn mode, as the public tool contract promises.
++pub(crate) fn nonblank_follow_up_session(value: Option<&str>) -> Option<&str> {
++    value.map(str::trim).filter(|value| !value.is_empty())
++}
 +
 +impl BlueprintTool {
 +    /// Create a new generated tool for the given blueprint.
@@ -1152,7 +1243,7 @@ index 000000000..9fe52217e
 +        let params: BlueprintToolInput = serde_json::from_value(input)?;
 +
 +        // ── Follow-up mode: read paginated output from an existing worker ──
-+        if let Some(session_id) = params.follow_up_session.as_deref() {
++        if let Some(session_id) = nonblank_follow_up_session(params.follow_up_session.as_deref()) {
 +            return self.execute_follow_up(session_id, params.offset, params.limit, &ctx).await;
 +        }
 +
@@ -1395,10 +1486,10 @@ index 000000000..9fe52217e
 +}
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
 new file mode 100644
-index 000000000..74f34ffe1
+index 000000000..48560e341
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -0,0 +1,892 @@
+@@ -0,0 +1,909 @@
 +//! Phase two integration tests for worker blueprints.
 +//!
 +//! These tests verify the runtime integration of worker blueprints:
@@ -2202,6 +2293,23 @@ index 000000000..74f34ffe1
 +}
 +
 +#[test]
++fn blank_follow_up_session_selects_spawn_mode() {
++    // Strict tool-schema transports can require every property and represent an
++    // omitted optional string as "". This must retain the documented spawn
++    // behavior instead of trying to read a worker with an empty session ID.
++    assert_eq!(crate::tool::blueprint::nonblank_follow_up_session(None), None);
++    assert_eq!(crate::tool::blueprint::nonblank_follow_up_session(Some("")), None);
++    assert_eq!(
++        crate::tool::blueprint::nonblank_follow_up_session(Some("  \t\n")),
++        None
++    );
++    assert_eq!(
++        crate::tool::blueprint::nonblank_follow_up_session(Some(" session_123 ")),
++        Some("session_123")
++    );
++}
++
++#[test]
 +fn follow_up_mode_offset_beyond_end_returns_empty() {
 +    let full = "a".repeat(100);
 +    let offset = 200usize;
@@ -2434,6 +2542,31 @@ index 893b0eadf..5bed9bfd9 100644
      /// Get all tool definitions for the API
      pub async fn definitions(
          &self,
+diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
+index 655ff2aa1..4a23866ce 100644
+--- a/crates/jcode-app-core/src/tool/tests.rs
++++ b/crates/jcode-app-core/src/tool/tests.rs
+@@ -613,7 +613,8 @@ async fn tool_descriptions_stay_under_token_cap() {
+     const DESCRIPTION_TOKEN_CAP: usize = 20;
+     // batch embeds a concrete multi-call JSON example and jcode_docs explains its
+     // version-matched documentation behavior. swarm appends the user-tunable
+-    // swarm-prompt.md by design.
++    // swarm-prompt.md by design. swarm_<id> tools are generated from user-owned
++    // worker blueprints, whose descriptions intentionally remain user-controlled.
+     const EXEMPT: &[&str] = &["batch", "jcode_docs", "swarm"];
+ 
+     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+@@ -622,7 +623,9 @@ async fn tool_descriptions_stay_under_token_cap() {
+         .definitions(None)
+         .await
+         .into_iter()
+-        .filter(|def| !EXEMPT.contains(&def.name.as_str()))
++        .filter(|def| {
++            !EXEMPT.contains(&def.name.as_str()) && !def.name.starts_with("swarm_")
++        })
+         .filter(|def| def.description_token_estimate() > DESCRIPTION_TOKEN_CAP)
+         .map(|def| {
+             format!(
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
 index a8ecfe925..9af6c4fd5 100644
 --- a/crates/jcode-base/src/config.rs
@@ -2469,10 +2602,10 @@ index b7d18eb48..d70aaf961 100644
  pub use jcode_core::{terminal_eprint, terminal_eprintln, terminal_print, terminal_println};
 diff --git a/crates/jcode-base/src/worker_blueprint.rs b/crates/jcode-base/src/worker_blueprint.rs
 new file mode 100644
-index 000000000..a5e44950e
+index 000000000..de762a7ad
 --- /dev/null
 +++ b/crates/jcode-base/src/worker_blueprint.rs
-@@ -0,0 +1,1782 @@
+@@ -0,0 +1,1823 @@
 +//! Worker blueprint discovery, parsing, validation, and override merging.
 +//!
 +//! This module owns the phase-one data and configuration boundary for worker
@@ -2827,13 +2960,13 @@ index 000000000..a5e44950e
 +/// Supports `~`, `~/...`, and `~\...` expansion using `dirs::home_dir()`,
 +/// the same convention already used by jcode. Other relative paths retain
 +/// normal process-working-directory semantics. Returns the default
-+/// `~/.jcode/workers/` when `configured` is `None`.
++/// `~/.jcode/worker-blueprints/` when `configured` is `None`.
 +pub fn resolve_blueprints_dir(configured: Option<&str>) -> Option<PathBuf> {
 +    match configured {
 +        None => {
-+            // Default: ~/.jcode/workers/
++            // Default: ~/.jcode/worker-blueprints/
 +            let home = dirs::home_dir()?;
-+            Some(home.join(".jcode").join("workers"))
++            Some(home.join(".jcode").join("worker-blueprints"))
 +        }
 +        Some(s) => expand_tilde(s),
 +    }
@@ -2875,7 +3008,11 @@ index 000000000..a5e44950e
 +        .filter_map(|e| e.ok())
 +        .filter_map(|e| {
 +            let path = e.path();
-+            let meta = e.metadata().ok()?;
++            // Follow file symlinks: bundled blueprints are commonly installed
++            // by symlinking their Markdown files into ~/.jcode/worker-blueprints.
++            // `DirEntry::metadata` inspects the link itself, so use
++            // `fs::metadata` to accept a link whose target is a regular file.
++            let meta = std::fs::metadata(&path).ok()?;
 +            // Only direct regular files (not symlinks to dirs, not dirs).
 +            if !meta.is_file() {
 +                return None;
@@ -3503,6 +3640,43 @@ index 000000000..a5e44950e
 +        assert!(report.registry.get("reviewer").is_some());
 +    }
 +
++    #[cfg(unix)]
++    #[test]
++    fn discovery_follows_symlinked_markdown_files() {
++        use std::os::unix::fs::symlink;
++
++        let source = make_dir(&[("explorer.md", MINIMAL_BP)]);
++        let installed = TempDir::new().unwrap();
++        symlink(
++            source.path().join("explorer.md"),
++            installed.path().join("explorer.md"),
++        )
++        .unwrap();
++
++        let report = load_worker_blueprints(installed.path().to_str(), &BTreeMap::new());
++
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.registry.get("shell-runner").is_some());
++        assert!(report.diagnostics.is_empty());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn discovery_follows_a_symlinked_blueprint_directory() {
++        use std::os::unix::fs::symlink;
++
++        let source = make_dir(&[("explorer.md", MINIMAL_BP)]);
++        let parent = TempDir::new().unwrap();
++        let installed = parent.path().join("worker-blueprints");
++        symlink(source.path(), &installed).unwrap();
++
++        let report = load_worker_blueprints(installed.to_str(), &BTreeMap::new());
++
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.registry.get("shell-runner").is_some());
++        assert!(report.diagnostics.is_empty());
++    }
++
 +    // Test 3: Correct line-delimited front matter preserves the exact
 +    // Markdown body.
 +    #[test]
@@ -4080,12 +4254,12 @@ index 000000000..a5e44950e
 +
 +    // Additional coverage: tilde expansion.
 +    #[test]
-+    fn resolve_default_dir_uses_jcode_workers() {
++    fn resolve_default_dir_uses_documented_worker_blueprints_path() {
 +        let resolved = resolve_blueprints_dir(None);
 +        assert!(resolved.is_some());
 +        let path = resolved.unwrap();
 +        assert!(path.ends_with(".jcode") || path.to_string_lossy().contains(".jcode"));
-+        assert!(path.ends_with("workers"));
++        assert!(path.ends_with("worker-blueprints"));
 +    }
 +
 +    #[test]
@@ -4256,7 +4430,7 @@ index 000000000..a5e44950e
 +    }
 +}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 01735a693..cc702f5f8 100644
+index 01735a693..812de0e34 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -649,6 +649,78 @@ pub struct AgentsConfig {
@@ -4264,7 +4438,7 @@ index 01735a693..cc702f5f8 100644
      #[serde(default = "default_swarm_max_concurrent_agents")]
      pub swarm_max_concurrent_agents: usize,
 +    /// Directory containing worker blueprint Markdown files. Defaults to
-+    /// `~/.jcode/workers/`. Supports `~`, `~/...`, and `~\...` expansion.
++    /// `~/.jcode/worker-blueprints/`. Supports `~`, `~/...`, and `~\...` expansion.
 +    #[serde(default)]
 +    pub worker_blueprints_dir: Option<String>,
 +    /// Per-blueprint configuration overrides keyed by blueprint ID. Each

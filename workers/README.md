@@ -18,12 +18,12 @@ easy to change the model for all workers in one place.
 
 ## Install
 
-Symlink the bundled blueprints into the global workers directory:
+Symlink the bundled blueprints into the default blueprint directory:
 
 ```bash
-mkdir -p ~/.jcode/workers
+mkdir -p ~/.jcode/worker-blueprints
 for f in workers/blueprints/*.md; do
-  ln -sf "$(pwd)/$f" "$HOME/.jcode/workers/$(basename $f)"
+  ln -sf "$(pwd)/$f" "$HOME/.jcode/worker-blueprints/$(basename "$f")"
 done
 ```
 
