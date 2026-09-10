@@ -30,7 +30,15 @@ def apply(root: Path, worktree: Path, target: str | None, required_kind: str | N
         for patch in ordered:
             print(f"applying {patch.path.name}")
             with isolated_environment() as environment:
-                subprocess.run(["git", "am", str(patch.path)], cwd=worktree, env=environment, check=True)
+                subprocess.run(
+                    [
+                        "git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                        "am", str(patch.path),
+                    ],
+                    cwd=worktree,
+                    env=environment,
+                    check=True,
+                )
     except subprocess.CalledProcessError as error:
         raise CatalogError(
             f"git am conflict in {worktree}\n"

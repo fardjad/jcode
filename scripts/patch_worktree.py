@@ -10,6 +10,14 @@ from pathlib import Path
 from patch_catalog import CatalogError, fail, git, repository_root, worktree_path
 
 
+def normalize_checkout(path: Path) -> None:
+    """Use LF checkout content so mail patches apply identically on every OS."""
+    git(
+        "-c", "core.autocrlf=false", "-c", "core.eol=lf", "reset", "--hard",
+        cwd=path,
+    )
+
+
 def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-", destination: Path | None = None) -> Path:
     """Create or safely reset clean detached worktree at revision."""
     if not name or Path(name).name != name or ".." in name:
@@ -55,6 +63,7 @@ def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-"
         git("checkout", "--detach", resolved_revision, cwd=path)
     else:
         git("worktree", "add", "--detach", str(path), revision)
+    normalize_checkout(path)
     print(path)
     return path
 
