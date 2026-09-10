@@ -109,10 +109,11 @@ install-patched-version:
 
   repo_root=$(git rev-parse --show-toplevel)
   worktree="$repo_root/.patched-jcode"
+  install_dir="${JCODE_INSTALL_DIR:-$HOME/.local/bin}"
   just --justfile "$repo_root/justfile" create-patched-copy
   (
     cd "$worktree"
-    python3 "$repo_root/scripts/isolate_config.py" -- ./scripts/install_release.sh --fast
+    JCODE_INSTALL_DIR="$install_dir" ./scripts/install_release.sh --fast
   )
 
 # Apply one patch in a clean worktree and run its validation/tests.

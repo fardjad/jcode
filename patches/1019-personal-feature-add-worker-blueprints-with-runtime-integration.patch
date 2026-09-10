@@ -54,8 +54,11 @@ Upstream integration points:
 - crates/jcode-app-core/src/server/state.rs: communication_policy field on
   SwarmMember.
 - crates/jcode-app-core/src/tool/blueprint.rs: BlueprintTool implementing the
-  Tool trait. Spawn mode: spawn, await, return compact summary with session ID.
-  Follow-up mode: deterministic paginated read of stored output. Timeout
+  Tool trait. Generated tools default to headless workers so synchronous
+  calls cannot hang on a separate headed client attachment; explicit spawn
+  modes remain honored. Spawn mode: spawn, await, return compact summary
+  with session ID. Follow-up mode: deterministic paginated read of stored
+  output. Timeout
   resolved per-call > blueprint > config > default (20m).
 - crates/jcode-app-core/src/tool/tests.rs: excludes user-owned generated
   swarm_<id> descriptions from the static built-in tool-description token cap.
@@ -76,13 +79,19 @@ user-owned and exempt from the static built-in description token cap. Blueprint
 allowed-tools are always intersected with the global tool policy. Coordinator
 policy only applies to root sessions, never to spawned workers or internal
 roles. Communication-policy: none blocks ordinary messages but not tool
-results. Generated tools never overwrite existing tool names. All test
+results. Generated tools default to headless execution when spawn mode is omitted or
+set to auto, unless the caller explicitly selects another spawn mode, so their
+synchronous result wait cannot depend on a headed client attaching to a new
+persisted session. Generated
+tools never overwrite existing tool names. All test
 SwarmMember and WorkerBlueprintOverride constructions must include the new
 fields.
 
 Validation:
 cargo test -p jcode-app-core blueprint --lib
 cargo test -p jcode-app-core blank_follow_up_session_selects_spawn_mode --lib
+cargo test -p jcode-app-core generated_blueprint_workers_default_to_headless_spawn --lib
+cargo test -p jcode-app-core generated_blueprint_tool_executes_through_server_without_visible_attachment --lib
 cargo test -p jcode-app-core requested_unknown_blueprint_is_rejected_before_generic_swarm_spawn --lib
 cargo test -p jcode-app-core generated_blueprint_id_resolves_model_or_configured_luna_at_runtime --lib
 cargo test -p jcode-app-core tool_descriptions_stay_under_token_cap --lib
@@ -128,11 +137,13 @@ cargo test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disab
  crates/jcode-app-core/src/server/swarm.rs     |    1 +
  .../src/server/swarm_persistence_tests.rs     |    8 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  483 +++++
- .../src/tool/blueprint_tests.rs               |  909 ++++++++
+ crates/jcode-app-core/src/tool/blueprint.rs   |  496 +++++
+ .../src/tool/blueprint_tests.rs               |  937 +++++++++
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
- crates/jcode-app-core/src/tool/mod.rs         |   56 +-
+ .../src/tool/communicate_tests.rs             |    2 +-
+ .../src/tool/communicate_tests/end_to_end.rs  |  121 ++
+ crates/jcode-app-core/src/tool/mod.rs         |   61 +-
  crates/jcode-app-core/src/tool/tests.rs       |    7 +-
  crates/jcode-base/src/config.rs               |    4 +-
  .../jcode-base/src/config/display_summary.rs  |   78 +-
@@ -142,7 +153,7 @@ cargo test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disab
  crates/jcode-config-types/src/lib.rs          |   76 +
  .../src/protocol_tests/comm_requests.rs       |    1 +
  crates/jcode-protocol/src/wire.rs             |    7 +
- 43 files changed, 3954 insertions(+), 52 deletions(-)
+ 45 files changed, 4122 insertions(+), 53 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
@@ -1324,10 +1335,10 @@ index 044c3244c..fa94f0f9f 100644
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
 new file mode 100644
-index 000000000..205ca9e54
+index 000000000..e2f0e0fc4
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,496 @@
 +//! Generated coordinator-visible tools for worker blueprints.
 +//!
 +//! Every valid effective blueprint generates a tool named `swarm_<id>`. The
@@ -1429,6 +1440,19 @@ index 000000000..205ca9e54
 +/// absent so it selects spawn mode, as the public tool contract promises.
 +pub(crate) fn nonblank_follow_up_session(value: Option<&str>) -> Option<&str> {
 +    value.map(str::trim).filter(|value| !value.is_empty())
++}
++
++/// Generated blueprint tools synchronously return a worker's result, so their
++/// default must be an in-process worker. A headed default creates a separate
++/// client which must attach to the just-created persisted session before the
++/// caller can make progress. If that client cannot attach, the coordinator is
++/// left waiting until the full worker timeout. Callers may still explicitly
++/// request a visible or inline worker when that lifecycle is intentional.
++pub(crate) fn blueprint_spawn_mode(requested: Option<String>) -> Option<String> {
++    match requested.as_deref() {
++        None | Some("auto") => Some("headless".to_string()),
++        Some(_) => requested,
++    }
 +}
 +
 +impl BlueprintTool {
@@ -1590,7 +1614,7 @@ index 000000000..205ca9e54
 +            working_dir: params.working_dir.clone(),
 +            initial_message: Some(task.to_string()),
 +            request_nonce: None,
-+            spawn_mode: params.spawn_mode.clone(),
++            spawn_mode: blueprint_spawn_mode(params.spawn_mode.clone()),
 +            model: None,
 +            effort: None,
 +            label: None,
@@ -1813,10 +1837,10 @@ index 000000000..205ca9e54
 +}
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
 new file mode 100644
-index 000000000..48560e341
+index 000000000..70c3c690e
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -0,0 +1,909 @@
+@@ -0,0 +1,937 @@
 +//! Phase two integration tests for worker blueprints.
 +//!
 +//! These tests verify the runtime integration of worker blueprints:
@@ -2637,6 +2661,34 @@ index 000000000..48560e341
 +}
 +
 +#[test]
++fn generated_blueprint_workers_default_to_headless_spawn() {
++    // A blueprint tool waits synchronously for its worker's result. It must
++    // therefore avoid the headed-session attach lifecycle by default, which
++    // otherwise leaves the caller waiting for the full worker timeout when a
++    // newly opened terminal cannot attach to its persisted session.
++    assert_eq!(
++        crate::tool::blueprint::blueprint_spawn_mode(None).as_deref(),
++        Some("headless")
++    );
++    assert_eq!(
++        crate::tool::blueprint::blueprint_spawn_mode(Some("auto".to_string())).as_deref(),
++        Some("headless")
++    );
++    assert_eq!(
++        crate::tool::blueprint::blueprint_spawn_mode(Some("headless".to_string())).as_deref(),
++        Some("headless")
++    );
++    assert_eq!(
++        crate::tool::blueprint::blueprint_spawn_mode(Some("inline".to_string())).as_deref(),
++        Some("inline")
++    );
++    assert_eq!(
++        crate::tool::blueprint::blueprint_spawn_mode(Some("visible".to_string())).as_deref(),
++        Some("visible")
++    );
++}
++
++#[test]
 +fn follow_up_mode_offset_beyond_end_returns_empty() {
 +    let full = "a".repeat(100);
 +    let offset = 200usize;
@@ -2786,8 +2838,153 @@ index 9ad3f4c0d..17ee7c063 100644
      request: Request,
      timeout: Option<std::time::Duration>,
  ) -> Result<ServerEvent> {
+diff --git a/crates/jcode-app-core/src/tool/communicate_tests.rs b/crates/jcode-app-core/src/tool/communicate_tests.rs
+index 8613aaea5..f4b39d077 100644
+--- a/crates/jcode-app-core/src/tool/communicate_tests.rs
++++ b/crates/jcode-app-core/src/tool/communicate_tests.rs
+@@ -13,7 +13,7 @@ use crate::protocol::{
+ };
+ use crate::provider::{EventStream, Provider};
+ use crate::server::Server;
+-use crate::tool::{Tool, ToolContext, ToolExecutionMode};
++use crate::tool::{Registry, Tool, ToolContext, ToolExecutionMode};
+ use crate::transport::{ReadHalf, Stream, WriteHalf};
+ use anyhow::Result;
+ use async_trait::async_trait;
+diff --git a/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs b/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
+index 83a896805..5991e3ba5 100644
+--- a/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
++++ b/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
+@@ -126,6 +126,127 @@ async fn communicate_list_and_await_members_work_end_to_end() {
+     server_task.abort();
+ }
+ 
++#[tokio::test]
++async fn generated_blueprint_tool_executes_through_server_without_visible_attachment() {
++    let _env_lock = crate::storage::lock_test_env();
++    let home_dir = tempfile::TempDir::new().expect("config home");
++    let blueprint_dir = tempfile::TempDir::new().expect("blueprint directory");
++    let runtime_dir = tempfile::TempDir::new().expect("runtime tempdir");
++    let repo_dir = std::env::current_dir().expect("repo cwd");
++    let socket_path = runtime_dir.path().join("jcode.sock");
++    let config_path = home_dir.path().join("config.toml");
++    std::fs::write(
++        blueprint_dir.path().join("e2e-worker.md"),
++        "---\n\
++         name: e2e-worker\n\
++         description: A worker used by the server end-to-end test.\n\
++         ---\n\
++         Reply with a short acknowledgement.",
++    )
++    .expect("write test blueprint");
++    std::fs::write(
++        &config_path,
++        format!(
++            "[agents]\nworker_blueprints_dir = {:?}\n",
++            blueprint_dir.path().display().to_string()
++        ),
++    )
++    .expect("write isolated config");
++
++    let _home = EnvGuard::set("JCODE_HOME", home_dir.path());
++    let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
++    let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
++    let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
++    crate::config::invalidate_config_cache();
++
++    let provider: Arc<dyn Provider> = Arc::new(DelayedTestProvider {
++        delay: Duration::from_millis(100),
++    });
++    let server = Arc::new(Server::new(Arc::clone(&provider)));
++    let mut server_task = {
++        let server = Arc::clone(&server);
++        tokio::spawn(async move { server.run().await })
++    };
++    wait_for_server_socket(&socket_path, &mut server_task)
++        .await
++        .expect("server socket should be ready");
++
++    let mut watcher = RawClient::connect(&socket_path)
++        .await
++        .expect("watcher should connect");
++    watcher
++        .subscribe(&repo_dir)
++        .await
++        .expect("watcher subscribe");
++    let watcher_session = watcher.session_id().await.expect("watcher session id");
++
++    let registry = Registry::new(Arc::clone(&provider)).await;
++    assert!(
++        registry
++            .tool_names()
++            .await
++            .iter()
++            .any(|name| name == "swarm_e2e-worker"),
++        "configured blueprint should register a generated tool"
++    );
++
++    let generated_tool = registry
++        .tool("swarm_e2e-worker")
++        .await
++        .expect("generated blueprint tool should be registered");
++    let result = tokio::time::timeout(
++        Duration::from_secs(5),
++        generated_tool.execute(
++            json!({
++                "task": "Acknowledge this end-to-end test.",
++                "spawn_mode": "auto",
++                "intent": "exercise generated blueprint tool"
++            }),
++            test_ctx(&watcher_session, &repo_dir),
++        ),
++    )
++    .await
++    .expect("generated blueprint tool should complete promptly")
++    .expect("generated blueprint tool should succeed");
++
++    assert!(
++        result.output.contains("Worker session:"),
++        "tool output should return the worker session ID: {}",
++        result.output
++    );
++    let worker_session = result
++        .output
++        .lines()
++        .find_map(|line| line.strip_prefix("Worker session: "))
++        .map(str::trim)
++        .filter(|session_id| !session_id.is_empty())
++        .expect("tool output should contain a nonblank worker session ID");
++    let members = wait_for_member_presence(&mut watcher, &watcher_session, worker_session)
++        .await
++        .expect("spawned worker should be visible to the server");
++    let worker = members
++        .iter()
++        .find(|member| member.session_id == worker_session)
++        .expect("returned worker session should be registered");
++    assert_eq!(
++        worker.is_headless,
++        Some(true),
++        "explicit auto mode must not use a visible attachment path"
++    );
++    assert_eq!(
++        worker.live_attachments,
++        Some(0),
++        "headless blueprint worker must not have a visible client attached"
++    );
++
++    server_task.abort();
++    drop(_debug);
++    drop(_socket);
++    drop(_runtime);
++    drop(_home);
++    crate::config::invalidate_config_cache();
++}
++
+ #[tokio::test]
+ async fn communicate_await_members_background_returns_immediately_and_notifies() {
+     let _env_lock = crate::storage::lock_test_env();
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 893b0eadf..9f1122ddb 100644
+index 893b0eadf..4434128b7 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,4 +1,7 @@
@@ -2880,6 +3077,18 @@ index 893b0eadf..9f1122ddb 100644
      /// Get all tool definitions for the API
      pub async fn definitions(
          &self,
+@@ -510,6 +564,11 @@ impl Registry {
+         tools.keys().cloned().collect()
+     }
+ 
++    #[cfg(test)]
++    pub(crate) async fn tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
++        self.tools.read().await.get(name).cloned()
++    }
++
+     /// Enable test mode for memory tools (isolated storage)
+     /// Called when session is marked as debug
+     pub async fn enable_memory_test_mode(&self) {
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
 index 655ff2aa1..4a23866ce 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
