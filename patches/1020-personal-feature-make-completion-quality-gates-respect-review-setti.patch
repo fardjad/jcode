@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Thu, 10 Sep 2026 22:01:55 +0200
+Subject: [PATCH] feat: make completion quality gates respect review settings
+
+X-Jcode-Patch-Intent: Skip automatic post-completion todo quality
+continuations when auto-review and auto-judge are both disabled.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1019-personal-feature-add-worker-blueprints-with-runtime-integration.patch
+
+Patch intent:
+Make automatic ownership, validation, and final-response todo continuations
+conditional on at least one automatic review workflow being enabled.
+
+Why it exists:
+Users who disable both automatic review and automatic judging expect jcode not
+to add extra post-completion verification work. Incomplete-work progress pokes
+remain available, and either enabled workflow preserves the existing gates.
+
+Upstream integration points:
+crates/jcode-tui/src/tui/app/input.rs schedules todo completion continuations
+from App::schedule_auto_poke_followup_if_needed. Its review-state fields track
+the session-level autoreview and autojudge feature settings.
+
+Update guidance:
+Keep the guard before every completed-todo quality continuation. Do not disable
+incomplete-work progress reminders, and require both review settings to be off.
+
+Validation:
+scripts/cargo_exec.sh test -p jcode-tui completion_quality_gates_are_disabled_only_when_review_and_judge_are_off --lib
+---
+ crates/jcode-tui/src/tui/app/input.rs          | 15 +++++++++++++++
+ .../tui/app/tests/remote_events_reload_05.rs   | 18 ++++++++++++++++++
+ 2 files changed, 33 insertions(+)
+
+diff --git a/crates/jcode-tui/src/tui/app/input.rs b/crates/jcode-tui/src/tui/app/input.rs
+index e10c42314..af0751941 100644
+--- a/crates/jcode-tui/src/tui/app/input.rs
++++ b/crates/jcode-tui/src/tui/app/input.rs
+@@ -1687,6 +1687,21 @@ impl App {
+                 self.last_todo_ownership_fingerprint = None;
+                 return false;
+             }
++            // The completion gates are the prompt-side counterpart to the
++            // automatic review and judging workflows. When both workflows
++            // are disabled, do not add ownership, validation, or synthetic
++            // final-response instructions after the agent has completed its
++            // todos. Keep incomplete-work pokes active above: those are
++            // progress reminders, not post-completion quality checks.
++            if !self.autoreview_enabled && !self.autojudge_enabled {
++                self.todo_final_response_requested = false;
++                self.last_todo_ownership_fingerprint = None;
++                self.todo_completion_gate_attempts = 0;
++                self.todo_confidence_spike_challenged = false;
++                self.todo_gate_digest_delivered = false;
++                self.pending_queued_dispatch = false;
++                return false;
++            }
+             // Deferred quality checks land here, once, instead of interrupting
+             // every todo write during the turn. Every point recorded during the
+             // turn is raised, including ones whose score later climbed: work
+diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
+index ae6aaabe9..2ef0f588d 100644
+--- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
++++ b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
+@@ -373,6 +373,24 @@ fn dispatch_ownership_followup(app: &mut App) {
+     app.pending_queued_dispatch = false;
+ }
+ 
++#[test]
++fn completion_quality_gates_are_disabled_only_when_review_and_judge_are_off() {
++    with_temp_jcode_home(|| {
++        let mut app = create_test_app();
++        app.auto_poke_incomplete_todos = true;
++        app.autoreview_enabled = false;
++        app.autojudge_enabled = false;
++        save_blocked_ownership_fixture(&app.session.id);
++
++        assert!(!app.schedule_auto_poke_followup_if_needed());
++        assert!(app.queued_messages.is_empty());
++        assert_eq!(app.todo_completion_gate_attempts, 0);
++
++        app.autojudge_enabled = true;
++        dispatch_ownership_followup(&mut app);
++    });
++}
++
+ #[test]
+ fn ownership_gate_stops_on_unchanged_assessment_without_claiming_success() {
+     with_temp_jcode_home(|| {
