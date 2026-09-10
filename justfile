@@ -11,14 +11,16 @@ validate-patch-files:
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  python3 "$repo_root/scripts/validate_patches.py"
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/validate_patches.py"
 
 _bootstrap-nextest:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  python3 "$repo_root/scripts/bootstrap_nextest.py"
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/bootstrap_nextest.py"
 
 # Create/reset persistent patched copy from local master.
 create-patched-copy:
@@ -38,7 +40,8 @@ create-patched-copy:
   base=$(git rev-parse --verify master^{commit})
   worktree="$repo_root/.patched-jcode"
 
-  python3 "$repo_root/scripts/validate_patches.py"
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/validate_patches.py"
   worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create patched-jcode "$base" --path "$worktree")
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
@@ -60,7 +63,7 @@ validate-patched-copy:
   just --justfile "$repo_root/justfile" create-patched-copy
   (
     cd "$worktree"
-    cargo check --workspace
+    python3 "$repo_root/scripts/isolate_config.py" -- cargo check --workspace
   )
   base=$(git rev-parse master^{commit})
   just --justfile "$repo_root/justfile" _fast-test "$worktree" "$base"
@@ -109,7 +112,7 @@ install-patched-version:
   just --justfile "$repo_root/justfile" create-patched-copy
   (
     cd "$worktree"
-    ./scripts/install_release.sh --fast
+    python3 "$repo_root/scripts/isolate_config.py" -- ./scripts/install_release.sh --fast
   )
 
 # Apply one patch in a clean worktree and run its validation/tests.
@@ -121,7 +124,8 @@ test-patch-file patch:
   patch_name=$(basename "{{patch}}")
   name="test-${patch_name%.patch}"
 
-  python3 "$repo_root/scripts/validate_patches.py"
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/validate_patches.py"
   worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create "$name" master)
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
@@ -146,7 +150,8 @@ create-upstream-candidate-branch-from patch:
   name="candidate-${patch_name%.patch}"
   branch="upstream-candidate/$slug"
 
-  python3 "$repo_root/scripts/validate_patches.py"
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/validate_patches.py"
   worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create "$name" master)
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 

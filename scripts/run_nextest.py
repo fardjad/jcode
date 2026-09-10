@@ -11,6 +11,8 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from isolate_config import isolated_environment
+
 NEXTEST_VERSION = "0.9.143"
 
 
@@ -87,12 +89,12 @@ def load_names(root: Path, base: str) -> list[str] | None:
 
 
 def run(binary: str, root: Path, worktree: Path, names: list[str]) -> int:
-    environment = os.environ.copy()
-    environment["JCODE_DEV_FEATURE_PROFILE"] = "minimal"
     command = [binary, "nextest", "run", "--manifest-path", str(worktree / "Cargo.toml"), "--config-file", str(root / "nextest.toml"), "--profile", "compat", "--lib", "--bin", "jcode"]
     if names:
         command += ["--filterset", " and ".join(f"not test(={name})" for name in names)]
-    return subprocess.run(command, env=environment).returncode
+    with isolated_environment() as environment:
+        environment["JCODE_DEV_FEATURE_PROFILE"] = "minimal"
+        return subprocess.run(command, env=environment).returncode
 
 
 def main() -> int:
@@ -107,7 +109,12 @@ def main() -> int:
         return 2
     report = worktree / "target" / "nextest" / "compat" / "junit.xml"
     try:
-        binary = subprocess.check_output([sys.executable, str(root / "scripts" / "bootstrap_nextest.py")], text=True).strip()
+        with isolated_environment() as environment:
+            binary = subprocess.check_output(
+                [sys.executable, str(root / "scripts" / "bootstrap_nextest.py")],
+                env=environment,
+                text=True,
+            ).strip()
         report.unlink(missing_ok=True)
         names = [] if mode == "learn" else (load_names(root, base) or [])
         print(f"nextest exclusions: {'loaded' if names else 'none'} ({len(names)} tests)")

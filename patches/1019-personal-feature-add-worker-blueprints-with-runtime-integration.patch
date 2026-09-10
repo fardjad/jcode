@@ -29,7 +29,7 @@ the worker's full output. A deterministic follow-up read (no LLM) lets the
 coordinator page through more output in 2000-char chunks when needed. The
 coordinator policy lets a user remove broad tools like bash and generic swarm
 from the coordinator while retaining them for authorized specialized workers
-and internal agents.
+and internal agents. When the swarm feature is off, swarm and generated swarm_<id> tools are omitted from the session tool surface and rejected at execution, the root coordinator has no coordinator-specific tool limit applied or exposed, and swarm-specific agent settings are omitted from the config summary. Runtime toggles remove and restore that coordinator policy while preserving global tool limits.
 
 Upstream integration points:
 - crates/jcode-config-types/src/lib.rs: CoordinatorConfig struct,
@@ -42,7 +42,9 @@ Upstream integration points:
   diagnostics, and Display impl for WorkerBlueprintDiagnostic.
 - crates/jcode-protocol/src/wire.rs: blueprint field on CommSpawn.
 - crates/jcode-app-core/src/agent.rs: apply_coordinator_policy applied to root
-  sessions in new_with_initial_ownership.
+  sessions in new_with_initial_ownership, with swarm-disabled bypass.
+- crates/jcode-app-core/src/agent/turn_execution.rs: set_swarm_enabled refreshes
+  the root session policy when the feature is toggled at runtime.
 - crates/jcode-app-core/src/server/comm_session.rs: fallible blueprint
   resolution that rejects requested unavailable or invalid IDs, prompt
   composition, tool policy application, communication policy storage in
@@ -91,9 +93,17 @@ cargo test -p jcode-base resolve_default_dir_uses_documented_worker_blueprints_p
 cargo test -p jcode-protocol --lib
 cargo test -p jcode-config-types --lib
 cargo check -p jcode-app-core
+cargo test -p jcode-app-core swarm_tools_are_hidden_and_not_executable_when_swarm_is_off --lib
+cargo test -p jcode-app-core swarm_disabled_does_not_apply_coordinator_tool_policy_to_root --lib
+cargo test -p jcode-app-core swarm_disabled_retains_global_disabled_tool_policy --lib
+cargo test -p jcode-app-core toggling_swarm_off_removes_root_coordinator_tool_policy --lib
+cargo test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disabled --lib
 ---
- crates/jcode-app-core/src/agent.rs            |   35 +-
+ crates/jcode-app-core/src/agent.rs            |   53 +-
+ .../src/agent/turn_execution.rs               |   33 +
+ crates/jcode-app-core/src/agent_tests.rs      |  199 ++
  .../src/protocol_tests/comm_requests.rs       |    1 +
+ .../src/server/client_actions.rs              |    4 +
  .../src/server/client_actions_tests.rs        |    5 +
  .../src/server/client_comm_message.rs         |   19 +
  .../src/server/client_comm_tests.rs           |   12 +
@@ -122,24 +132,26 @@ cargo check -p jcode-app-core
  .../src/tool/blueprint_tests.rs               |  909 ++++++++
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
- crates/jcode-app-core/src/tool/mod.rs         |   52 +-
+ crates/jcode-app-core/src/tool/mod.rs         |   56 +-
  crates/jcode-app-core/src/tool/tests.rs       |    7 +-
  crates/jcode-base/src/config.rs               |    4 +-
+ .../jcode-base/src/config/display_summary.rs  |   78 +-
+ crates/jcode-base/src/config_tests.rs         |   11 +
  crates/jcode-base/src/lib.rs                  |    1 +
  crates/jcode-base/src/worker_blueprint.rs     | 1823 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   76 +
  .../src/protocol_tests/comm_requests.rs       |    1 +
  crates/jcode-protocol/src/wire.rs             |    7 +
- 38 files changed, 3646 insertions(+), 13 deletions(-)
+ 43 files changed, 3954 insertions(+), 52 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index aa437a027..72e50da9a 100644
+index aa437a027..42a28bdb9 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -69,6 +69,28 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
+@@ -69,6 +69,42 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
      LazyLock::new(|| StdMutex::new(HashMap::new()));
  const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
  
@@ -150,14 +162,16 @@ index aa437a027..72e50da9a 100644
 +/// unchanged.
 +fn apply_coordinator_policy(
 +    global_allowed: Option<HashSet<String>>,
++    swarm_enabled: bool,
 +) -> Option<HashSet<String>> {
++    if !swarm_enabled {
++        return global_allowed;
++    }
 +    let coordinator_config = &crate::config::config().agents.coordinator;
 +    let coordinator_allowed = coordinator_config.allowed_set();
 +    match (global_allowed, coordinator_allowed) {
 +        // Both present: intersect.
-+        (Some(global), Some(coord)) => {
-+            Some(global.intersection(&coord).cloned().collect())
-+        }
++        (Some(global), Some(coord)) => Some(global.intersection(&coord).cloned().collect()),
 +        // Only coordinator: use it directly.
 +        (None, Some(coord)) => Some(coord),
 +        // Only global or neither: pass through.
@@ -165,10 +179,40 @@ index aa437a027..72e50da9a 100644
 +    }
 +}
 +
++fn effective_root_allowed_tools(
++    global_allowed: Option<HashSet<String>>,
++    swarm_enabled: bool,
++    is_root: bool,
++) -> Option<HashSet<String>> {
++    if is_root {
++        apply_coordinator_policy(global_allowed, swarm_enabled)
++    } else {
++        global_allowed
++    }
++}
++
  fn stable_hash_str(value: &str) -> u64 {
      let mut hasher = std::collections::hash_map::DefaultHasher::new();
      value.hash(&mut hasher);
-@@ -413,6 +435,17 @@ impl Agent {
+@@ -244,6 +280,9 @@ pub struct Agent {
+     agents_md_snapshot: (Option<String>, crate::prompt::ContextInfo),
+     /// Whether memory features are enabled for this session
+     memory_enabled: bool,
++    /// Whether swarm coordination tools and swarm-specific settings are enabled
++    /// for this session.
++    swarm_enabled: bool,
+     /// One-step undo snapshot captured before the most recent rewind.
+     rewind_undo_snapshot: Option<RewindUndoSnapshot>,
+     /// Channel for tools to request stdin input from the user
+@@ -333,6 +372,7 @@ impl Agent {
+             system_prompt_override: None,
+             agents_md_snapshot,
+             memory_enabled: crate::config::config().features.memory,
++            swarm_enabled: crate::config::config().features.swarm,
+             rewind_undo_snapshot: None,
+             stdin_request_tx: None,
+             provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
+@@ -413,6 +453,17 @@ impl Agent {
      ) -> Self {
          let start = Instant::now();
          let tool_selection = crate::config::config().tools.selection();
@@ -177,16 +221,16 @@ index aa437a027..72e50da9a 100644
 +        // The effective coordinator policy is the intersection of this optional
 +        // allowlist and the global `[tools]` policy. Not applied to child/spawned
 +        // sessions (parent_id is Some) or internal/headless service sessions.
-+        let allowed_tools = if parent_id.is_none() {
-+            apply_coordinator_policy(tool_selection.allowed_tools)
-+        } else {
-+            tool_selection.allowed_tools
-+        };
++        let allowed_tools = effective_root_allowed_tools(
++            tool_selection.allowed_tools,
++            crate::config::config().features.swarm,
++            parent_id.is_none(),
++        );
 +
          let mut session = Session::create(parent_id, None);
          if let Some(working_dir) = working_dir {
              session.working_dir = Some(working_dir.to_string());
-@@ -421,7 +454,7 @@ impl Agent {
+@@ -421,7 +472,7 @@ impl Agent {
              provider,
              registry,
              session,
@@ -195,6 +239,274 @@ index aa437a027..72e50da9a 100644
              tool_selection.disabled_tools,
          );
          agent.session.mark_active();
+diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
+index ef313c869..f1d9cd323 100644
+--- a/crates/jcode-app-core/src/agent/turn_execution.rs
++++ b/crates/jcode-app-core/src/agent/turn_execution.rs
+@@ -347,6 +347,30 @@ impl Agent {
+         }
+     }
+ 
++    /// Enable or disable swarm coordination tools for this session.
++    ///
++    /// The feature can be toggled while a client is connected, so invalidate
++    /// the cached provider tool surface when its state changes. This prevents
++    /// a previously exposed `swarm` or `swarm_<id>` tool from remaining
++    /// executable after swarm is turned off.
++    pub fn set_swarm_enabled(&mut self, enabled: bool) {
++        if self.swarm_enabled == enabled {
++            return;
++        }
++        self.swarm_enabled = enabled;
++        if self.session.parent_id.is_none() {
++            let global_allowed = crate::config::config().tools.selection().allowed_tools;
++            self.allowed_tools = super::effective_root_allowed_tools(global_allowed, enabled, true);
++            self._tool_policy_registration = crate::tool::register_session_tool_policy(
++                &self.session.id,
++                self.allowed_tools.clone(),
++                self.disabled_tools.clone(),
++            );
++        }
++        self.locked_tools = None;
++        self.cache_tracker.reset();
++    }
++
+     /// Mark this session as an inline swarm worker. When enabled, the streaming
+     /// loop publishes a throttled output tail to the global bus so a
+     /// coordinator can render a live inline gallery viewport for it.
+@@ -482,6 +506,9 @@ impl Agent {
+     /// session's `allowed_tools`, `disabled_tools`, and self-dev filters.
+     async fn build_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
+         let mut tools = self.registry.definitions(self.allowed_tools.as_ref()).await;
++        if !self.swarm_enabled {
++            tools.retain(|tool| !crate::tool::is_swarm_tool_name(&tool.name));
++        }
+         if !self.disabled_tools.is_empty() {
+             tools.retain(|tool| {
+                 !crate::tool::tool_name_is_disabled(&self.disabled_tools, &tool.name)
+@@ -640,6 +667,12 @@ impl Agent {
+     }
+ 
+     pub(super) fn validate_tool_allowed(&self, name: &str) -> Result<()> {
++        if !self.swarm_enabled && crate::tool::is_swarm_tool_name(name) {
++            return Err(anyhow::anyhow!(
++                "Tool '{}' is disabled while swarm is off",
++                name
++            ));
++        }
+         if let Some(allowed) = self.allowed_tools.as_ref()
+             && !crate::tool::tool_name_is_allowed(allowed, name)
+         {
+diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
+index 026e3a4ba..8708bb431 100644
+--- a/crates/jcode-app-core/src/agent_tests.rs
++++ b/crates/jcode-app-core/src/agent_tests.rs
+@@ -964,6 +964,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
+     crate::config::Config::invalidate_cache();
+ }
+ 
++#[tokio::test]
++async fn swarm_tools_are_hidden_and_not_executable_when_swarm_is_off() {
++    let _guard = crate::storage::lock_test_env();
++    let previous_home = std::env::var_os("JCODE_HOME");
++    let previous_swarm = std::env::var_os("JCODE_SWARM_ENABLED");
++    let temp_home = tempfile::TempDir::new().expect("temp home");
++
++    crate::env::set_var("JCODE_HOME", temp_home.path());
++    crate::env::set_var("JCODE_SWARM_ENABLED", "false");
++    crate::config::Config::invalidate_cache();
++
++    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
++    let registry = Registry::new(provider.clone()).await;
++    let mut agent = Agent::new(provider, registry);
++    let definitions = agent.tool_definitions().await;
++    assert!(
++        definitions
++            .iter()
++            .all(|definition| !crate::tool::is_swarm_tool_name(&definition.name)),
++        "swarm and generated swarm_<id> tools must be absent when swarm is off"
++    );
++    let error = agent
++        .validate_tool_allowed("swarm")
++        .expect_err("swarm must not be executable when swarm is off");
++    assert!(error.to_string().contains("swarm is off"));
++
++    crate::env::set_var("JCODE_SWARM_ENABLED", "true");
++    crate::config::Config::invalidate_cache();
++    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
++    let registry = Registry::new(provider.clone()).await;
++    let mut agent = Agent::new(provider, registry);
++    let definitions = agent.tool_definitions().await;
++    assert!(
++        definitions
++            .iter()
++            .any(|definition| definition.name == "swarm"),
++        "swarm must remain visible when the feature is enabled"
++    );
++
++    if let Some(previous) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++    if let Some(previous) = previous_swarm {
++        crate::env::set_var("JCODE_SWARM_ENABLED", previous);
++    } else {
++        crate::env::remove_var("JCODE_SWARM_ENABLED");
++    }
++    crate::config::Config::invalidate_cache();
++}
++
++#[tokio::test]
++async fn swarm_disabled_does_not_apply_coordinator_tool_policy_to_root() {
++    let _guard = crate::storage::lock_test_env();
++    let previous_home = std::env::var_os("JCODE_HOME");
++    let previous_swarm = std::env::var_os("JCODE_SWARM_ENABLED");
++    let temp_home = tempfile::TempDir::new().expect("temp home");
++
++    std::fs::write(
++        temp_home.path().join("config.toml"),
++        "[features]\nswarm = false\n\n[tools]\nenabled = [\"read\", \"bash\"]\n\n[agents.coordinator]\nallowed_tools = [\"read\"]\n",
++    )
++    .expect("write test config");
++    crate::env::set_var("JCODE_HOME", temp_home.path());
++    crate::env::set_var("JCODE_SWARM_ENABLED", "false");
++    crate::config::Config::invalidate_cache();
++
++    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
++    let registry = Registry::new(provider.clone()).await;
++    let agent = Agent::new(provider, registry);
++    let allowed = agent
++        .allowed_tools
++        .expect("ordinary global tool limits remain active");
++    assert!(allowed.contains("read"));
++    assert!(allowed.contains("bash"));
++    assert!(!allowed.contains("write"));
++
++    if let Some(previous) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++    if let Some(previous) = previous_swarm {
++        crate::env::set_var("JCODE_SWARM_ENABLED", previous);
++    } else {
++        crate::env::remove_var("JCODE_SWARM_ENABLED");
++    }
++    crate::config::Config::invalidate_cache();
++}
++
++#[tokio::test]
++async fn swarm_disabled_retains_global_disabled_tool_policy() {
++    let _guard = crate::storage::lock_test_env();
++    let previous_home = std::env::var_os("JCODE_HOME");
++    let previous_swarm = std::env::var_os("JCODE_SWARM_ENABLED");
++    let temp_home = tempfile::TempDir::new().expect("temp home");
++
++    std::fs::write(
++        temp_home.path().join("config.toml"),
++        "[features]\nswarm = false\n\n[tools]\ndisabled = [\"bash\"]\n\n[agents.coordinator]\nallowed_tools = [\"read\"]\n",
++    )
++    .expect("write test config");
++    crate::env::set_var("JCODE_HOME", temp_home.path());
++    crate::env::set_var("JCODE_SWARM_ENABLED", "false");
++    crate::config::Config::invalidate_cache();
++
++    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
++    let registry = Registry::new(provider.clone()).await;
++    let mut agent = Agent::new(provider, registry);
++    assert!(
++        agent.allowed_tools.is_none(),
++        "the coordinator allowlist must be fully ignored when swarm is off"
++    );
++    let definitions = agent.tool_definitions().await;
++    assert!(
++        definitions
++            .iter()
++            .any(|definition| definition.name == "write"),
++        "normal tools outside the coordinator allowlist remain available"
++    );
++    assert!(
++        definitions.iter().all(|definition| definition.name != "bash"),
++        "global disabled tools remain hidden"
++    );
++    let error = agent
++        .validate_tool_allowed("bash")
++        .expect_err("global disabled tools remain unavailable");
++    assert!(error.to_string().contains("disabled"));
++
++    if let Some(previous) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++    if let Some(previous) = previous_swarm {
++        crate::env::set_var("JCODE_SWARM_ENABLED", previous);
++    } else {
++        crate::env::remove_var("JCODE_SWARM_ENABLED");
++    }
++    crate::config::Config::invalidate_cache();
++}
++
++#[tokio::test]
++async fn toggling_swarm_off_removes_root_coordinator_tool_policy() {
++    let _guard = crate::storage::lock_test_env();
++    let previous_home = std::env::var_os("JCODE_HOME");
++    let previous_swarm = std::env::var_os("JCODE_SWARM_ENABLED");
++    let temp_home = tempfile::TempDir::new().expect("temp home");
++
++    std::fs::write(
++        temp_home.path().join("config.toml"),
++        "[features]\nswarm = true\n\n[tools]\nenabled = [\"read\", \"bash\"]\n\n[agents.coordinator]\nallowed_tools = [\"read\"]\n",
++    )
++    .expect("write test config");
++    crate::env::set_var("JCODE_HOME", temp_home.path());
++    crate::env::set_var("JCODE_SWARM_ENABLED", "true");
++    crate::config::Config::invalidate_cache();
++
++    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
++    let registry = Registry::new(provider.clone()).await;
++    let mut agent = Agent::new(provider, registry);
++    assert!(
++        !agent
++            .allowed_tools
++            .as_ref()
++            .expect("coordinator policy is active while swarm is enabled")
++            .contains("bash")
++    );
++
++    agent.set_swarm_enabled(false);
++    let allowed = agent
++        .allowed_tools
++        .as_ref()
++        .expect("global tool limits remain active when swarm is disabled");
++    assert!(allowed.contains("read"));
++    assert!(allowed.contains("bash"));
++
++    agent.set_swarm_enabled(true);
++    let allowed = agent
++        .allowed_tools
++        .as_ref()
++        .expect("coordinator policy returns when swarm is enabled");
++    assert!(allowed.contains("read"));
++    assert!(!allowed.contains("bash"));
++
++    if let Some(previous) = previous_home {
++        crate::env::set_var("JCODE_HOME", previous);
++    } else {
++        crate::env::remove_var("JCODE_HOME");
++    }
++    if let Some(previous) = previous_swarm {
++        crate::env::set_var("JCODE_SWARM_ENABLED", previous);
++    } else {
++        crate::env::remove_var("JCODE_SWARM_ENABLED");
++    }
++    crate::config::Config::invalidate_cache();
++}
++
+ fn seed_transient_session_state(agent: &mut Agent) {
+     agent.push_alert("pending alert".to_string());
+     agent.queue_soft_interrupt(
 diff --git a/crates/jcode-app-core/src/protocol_tests/comm_requests.rs b/crates/jcode-app-core/src/protocol_tests/comm_requests.rs
 index 1a1a54390..5298ba8a5 100644
 --- a/crates/jcode-app-core/src/protocol_tests/comm_requests.rs
@@ -207,6 +519,21 @@ index 1a1a54390..5298ba8a5 100644
      };
      let json = serde_json::to_string(&req)?;
      assert!(json.contains("\"type\":\"comm_spawn\""));
+diff --git a/crates/jcode-app-core/src/server/client_actions.rs b/crates/jcode-app-core/src/server/client_actions.rs
+index f2ad66a3b..f23f4a850 100644
+--- a/crates/jcode-app-core/src/server/client_actions.rs
++++ b/crates/jcode-app-core/src/server/client_actions.rs
+@@ -458,6 +458,10 @@ pub(super) async fn handle_set_feature(
+             }
+         }
+         FeatureToggle::Swarm => {
++            {
++                let mut agent_guard = agent.lock().await;
++                agent_guard.set_swarm_enabled(enabled);
++            }
+             if *swarm_enabled == enabled {
+                 let _ = client_event_tx.send(ServerEvent::Done { id });
+                 return;
 diff --git a/crates/jcode-app-core/src/server/client_actions_tests.rs b/crates/jcode-app-core/src/server/client_actions_tests.rs
 index a029ffe49..74ac31041 100644
 --- a/crates/jcode-app-core/src/server/client_actions_tests.rs
@@ -2460,7 +2787,7 @@ index 9ad3f4c0d..17ee7c063 100644
      timeout: Option<std::time::Duration>,
  ) -> Result<ServerEvent> {
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 893b0eadf..5bed9bfd9 100644
+index 893b0eadf..9f1122ddb 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,4 +1,7 @@
@@ -2471,7 +2798,18 @@ index 893b0eadf..5bed9bfd9 100644
  pub mod ambient;
  mod apply_patch;
  mod bash;
-@@ -459,22 +462,69 @@ impl Registry {
+@@ -56,6 +59,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
+     disabled.contains(name) || (disabled.contains("mcp") && is_mcp_tool_name(name))
+ }
+ 
++pub(crate) fn is_swarm_tool_name(name: &str) -> bool {
++    name == "swarm" || name.starts_with("swarm_")
++}
++
+ fn is_fixed_mcp_tool(name: &str) -> bool {
+     matches!(name, "mcp_search" | "mcp_call")
+ }
+@@ -459,22 +466,69 @@ impl Registry {
          );
          let session_tools_ms = session_tools_start.elapsed().as_millis();
  
@@ -2588,6 +2926,131 @@ index a8ecfe925..9af6c4fd5 100644
  };
  use serde::{Deserialize, Serialize};
  use std::collections::{BTreeMap, BTreeSet, HashSet};
+diff --git a/crates/jcode-base/src/config/display_summary.rs b/crates/jcode-base/src/config/display_summary.rs
+index b658e839c..145c2facd 100644
+--- a/crates/jcode-base/src/config/display_summary.rs
++++ b/crates/jcode-base/src/config/display_summary.rs
+@@ -8,6 +8,43 @@ impl Config {
+         let mut effective_disabled_tools: Vec<String> =
+             self.tools.selection().disabled_tools.into_iter().collect();
+         effective_disabled_tools.sort();
++        let agent_models_summary = if self.features.swarm {
++            format!(
++                "**Agent models:**\n- Swarm / subagent: {}\n- Swarm spawn mode: {}\n- Spawn hook: {}\n- Review: {}\n- Judge: {}\n- Memory: {}\n- Memory sidecar: {}\n- Ambient: {}",
++                self.agents
++                    .swarm_model
++                    .as_deref()
++                    .unwrap_or("(inherit current session)"),
++                self.agents.swarm_spawn_mode.as_str(),
++                self.terminal
++                    .spawn_hook
++                    .as_deref()
++                    .unwrap_or("(built-in terminal detection)"),
++                self.autoreview
++                    .model
++                    .as_deref()
++                    .unwrap_or("(inherit current session)"),
++                self.autojudge
++                    .model
++                    .as_deref()
++                    .unwrap_or("(inherit current session)"),
++                self.agents
++                    .memory_model
++                    .as_deref()
++                    .unwrap_or("(sidecar auto-select)"),
++                if self.agents.memory_sidecar_enabled {
++                    "enabled"
++                } else {
++                    "disabled"
++                },
++                self.ambient
++                    .model
++                    .as_deref()
++                    .unwrap_or("(provider default)")
++            )
++        } else {
++            String::new()
++        };
+ 
+         format!(
+             r#"**Configuration** (`{}`)
+@@ -95,15 +132,7 @@ impl Config {
+ - OpenAI native compaction threshold ratio: {:.2}
+ - Cross-provider failover: {}
+ 
+-**Agent models:**
+-- Swarm / subagent: {}
+-- Swarm spawn mode: {}
+-- Spawn hook: {}
+-- Review: {}
+-- Judge: {}
+-- Memory: {}
+-- Memory sidecar: {}
+-- Ambient: {}
++{}
+ 
+ **Gateway:**
+ - Enabled: {}
+@@ -275,36 +304,7 @@ impl Config {
+             self.provider.openai_native_compaction_mode.as_str(),
+             self.provider.openai_native_compaction_threshold_tokens,
+             self.provider.cross_provider_failover.as_str(),
+-            self.agents
+-                .swarm_model
+-                .as_deref()
+-                .unwrap_or("(inherit current session)"),
+-            self.agents.swarm_spawn_mode.as_str(),
+-            self.terminal
+-                .spawn_hook
+-                .as_deref()
+-                .unwrap_or("(built-in terminal detection)"),
+-            self.autoreview
+-                .model
+-                .as_deref()
+-                .unwrap_or("(inherit current session)"),
+-            self.autojudge
+-                .model
+-                .as_deref()
+-                .unwrap_or("(inherit current session)"),
+-            self.agents
+-                .memory_model
+-                .as_deref()
+-                .unwrap_or("(sidecar auto-select)"),
+-            if self.agents.memory_sidecar_enabled {
+-                "enabled"
+-            } else {
+-                "disabled"
+-            },
+-            self.ambient
+-                .model
+-                .as_deref()
+-                .unwrap_or("(provider default)"),
++            agent_models_summary,
+             self.gateway.enabled,
+             self.gateway.bind_addr,
+             self.gateway.port,
+diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
+index 481ab7505..7a4d737f8 100644
+--- a/crates/jcode-base/src/config_tests.rs
++++ b/crates/jcode-base/src/config_tests.rs
+@@ -50,6 +50,17 @@ fn swarm_max_concurrent_agents_defaults_to_safe_live_worker_budget() {
+     assert_eq!(Config::default().agents.swarm_max_concurrent_agents, 32);
+ }
+ 
++#[test]
++fn config_summary_hides_swarm_settings_when_swarm_is_disabled() {
++    let mut config = Config::default();
++    config.features.swarm = false;
++    let summary = config.display_string();
++
++    assert!(!summary.contains("**Agent models:**"));
++    assert!(!summary.contains("Swarm / subagent:"));
++    assert!(!summary.contains("Swarm spawn mode: inline"));
++}
++
+ #[test]
+ fn mermaid_feature_defaults_on_and_parses_false() {
+     assert!(Config::default().features.mermaid);
 diff --git a/crates/jcode-base/src/lib.rs b/crates/jcode-base/src/lib.rs
 index b7d18eb48..d70aaf961 100644
 --- a/crates/jcode-base/src/lib.rs

@@ -6,6 +6,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
+from isolate_config import isolated_environment
 from patch_catalog import CatalogError, dependency_order, fail, patches, repository_root, resolve_patch, validation_commands
 
 
@@ -20,7 +21,8 @@ def validate(root: Path, worktree: Path, target: str | None) -> None:
         for command in validation_commands(patch.path):
             print(f"validating {patch.path.name}: {command}")
             try:
-                subprocess.run(["bash", "-c", command], cwd=worktree, check=True)
+                with isolated_environment() as environment:
+                    subprocess.run(["bash", "-c", command], cwd=worktree, env=environment, check=True)
             except subprocess.CalledProcessError as error:
                 raise CatalogError(f"validation failed in {patch.path.name}: {command}") from error
 

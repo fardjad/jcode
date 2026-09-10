@@ -6,6 +6,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
+from isolate_config import isolated_environment
 from patch_catalog import CatalogError, dependency_order, fail, patches, repository_root, resolve_patch
 
 
@@ -28,7 +29,8 @@ def apply(root: Path, worktree: Path, target: str | None, required_kind: str | N
             ordered = dependency_order(root, target_path)
         for patch in ordered:
             print(f"applying {patch.path.name}")
-            subprocess.run(["git", "am", str(patch.path)], cwd=worktree, check=True)
+            with isolated_environment() as environment:
+                subprocess.run(["git", "am", str(patch.path)], cwd=worktree, env=environment, check=True)
     except subprocess.CalledProcessError as error:
         raise CatalogError(
             f"git am conflict in {worktree}\n"

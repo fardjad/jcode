@@ -4,6 +4,23 @@ Always spell the project name `jcode` in human-facing prose, workflow names,
 and labels. Preserve existing capitalization in code identifiers, environment
 variables, protocol values, patch metadata headers, and upstream source text.
 
+## Configuration isolation
+
+Never access, read, write, or probe the user's real `~/.jcode/config.toml` (or
+its parent directory) from repository work, tests, validation commands, or
+agent workflows unless the user expressly directs that specific access. Every
+validation or test command must use disposable `HOME` and
+`XDG_CONFIG_HOME` values, and should use the repository's
+`scripts/isolate_config.py` wrapper, which also provides disposable
+`JCODE_HOME` and other XDG directories. `just` validation runs declared patch
+commands and compatibility tests through this isolation, and the
+patched-workspace compile check is isolated as well. Do not weaken this
+boundary by inheriting a user's `JCODE_HOME` or XDG settings in new workflow
+commands. The wrapper may preserve or derive the standard `CARGO_HOME` and
+`RUSTUP_HOME` locations so Rust toolchains and caches remain usable, but must
+not preserve `JCODE_HOME` or any XDG path from the caller. This safeguard does
+not authorize access to any personal path.
+
 `personalized` is an orphan catalog branch. It contains only catalog files:
 `README.md`, `AGENTS.md`, `justfile`, `nextest.toml`, `.gitignore`, `patches/`,
 `scripts/`, and `plugins/`. Upstream source lives on local `master`; ordered

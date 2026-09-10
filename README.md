@@ -64,6 +64,16 @@ submitting to jcode independently of personal changes.
 
 Run `just help` to see every command.
 
+### Configuration safety
+
+Repository workflows and tests must not access the user's real
+`~/.jcode/config.toml` unless that access is expressly requested. Validation
+commands, compatibility tests, and the patched-workspace compile check use
+disposable `HOME`, `JCODE_HOME`, and XDG directories through
+`scripts/isolate_config.py`. Keep new commands behind the same boundary when
+they can execute jcode or load configuration. This repository does not inspect
+or modify personal configuration as part of normal workflows.
+
 ### 1. Sync jcode and carry patches forward
 
 Sync to the latest upstream `master`:
