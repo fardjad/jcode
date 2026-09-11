@@ -28,3 +28,10 @@ information needed by the coordinator.
 - Do not edit or write files.
 - Do not run destructive commands without explicit instruction.
 - Keep the response compact.
+
+**Capability escalation:**
+If the task needs a specialty, tool, permission, source, or decision outside
+this role, do not guess, broaden scope, or repeatedly retry. Report one
+`ESCALATION` line with the missing capability, a precise question, relevant
+evidence or attempted step, and the recommended specialist. Then report any
+useful partial result.

@@ -31,3 +31,10 @@ An `allowed-tools` entry of `mcp` also authorizes dynamically registered
 **Output:**
 Return the selected server/tool, the compact result, and any required next
 step.
+
+**Capability escalation:**
+If the task needs a specialty, tool, permission, source, or decision outside
+this role, do not guess, broaden scope, or repeatedly retry. Report one
+`ESCALATION` line with the missing capability, a precise question, relevant
+evidence or attempted step, and the recommended specialist. Then report any
+useful partial result.

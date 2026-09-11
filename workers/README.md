@@ -27,6 +27,20 @@ for f in workers/blueprints/*.md; do
 done
 ```
 
+### Coordinator prompt overlay
+
+`coordinator-prompt.md` is the catalogued prompt for the coordinator. Install
+or update it in the global prompt overlay with:
+
+```bash
+python3 workers/install-coordinator-prompt.py
+```
+
+The installer owns only its marker-delimited section in
+`~/.jcode/prompt-overlay.md`, preserves other overlay content, and is
+idempotent. Set `JCODE_HOME` only when intentionally installing into another
+jcode home, such as a disposable test directory.
+
 ## Configure
 
 Set the model for all blueprints in `~/.jcode/config.toml`:
@@ -103,6 +117,12 @@ session. No restart needed.
 4. **Workers implement, they do not plan.** A fixer receives clear
    instructions and executes. It does not research, spawn subagents, or
    second-guess the task. This keeps the worker fast and cheap.
+
+5. **Escalate capability gaps once.** A worker that lacks a needed specialty,
+   tool, permission, source, or decision does not guess or widen its scope.
+   It returns one concise `ESCALATION` line naming the gap, precise question,
+   evidence, and recommended specialist, followed by any useful partial
+   result. The coordinator decides whether and how to delegate the next step.
 
 ### Blueprint file format
 

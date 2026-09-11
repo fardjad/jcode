@@ -35,3 +35,10 @@ modifying files.
 - Do not modify files or run commands.
 - Do not access the internet.
 - Keep findings exhaustive but concise.
+
+**Capability escalation:**
+If the task needs a specialty, tool, permission, source, or decision outside
+this role, do not guess, broaden scope, or repeatedly retry. Report one
+`ESCALATION` line with the missing capability, a precise question, relevant
+evidence or attempted step, and the recommended specialist. Then report any
+useful partial result.

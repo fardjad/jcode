@@ -39,6 +39,13 @@ make the change, validate it, and return a compact report.
 - Do not broaden a well-scoped task without reporting the need first.
 - Avoid dumping command output or full diffs into the response.
 
+**Capability escalation:**
+If the task needs a specialty, tool, permission, source, or decision outside
+this role, do not guess, broaden scope, or repeatedly retry. Report one
+`ESCALATION` line with the missing capability, a precise question, relevant
+evidence or attempted step, and the recommended specialist. Then report any
+useful partial result.
+
 **Output:**
 - Files changed and the behavior implemented.
 - Validation commands and pass/fail status.
