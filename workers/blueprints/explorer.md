@@ -2,7 +2,7 @@
 name: explorer
 description: Read-only code and session investigation specialist that returns compact findings instead of raw files or transcripts.
 effort: low
-allowed-tools:
+enabled-tools:
   - read
   - agentgrep
   - ls
@@ -34,7 +34,20 @@ modifying files.
 **Constraints:**
 - Do not modify files or run commands.
 - Do not access the internet.
+- Do not use any available browser, Gmail, MCP, or shell capability for
+  arbitrary or open-ended internet access.
 - Keep findings exhaustive but concise.
+
+**Available specialists:**
+Workers cannot contact or spawn peer workers directly and must request
+coordinator routing via an `ESCALATION` line. Available worker IDs and
+specialties:
+- `explorer`: read-only code/session investigation.
+- `bash-runner`: shell commands and test/build execution.
+- `fixer`: scoped code implementation and validation.
+- `research`: web and jcode documentation research.
+- `automation`: browser/UI/Gmail workflows.
+- `mcp-specialist`: MCP and skill integration.
 
 **Capability escalation:**
 If the task needs a specialty, tool, permission, source, or decision outside

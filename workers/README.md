@@ -7,14 +7,48 @@ This directory versions personal worker blueprints installed locally under
 
 | Blueprint | Tool name | Purpose |
 | --- | --- | --- |
+| `coordinator.md` | (reserved, no tool) | Coordinator prompt and tool policy. Not a spawnable worker. |
 | `explorer.md` | `swarm_explorer` | Read-only codebase navigation. Answers "where is X?" questions. |
 | `bash-runner.md` | `swarm_bash-runner` | Runs shell commands and returns concise output. |
 | `fixer.md` | `swarm_fixer` | Fast implementation specialist for small, well-scoped tasks. |
 | `research.md` | `swarm_research` | Web and documentation research without file modification. |
+| `automation.md` | `swarm_automation` | Browser, UI, and Gmail workflows. |
+| `mcp-specialist.md` | `swarm_mcp-specialist` | MCP tool discovery and invocation. |
 
-All four use a cheap model configured centrally via TOML overrides in
-`~/.jcode/config.toml`, not in the blueprint front matter. This makes it
-easy to change the model for all workers in one place.
+### Built-in tool ownership
+
+Every worker-executable built-in tool is assigned to at least one worker.
+Coordinator orchestration tools, including `todo`, `initiative`, and
+`schedule`, intentionally remain with the coordinator and are not delegated.
+Generated `swarm_<id>` tools are coordinator controls and are not included in
+this ownership list.
+
+| Worker | Owned tools |
+| --- | --- |
+| `swarm_explorer` | `agentgrep`, `conversation_search`, `ls`, `memory`, `read`, `session_search` |
+| `swarm_bash-runner` | `bash`, `bg`, `read` |
+| `swarm_fixer` | `agentgrep`, `apply_patch`, `batch`, `bash`, `bg`, `debug_socket`, `edit`, `ls`, `multiedit`, `patch`, `read`, `selfdev`, `write` |
+| `swarm_research` | `jcode_docs`, `read`, `webfetch`, `websearch` |
+| `swarm_automation` | `browser`, `gmail`, `macos_computer_use`, `open`, `side_panel` |
+| `swarm_mcp-specialist` | `jcode_docs`, `mcp`, `mcp_call`, `mcp_search`, `skill_manage` |
+
+The automation worker owns `open` because it supports user-facing UI and
+artifact workflows. These assignments do not change the existing internet-use
+boundary: research remains the web and documentation role, while other workers
+may use network-capable tools only for their explicitly requested, task-scoped
+capability.
+
+Ordinary worker blueprints may set a `model` and `effort` in front matter.
+Use TOML overrides in `~/.jcode/config.toml` to centrally replace those values
+without editing every blueprint.
+
+`coordinator.md` is a special reserved blueprint. Its filename supplies the
+reserved `coordinator` ID; it is never registered as a spawnable worker tool
+and no `swarm_coordinator` tool is generated. Its YAML front matter must be
+present and explicitly declares empty tool lists. Its Markdown body is the
+coordinator's durable system prompt segment, injected only when swarm is
+enabled. Configure its effective tool policy through the reserved TOML
+override.
 
 ## Install
 
@@ -27,19 +61,8 @@ for f in workers/blueprints/*.md; do
 done
 ```
 
-### Coordinator prompt overlay
-
-`coordinator-prompt.md` is the catalogued prompt for the coordinator. Install
-or update it in the global prompt overlay with:
-
-```bash
-python3 workers/install-coordinator-prompt.py
-```
-
-The installer owns only its marker-delimited section in
-`~/.jcode/prompt-overlay.md`, preserves other overlay content, and is
-idempotent. Set `JCODE_HOME` only when intentionally installing into another
-jcode home, such as a disposable test directory.
+This installs `coordinator.md` alongside worker blueprints using the same
+mechanism. No separate prompt-overlay installer is needed.
 
 ## Configure
 
@@ -58,6 +81,23 @@ model = "openrouter-eu:gpt-5.6-luna"
 [agents.worker_blueprints.research]
 model = "openrouter-eu:gpt-5.6-luna"
 ```
+
+### Coordinator policy
+
+Configure the coordinator's own tool policy via the reserved
+`[agents.worker_blueprints.coordinator]` override:
+
+```toml
+[agents.worker_blueprints.coordinator]
+enabled = ["read", "agentgrep", "swarm_explorer", "swarm_fixer"]
+disabled = ["bash", "swarm_automation"]
+```
+
+This uses the same TOML override namespace and policy fields as worker
+blueprints. The coordinator accepts only `enabled` and `disabled`; worker-only
+fields like `model` and `effort` are rejected for the reserved ID. The
+effective coordinator policy is combined with global `[tools]` policy using
+the shared pattern-aware evaluator.
 
 ---
 
@@ -80,7 +120,7 @@ name: reviewer
 description: Reviews changes for correctness, regressions, and missing tests.
 model: openai-api:gpt-5.5
 effort: medium
-allowed-tools:
+enabled-tools:
   - read
   - agentgrep
   - bash
@@ -111,8 +151,13 @@ session. No restart needed.
    coordinator page through more output in 2000-char chunks when needed.
 
 3. **Separate read-only from write-capable.** Exploration agents should not
-   have write tools. Implementation agents should not have internet access.
-   Each blueprint's `allowed-tools` list enforces this boundary.
+   have write tools. Non-research workers must not use available browser,
+   Gmail, MCP, or shell capabilities for arbitrary or open-ended internet
+   access. Task-specific exceptions are limited to automation's explicitly
+   requested UI or email workflow, MCP integration's explicitly requested MCP
+   capability, and a shell worker's explicitly requested specific network
+   operation. Research remains the web and documentation research role. Each
+   blueprint's `enabled-tools` list enforces the capability boundary.
 
 4. **Workers implement, they do not plan.** A fixer receives clear
    instructions and executes. It does not research, spawn subagents, or
@@ -126,29 +171,55 @@ session. No restart needed.
 
 ### Blueprint file format
 
-Each file in `~/.jcode/worker-blueprints/` is a Markdown file with YAML front matter.
-The filename is only a source filename; the `name` key is the stable
+Each file in `~/.jcode/worker-blueprints/` is a Markdown file with YAML front
+matter. The filename is only a source filename; the `name` key is the stable
 blueprint ID.
 
-#### Front-matter keys
+The special `coordinator.md` file is an exception: its filename supplies the
+reserved `coordinator` ID. It requires YAML front matter with the supported
+`enabled-tools` and `disabled-tools` keys. The bundled file leaves both lists
+empty; its Markdown body is the coordinator prompt segment. Coordinator tool
+policy is configured only through `[agents.worker_blueprints.coordinator]` in
+TOML, not through front matter.
+
+#### Front-matter keys (ordinary worker blueprints)
 
 | Key | Required | Type | Description |
 | --- | --- | --- | --- |
-| `name` | Yes | String matching `[a-z][a-z0-9_-]*` | Blueprint ID. Produces tool `swarm_<id>`. |
+| `name` | Yes | String matching `[a-z][a-z0-9_-]*` | Blueprint ID. Produces tool `swarm_<id>`. The reserved ID `coordinator` is rejected. |
 | `description` | Yes | Nonblank string | Used in the generated tool description. |
 | `model` | No | Nonblank string | Model string, including bare IDs, explicit routes, `inherit`, or `coordinator`. |
 | `effort` | No | Enum: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `swarm`, `swarm-deep` | Reasoning effort. |
-| `allowed-tools` | No | YAML array of strings | Restrictive per-session tool allowlist. `[]` means no tools. Omission means no restriction. |
+| `enabled-tools` | No | YAML array of strings | Restrictive per-session tool allowlist. `[]` means no tools. Omission means no restriction. |
+| `disabled-tools` | No | YAML array of strings | Per-session tool denylist. `["*"]` disables every tool. Omission means no deny restriction. |
 | `communication-policy` | No | Enum: `none`, `report-to-parent`, `parent-and-children`, `same-swarm` | Controls what messages the worker can send. |
 | `timeout-minutes` | No | Positive integer | How long the generated tool waits for the worker to complete. |
 
 Unknown keys are diagnosed and ignored. Invalid values are diagnosed and
-fall through to the default.
+fall through to the default. The old `allowed-tools` key is no longer
+accepted; use `enabled-tools` instead.
+
+#### coordinator.md front matter
+
+`coordinator.md` requires YAML front matter. The bundled file explicitly
+leaves both supported fields empty:
+
+```yaml
+---
+enabled-tools: []
+disabled-tools: []
+---
+```
+
+Its nonblank Markdown body is loaded as the coordinator prompt segment. The
+current runtime applies coordinator tool policy from the `enabled` and
+`disabled` keys in the reserved TOML override shown above.
 
 #### Body
 
 The body after the closing `---` delimiter is the worker's durable role
-instructions. These are applied first, followed by the runtime task.
+instructions (or, for `coordinator.md`, the coordinator's prompt segment).
+These are applied first, followed by the runtime task.
 
 ### Configuration
 
@@ -167,20 +238,25 @@ error.
 
 #### Per-blueprint overrides
 
-Override model and effort per blueprint in config:
+Override model, effort, timeout, and tool policy per blueprint in config:
 
 ```toml
 [agents.worker_blueprints.reviewer]
 model = "openrouter-eu:gpt-5.6-luna"
 effort = "high"
 timeout-minutes = 30
+enabled = ["read", "agentgrep"]
+disabled = ["bash"]
 ```
 
-TOML overrides replace front-matter values. Invalid overrides are diagnosed
-and fall through to the source value. Only `model`, `effort`, and
-`timeout-minutes` are overridable. Source-owned fields (name, description,
-allowed-tools, communication-policy, role instructions) remain owned by the
-Markdown file.
+TOML overrides replace front-matter values. A present `enabled = []` clears
+the source enabled restriction (unrestricted at this scope). An omitted
+override inherits the source value. Invalid overrides are diagnosed and fall
+through to the source value.
+
+The reserved `coordinator` ID accepts only `enabled` and `disabled`; worker-only
+fields (`model`, `effort`, `timeout-minutes`) are rejected for it. Coordinator
+front matter does not set tool policy.
 
 #### Global defaults
 
@@ -191,18 +267,21 @@ swarm_effort = "medium"
 swarm_timeout_minutes = 20
 ```
 
-#### Coordinator policy
+### Tool policy
 
-Restrict the coordinator's own tools without affecting spawned workers or
-internal agents:
+Worker blueprints' `enabled-tools` and `disabled-tools` are applied as a
+restrictive per-session policy, combined with the global `[tools]` policy. A
+blueprint can further restrict globally allowed tools but can never restore a
+globally disabled tool. An empty `enabled-tools: []` means the worker has no
+tools. Omission means no blueprint-specific restriction.
 
-```toml
-[agents.coordinator]
-allowed_tools = ["read", "agentgrep", "swarm_reviewer", "swarm_fixer"]
-```
+For the coordinator, configure `enabled` and `disabled` in the reserved TOML
+override. These are combined with global `[tools]` policy. `coordinator.md`
+front matter does not affect tool policy.
 
-The effective coordinator policy is the intersection of this allowlist and
-the global `[tools]` policy. Applied only to user-facing root sessions.
+Tool names support exact names, aliases, `"*"`/`"all"` wildcards, and anchored
+whole-name patterns such as `swarm_*` and `mcp_*`. The `mcp` family shorthand
+is also preserved. Disabled takes precedence over enabled.
 
 ### Model and effort precedence
 
@@ -272,15 +351,7 @@ Output from session abc123 (chars 2000-4000 of 8500):
 
 Generated tools never overwrite existing tool names. If a collision is
 detected (built-in, MCP, or another generated tool), the generated tool is
-skipped and logged.
-
-### Tool policy
-
-Blueprint `allowed-tools` are applied as a restrictive per-session policy,
-intersected with the global `[tools]` policy. A blueprint can further
-restrict globally allowed tools but can never restore a globally disabled
-tool. An empty `allowed-tools: []` means the worker has no tools. Omission
-means no blueprint-specific restriction.
+skipped and logged. The reserved `coordinator` ID never generates a tool.
 
 ### Communication policy
 
@@ -298,3 +369,6 @@ Enforced in message-routing and subscription paths, not through prompts.
 Blueprint loading is nonfatal. Bad files are excluded; valid blueprints
 remain usable. Diagnostics are structured and actionable, identifying the
 source path, exact problem, and what was excluded or what fallback applies.
+A malformed `coordinator.md` leaves swarm disabled with no partial surface;
+a missing `coordinator.md` warns once per load attempt but permits swarm with
+no coordinator-specific prompt or policy.

@@ -1,3 +1,8 @@
+---
+enabled-tools: []
+disabled-tools: []
+---
+
 # Worker delegation for token efficiency
 
 You (the coordinator) run on a large, expensive model. Swarm workers run on

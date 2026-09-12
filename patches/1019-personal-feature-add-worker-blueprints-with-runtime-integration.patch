@@ -3,89 +3,112 @@ From: Fardjad Davari <public@fardjad.com>
 Date: Wed, 9 Sep 2026 18:02:58 +0200
 Subject: [PATCH] feat: add worker blueprints with runtime integration
 
-X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator policy, generated tools, and bounded paginated output
+X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: 0001-candidate-pre-tool-input-transformers.patch, 1001-personal-release-installer-path-opt-in.patch, 1002-personal-provider-family-allowlist.patch, 1003-personal-feature-configure-session-picker-sorting.patch, 1004-personal-feature-configure-session-picker-default-filter.patch, 1005-personal-feature-delete-sessions-from-picker.patch, 1006-personal-openrouter-eu.patch, 1007-personal-feature-disable-telemetry-delivery-and-remove-telemetry-controls.patch, 1008-personal-feature-remove-hosted-subscription-and-promotional-commands.patch, 1009-personal-feature-remove-promotional-onboarding-content.patch, 1010-personal-feature-remove-sponsored-integration-discovery.patch, 1011-personal-feature-disable-automatic-onboarding.patch, 1012-personal-feature-remove-hosted-account-cli-commands.patch, 1013-personal-feature-remove-hosted-account-tui-commands.patch, 1014-personal-feature-docs-remove-sponsored-discovery-documentation.patch, 1015-personal-feature-refactor-remove-hosted-subscription-account-api.patch, 1016-personal-feature-docs-remove-hosted-account-and-cloud-documentation.patch, 1017-personal-feature-refactor-route-jcode-choice-through-direct-endpoin.patch, 1018-personal-feature-allow-selecting-the-self-update-repository.patch
 
 Patch intent:
 Add a worker blueprint system that lets a jcode user define reusable,
-specialized subagent roles in Markdown. Each blueprint supplies durable role
-instructions, model, effort, allowed-tools, communication-policy, and timeout.
-At runtime, every valid blueprint generates a coordinator-visible tool named
-swarm_<id> that spawns a blueprint-backed worker, waits for completion, and
-returns a compact summary with paginated follow-up reads. Runtime resolution
-uses the documented default blueprint directory, including symlinked directories
-and Markdown files, and rejects nonblank blueprint IDs that are unavailable or
-invalid instead of spawning a generic worker. A
-coordinator-only tool policy (agents.coordinator) restricts the coordinator's
-own tools without affecting internal roles or spawned workers.
+specialized subagent roles in Markdown. Each blueprint supplies durable
+role instructions, model, effort, enabled-tools, disabled-tools,
+communication-policy, and timeout. At runtime, every valid blueprint
+generates a coordinator-visible tool named swarm_<id> that spawns a
+blueprint-backed worker, waits for completion, and returns a compact
+summary with paginated follow-up reads. A reserved coordinator.md file
+supplies the coordinator's durable prompt and tool policy
+(enabled-tools/disabled-tools), configured via the shared
+[agents.worker_blueprints.coordinator] override namespace. The old
+allowed-tools key is replaced by enabled-tools and disabled-tools,
+matching the global [tools] policy vocabulary.
 
 Why it exists:
-Worker blueprints let a user specialize subagents without code changes. A
-blueprint can pin a cheap model for routine work, restrict its tool access,
-control its communication, and cap its runtime. The generated tool returns a
-bounded summary (2000 chars) so the coordinator does not burn tokens reading
-the worker's full output. A deterministic follow-up read (no LLM) lets the
-coordinator page through more output in 2000-char chunks when needed. The
-coordinator policy lets a user remove broad tools like bash and generic swarm
-from the coordinator while retaining them for authorized specialized workers
-and internal agents. When the swarm feature is off, swarm and generated swarm_<id> tools are omitted from the session tool surface and rejected at execution, the root coordinator has no coordinator-specific tool limit applied or exposed, and swarm-specific agent settings are omitted from the config summary. Runtime toggles remove and restore that coordinator policy while preserving global tool limits.
+Worker blueprints let a user specialize subagents without code changes.
+A blueprint can pin a cheap model for routine work, restrict its tool
+access, control its communication, and cap its runtime. The generated
+tool returns a bounded summary (2000 chars) so the coordinator does not
+burn tokens reading the worker's full output. A deterministic follow-up
+read (no LLM) lets the coordinator page through more output in 2000-char
+chunks when needed. The coordinator.md file lets a user define the
+coordinator's own prompt and tool policy without installing content into
+a global prompt overlay. The reserved coordinator ID uses the same
+[agents.worker_blueprints.<id>] override namespace as ordinary workers,
+accepting only enabled and disabled (not model, effort, or
+timeout-minutes). When the swarm feature is off, swarm and generated
+swarm_<id> tools are omitted from the session tool surface and rejected
+at execution, the root coordinator has no coordinator-specific tool limit
+or prompt applied, and swarm-specific agent settings are omitted from
+the config summary. Runtime toggles remove and restore that coordinator
+policy and prompt while preserving global tool limits.
 
 Upstream integration points:
-- crates/jcode-config-types/src/lib.rs: CoordinatorConfig struct,
-  swarm_timeout_minutes field, timeout_minutes on WorkerBlueprintOverride,
-  coordinator and worker_blueprints fields on AgentsConfig.
-- crates/jcode-base/src/config.rs: re-exports CoordinatorConfig.
-- crates/jcode-base/src/worker_blueprint.rs: blueprint discovery from the
-  documented ~/.jcode/worker-blueprints/ default, including symlinked files and
-  directories, front-matter parsing, schema validation, override merging,
-  diagnostics, and Display impl for WorkerBlueprintDiagnostic.
+- crates/jcode-config-types/src/lib.rs: WorkerBlueprintOverride with
+  enabled and disabled Option<Vec<String>> fields,
+  swarm_timeout_minutes field, worker_blueprints field on AgentsConfig.
+- crates/jcode-base/src/config.rs: re-exports WorkerBlueprintOverride.
+- crates/jcode-base/src/worker_blueprint.rs: blueprint discovery from
+  the documented ~/.jcode/worker-blueprints/ default, including symlinked
+  files and directories, front-matter parsing for enabled-tools and
+  disabled-tools, schema validation, override merging with enabled and
+  disabled, diagnostics, COORDINATOR_ID constant, CoordinatorBlueprint
+  and CoordinatorLoadResult for the special coordinator.md file,
+  load_coordinator_blueprint function, and Display impl for
+  WorkerBlueprintDiagnostic. The reserved coordinator ID is rejected in
+  ordinary blueprints and coordinator.md is excluded from the worker
+  registry.
 - crates/jcode-protocol/src/wire.rs: blueprint field on CommSpawn.
-- crates/jcode-app-core/src/agent.rs: apply_coordinator_policy applied to root
-  sessions in new_with_initial_ownership, with swarm-disabled bypass.
-- crates/jcode-app-core/src/agent/turn_execution.rs: set_swarm_enabled refreshes
-  the root session policy when the feature is toggled at runtime.
+- crates/jcode-app-core/src/agent.rs: apply_coordinator_policy reads
+  from [agents.worker_blueprints.coordinator] override, applied to root
+  sessions in new_with_initial_ownership with swarm-disabled bypass.
+  load_coordinator_prompt_body loads the coordinator.md body for root
+  sessions. coordinator_prompt field on Agent.
+- crates/jcode-app-core/src/agent/prompting.rs: coordinator_prompt
+  injected into split-system-prompt static_part after base/overlay
+  content, including the explicit system-prompt override branch.
+- crates/jcode-app-core/src/agent/turn_execution.rs: set_swarm_enabled
+  refreshes the root session policy and loads/clears coordinator_prompt
+  when the feature is toggled at runtime.
 - crates/jcode-app-core/src/server/comm_session.rs: fallible blueprint
-  resolution that rejects requested unavailable or invalid IDs, prompt
-  composition, tool policy application, communication policy storage in
-  spawn_swarm_agent.
-- crates/jcode-app-core/src/server/client_comm_message.rs: communication
-  policy enforcement in handle_comm_message.
-- crates/jcode-app-core/src/server/state.rs: communication_policy field on
-  SwarmMember.
-- crates/jcode-app-core/src/tool/blueprint.rs: BlueprintTool implementing the
-  Tool trait. Generated tools default to headless workers so synchronous
-  calls cannot hang on a separate headed client attachment; explicit spawn
-  modes remain honored. Spawn mode: spawn, await, return compact summary
-  with session ID. Follow-up mode: deterministic paginated read of stored
-  output. Timeout
-  resolved per-call > blueprint > config > default (20m).
+  resolution, prompt composition, tool policy application,
+  communication policy storage in spawn_swarm_agent.
+- crates/jcode-app-core/src/server/client_comm_message.rs:
+  communication policy enforcement in handle_comm_message.
+- crates/jcode-app-core/src/server/state.rs: communication_policy field
+  on SwarmMember.
+- crates/jcode-app-core/src/tool/blueprint.rs: BlueprintTool
+  implementing the Tool trait. Generated tools default to headless
+  workers. Spawn mode and follow-up mode. Timeout resolved per-call >
+  blueprint > config > default (20m). Uses enabled-tools in description.
 - crates/jcode-app-core/src/tool/tests.rs: excludes user-owned generated
-  swarm_<id> descriptions from the static built-in tool-description token cap.
+  swarm_<id> descriptions from the static built-in tool-description
+  token cap.
 - crates/jcode-app-core/src/tool/mod.rs: register_blueprint_tools in
   Registry::new.
 - crates/jcode-app-core/src/tool/communicate.rs: blueprint field in
   CommunicateInput and spawn action.
-- crates/jcode-app-core/src/tool/communicate/transport.rs: send_request and
-  send_request_with_timeout made pub(crate) for blueprint tool reuse.
+- crates/jcode-app-core/src/tool/communicate/transport.rs:
+  send_request and send_request_with_timeout made pub(crate).
 
 Update guidance:
 Preserve the documented ~/.jcode/worker-blueprints/ default, including
-symlinked directories and Markdown files, and reject every nonblank requested
-blueprint ID that cannot resolve. Preserve the precedence chain for model
-(per-spawn > blueprint > swarm_model > coordinator) and timeout (per-call >
-blueprint > config > default 20m). Generated swarm_<id> descriptions are
-user-owned and exempt from the static built-in description token cap. Blueprint
-allowed-tools are always intersected with the global tool policy. Coordinator
-policy only applies to root sessions, never to spawned workers or internal
-roles. Communication-policy: none blocks ordinary messages but not tool
-results. Generated tools default to headless execution when spawn mode is omitted or
-set to auto, unless the caller explicitly selects another spawn mode, so their
-synchronous result wait cannot depend on a headed client attaching to a new
-persisted session. Generated
-tools never overwrite existing tool names. All test
-SwarmMember and WorkerBlueprintOverride constructions must include the new
-fields.
+symlinked directories and Markdown files. The reserved coordinator ID
+must never be accepted as an ordinary worker blueprint or generate a
+swarm_coordinator tool. The coordinator.md front matter accepts only
+enabled-tools and disabled-tools; no name, description, model, effort,
+communication-policy, or timeout-minutes. The [agents.worker_blueprints.
+coordinator] override accepts only enabled and disabled; worker-only
+fields (model, effort, timeout_minutes) are rejected. Preserve the
+precedence chain for model (per-spawn > blueprint > swarm_model >
+coordinator) and timeout (per-call > blueprint > config > default 20m).
+Generated swarm_<id> descriptions are user-owned and exempt from the
+static built-in description token cap. Blueprint enabled-tools are
+always combined with the global tool policy. Coordinator policy only
+applies to root sessions, never to spawned workers or internal roles.
+The coordinator.md body is injected as a stable static segment in the
+root system prompt only when swarm is enabled. Communication-policy none
+blocks ordinary messages but not tool results. Generated tools default
+to headless execution. Generated tools never overwrite existing tool
+names. All test SwarmMember and WorkerBlueprintOverride constructions
+must include the new fields.
 
 Validation:
 cargo test -p jcode-app-core blueprint --lib
@@ -107,9 +130,17 @@ cargo test -p jcode-app-core swarm_disabled_does_not_apply_coordinator_tool_poli
 cargo test -p jcode-app-core swarm_disabled_retains_global_disabled_tool_policy --lib
 cargo test -p jcode-app-core toggling_swarm_off_removes_root_coordinator_tool_policy --lib
 cargo test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disabled --lib
+cargo test -p jcode-base coordinator_override_rejects_worker_only_fields --lib
+cargo test -p jcode-base coordinator_override_accepts_enabled_disabled_only --lib
+cargo test -p jcode-base coordinator_md_loaded_from_blueprint_dir --lib
+cargo test -p jcode-base coordinator_md_missing_returns_missing --lib
+cargo test -p jcode-base coordinator_md_malformed_returns_invalid --lib
+cargo test -p jcode-base coordinator_id_rejected_in_ordinary_blueprint --lib
+cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
 ---
- crates/jcode-app-core/src/agent.rs            |   53 +-
- .../src/agent/turn_execution.rs               |   33 +
+ crates/jcode-app-core/src/agent.rs            |   97 +-
+ crates/jcode-app-core/src/agent/prompting.rs  |   20 +-
+ .../src/agent/turn_execution.rs               |   39 +
  crates/jcode-app-core/src/agent_tests.rs      |  199 ++
  .../src/protocol_tests/comm_requests.rs       |    1 +
  .../src/server/client_actions.rs              |    4 +
@@ -137,39 +168,39 @@ cargo test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disab
  crates/jcode-app-core/src/server/swarm.rs     |    1 +
  .../src/server/swarm_persistence_tests.rs     |    8 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  496 +++++
- .../src/tool/blueprint_tests.rs               |  937 +++++++++
+ crates/jcode-app-core/src/tool/blueprint.rs   |  496 ++++
+ .../src/tool/blueprint_tests.rs               |  963 +++++++
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
  .../src/tool/communicate_tests.rs             |    2 +-
- .../src/tool/communicate_tests/end_to_end.rs  |  121 ++
+ .../src/tool/communicate_tests/end_to_end.rs  |  121 +
  crates/jcode-app-core/src/tool/mod.rs         |   61 +-
  crates/jcode-app-core/src/tool/tests.rs       |    7 +-
- crates/jcode-base/src/config.rs               |    4 +-
+ crates/jcode-base/src/config.rs               |    2 +-
  .../jcode-base/src/config/display_summary.rs  |   78 +-
  crates/jcode-base/src/config_tests.rs         |   11 +
  crates/jcode-base/src/lib.rs                  |    1 +
- crates/jcode-base/src/worker_blueprint.rs     | 1823 +++++++++++++++++
- crates/jcode-config-types/src/lib.rs          |   76 +
+ crates/jcode-base/src/worker_blueprint.rs     | 2222 +++++++++++++++++
+ crates/jcode-config-types/src/lib.rs          |   59 +
  .../src/protocol_tests/comm_requests.rs       |    1 +
  crates/jcode-protocol/src/wire.rs             |    7 +
- 45 files changed, 4122 insertions(+), 53 deletions(-)
+ 46 files changed, 4598 insertions(+), 53 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index aa437a027..42a28bdb9 100644
+index aa437a027..09c7c0479 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -69,6 +69,42 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
+@@ -69,6 +69,76 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
      LazyLock::new(|| StdMutex::new(HashMap::new()));
  const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
  
 +/// Apply the optional coordinator tool policy to a root session's allowed-tools
-+/// set. The effective coordinator policy is the intersection of the
-+/// coordinator's allowlist and the global `[tools]` policy. If the coordinator
-+/// config is not set (empty `allowed_tools`), the global policy passes through
++/// set. The coordinator policy is sourced from the reserved
++/// `[agents.worker_blueprints.coordinator]` override and the `coordinator.md`
++/// blueprint file. When swarm is disabled, the global policy passes through
 +/// unchanged.
 +fn apply_coordinator_policy(
 +    global_allowed: Option<HashSet<String>>,
@@ -178,9 +209,20 @@ index aa437a027..42a28bdb9 100644
 +    if !swarm_enabled {
 +        return global_allowed;
 +    }
-+    let coordinator_config = &crate::config::config().agents.coordinator;
-+    let coordinator_allowed = coordinator_config.allowed_set();
-+    match (global_allowed, coordinator_allowed) {
++    let coordinator_override = crate::config::config()
++        .agents
++        .worker_blueprints
++        .get(crate::worker_blueprint::COORDINATOR_ID);
++    let coordinator_enabled = coordinator_override
++        .and_then(|ov| ov.enabled.as_ref())
++        .map(|tools| {
++            tools
++                .iter()
++                .map(|t| t.trim().to_string())
++                .filter(|t| !t.is_empty())
++                .collect::<HashSet<String>>()
++        });
++    match (global_allowed, coordinator_enabled) {
 +        // Both present: intersect.
 +        (Some(global), Some(coord)) => Some(global.intersection(&coord).cloned().collect()),
 +        // Only coordinator: use it directly.
@@ -202,28 +244,56 @@ index aa437a027..42a28bdb9 100644
 +    }
 +}
 +
++/// Load the coordinator prompt body from `coordinator.md` in the configured
++/// blueprint directory. Returns `None` when the file is missing or invalid,
++/// allowing swarm to proceed without a coordinator-specific prompt.
++fn load_coordinator_prompt_body() -> Option<String> {
++    let blueprints_dir = crate::config::config()
++        .agents
++        .worker_blueprints_dir
++        .as_deref();
++    match crate::worker_blueprint::load_coordinator_blueprint(blueprints_dir) {
++        crate::worker_blueprint::CoordinatorLoadResult::Ok(coord) => Some(coord.body),
++        crate::worker_blueprint::CoordinatorLoadResult::Missing => None,
++        crate::worker_blueprint::CoordinatorLoadResult::Invalid(diags) => {
++            for diag in &diags {
++                logging::warn(&format!(
++                    "coordinator.md: {}",
++                    diag
++                ));
++            }
++            None
++        }
++    }
++}
++
  fn stable_hash_str(value: &str) -> u64 {
      let mut hasher = std::collections::hash_map::DefaultHasher::new();
      value.hash(&mut hasher);
-@@ -244,6 +280,9 @@ pub struct Agent {
+@@ -244,6 +314,13 @@ pub struct Agent {
      agents_md_snapshot: (Option<String>, crate::prompt::ContextInfo),
      /// Whether memory features are enabled for this session
      memory_enabled: bool,
 +    /// Whether swarm coordination tools and swarm-specific settings are enabled
 +    /// for this session.
 +    swarm_enabled: bool,
++    /// Coordinator prompt body from `coordinator.md`, injected into the root
++    /// session's system prompt only when swarm is enabled. None when swarm is
++    /// disabled or the coordinator file is missing.
++    coordinator_prompt: Option<String>,
      /// One-step undo snapshot captured before the most recent rewind.
      rewind_undo_snapshot: Option<RewindUndoSnapshot>,
      /// Channel for tools to request stdin input from the user
-@@ -333,6 +372,7 @@ impl Agent {
+@@ -333,6 +410,8 @@ impl Agent {
              system_prompt_override: None,
              agents_md_snapshot,
              memory_enabled: crate::config::config().features.memory,
 +            swarm_enabled: crate::config::config().features.swarm,
++            coordinator_prompt: None,
              rewind_undo_snapshot: None,
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
-@@ -413,6 +453,17 @@ impl Agent {
+@@ -413,6 +492,18 @@ impl Agent {
      ) -> Self {
          let start = Instant::now();
          let tool_selection = crate::config::config().tools.selection();
@@ -238,10 +308,11 @@ index aa437a027..42a28bdb9 100644
 +            parent_id.is_none(),
 +        );
 +
++        let is_root = parent_id.is_none();
          let mut session = Session::create(parent_id, None);
          if let Some(working_dir) = working_dir {
              session.working_dir = Some(working_dir.to_string());
-@@ -421,7 +472,7 @@ impl Agent {
+@@ -421,10 +512,14 @@ impl Agent {
              provider,
              registry,
              session,
@@ -250,11 +321,58 @@ index aa437a027..42a28bdb9 100644
              tool_selection.disabled_tools,
          );
          agent.session.mark_active();
++        // Load the coordinator prompt for root sessions when swarm is enabled.
++        if is_root && agent.swarm_enabled {
++            agent.coordinator_prompt = load_coordinator_prompt_body();
++        }
+         agent.session.model = Some(agent.provider_model());
+         agent.session.provider_key = agent.provider_key_for_new_session();
+         agent.reconcile_explicit_provider_pin_route();
+diff --git a/crates/jcode-app-core/src/agent/prompting.rs b/crates/jcode-app-core/src/agent/prompting.rs
+index f4b0f9163..a736c10d1 100644
+--- a/crates/jcode-app-core/src/agent/prompting.rs
++++ b/crates/jcode-app-core/src/agent/prompting.rs
+@@ -78,9 +78,17 @@ impl Agent {
+         &self,
+         memory_prompt: Option<&str>,
+     ) -> crate::prompt::SplitSystemPrompt {
++        // When an explicit system-prompt override exists, it replaces the base
++        // prompt, but the coordinator prompt is still appended as a stable
++        // suffix when swarm is enabled for root sessions.
+         if let Some(ref override_prompt) = self.system_prompt_override {
++            let static_part = if let Some(ref coord) = self.coordinator_prompt {
++                format!("{override_prompt}\n\n{coord}")
++            } else {
++                override_prompt.clone()
++            };
+             return crate::prompt::SplitSystemPrompt {
+-                static_part: override_prompt.clone(),
++                static_part,
+                 dynamic_part: String::new(),
+             };
+         }
+@@ -116,6 +124,16 @@ impl Agent {
+             self.agents_md_snapshot.clone(),
+         );
+ 
++        // Inject the coordinator prompt as a stable static segment, after the
++        // base/overlay content but before turn-varying reminders. This
++        // preserves the byte-for-byte stable base prefix for KV-cache reuse.
++        if let Some(ref coord) = self.coordinator_prompt {
++            if !split.static_part.is_empty() {
++                split.static_part.push_str("\n\n");
++            }
++            split.static_part.push_str(coord);
++        }
++
+         self.append_current_turn_system_reminder(&mut split);
+         crate::prompt::append_swarm_effort_directive(
+             &mut split,
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index ef313c869..f1d9cd323 100644
+index ef313c869..4c73c85b8 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
-@@ -347,6 +347,30 @@ impl Agent {
+@@ -347,6 +347,36 @@ impl Agent {
          }
      }
  
@@ -277,6 +395,12 @@ index ef313c869..f1d9cd323 100644
 +                self.allowed_tools.clone(),
 +                self.disabled_tools.clone(),
 +            );
++            // Load or clear the coordinator prompt for root sessions.
++            if enabled {
++                self.coordinator_prompt = super::load_coordinator_prompt_body();
++            } else {
++                self.coordinator_prompt = None;
++            }
 +        }
 +        self.locked_tools = None;
 +        self.cache_tracker.reset();
@@ -285,7 +409,7 @@ index ef313c869..f1d9cd323 100644
      /// Mark this session as an inline swarm worker. When enabled, the streaming
      /// loop publishes a throttled output tail to the global bus so a
      /// coordinator can render a live inline gallery viewport for it.
-@@ -482,6 +506,9 @@ impl Agent {
+@@ -482,6 +512,9 @@ impl Agent {
      /// session's `allowed_tools`, `disabled_tools`, and self-dev filters.
      async fn build_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
          let mut tools = self.registry.definitions(self.allowed_tools.as_ref()).await;
@@ -295,7 +419,7 @@ index ef313c869..f1d9cd323 100644
          if !self.disabled_tools.is_empty() {
              tools.retain(|tool| {
                  !crate::tool::tool_name_is_disabled(&self.disabled_tools, &tool.name)
-@@ -640,6 +667,12 @@ impl Agent {
+@@ -640,6 +673,12 @@ impl Agent {
      }
  
      pub(super) fn validate_tool_allowed(&self, name: &str) -> Result<()> {
@@ -309,7 +433,7 @@ index ef313c869..f1d9cd323 100644
              && !crate::tool::tool_name_is_allowed(allowed, name)
          {
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 026e3a4ba..8708bb431 100644
+index 026e3a4ba..e9fb2aab5 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
 @@ -964,6 +964,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
@@ -377,7 +501,7 @@ index 026e3a4ba..8708bb431 100644
 +
 +    std::fs::write(
 +        temp_home.path().join("config.toml"),
-+        "[features]\nswarm = false\n\n[tools]\nenabled = [\"read\", \"bash\"]\n\n[agents.coordinator]\nallowed_tools = [\"read\"]\n",
++        "[features]\nswarm = false\n\n[tools]\nenabled = [\"read\", \"bash\"]\n\n[agents.worker_blueprints.coordinator]\nenabled = [\"read\"]\n",
 +    )
 +    .expect("write test config");
 +    crate::env::set_var("JCODE_HOME", temp_home.path());
@@ -416,7 +540,7 @@ index 026e3a4ba..8708bb431 100644
 +
 +    std::fs::write(
 +        temp_home.path().join("config.toml"),
-+        "[features]\nswarm = false\n\n[tools]\ndisabled = [\"bash\"]\n\n[agents.coordinator]\nallowed_tools = [\"read\"]\n",
++        "[features]\nswarm = false\n\n[tools]\ndisabled = [\"bash\"]\n\n[agents.worker_blueprints.coordinator]\nenabled = [\"read\"]\n",
 +    )
 +    .expect("write test config");
 +    crate::env::set_var("JCODE_HOME", temp_home.path());
@@ -468,7 +592,7 @@ index 026e3a4ba..8708bb431 100644
 +
 +    std::fs::write(
 +        temp_home.path().join("config.toml"),
-+        "[features]\nswarm = true\n\n[tools]\nenabled = [\"read\", \"bash\"]\n\n[agents.coordinator]\nallowed_tools = [\"read\"]\n",
++        "[features]\nswarm = true\n\n[tools]\nenabled = [\"read\", \"bash\"]\n\n[agents.worker_blueprints.coordinator]\nenabled = [\"read\"]\n",
 +    )
 +    .expect("write test config");
 +    crate::env::set_var("JCODE_HOME", temp_home.path());
@@ -888,7 +1012,7 @@ index 0a854c81e..5b9863831 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/server/comm_session.rs b/crates/jcode-app-core/src/server/comm_session.rs
-index 7ffd473c2..c2f276e6a 100644
+index 7ffd473c2..433008373 100644
 --- a/crates/jcode-app-core/src/server/comm_session.rs
 +++ b/crates/jcode-app-core/src/server/comm_session.rs
 @@ -18,6 +18,7 @@ use crate::config::SwarmSpawnMode;
@@ -1029,7 +1153,7 @@ index 7ffd473c2..c2f276e6a 100644
 +    // means no worker tools; `None` (omission) means no blueprint-specific
 +    // restriction.
 +    if let Some(bp) = &blueprint {
-+        if let Some(allowed) = &bp.allowed_tools {
++        if let Some(allowed) = &bp.enabled_tools {
 +            let allowed_set: HashSet<String> = allowed.iter().cloned().collect();
 +            // Intersect with global tool policy so a blueprint can never
 +            // restore a globally disabled or unpermitted tool.
@@ -1335,7 +1459,7 @@ index 044c3244c..fa94f0f9f 100644
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
 new file mode 100644
-index 000000000..e2f0e0fc4
+index 000000000..6c38aef0f
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
 @@ -0,0 +1,496 @@
@@ -1462,7 +1586,7 @@ index 000000000..e2f0e0fc4
 +        description: &str,
 +        model: Option<&str>,
 +        effort: Option<&str>,
-+        allowed_tools: Option<&[String]>,
++        enabled_tools: Option<&[String]>,
 +        communication_policy: Option<&str>,
 +        timeout_minutes: Option<u32>,
 +    ) -> Self {
@@ -1475,8 +1599,8 @@ index 000000000..e2f0e0fc4
 +        if let Some(effort) = effort {
 +            meta.push(format!("effort: {effort}"));
 +        }
-+        if let Some(tools) = allowed_tools {
-+            meta.push(format!("allowed-tools: {}", tools.join(", ")));
++        if let Some(tools) = enabled_tools {
++            meta.push(format!("enabled-tools: {}", tools.join(", ")));
 +        }
 +        if let Some(policy) = communication_policy {
 +            meta.push(format!("communication-policy: {policy}"));
@@ -1514,7 +1638,7 @@ index 000000000..e2f0e0fc4
 +            &bp.description,
 +            bp.model.as_deref(),
 +            bp.effort.as_ref().map(|e| e.as_str()),
-+            bp.allowed_tools.as_deref(),
++            bp.enabled_tools.as_deref(),
 +            bp.communication_policy.as_ref().map(|p| p.as_str()),
 +            bp.timeout_minutes,
 +        )
@@ -1837,10 +1961,10 @@ index 000000000..e2f0e0fc4
 +}
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
 new file mode 100644
-index 000000000..70c3c690e
+index 000000000..ff2c8d6b6
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -0,0 +1,937 @@
+@@ -0,0 +1,963 @@
 +//! Phase two integration tests for worker blueprints.
 +//!
 +//! These tests verify the runtime integration of worker blueprints:
@@ -1853,7 +1977,7 @@ index 000000000..70c3c690e
 +
 +#![cfg(test)]
 +
-+use crate::config::{AgentsConfig, CoordinatorConfig, ToolSelection, WorkerBlueprintOverride};
++use crate::config::{AgentsConfig, ToolSelection, WorkerBlueprintOverride};
 +use crate::protocol::Request;
 +use crate::worker_blueprint::{
 +    self, BlueprintEffort, CommunicationPolicy, WorkerBlueprint, WorkerBlueprintRegistry,
@@ -1886,7 +2010,8 @@ index 000000000..70c3c690e
 +        description: description.to_string(),
 +        model: None,
 +        effort: None,
-+        allowed_tools: None,
++        enabled_tools: None,
++        disabled_tools: None,
 +        communication_policy: None,
 +        timeout_minutes: None,
 +        body: body.to_string(),
@@ -1894,30 +2019,36 @@ index 000000000..70c3c690e
 +}
 +
 +// ---------------------------------------------------------------------------
-+// Coordinator policy tests
++// Coordinator policy tests (via reserved worker_blueprints.coordinator override)
 +// ---------------------------------------------------------------------------
 +
 +#[test]
-+fn coordinator_policy_empty_means_no_restriction() {
-+    let coord = CoordinatorConfig::default();
-+    assert!(coord.allowed_set().is_none());
-+}
-+
-+#[test]
-+fn coordinator_policy_nonempty_produces_allowed_set() {
-+    let coord = CoordinatorConfig {
-+        allowed_tools: vec!["read".to_string(), "swarm_reviewer".to_string()],
++fn coordinator_override_enabled_means_restriction() {
++    let ov = WorkerBlueprintOverride {
++        enabled: Some(vec!["read".to_string(), "swarm_reviewer".to_string()]),
++        disabled: None,
++        model: None,
++        effort: None,
++        timeout_minutes: None,
 +    };
-+    let allowed = coord.allowed_set().unwrap();
++    let enabled_set: Option<HashSet<String>> =
++        ov.enabled.map(|tools| tools.iter().cloned().collect());
++    let allowed = enabled_set.unwrap();
 +    assert!(allowed.contains("read"));
 +    assert!(allowed.contains("swarm_reviewer"));
 +    assert!(!allowed.contains("bash"));
 +}
 +
 +#[test]
-+fn coordinator_policy_intersects_with_global_allowed() {
-+    // Simulate the apply_coordinator_policy logic: intersection of
-+    // coordinator allowed_tools with the global tool selection allowed_tools.
++fn coordinator_override_no_enabled_means_no_restriction() {
++    let ov = WorkerBlueprintOverride::default();
++    let enabled_set: Option<HashSet<String>> =
++        ov.enabled.map(|tools| tools.iter().cloned().collect());
++    assert!(enabled_set.is_none());
++}
++
++#[test]
++fn coordinator_override_intersects_with_global_allowed() {
 +    let global: HashSet<String> =
 +        ["read", "write", "bash", "swarm", "swarm_reviewer"]
 +            .iter()
@@ -1928,7 +2059,8 @@ index 000000000..70c3c690e
 +            .iter()
 +            .map(|s| s.to_string())
 +            .collect();
-+    let intersection: HashSet<String> = global.intersection(&coord).cloned().collect();
++    let intersection: HashSet<String> =
++        global.intersection(&coord).cloned().collect();
 +    assert!(intersection.contains("read"));
 +    assert!(intersection.contains("swarm_reviewer"));
 +    assert!(!intersection.contains("bash"));
@@ -1937,19 +2069,33 @@ index 000000000..70c3c690e
 +}
 +
 +#[test]
-+fn coordinator_policy_empty_allowed_tools_means_no_developer_tools() {
-+    let coord = CoordinatorConfig {
-+        allowed_tools: vec![],
++fn coordinator_override_empty_enabled_clears_restriction() {
++    let ov = WorkerBlueprintOverride {
++        enabled: Some(vec![]),
++        disabled: None,
++        model: None,
++        effort: None,
++        timeout_minutes: None,
 +    };
-+    // Empty vec means no restriction (allowed_set returns None)
-+    assert!(coord.allowed_set().is_none());
++    let enabled_set: HashSet<String> = ov.enabled.unwrap().iter().cloned().collect();
++    assert!(enabled_set.is_empty());
++}
 +
-+    // But if we use a non-empty global with an empty coordinator set,
-+    // the intersection is empty.
-+    let global: HashSet<String> = ["read", "bash"].iter().map(|s| s.to_string()).collect();
-+    let coord_empty: HashSet<String> = HashSet::new();
-+    let intersection: HashSet<String> = global.intersection(&coord_empty).cloned().collect();
-+    assert!(intersection.is_empty());
++#[test]
++fn coordinator_override_disabled_deny_takes_precedence() {
++    let global: HashSet<String> =
++        ["read", "write", "bash"].iter().map(|s| s.to_string()).collect();
++    let coord_enabled: HashSet<String> =
++        ["read", "write", "bash"].iter().map(|s| s.to_string()).collect();
++    let coord_disabled: HashSet<String> =
++        ["bash"].iter().map(|s| s.to_string()).collect();
++    let intersected: HashSet<String> =
++        global.intersection(&coord_enabled).cloned().collect();
++    let effective: HashSet<String> =
++        intersected.difference(&coord_disabled).cloned().collect();
++    assert!(effective.contains("read"));
++    assert!(effective.contains("write"));
++    assert!(!effective.contains("bash"));
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -2019,7 +2165,8 @@ index 000000000..70c3c690e
 +        description: "Reviews changes for correctness.".to_string(),
 +        model: Some("openai-api:gpt-5.5".to_string()),
 +        effort: Some(BlueprintEffort::Medium),
-+        allowed_tools: Some(vec!["read".to_string(), "agentgrep".to_string()]),
++        enabled_tools: Some(vec!["read".to_string(), "agentgrep".to_string()]),
++        disabled_tools: None,
 +        communication_policy: Some(CommunicationPolicy::ReportToParent),
 +        timeout_minutes: Some(30),
 +        body: "You are a reviewer.".to_string(),
@@ -2034,8 +2181,8 @@ index 000000000..70c3c690e
 +        bp.effort.as_ref().map(|e| e.as_str()).unwrap_or("")
 +    ));
 +    desc.push_str(&format!(
-+        "allowed-tools: {}; ",
-+        bp.allowed_tools.as_deref().unwrap_or(&[]).join(", ")
++        "enabled-tools: {}; ",
++        bp.enabled_tools.as_deref().unwrap_or(&[]).join(", ")
 +    ));
 +    desc.push_str(&format!(
 +        "communication-policy: {}; ",
@@ -2051,7 +2198,7 @@ index 000000000..70c3c690e
 +
 +    assert!(desc.contains("model: openai-api:gpt-5.5"));
 +    assert!(desc.contains("effort: medium"));
-+    assert!(desc.contains("allowed-tools: read, agentgrep"));
++    assert!(desc.contains("enabled-tools: read, agentgrep"));
 +    assert!(desc.contains("communication-policy: report-to-parent"));
 +    assert!(desc.contains("timeout: 30m"));
 +}
@@ -2214,6 +2361,8 @@ index 000000000..70c3c690e
 +            model: Some("claude-api:claude-4".to_string()),
 +            effort: None,
 +            timeout_minutes: None,
++            enabled: None,
++            disabled: None,
 +        },
 +    );
 +
@@ -2262,15 +2411,15 @@ index 000000000..70c3c690e
 +// ---------------------------------------------------------------------------
 +
 +#[test]
-+fn blueprint_allowed_tools_intersected_with_global() {
++fn blueprint_enabled_tools_intersected_with_global() {
 +    // Simulate the tool policy intersection logic from spawn_swarm_agent.
-+    let blueprint_allowed: HashSet<String> =
++    let blueprint_enabled: HashSet<String> =
 +        ["read", "agentgrep", "bash"].iter().map(|s| s.to_string()).collect();
 +    let global_allowed: HashSet<String> =
 +        ["read", "agentgrep", "write", "edit"].iter().map(|s| s.to_string()).collect();
 +
 +    // Intersection: blueprint can only further restrict, never expand.
-+    let effective: HashSet<String> = blueprint_allowed
++    let effective: HashSet<String> = blueprint_enabled
 +        .intersection(&global_allowed)
 +        .cloned()
 +        .collect();
@@ -2282,28 +2431,28 @@ index 000000000..70c3c690e
 +}
 +
 +#[test]
-+fn blueprint_empty_allowed_tools_means_no_tools() {
-+    let blueprint_allowed: HashSet<String> = HashSet::new();
++fn blueprint_empty_enabled_tools_means_no_tools() {
++    let blueprint_enabled: HashSet<String> = HashSet::new();
 +    let global_allowed: HashSet<String> =
 +        ["read", "bash", "swarm"].iter().map(|s| s.to_string()).collect();
 +
-+    let effective: HashSet<String> = blueprint_allowed
++    let effective: HashSet<String> = blueprint_enabled
 +        .intersection(&global_allowed)
 +        .cloned()
 +        .collect();
 +
-+    assert!(effective.is_empty(), "empty allowed-tools means no worker tools");
++    assert!(effective.is_empty(), "empty enabled-tools means no worker tools");
 +}
 +
 +#[test]
-+fn blueprint_no_allowed_tools_means_no_restriction() {
-+    // When allowed_tools is None (omitted), no blueprint-specific restriction.
-+    let blueprint_allowed: Option<HashSet<String>> = None;
++fn blueprint_no_enabled_tools_means_no_restriction() {
++    // When enabled_tools is None (omitted), no blueprint-specific restriction.
++    let blueprint_enabled: Option<HashSet<String>> = None;
 +    let global_allowed: Option<HashSet<String>> =
 +        Some(["read", "bash"].iter().map(|s| s.to_string()).collect());
 +
 +    // When blueprint has no restriction, global passes through.
-+    let effective = match (global_allowed, blueprint_allowed) {
++    let effective = match (global_allowed, blueprint_enabled) {
 +        (Some(global), Some(bp)) => Some(global.intersection(&bp).cloned().collect()),
 +        (Some(global), None) => Some(global),
 +        (None, _) => None,
@@ -2321,18 +2470,19 @@ index 000000000..70c3c690e
 +
 +#[test]
 +fn coordinator_policy_only_applies_to_root_sessions() {
-+    // The apply_coordinator_policy function is only called when parent_id
-+    // is None (root sessions). Spawned workers (parent_id is Some) skip it.
-+    // This test verifies the condition logic.
-+    let root_session = true; // parent_id.is_none()
-+    let worker_session = false; // parent_id.is_some()
++    let root_session = true;
++    let worker_session = false;
 +
-+    let coord = CoordinatorConfig {
-+        allowed_tools: vec!["read".to_string()],
++    let coord_override = WorkerBlueprintOverride {
++        enabled: Some(vec!["read".to_string()]),
++        disabled: None,
++        model: None,
++        effort: None,
++        timeout_minutes: None,
 +    };
-+    let coord_set = coord.allowed_set();
++    let coord_set: Option<HashSet<String>> =
++        coord_override.enabled.map(|tools| tools.iter().cloned().collect());
 +
-+    // Root session: policy is applied (intersection)
 +    if root_session {
 +        let global: Option<HashSet<String>> =
 +            Some(["read", "bash"].iter().map(|s| s.to_string()).collect());
@@ -2346,11 +2496,9 @@ index 000000000..70c3c690e
 +        assert!(!eff.contains("bash"), "coordinator policy removed bash from root");
 +    }
 +
-+    // Worker session: policy is NOT applied, global passes through
 +    if !worker_session {
 +        let global: Option<HashSet<String>> =
 +            Some(["read", "bash"].iter().map(|s| s.to_string()).collect());
-+        // No coordinator policy intersection for workers
 +        let effective = global;
 +        let eff = effective.unwrap();
 +        assert!(eff.contains("read"));
@@ -2587,6 +2735,8 @@ index 000000000..70c3c690e
 +            model: None,
 +            effort: None,
 +            timeout_minutes: Some(30),
++            enabled: None,
++            disabled: None,
 +        },
 +    );
 +
@@ -3115,18 +3265,10 @@ index 655ff2aa1..4a23866ce 100644
          .map(|def| {
              format!(
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index a8ecfe925..9af6c4fd5 100644
+index a8ecfe925..96c50784e 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
-@@ -5,14 +5,14 @@
- 
- pub use jcode_config_types::{
-     AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
--    CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
-+    CompactionMode, CoordinatorConfig, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
-     DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HookCommands, HooksConfig,
-     KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
-     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
+@@ -12,7 +12,7 @@ pub use jcode_config_types::{
      NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
      PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
      SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig,
@@ -3274,10 +3416,10 @@ index b7d18eb48..d70aaf961 100644
  pub use jcode_core::{terminal_eprint, terminal_eprintln, terminal_print, terminal_println};
 diff --git a/crates/jcode-base/src/worker_blueprint.rs b/crates/jcode-base/src/worker_blueprint.rs
 new file mode 100644
-index 000000000..de762a7ad
+index 000000000..cfb3fd02b
 --- /dev/null
 +++ b/crates/jcode-base/src/worker_blueprint.rs
-@@ -0,0 +1,1823 @@
+@@ -0,0 +1,2222 @@
 +//! Worker blueprint discovery, parsing, validation, and override merging.
 +//!
 +//! This module owns the phase-one data and configuration boundary for worker
@@ -3301,6 +3443,13 @@ index 000000000..de762a7ad
 +use serde::Deserialize;
 +
 +use crate::config::WorkerBlueprintOverride;
++
++/// Reserved blueprint ID for the coordinator special file.
++///
++/// The `coordinator.md` file in the blueprint directory supplies the
++/// coordinator's durable prompt and policy. It is never registered as a
++/// spawnable worker blueprint or used to generate a `swarm_coordinator` tool.
++pub const COORDINATOR_ID: &str = "coordinator";
 +
 +// ---------------------------------------------------------------------------
 +// Effective blueprint enums
@@ -3410,8 +3559,10 @@ index 000000000..de762a7ad
 +    pub model: Option<String>,
 +    /// Optional effort from the `effort` key.
 +    pub effort: Option<BlueprintEffort>,
-+    /// Optional allowed-tools list from the `allowed-tools` key.
-+    pub allowed_tools: Option<Vec<String>>,
++    /// Optional enabled-tools list from the `enabled-tools` key.
++    pub enabled_tools: Option<Vec<String>>,
++    /// Optional disabled-tools list from the `disabled-tools` key.
++    pub disabled_tools: Option<Vec<String>>,
 +    /// Optional communication policy from the `communication-policy` key.
 +    pub communication_policy: Option<CommunicationPolicy>,
 +    /// Optional timeout in minutes from the `timeout-minutes` key.
@@ -3436,8 +3587,10 @@ index 000000000..de762a7ad
 +    pub model: Option<String>,
 +    /// Effective effort after override resolution.
 +    pub effort: Option<BlueprintEffort>,
-+    /// Optional allowed-tools restriction from front matter.
-+    pub allowed_tools: Option<Vec<String>>,
++    /// Optional enabled-tools restriction from front matter.
++    pub enabled_tools: Option<Vec<String>>,
++    /// Optional disabled-tools restriction from front matter.
++    pub disabled_tools: Option<Vec<String>>,
 +    /// Optional communication policy from front matter.
 +    pub communication_policy: Option<CommunicationPolicy>,
 +    /// Optional timeout in minutes from front matter.
@@ -3572,6 +3725,32 @@ index 000000000..de762a7ad
 +    pub diagnostics: Vec<WorkerBlueprintDiagnostic>,
 +}
 +
++/// Resolved coordinator blueprint: policy and prompt body.
++///
++/// Returned by [`load_coordinator_blueprint`] when the special
++/// `coordinator.md` file is found and valid. Not a worker blueprint; it is
++/// never registered as a spawnable tool.
++#[derive(Debug, Clone)]
++pub struct CoordinatorBlueprint {
++    /// Enabled-tools policy from front matter (None = no restriction).
++    pub enabled_tools: Option<Vec<String>>,
++    /// Disabled-tools policy from front matter (None = no deny restriction).
++    pub disabled_tools: Option<Vec<String>>,
++    /// Nonblank Markdown body used as the coordinator system prompt segment.
++    pub body: String,
++}
++
++/// Result of loading the coordinator blueprint file.
++#[derive(Debug, Clone)]
++pub enum CoordinatorLoadResult {
++    /// File found and valid.
++    Ok(CoordinatorBlueprint),
++    /// File not found. Swarm proceeds without coordinator-specific policy/prompt.
++    Missing,
++    /// File found but invalid. Swarm must remain disabled for this root.
++    Invalid(Vec<WorkerBlueprintDiagnostic>),
++}
++
 +// ---------------------------------------------------------------------------
 +// Front-matter deserialization
 +// ---------------------------------------------------------------------------
@@ -3588,15 +3767,17 @@ index 000000000..de762a7ad
 +    model: Option<String>,
 +    #[serde(default)]
 +    effort: Option<String>,
-+    #[serde(default, rename = "allowed-tools")]
-+    allowed_tools: Option<YamlTools>,
++    #[serde(default, rename = "enabled-tools")]
++    enabled_tools: Option<YamlTools>,
++    #[serde(default, rename = "disabled-tools")]
++    disabled_tools: Option<YamlTools>,
 +    #[serde(default, rename = "communication-policy")]
 +    communication_policy: Option<String>,
 +    #[serde(default, rename = "timeout-minutes")]
 +    timeout_minutes: Option<u32>,
 +}
 +
-+/// Allowed-tools YAML representation. Only YAML arrays are valid.
++/// Tool-list YAML representation. Only YAML arrays are valid.
 +/// Scalar shorthand is intentionally rejected.
 +#[derive(Debug, Deserialize)]
 +#[serde(untagged)]
@@ -3604,6 +3785,148 @@ index 000000000..de762a7ad
 +enum YamlTools {
 +    Array(Vec<serde_yaml::Value>),
 +    Other(serde_yaml::Value),
++}
++
++/// Parse a YamlTools option into an optional Vec<String>, pushing diagnostics
++/// for blank or non-string entries.
++fn parse_yaml_tools(
++    path: &Path,
++    tools: Option<YamlTools>,
++    field_name: &str,
++    diags: &mut Vec<WorkerBlueprintDiagnostic>,
++) -> Option<Vec<String>> {
++    match tools {
++        None => None,
++        Some(YamlTools::Array(vals)) => {
++            let mut result = Vec::new();
++            for v in &vals {
++                match v {
++                    serde_yaml::Value::String(s) => {
++                        let trimmed = s.trim();
++                        if trimmed.is_empty() {
++                            diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                                path,
++                                format!(
++                                    "blank entry in {field_name} in {}; entry skipped",
++                                    path.display()
++                                ),
++                            ));
++                        } else {
++                            result.push(trimmed.to_string());
++                        }
++                    }
++                    _ => {
++                        diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                            path,
++                            format!(
++                                "non-string entry in {field_name} in {}; expected array of \
++                                 tool-name strings. Entry skipped.",
++                                path.display()
++                            ),
++                        ));
++                    }
++                }
++            }
++            Some(result)
++        }
++        Some(YamlTools::Other(_)) => {
++            diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                path,
++                format!(
++                    "{field_name} in {} must be a YAML array of strings; scalar shorthand \
++                     is invalid. Field ignored.",
++                    path.display()
++                ),
++            ));
++            None
++        }
++    }
++}
++
++/// Load the special `coordinator.md` from the blueprint directory.
++pub fn load_coordinator_blueprint(blueprints_dir: Option<&str>) -> CoordinatorLoadResult {
++    let Some(dir) = resolve_blueprints_dir(blueprints_dir) else {
++        return CoordinatorLoadResult::Missing;
++    };
++    let path = dir.join("coordinator.md");
++    let raw = match std::fs::read_to_string(&path) {
++        Ok(raw) => raw,
++        Err(_) => return CoordinatorLoadResult::Missing,
++    };
++
++    let (yaml_text, body) = match split_front_matter(&raw) {
++        Ok(v) => v,
++        Err(msg) => {
++            return CoordinatorLoadResult::Invalid(vec![
++                WorkerBlueprintDiagnostic::file_excluded(&path, msg),
++            ]);
++        }
++    };
++    let yaml_value: serde_yaml::Value = match serde_yaml::from_str(&yaml_text) {
++        Ok(v) => v,
++        Err(e) => {
++            return CoordinatorLoadResult::Invalid(vec![
++                WorkerBlueprintDiagnostic::file_excluded(
++                    &path,
++                    format!("invalid YAML in coordinator front matter: {e}"),
++                ),
++            ]);
++        }
++    };
++
++    let mut diags = Vec::new();
++    let known_keys = ["enabled-tools", "disabled-tools"];
++    if let serde_yaml::Value::Mapping(map) = &yaml_value {
++        for key in map.keys() {
++            if let serde_yaml::Value::String(k) = key {
++                if !known_keys.contains(&k.as_str()) {
++                    diags.push(WorkerBlueprintDiagnostic::field_ignored(
++                        &path,
++                        format!(
++                            "unknown front-matter key '{k}' in coordinator.md; \
++                             accepted keys: enabled-tools, disabled-tools"
++                        ),
++                    ));
++                }
++            }
++        }
++    }
++
++    #[derive(Debug, Deserialize)]
++    struct CoordinatorFrontMatter {
++        #[serde(default, rename = "enabled-tools")]
++        enabled_tools: Option<YamlTools>,
++        #[serde(default, rename = "disabled-tools")]
++        disabled_tools: Option<YamlTools>,
++    }
++    let fm: CoordinatorFrontMatter = match serde_yaml::from_value(yaml_value) {
++        Ok(fm) => fm,
++        Err(e) => {
++            return CoordinatorLoadResult::Invalid(vec![
++                WorkerBlueprintDiagnostic::file_excluded(
++                    &path,
++                    format!("failed to deserialize coordinator front matter: {e}"),
++                ),
++            ]);
++        }
++    };
++    let enabled_tools = parse_yaml_tools(&path, fm.enabled_tools, "enabled-tools", &mut diags);
++    let disabled_tools = parse_yaml_tools(&path, fm.disabled_tools, "disabled-tools", &mut diags);
++    if !diags.is_empty() {
++        return CoordinatorLoadResult::Invalid(diags);
++    }
++    let body = body.trim();
++    if body.is_empty() {
++        return CoordinatorLoadResult::Invalid(vec![WorkerBlueprintDiagnostic::file_excluded(
++            &path,
++            "coordinator.md body is blank; a nonblank prompt body is required".to_string(),
++        )]);
++    }
++    CoordinatorLoadResult::Ok(CoordinatorBlueprint {
++        enabled_tools,
++        disabled_tools,
++        body: body.to_string(),
++    })
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -3792,7 +4115,8 @@ index 000000000..de762a7ad
 +        "description",
 +        "model",
 +        "effort",
-+        "allowed-tools",
++        "enabled-tools",
++        "disabled-tools",
 +        "communication-policy",
 +        "timeout-minutes",
 +    ];
@@ -3806,7 +4130,7 @@ index 000000000..de762a7ad
 +                        format!(
 +                            "unknown front-matter key '{k}' in {}; \
 +                             known keys: name, description, model, effort, \
-+                             allowed-tools, communication-policy, \
++                             enabled-tools, disabled-tools, communication-policy, \
 +                             timeout-minutes",
 +                            path.display()
 +                        ),
@@ -3907,59 +4231,9 @@ index 000000000..de762a7ad
 +        }
 +    };
 +
-+    // Validate allowed-tools.
-+    let allowed_tools = match fm.allowed_tools {
-+        None => None,
-+        Some(YamlTools::Array(vals)) => {
-+            let mut tools = Vec::new();
-+            for v in &vals {
-+                match v {
-+                    serde_yaml::Value::String(s) => {
-+                        let trimmed = s.trim();
-+                        if trimmed.is_empty() {
-+                            diags.push(WorkerBlueprintDiagnostic::field_ignored(
-+                                path,
-+                                format!(
-+                                    "blank entry in allowed-tools in {}; \
-+                                     entry skipped",
-+                                    path.display()
-+                                ),
-+                            ));
-+                        } else {
-+                            tools.push(trimmed.to_string());
-+                        }
-+                    }
-+                    _ => {
-+                        diags.push(WorkerBlueprintDiagnostic::field_ignored(
-+                            path,
-+                            format!(
-+                                "non-string entry in allowed-tools in {}; \
-+                                 expected array of tool-name strings. \
-+                                 Entry skipped.",
-+                                path.display()
-+                            ),
-+                        ));
-+                    }
-+                }
-+            }
-+            // An empty array means "no worker tools" (Some(vec![])), which
-+            // is distinct from omission (None = no blueprint-specific
-+            // restriction). An array where all entries were blank/invalid
-+            // also yields Some(vec![]) since the key was present.
-+            Some(tools)
-+        }
-+        Some(YamlTools::Other(_)) => {
-+            diags.push(WorkerBlueprintDiagnostic::field_ignored(
-+                path,
-+                format!(
-+                    "allowed-tools in {} must be a YAML array of strings; \
-+                     scalar shorthand is invalid. Field ignored.",
-+                    path.display()
-+                ),
-+            ));
-+            None
-+        }
-+    };
++    // Validate enabled-tools and disabled-tools.
++    let enabled_tools = parse_yaml_tools(path, fm.enabled_tools, "enabled-tools", &mut diags);
++    let disabled_tools = parse_yaml_tools(path, fm.disabled_tools, "disabled-tools", &mut diags);
 +
 +    // Validate communication-policy.
 +    let communication_policy = match fm.communication_policy.as_deref() {
@@ -4013,7 +4287,8 @@ index 000000000..de762a7ad
 +            description,
 +            model,
 +            effort,
-+            allowed_tools,
++            enabled_tools,
++            disabled_tools,
 +            communication_policy,
 +            timeout_minutes,
 +            body,
@@ -4036,6 +4311,39 @@ index 000000000..de762a7ad
 +    overrides: Option<&WorkerBlueprintOverride>,
 +) -> (WorkerBlueprint, Vec<WorkerBlueprintDiagnostic>) {
 +    let mut diags = Vec::new();
++
++    let (enabled_tools, disabled_tools) = match overrides {
++        None => (source.enabled_tools.clone(), source.disabled_tools.clone()),
++        Some(ov) => {
++            let resolve_tools = |override_tools: &Option<Vec<String>>,
++                                 source_tools: &Option<Vec<String>>,
++                                 field: &str,
++                                 diags: &mut Vec<WorkerBlueprintDiagnostic>| {
++                match override_tools {
++                    None => source_tools.clone(),
++                    Some(values) => {
++                        let mut result = Vec::new();
++                        for value in values {
++                            let trimmed = value.trim();
++                            if trimmed.is_empty() {
++                                diags.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                                    format!("agents.worker_blueprints.{}.{}", source.name, field),
++                                    format!("blank entry in {field} override; entry skipped"),
++                                ));
++                            } else {
++                                result.push(trimmed.to_string());
++                            }
++                        }
++                        Some(result)
++                    }
++                }
++            };
++            (
++                resolve_tools(&ov.enabled, &source.enabled_tools, "enabled", &mut diags),
++                resolve_tools(&ov.disabled, &source.disabled_tools, "disabled", &mut diags),
++            )
++        }
++    };
 +
 +    let (model, effort) = match overrides {
 +        None => (source.model.clone(), source.effort.clone()),
@@ -4128,7 +4436,8 @@ index 000000000..de762a7ad
 +            description: source.description,
 +            model,
 +            effort,
-+            allowed_tools: source.allowed_tools,
++            enabled_tools,
++            disabled_tools,
 +            communication_policy: source.communication_policy,
 +            timeout_minutes,
 +            body: source.body,
@@ -4164,8 +4473,17 @@ index 000000000..de762a7ad
 +                        let (source, file_diags) = parse_blueprint_file_with_diagnostics(&path, &raw);
 +                        diagnostics.extend(file_diags);
 +                        if let Some(src) = source {
++                            if src.name == COORDINATOR_ID {
++                                diagnostics.push(WorkerBlueprintDiagnostic::file_excluded(
++                                    &path,
++                                    format!(
++                                        "blueprint ID '{}' is reserved for the coordinator; \
++                                         ordinary worker blueprints cannot use it. File excluded.",
++                                        src.name
++                                    ),
++                                ));
 +                            // Detect duplicate IDs after normalization.
-+                            if sources.contains_key(&src.name) {
++                            } else if sources.contains_key(&src.name) {
 +                                diagnostics.push(WorkerBlueprintDiagnostic::file_excluded(
 +                                    &path,
 +                                    format!(
@@ -4207,8 +4525,36 @@ index 000000000..de762a7ad
 +    }
 +
 +    // 3. Diagnose overrides with no matching source blueprint.
-+    for (id, _ov) in overrides {
-+        if !sources.contains_key(id) {
++    for (id, ov) in overrides {
++        if *id == COORDINATOR_ID {
++            // The reserved coordinator override accepts only enabled and
++            // disabled. Worker-only fields (model, effort, timeout_minutes)
++            // are rejected.
++            if ov.model.is_some() {
++                diagnostics.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                    format!("agents.worker_blueprints.{COORDINATOR_ID}.model"),
++                    "the reserved coordinator override does not accept \
++                     worker-only field 'model'; ignored."
++                        .to_string(),
++                ));
++            }
++            if ov.effort.is_some() {
++                diagnostics.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                    format!("agents.worker_blueprints.{COORDINATOR_ID}.effort"),
++                    "the reserved coordinator override does not accept \
++                     worker-only field 'effort'; ignored."
++                        .to_string(),
++                ));
++            }
++            if ov.timeout_minutes.is_some() {
++                diagnostics.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                    format!("agents.worker_blueprints.{COORDINATOR_ID}.timeout_minutes"),
++                    "the reserved coordinator override does not accept \
++                     worker-only field 'timeout_minutes'; ignored."
++                        .to_string(),
++                ));
++            }
++        } else if !sources.contains_key(id) {
 +            diagnostics.push(WorkerBlueprintDiagnostic::config_excluded(
 +                format!("agents.worker_blueprints.{id}"),
 +                format!(
@@ -4258,7 +4604,7 @@ index 000000000..de762a7ad
 +description: Reviews changes for correctness.
 +model: openai-api:gpt-5.5
 +effort: medium
-+allowed-tools:
++enabled-tools:
 +  - read
 +  - agentgrep
 +  - bash
@@ -4524,15 +4870,15 @@ index 000000000..de762a7ad
 +            .any(|d| d.message.contains("description")));
 +    }
 +
-+    // Test 7: allowed-tools accepts only arrays of nonblank strings and
++    // Test 7: enabled-tools accepts only arrays of nonblank strings and
 +    // rejects scalar, blank, or otherwise malformed forms.
 +    #[test]
-+    fn allowed_tools_array_accepted() {
++    fn enabled_tools_array_accepted() {
 +        let bp = "\
 +---
 +name: tools-ok
 +description: Test.
-+allowed-tools:
++enabled-tools:
 +  - read
 +  - bash
 +---
@@ -4545,18 +4891,18 @@ index 000000000..de762a7ad
 +        assert_eq!(report.registry.len(), 1);
 +        let blueprint = report.registry.get("tools-ok").unwrap();
 +        assert_eq!(
-+            blueprint.allowed_tools.as_deref(),
++            blueprint.enabled_tools.as_deref(),
 +            Some(&["read".to_string(), "bash".to_string()][..])
 +        );
 +    }
 +
 +    #[test]
-+    fn allowed_tools_scalar_rejected() {
++    fn enabled_tools_scalar_rejected() {
 +        let bp = "\
 +---
 +name: scalar-tools
 +description: Test.
-+allowed-tools: read
++enabled-tools: read
 +---
 +
 +Body.
@@ -4564,23 +4910,23 @@ index 000000000..de762a7ad
 +        let dir = make_dir(&[("scalar.md", bp)]);
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
-+        // The file is still valid, but the allowed-tools field is ignored.
++        // The file is still valid, but the enabled-tools field is ignored.
 +        assert_eq!(report.registry.len(), 1);
 +        let bp = report.registry.get("scalar-tools").unwrap();
-+        assert!(bp.allowed_tools.is_none());
++        assert!(bp.enabled_tools.is_none());
 +        assert!(report
 +            .diagnostics
 +            .iter()
-+            .any(|d| d.message.contains("allowed-tools") && d.message.contains("array")));
++            .any(|d| d.message.contains("enabled-tools") && d.message.contains("array")));
 +    }
 +
 +    #[test]
-+    fn allowed_tools_blank_entries_skipped() {
++    fn enabled_tools_blank_entries_skipped() {
 +        let bp = "\
 +---
 +name: blank-tools
 +description: Test.
-+allowed-tools:
++enabled-tools:
 +  - read
 +  - \"\"
 +  - bash
@@ -4595,18 +4941,18 @@ index 000000000..de762a7ad
 +        let bp = report.registry.get("blank-tools").unwrap();
 +        // Blank entries are skipped; non-blank ones remain.
 +        assert_eq!(
-+            bp.allowed_tools.as_deref(),
++            bp.enabled_tools.as_deref(),
 +            Some(&["read".to_string(), "bash".to_string()][..])
 +        );
 +    }
 +
 +    #[test]
-+    fn allowed_tools_empty_array_means_no_tools() {
++    fn enabled_tools_empty_array_means_no_tools() {
 +        let bp = "\
 +---
 +name: empty-tools
 +description: Test.
-+allowed-tools: []
++enabled-tools: []
 +---
 +
 +Body.
@@ -4617,7 +4963,7 @@ index 000000000..de762a7ad
 +        assert_eq!(report.registry.len(), 1);
 +        let bp = report.registry.get("empty-tools").unwrap();
 +        // [] means no worker tools (empty vec, not None).
-+        assert_eq!(bp.allowed_tools.as_deref(), Some(&[][..]));
++        assert_eq!(bp.enabled_tools.as_deref(), Some(&[][..]));
 +    }
 +
 +    // Test 8: Unknown front-matter keys and invalid
@@ -4711,6 +5057,8 @@ index 000000000..de762a7ad
 +                model: Some("claude-opus-5".to_string()),
 +                effort: Some("high".to_string()),
 +                timeout_minutes: None,
++                enabled: None,
++                disabled: None,
 +            },
 +        );
 +
@@ -4732,6 +5080,8 @@ index 000000000..de762a7ad
 +                model: Some("claude-opus-5".to_string()),
 +                effort: None,
 +                timeout_minutes: None,
++                enabled: None,
++                disabled: None,
 +            },
 +        );
 +
@@ -4755,6 +5105,8 @@ index 000000000..de762a7ad
 +                model: None,
 +                effort: Some("ridiculous".to_string()),
 +                timeout_minutes: None,
++                enabled: None,
++                disabled: None,
 +            },
 +        );
 +
@@ -4781,6 +5133,8 @@ index 000000000..de762a7ad
 +                model: Some("   ".to_string()),
 +                effort: None,
 +                timeout_minutes: None,
++                enabled: None,
++                disabled: None,
 +            },
 +        );
 +
@@ -4806,6 +5160,8 @@ index 000000000..de762a7ad
 +                model: Some("gpt-5".to_string()),
 +                effort: None,
 +                timeout_minutes: None,
++                enabled: None,
++                disabled: None,
 +            },
 +        );
 +
@@ -5070,14 +5426,14 @@ index 000000000..de762a7ad
 +        }
 +    }
 +
-+    // Additional coverage: allowed-tools with non-string entries.
++    // Additional coverage: enabled-tools with non-string entries.
 +    #[test]
-+    fn allowed_tools_non_string_entries_diagnosed() {
++    fn enabled_tools_non_string_entries_diagnosed() {
 +        let bp = "\
 +---
 +name: mixed-tools
 +description: Test.
-+allowed-tools:
++enabled-tools:
 +  - read
 +  - 42
 +  - bash
@@ -5092,7 +5448,7 @@ index 000000000..de762a7ad
 +        let bp = report.registry.get("mixed-tools").unwrap();
 +        // Non-string entries are skipped; valid ones remain.
 +        assert_eq!(
-+            bp.allowed_tools.as_deref(),
++            bp.enabled_tools.as_deref(),
 +            Some(&["read".to_string(), "bash".to_string()][..])
 +        );
 +        assert!(report
@@ -5100,12 +5456,197 @@ index 000000000..de762a7ad
 +            .iter()
 +            .any(|d| d.message.contains("non-string entry")));
 +    }
++
++    #[test]
++    fn coordinator_md_loaded_from_blueprint_dir() {
++        let dir = make_dir(&[(
++            "coordinator.md",
++            "---\nenabled-tools:\n  - read\n  - agentgrep\ndisabled-tools:\n  - bash\n---\n\nDelegate tasks to workers.",
++        )]);
++        match load_coordinator_blueprint(dir.path().to_str()) {
++            CoordinatorLoadResult::Ok(coord) => {
++                assert_eq!(coord.enabled_tools.as_deref(), Some(&["read".to_string(), "agentgrep".to_string()][..]));
++                assert_eq!(coord.disabled_tools.as_deref(), Some(&["bash".to_string()][..]));
++                assert_eq!(coord.body, "Delegate tasks to workers.");
++            }
++            _ => panic!("expected Ok"),
++        }
++    }
++
++    #[test]
++    fn coordinator_md_missing_returns_missing() {
++        let dir = make_dir(&[("other.md", MINIMAL_BP)]);
++        assert!(matches!(load_coordinator_blueprint(dir.path().to_str()), CoordinatorLoadResult::Missing));
++    }
++
++    #[test]
++    fn coordinator_md_malformed_returns_invalid() {
++        let dir = make_dir(&[("coordinator.md", "no front matter at all")]);
++        assert!(matches!(load_coordinator_blueprint(dir.path().to_str()), CoordinatorLoadResult::Invalid(_)));
++    }
++
++    #[test]
++    fn coordinator_md_blank_body_returns_invalid() {
++        let dir = make_dir(&[("coordinator.md", "---\nenabled-tools:\n  - read\n---\n\n  \n")]);
++        assert!(matches!(load_coordinator_blueprint(dir.path().to_str()), CoordinatorLoadResult::Invalid(_)));
++    }
++
++    #[test]
++    fn coordinator_md_unknown_key_returns_invalid() {
++        let dir = make_dir(&[("coordinator.md", "---\nname: coordinator\ndescription: bad\n---\n\nBody.")]);
++        assert!(matches!(load_coordinator_blueprint(dir.path().to_str()), CoordinatorLoadResult::Invalid(_)));
++    }
++
++    #[test]
++    fn coordinator_id_rejected_in_ordinary_blueprint() {
++        let bp = "---\nname: coordinator\ndescription: Trying to be coordinator.\n---\n\nBody.\n";
++        let dir = make_dir(&[("fake.md", bp), ("valid.md", MINIMAL_BP)]);
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert!(report.registry.get("coordinator").is_none());
++        assert!(report.diagnostics.iter().any(|d| d.message.contains("reserved")));
++    }
++
++    #[test]
++    fn enabled_and_disabled_tools_both_parsed() {
++        let bp = "---\nname: restricted\ndescription: Test.\nenabled-tools:\n  - read\n  - agentgrep\ndisabled-tools:\n  - bash\n---\n\nBody.\n";
++        let dir = make_dir(&[("restricted.md", bp)]);
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        let bp = report.registry.get("restricted").unwrap();
++        assert_eq!(bp.enabled_tools.as_deref(), Some(&["read".to_string(), "agentgrep".to_string()][..]));
++        assert_eq!(bp.disabled_tools.as_deref(), Some(&["bash".to_string()][..]));
++    }
++
++    #[test]
++    fn old_allowed_tools_key_diagnosed_as_unknown() {
++        let bp = "---\nname: old-tools\ndescription: Test.\nallowed-tools:\n  - read\n---\n\nBody.\n";
++        let dir = make_dir(&[("old.md", bp)]);
++        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(report.registry.len(), 1);
++        assert!(report.diagnostics.iter().any(|d| d.message.contains("unknown front-matter key 'allowed-tools'")));
++    }
++
++    #[test]
++    fn override_enabled_replaces_source() {
++        let dir = make_dir(&[("bp.md", VALID_BP)]);
++        let mut overrides = BTreeMap::new();
++        overrides.insert("reviewer".to_string(), WorkerBlueprintOverride {
++            model: None, effort: None, timeout_minutes: None,
++            enabled: Some(vec!["read".to_string()]), disabled: None,
++        });
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        assert_eq!(report.registry.get("reviewer").unwrap().enabled_tools.as_deref(), Some(&["read".to_string()][..]));
++    }
++
++    #[test]
++    fn override_enabled_empty_clears_source() {
++        let dir = make_dir(&[("bp.md", VALID_BP)]);
++        let mut overrides = BTreeMap::new();
++        overrides.insert("reviewer".to_string(), WorkerBlueprintOverride {
++            model: None, effort: None, timeout_minutes: None,
++            enabled: Some(vec![]), disabled: None,
++        });
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        assert_eq!(report.registry.get("reviewer").unwrap().enabled_tools.as_deref(), Some(&[][..]));
++    }
++
++    #[test]
++    fn override_disabled_replaces_source() {
++        let bp = "---\nname: worker\ndescription: Test.\ndisabled-tools:\n  - bash\n---\n\nBody.\n";
++        let dir = make_dir(&[("worker.md", bp)]);
++        let mut overrides = BTreeMap::new();
++        overrides.insert("worker".to_string(), WorkerBlueprintOverride {
++            model: None, effort: None, timeout_minutes: None,
++            enabled: None, disabled: Some(vec!["write".to_string()]),
++        });
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        assert_eq!(report.registry.get("worker").unwrap().disabled_tools.as_deref(), Some(&["write".to_string()][..]));
++    }
++
++    #[test]
++    fn omitted_override_inherits_source() {
++        let dir = make_dir(&[("bp.md", VALID_BP)]);
++        let mut overrides = BTreeMap::new();
++        overrides.insert("reviewer".to_string(), WorkerBlueprintOverride {
++            model: None, effort: None, timeout_minutes: None,
++            enabled: None, disabled: None,
++        });
++        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
++        let bp = report.registry.get("reviewer").unwrap();
++        assert_eq!(bp.enabled_tools.as_ref().unwrap().len(), 4);
++    }
++
++    // Test: coordinator override rejects worker-only fields.
++    #[test]
++    fn coordinator_override_rejects_worker_only_fields() {
++        let mut overrides = BTreeMap::new();
++        overrides.insert(
++            COORDINATOR_ID.to_string(),
++            WorkerBlueprintOverride {
++                model: Some("gpt-5".to_string()),
++                effort: Some("high".to_string()),
++                timeout_minutes: Some(30),
++                enabled: Some(vec!["read".to_string()]),
++                disabled: None,
++            },
++        );
++        let report = load_worker_blueprints(
++            Some("/nonexistent/path"),
++            &overrides,
++        );
++        // The coordinator override is not a worker blueprint; it does not
++        // appear in the registry.
++        assert!(report.registry.get(COORDINATOR_ID).is_none());
++        // Worker-only fields are diagnosed.
++        assert!(report.diagnostics.iter().any(|d| {
++            d.source == DiagnosticSource::Config(
++                "agents.worker_blueprints.coordinator.model".into()
++            )
++                && d.message.contains("worker-only field 'model'")
++        }));
++        assert!(report.diagnostics.iter().any(|d| {
++            d.source == DiagnosticSource::Config(
++                "agents.worker_blueprints.coordinator.effort".into()
++            )
++                && d.message.contains("worker-only field 'effort'")
++        }));
++        assert!(report.diagnostics.iter().any(|d| {
++            d.source == DiagnosticSource::Config(
++                "agents.worker_blueprints.coordinator.timeout_minutes".into()
++            )
++                && d.message.contains("worker-only field 'timeout_minutes'")
++        }));
++    }
++
++    // Test: coordinator override with only enabled/disabled produces no
++    // worker-only-field diagnostics.
++    #[test]
++    fn coordinator_override_accepts_enabled_disabled_only() {
++        let mut overrides = BTreeMap::new();
++        overrides.insert(
++            COORDINATOR_ID.to_string(),
++            WorkerBlueprintOverride {
++                model: None,
++                effort: None,
++                timeout_minutes: None,
++                enabled: Some(vec!["read".to_string(), "swarm_*".to_string()]),
++                disabled: Some(vec!["bash".to_string()]),
++            },
++        );
++        let report = load_worker_blueprints(
++            Some("/nonexistent/path"),
++            &overrides,
++        );
++        assert!(report.registry.get(COORDINATOR_ID).is_none());
++        assert!(report.diagnostics.iter().all(|d| {
++            !d.message.contains("worker-only field")
++        }));
++    }
 +}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 01735a693..812de0e34 100644
+index 01735a693..7bf26d384 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -649,6 +649,78 @@ pub struct AgentsConfig {
+@@ -649,6 +649,62 @@ pub struct AgentsConfig {
      /// Env override: `JCODE_SWARM_MAX_CONCURRENT_AGENTS`.
      #[serde(default = "default_swarm_max_concurrent_agents")]
      pub swarm_max_concurrent_agents: usize,
@@ -5115,17 +5656,13 @@ index 01735a693..812de0e34 100644
 +    pub worker_blueprints_dir: Option<String>,
 +    /// Per-blueprint configuration overrides keyed by blueprint ID. Each
 +    /// override can supply optional `model` and `effort` fields that replace
-+    /// the corresponding front-matter values. Source-owned fields (name,
-+    /// description, allowed-tools, communication-policy, role instructions)
-+    /// cannot be overridden in phase one.
++    /// the corresponding front-matter values. The reserved `coordinator` ID
++    /// configures root coordinator policy via `enabled` and `disabled`.
++    /// Source-owned fields (name, description, enabled-tools, disabled-tools,
++    /// communication-policy, role instructions) cannot be overridden in phase
++    /// one.
 +    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
 +    pub worker_blueprints: std::collections::BTreeMap<String, WorkerBlueprintOverride>,
-+    /// Optional coordinator-only tool policy. When present, the effective
-+    /// coordinator policy is the intersection of this allowlist and the global
-+    /// `[tools]` policy. Applied only to user-facing root sessions, never to
-+    /// internal roles or headless service sessions.
-+    #[serde(default)]
-+    pub coordinator: CoordinatorConfig,
 +    /// Default timeout in minutes for generated blueprint tool calls
 +    /// (`swarm_<id>`). Used when neither the per-call `timeout_minutes`
 +    /// parameter nor the blueprint's `timeout-minutes` front-matter key
@@ -5134,9 +5671,15 @@ index 01735a693..812de0e34 100644
 +    pub swarm_timeout_minutes: u32,
 +}
 +
-+/// TOML override for a single worker blueprint. Only `model` and `effort`
-+/// are overridable in phase one. An override whose ID has no discovered
-+/// Markdown blueprint is nonfatal but diagnosed.
++/// TOML override for a single worker blueprint. `model`, `effort`, and
++/// `timeout_minutes` are overridable in phase one. `enabled` and `disabled`
++/// provide TOML-level tool policy overrides that replace the corresponding
++/// front-matter `enabled-tools` and `disabled-tools` fields. An override
++/// whose ID has no discovered Markdown blueprint is nonfatal but diagnosed.
++///
++/// The reserved `coordinator` ID accepts only `enabled` and `disabled`;
++/// worker-only fields (`model`, `effort`, `timeout_minutes`) are rejected
++/// for it during post-deserialization validation.
 +#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 +#[serde(default)]
 +pub struct WorkerBlueprintOverride {
@@ -5150,33 +5693,15 @@ index 01735a693..812de0e34 100644
 +    pub effort: Option<String>,
 +    /// Optional timeout override in minutes. Must be a positive integer.
 +    pub timeout_minutes: Option<u32>,
-+}
-+
-+/// Coordinator-only tool policy configuration.
-+///
-+/// Omission means no coordinator-specific restriction. `allowed_tools = []`
-+/// means no developer tools. The effective coordinator policy is the
-+/// intersection of this optional allowlist and global `[tools]` policy.
-+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-+#[serde(default)]
-+pub struct CoordinatorConfig {
-+    /// Optional allowlist of tool names visible to the coordinator. When
-+    /// present, the coordinator can only use tools in this list (intersected
-+    /// with the global `[tools]` policy). Generated `swarm_<id>` tools must
-+    /// be explicitly listed to be visible.
-+    pub allowed_tools: Vec<String>,
-+}
-+
-+impl CoordinatorConfig {
-+    /// Returns `Some(HashSet)` when `allowed_tools` is non-empty, meaning a
-+    /// coordinator-specific restriction is active.
-+    pub fn allowed_set(&self) -> Option<std::collections::HashSet<String>> {
-+        if self.allowed_tools.is_empty() {
-+            None
-+        } else {
-+            Some(self.allowed_tools.iter().cloned().collect())
-+        }
-+    }
++    /// Optional enabled-tools override. A present list replaces the
++    /// front-matter `enabled-tools` field. An empty list clears the source
++    /// enabled restriction (unrestricted at this scope). Omission inherits
++    /// the source value.
++    pub enabled: Option<Vec<String>>,
++    /// Optional disabled-tools override. A present list replaces the
++    /// front-matter `disabled-tools` field. `disabled = ["*"]` disables
++    /// every tool. Omission inherits the source value.
++    pub disabled: Option<Vec<String>>,
 +}
 +
 +fn default_swarm_timeout_minutes() -> u32 {
@@ -5184,13 +5709,12 @@ index 01735a693..812de0e34 100644
  }
  
  fn default_swarm_max_concurrent_agents() -> usize {
-@@ -693,6 +765,10 @@ impl Default for AgentsConfig {
+@@ -693,6 +749,9 @@ impl Default for AgentsConfig {
              memory_embedding_base_url: None,
              memory_embedding_dim: None,
              swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
 +            worker_blueprints_dir: None,
 +            worker_blueprints: std::collections::BTreeMap::new(),
-+            coordinator: CoordinatorConfig::default(),
 +            swarm_timeout_minutes: default_swarm_timeout_minutes(),
          }
      }
