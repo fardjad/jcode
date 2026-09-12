@@ -88,7 +88,6 @@ workers in parallel rather than serializing.
 | `swarm_fixer`          | Code changes with build/test validation         |
 | `swarm_research`       | Web and documentation research                  |
 | `swarm_automation`     | Browser, UI, and Gmail workflows                |
-| `swarm_mcp-specialist` | MCP tool discovery and invocation               |
 
 ## The balance
 

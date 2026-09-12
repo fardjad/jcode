@@ -1,0 +1,709 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Sat, 12 Sep 2026 14:50:24 +0200
+Subject: [PATCH] feat: enforce ordered web-search engine policy
+
+X-Jcode-Patch-Intent: Make web-search engine selection an ordered,
+configuration-owned allowlist with scalar compatibility.
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1020-personal-feature-make-completion-quality-gates-respect-review-setti.patch
+
+Patch intent:
+Treat [websearch].engine as the complete ordered engine policy. Accept the
+legacy scalar and canonical array forms, normalize aliases and duplicates, and
+attempt configured engines in priority order only.
+
+Why it exists:
+A web-search tool request could previously select an engine outside the
+configured policy, including DuckDuckGo when SearXNG was explicitly selected.
+This patch removes engine selection from the public schema, rejects a legacy
+request for a non-primary engine, preserves legacy fallback migration, and
+makes list and scalar environment overrides explicit. It does not add new
+search providers or change result parsing.
+
+Upstream integration points:
+crates/jcode-config-types/src/lib.rs owns WebSearchConfig deserialization,
+defaults, aliases, and serialization. crates/jcode-base/src/config/
+config_file.rs and env_overrides.rs load and validate TOML and environment
+policy. The websearch tool in crates/jcode-app-core/src/tool/websearch.rs
+dispatches the normalized list and retains legacy request decoding for
+in-flight callers. README.md and the default config template document the
+policy and overrides.
+
+Update guidance:
+Preserve scalar compatibility and the default DuckDuckGo-then-Bing order while
+keeping the normalized engine vector as both allowlist and priority. If the
+legacy fallback key is removed, migrate its documented behavior deliberately.
+Any new dispatch path must consume the normalized list and must not reintroduce
+request-level engine selection or bypass strict environment validation.
+
+Validation:
+scripts/isolate_config.py -- cargo test -p jcode-config-types websearch_config_tests --lib
+scripts/isolate_config.py -- cargo test -p jcode-app-core tool::websearch::tests --lib
+scripts/isolate_config.py -- cargo test -p jcode-base websearch_ --lib
+---
+ Cargo.lock                                    |   1 +
+ README.md                                     |  14 ++
+ crates/jcode-app-core/src/tool/websearch.rs   |  63 +++++-
+ crates/jcode-base/src/config.rs               |   1 +
+ crates/jcode-base/src/config/config_file.rs   |  34 +++
+ crates/jcode-base/src/config/default_file.rs  |  13 +-
+ crates/jcode-base/src/config/env_overrides.rs |  67 +++++-
+ crates/jcode-base/src/config_tests.rs         |  77 ++++++-
+ crates/jcode-config-types/Cargo.toml          |   3 +
+ crates/jcode-config-types/src/lib.rs          | 193 +++++++++++++++++-
+ 10 files changed, 431 insertions(+), 35 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 56c6f1dbc..ddd6f1cad 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3309,6 +3309,7 @@ version = "0.1.0"
+ dependencies = [
+  "serde",
+  "serde_json",
++ "toml",
+ ]
+ 
+ [[package]]
+diff --git a/README.md b/README.md
+index c310e7625..48f82f1c9 100644
+--- a/README.md
++++ b/README.md
+@@ -330,6 +330,20 @@ Jcode is left-aligned by default. You can switch to centered mode with the `Alt+
+ 
+ To disable emoji globally in TUI and CLI output, set `emoji = false` under `[display]` in `~/.jcode/config.toml`, or launch with `JCODE_NO_EMOJI=1`. Jcode replaces emoji with compact ASCII markers while preserving other Unicode text.
+ 
++### Web-search engine policy
++
++The `[websearch].engine` setting is an ordered allowlist. It accepts the
++historical scalar form or the canonical array form, for example
++`engine = ["searxng", "bing"]`. Engines are attempted in listed order, and a
++websearch request cannot select or prioritize an engine outside that list. The
++default order remains DuckDuckGo followed by Bing. The deprecated
++`fallback_engines` setting is still read and appended during migration.
++
++`JCODE_WEBSEARCH_ENGINES` replaces the complete ordered list. The compatible
++`JCODE_WEBSEARCH_ENGINE` override replaces only the primary engine while
++retaining the configured tail. Invalid or empty engine overrides fail strict
++configuration loading.
++
+ ---
+ 
+ ## Swarm
+diff --git a/crates/jcode-app-core/src/tool/websearch.rs b/crates/jcode-app-core/src/tool/websearch.rs
+index 0d9dab329..88f29c58a 100644
+--- a/crates/jcode-app-core/src/tool/websearch.rs
++++ b/crates/jcode-app-core/src/tool/websearch.rs
+@@ -5,7 +5,7 @@ use async_trait::async_trait;
+ use serde::Deserialize;
+ use serde_json::{Value, json};
+ 
+-/// Web search using DuckDuckGo or Bing (HTML scraping, with optional Bing API)
++/// Web search using the ordered, configuration-owned engine policy.
+ pub struct WebSearchTool {
+     client: reqwest::Client,
+ }
+@@ -50,7 +50,7 @@ impl Tool for WebSearchTool {
+     }
+ 
+     fn description(&self) -> &str {
+-        "Search the web."
++        "Search the web using the engines and priority configured in [websearch].engine."
+     }
+ 
+     fn parameters_schema(&self) -> Value {
+@@ -67,11 +67,6 @@ impl Tool for WebSearchTool {
+                     "type": "integer",
+                     "description": "Max results."
+                 },
+-                "engine": {
+-                    "type": "string",
+-                    "enum": ["duckduckgo", "bing", "searxng"],
+-                    "description": "Engine. Defaults to duckduckgo; bing uses JCODE_BING_API_KEY, searxng uses JCODE_SEARXNG_URL."
+-                },
+                 "bing_market": {
+                     "type": "string",
+                     "description": "Optional Bing market, e.g. en-US or zh-CN. Defaults to JCODE_BING_MARKET or en-US."
+@@ -85,10 +80,7 @@ impl Tool for WebSearchTool {
+         let num_results = params.num_results.unwrap_or(8).min(20);
+ 
+         let config = crate::config::config();
+-        let mut engines = Vec::new();
+-        engines.push(params.engine.unwrap_or(config.websearch.engine));
+-        engines.extend(config.websearch.fallback_engines.iter().copied());
+-        engines.dedup();
++        let engines = resolve_engine_policy(&config.websearch.engine, params.engine)?;
+ 
+         let market = params
+             .bing_market
+@@ -157,6 +149,26 @@ impl Tool for WebSearchTool {
+     }
+ }
+ 
++fn resolve_engine_policy(
++    configured: &[WebSearchEngine],
++    requested: Option<WebSearchEngine>,
++) -> Result<Vec<WebSearchEngine>> {
++    let first = configured
++        .first()
++        .copied()
++        .ok_or_else(|| anyhow::anyhow!("websearch policy must contain at least one engine"))?;
++    if let Some(requested) = requested
++        && requested != first
++    {
++        return Err(anyhow::anyhow!(
++            "websearch engine requests are policy-controlled; configured primary is {}, not {}",
++            first.as_str(),
++            requested.as_str()
++        ));
++    }
++    Ok(configured.to_vec())
++}
++
+ impl WebSearchTool {
+     async fn search_with_engine(
+         &self,
+@@ -834,4 +846,33 @@ mod tests {
+         );
+         assert_eq!(WebSearchEngine::Searxng.as_str(), "searxng");
+     }
++
++    #[test]
++    fn schema_does_not_expose_engine_selection() {
++        let schema = WebSearchTool::new().parameters_schema();
++        assert!(schema["properties"].get("engine").is_none());
++    }
++
++    #[test]
++    fn searxng_only_policy_rejects_duckduckgo_request_without_dispatch() {
++        let error = resolve_engine_policy(
++            &[WebSearchEngine::Searxng],
++            Some(WebSearchEngine::Duckduckgo),
++        )
++        .expect_err("an unconfigured request engine must be rejected");
++        assert!(error.to_string().contains("policy-controlled"));
++    }
++
++    #[test]
++    fn configured_policy_order_is_authoritative() {
++        let engines = resolve_engine_policy(
++            &[WebSearchEngine::Searxng, WebSearchEngine::Bing],
++            Some(WebSearchEngine::Searxng),
++        )
++        .expect("the configured primary is allowed");
++        assert_eq!(
++            engines,
++            vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
++        );
++    }
+ }
+diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
+index 96c50784e..c9eab6682 100644
+--- a/crates/jcode-base/src/config.rs
++++ b/crates/jcode-base/src/config.rs
+@@ -184,6 +184,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+     "JCODE_TYPING_SCROLL_LOCK_TOGGLE_KEY",
+     "JCODE_UPDATE_CHANNEL",
+     "JCODE_WEBSEARCH_ENGINE",
++    "JCODE_WEBSEARCH_ENGINES",
+     "JCODE_WEBSEARCH_FALLBACK_ENGINES",
+     "JCODE_WORKSPACE_DOWN_KEY",
+     "JCODE_WORKSPACE_LEFT_KEY",
+diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
+index 214b02dde..bf3504e98 100644
+--- a/crates/jcode-base/src/config/config_file.rs
++++ b/crates/jcode-base/src/config/config_file.rs
+@@ -21,6 +21,7 @@ impl Config {
+     /// to distinguish a malformed config from an absent config.
+     pub fn load_strict() -> anyhow::Result<Self> {
+         let mut config = Self::load_from_file_strict()?.unwrap_or_default();
++        validate_websearch_env_overrides()?;
+         config.apply_env_overrides();
+         Ok(config)
+     }
+@@ -712,6 +713,39 @@ impl Config {
+     }
+ }
+ 
++fn validate_websearch_env_overrides() -> anyhow::Result<()> {
++    for key in [
++        "JCODE_WEBSEARCH_ENGINES",
++        "JCODE_WEBSEARCH_ENGINE",
++        "JCODE_WEBSEARCH_FALLBACK_ENGINES",
++    ] {
++        let Some(value) = std::env::var_os(key) else {
++            continue;
++        };
++        let value = value.to_string_lossy();
++        if key == "JCODE_WEBSEARCH_ENGINE" {
++            if value.trim().is_empty() || jcode_config_types::WebSearchEngine::parse(&value).is_none() {
++                anyhow::bail!("{key} must name a supported websearch engine");
++            }
++        } else {
++            let values = value
++                .split([',', '\n'])
++                .map(str::trim)
++                .filter(|item| !item.is_empty())
++                .collect::<Vec<_>>();
++            if values.is_empty() {
++                anyhow::bail!("{key} must contain at least one websearch engine");
++            }
++            for item in values {
++                if jcode_config_types::WebSearchEngine::parse(item).is_none() {
++                    anyhow::bail!("{key} contains unknown websearch engine {item:?}");
++                }
++            }
++        }
++    }
++    Ok(())
++}
++
+ #[cfg(test)]
+ mod issue_1056_tests {
+     use super::Config;
+diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
+index e8e017e4b..513137d0e 100644
+--- a/crates/jcode-base/src/config/default_file.rs
++++ b/crates/jcode-base/src/config/default_file.rs
+@@ -304,10 +304,13 @@ kv_cache_miss_notices = true
+ update_channel = "stable"
+ 
+ [websearch]
+-# Preferred websearch engine: "duckduckgo", "bing", or "searxng".
+-engine = "duckduckgo"
+-# Keyless HTML engines to try if the preferred engine fails. Default falls back to Bing HTML.
+-fallback_engines = ["bing"]
++# Ordered websearch policy and complete engine allowlist. The first engine is
++# tried first; no tool request can select an engine outside this list.
++engine = ["duckduckgo", "bing"]
++# Legacy fallback_engines is still accepted and appended during migration, but
++# the canonical form above is preferred. Environment overrides:
++# JCODE_WEBSEARCH_ENGINES replaces this complete list, while
++# JCODE_WEBSEARCH_ENGINE replaces only the primary engine.
+ # Bring your own Bing Search API key for primary Bing searches. Prefer using an env var.
+ # Fallback Bing searches intentionally use keyless HTML search.
+ # bing_api_key_env = "JCODE_BING_API_KEY"
+@@ -319,7 +322,7 @@ bing_market = "en-US"
+ # reputation and return an anti-bot page with no results. Pointing at a SearXNG
+ # instance (self-hosted or trusted public) with the JSON format enabled avoids
+ # this. Configure here or via the JCODE_SEARXNG_URL environment variable, then
+-# set engine = "searxng" or add it to fallback_engines.
++# set engine = ["searxng"] to use only SearXNG, or put it first in the list.
+ # searxng_url = "https://searx.example.org"
+ 
+ [tools]
+diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
+index 89adb667d..390f3867e 100644
+--- a/crates/jcode-base/src/config/env_overrides.rs
++++ b/crates/jcode-base/src/config/env_overrides.rs
+@@ -507,20 +507,36 @@ impl Config {
+             }
+         }
+ 
+-        // Web search
+-        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_ENGINE")
+-            && let Some(engine) = WebSearchEngine::parse(&v)
++        // Web search. The list override owns the complete policy. The scalar
++        // override only replaces the primary engine and retains the configured
++        // legacy tail for compatibility.
++        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_ENGINES")
++            && let Ok(engines) = parse_websearch_engines_env(&v)
+         {
+-            self.websearch.engine = engine;
++            self.websearch.engine = engines;
+         }
+-        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_FALLBACK_ENGINES") {
+-            let engines = parse_env_list(&v)
+-                .into_iter()
+-                .filter_map(|item| WebSearchEngine::parse(&item))
+-                .collect::<Vec<_>>();
+-            if !engines.is_empty() {
+-                self.websearch.fallback_engines = engines;
++        if std::env::var_os("JCODE_WEBSEARCH_ENGINES").is_none()
++            && let Ok(v) = std::env::var("JCODE_WEBSEARCH_ENGINE")
++            && let Some(engine) = WebSearchEngine::parse(&v)
++        {
++            let mut engines = vec![engine];
++            engines.extend(self.websearch.engine.iter().copied().skip(1));
++            dedup_websearch_engines(&mut engines);
++            self.websearch.engine = engines;
++        }
++        // Deprecated alias retained for old launch scripts. It replaces the
++        // configured tail, while the primary engine remains authoritative.
++        if std::env::var_os("JCODE_WEBSEARCH_ENGINES").is_none()
++            && std::env::var_os("JCODE_WEBSEARCH_ENGINE").is_none()
++            && let Ok(v) = std::env::var("JCODE_WEBSEARCH_FALLBACK_ENGINES")
++            && let Ok(fallbacks) = parse_websearch_engines_env(&v)
++        {
++            let primary = self.websearch.engine.first().copied();
++            self.websearch.engine = fallbacks;
++            if let Some(primary) = primary {
++                self.websearch.engine.insert(0, primary);
+             }
++            dedup_websearch_engines(&mut self.websearch.engine);
+         }
+         if let Ok(v) = std::env::var("JCODE_BING_API_KEY")
+             && !v.trim().is_empty()
+@@ -851,3 +867,32 @@ fn parse_env_list(raw: &str) -> Vec<String> {
+         .map(ToString::to_string)
+         .collect()
+ }
++
++fn parse_websearch_engines_env(raw: &str) -> Result<Vec<WebSearchEngine>, String> {
++    let values = parse_env_list(raw);
++    if values.is_empty() {
++        return Err("must contain at least one engine".to_string());
++    }
++    let mut engines = Vec::with_capacity(values.len());
++    for value in values {
++        let Some(engine) = WebSearchEngine::parse(&value) else {
++            return Err(format!("unknown websearch engine {value:?}"));
++        };
++        if !engines.contains(&engine) {
++            engines.push(engine);
++        }
++    }
++    Ok(engines)
++}
++
++fn dedup_websearch_engines(engines: &mut Vec<WebSearchEngine>) {
++    let mut seen = Vec::with_capacity(engines.len());
++    engines.retain(|engine| {
++        if seen.contains(engine) {
++            false
++        } else {
++            seen.push(*engine);
++            true
++        }
++    });
++}
+diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
+index 7a4d737f8..cdc8e4d94 100644
+--- a/crates/jcode-base/src/config_tests.rs
++++ b/crates/jcode-base/src/config_tests.rs
+@@ -1,7 +1,7 @@
+ use super::{
+     AmbientConfig, Config, DiffDisplayMode, DisplayConfig, HookCommands, LatexRenderingMode,
+     McpToolsMode, ProviderConfig, SessionPickerResumeAction, SwarmSpawnMode, ToolConfig,
+-    config_env_fingerprint, populate_context_limits_from_config_ref,
++    WebSearchEngine, config_env_fingerprint, populate_context_limits_from_config_ref,
+ };
+ use std::ffi::OsString;
+ use std::path::Path;
+@@ -14,6 +14,81 @@ fn restore_env_var(key: &str, previous: Option<OsString>) {
+     }
+ }
+ 
++#[test]
++fn websearch_environment_list_replaces_complete_policy() {
++    let _guard = crate::storage::lock_test_env();
++    let previous = save_websearch_env();
++    clear_websearch_env();
++    crate::env::set_var("JCODE_WEBSEARCH_ENGINES", "searxng");
++    let mut config = Config::default();
++    config.apply_env_overrides();
++    assert_eq!(config.websearch.engine, vec![WebSearchEngine::Searxng]);
++    restore_websearch_env(previous);
++}
++
++#[test]
++fn websearch_scalar_environment_override_replaces_only_primary() {
++    let _guard = crate::storage::lock_test_env();
++    let previous = save_websearch_env();
++    clear_websearch_env();
++    crate::env::set_var("JCODE_WEBSEARCH_ENGINE", "searxng");
++    let mut config = Config::default();
++    config.apply_env_overrides();
++    assert_eq!(
++        config.websearch.engine,
++        vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
++    );
++    restore_websearch_env(previous);
++}
++
++#[test]
++fn websearch_list_environment_override_has_precedence_over_legacy_overrides() {
++    let _guard = crate::storage::lock_test_env();
++    let previous = save_websearch_env();
++    clear_websearch_env();
++    crate::env::set_var("JCODE_WEBSEARCH_ENGINES", "searxng,bing,searx");
++    crate::env::set_var("JCODE_WEBSEARCH_ENGINE", "duckduckgo");
++    crate::env::set_var("JCODE_WEBSEARCH_FALLBACK_ENGINES", "duckduckgo");
++
++    let mut config = Config::default();
++    config.apply_env_overrides();
++
++    assert_eq!(
++        config.websearch.engine,
++        vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
++    );
++    restore_websearch_env(previous);
++}
++
++fn save_websearch_env() -> [(&'static str, Option<OsString>); 3] {
++    [
++        (
++            "JCODE_WEBSEARCH_ENGINES",
++            std::env::var_os("JCODE_WEBSEARCH_ENGINES"),
++        ),
++        (
++            "JCODE_WEBSEARCH_ENGINE",
++            std::env::var_os("JCODE_WEBSEARCH_ENGINE"),
++        ),
++        (
++            "JCODE_WEBSEARCH_FALLBACK_ENGINES",
++            std::env::var_os("JCODE_WEBSEARCH_FALLBACK_ENGINES"),
++        ),
++    ]
++}
++
++fn clear_websearch_env() {
++    for (key, _) in save_websearch_env() {
++        crate::env::remove_var(key);
++    }
++}
++
++fn restore_websearch_env(previous: [(&'static str, Option<OsString>); 3]) {
++    for (key, value) in previous {
++        restore_env_var(key, value);
++    }
++}
++
+ #[test]
+ fn test_openai_reasoning_effort_defaults_to_low() {
+     assert_eq!(
+diff --git a/crates/jcode-config-types/Cargo.toml b/crates/jcode-config-types/Cargo.toml
+index f71508e30..fac92bca4 100644
+--- a/crates/jcode-config-types/Cargo.toml
++++ b/crates/jcode-config-types/Cargo.toml
+@@ -7,3 +7,6 @@ publish = false
+ [dependencies]
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
++
++[dev-dependencies]
++toml = "0.8"
+diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
+index 7bf26d384..7f23d9fef 100644
+--- a/crates/jcode-config-types/src/lib.rs
++++ b/crates/jcode-config-types/src/lib.rs
+@@ -1,4 +1,4 @@
+-use serde::{Deserialize, Serialize};
++use serde::{Deserialize, Deserializer, Serialize, de};
+ 
+ mod display;
+ pub use display::DisplayConfig;
+@@ -1243,12 +1243,16 @@ impl WebSearchEngine {
+ }
+ 
+ /// Configuration for the websearch tool.
+-#[derive(Debug, Clone, Serialize, Deserialize)]
+-#[serde(default)]
++///
++/// `engine` is the complete, ordered policy.  Deserialization accepts the
++/// historical scalar form as well as the canonical array form and folds the
++/// deprecated `fallback_engines` key into that policy.
++#[derive(Debug, Clone)]
+ pub struct WebSearchConfig {
+-    /// Preferred engine when the tool input does not specify one.
+-    pub engine: WebSearchEngine,
+-    /// Keyless HTML engines to try after the preferred engine fails.
++    /// Engines to try in priority order.  This is also the complete allowlist.
++    pub engine: Vec<WebSearchEngine>,
++    /// Deprecated compatibility view of legacy fallback configuration.
++    /// Dispatch uses `engine`, never this field.
+     pub fallback_engines: Vec<WebSearchEngine>,
+     /// Optional Bing API key for primary Bing searches. Fallback Bing uses keyless HTML search.
+     pub bing_api_key: Option<String>,
+@@ -1264,10 +1268,136 @@ pub struct WebSearchConfig {
+     pub searxng_url_env: String,
+ }
+ 
++#[derive(Debug, Deserialize)]
++#[serde(untagged)]
++enum WebSearchEngineList {
++    Scalar(String),
++    Array(Vec<String>),
++}
++
++impl WebSearchEngineList {
++    fn parse<E>(self, field: &str, allow_empty: bool) -> Result<Vec<WebSearchEngine>, E>
++    where
++        E: de::Error,
++    {
++        let values = match self {
++            Self::Scalar(value) => vec![value],
++            Self::Array(values) => values,
++        };
++        if values.is_empty() && !allow_empty {
++            return Err(de::Error::custom(format!(
++                "[websearch].{field} must contain at least one engine"
++            )));
++        }
++        let mut parsed = Vec::with_capacity(values.len());
++        for value in values {
++            let Some(engine) = WebSearchEngine::parse(&value) else {
++                return Err(de::Error::custom(format!(
++                    "unknown websearch engine {value:?} in [websearch].{field}; expected duckduckgo, bing, or searxng"
++                )));
++            };
++            if !parsed.contains(&engine) {
++                parsed.push(engine);
++            }
++        }
++        if parsed.is_empty() && !allow_empty {
++            return Err(de::Error::custom(format!(
++                "[websearch].{field} must contain at least one engine"
++            )));
++        }
++        Ok(parsed)
++    }
++}
++
++#[derive(Debug, Deserialize)]
++struct RawWebSearchConfig {
++    #[serde(default)]
++    engine: Option<WebSearchEngineList>,
++    #[serde(default)]
++    fallback_engines: Option<WebSearchEngineList>,
++    #[serde(default)]
++    bing_api_key: Option<String>,
++    #[serde(default = "default_bing_api_key_env")]
++    bing_api_key_env: String,
++    #[serde(default = "default_bing_market")]
++    bing_market: String,
++    #[serde(default)]
++    searxng_url: Option<String>,
++    #[serde(default = "default_searxng_url_env")]
++    searxng_url_env: String,
++}
++
++fn default_bing_api_key_env() -> String {
++    "JCODE_BING_API_KEY".to_string()
++}
++
++fn default_bing_market() -> String {
++    "en-US".to_string()
++}
++
++fn default_searxng_url_env() -> String {
++    "JCODE_SEARXNG_URL".to_string()
++}
++
++impl<'de> Deserialize<'de> for WebSearchConfig {
++    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
++    where
++        D: Deserializer<'de>,
++    {
++        let raw = RawWebSearchConfig::deserialize(deserializer)?;
++        let engine_was_present = raw.engine.is_some();
++        let mut engine = raw
++            .engine
++            .map(|value| value.parse("engine", false))
++            .transpose()?
++            .unwrap_or_else(|| vec![WebSearchEngine::Duckduckgo]);
++        let fallback = match raw.fallback_engines {
++            Some(value) => value.parse("fallback_engines", true)?,
++            // Preserve the old effective default only when no primary engine
++            // was explicitly selected.  `engine = "searxng"` must remain
++            // exactly `[searxng]`.
++            None if !engine_was_present => vec![WebSearchEngine::Bing],
++            None => Vec::new(),
++        };
++        for fallback_engine in &fallback {
++            if !engine.contains(fallback_engine) {
++                engine.push(*fallback_engine);
++            }
++        }
++
++        Ok(Self {
++            engine,
++            fallback_engines: fallback,
++            bing_api_key: raw.bing_api_key,
++            bing_api_key_env: raw.bing_api_key_env,
++            bing_market: raw.bing_market,
++            searxng_url: raw.searxng_url,
++            searxng_url_env: raw.searxng_url_env,
++        })
++    }
++}
++
++impl Serialize for WebSearchConfig {
++    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
++    where
++        S: serde::Serializer,
++    {
++        use serde::ser::SerializeStruct;
++        let mut state = serializer.serialize_struct("WebSearchConfig", 7)?;
++        state.serialize_field("engine", &self.engine)?;
++        state.serialize_field("bing_api_key", &self.bing_api_key)?;
++        state.serialize_field("bing_api_key_env", &self.bing_api_key_env)?;
++        state.serialize_field("bing_market", &self.bing_market)?;
++        state.serialize_field("searxng_url", &self.searxng_url)?;
++        state.serialize_field("searxng_url_env", &self.searxng_url_env)?;
++        state.end()
++    }
++}
++
+ impl Default for WebSearchConfig {
+     fn default() -> Self {
+         Self {
+-            engine: WebSearchEngine::Duckduckgo,
++            engine: vec![WebSearchEngine::Duckduckgo, WebSearchEngine::Bing],
+             fallback_engines: vec![WebSearchEngine::Bing],
+             bing_api_key: None,
+             bing_api_key_env: "JCODE_BING_API_KEY".to_string(),
+@@ -1664,3 +1794,52 @@ mod reasoning_display_defaults_tests {
+         assert!(!display.show_thinking);
+     }
+ }
++
++#[cfg(test)]
++mod websearch_config_tests {
++    use super::*;
++
++    fn parse(input: &str) -> WebSearchConfig {
++        toml::from_str(input).expect("websearch config should parse")
++    }
++
++    #[test]
++    fn scalar_engine_normalizes_to_a_single_strict_policy() {
++        let config = parse("engine = \"searxng\"\n");
++        assert_eq!(config.engine, vec![WebSearchEngine::Searxng]);
++    }
++
++    #[test]
++    fn array_engine_preserves_priority_and_deduplicates_aliases() {
++        let config = parse("engine = [\"searx\", \"bing\", \"searxng\"]\n");
++        assert_eq!(
++            config.engine,
++            vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
++        );
++    }
++
++    #[test]
++    fn legacy_fallbacks_are_appended_during_migration() {
++        let config = parse(
++            "engine = \"searxng\"\nfallback_engines = [\"bing\", \"searx\"]\n",
++        );
++        assert_eq!(
++            config.engine,
++            vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
++        );
++    }
++
++    #[test]
++    fn empty_and_unknown_engine_lists_are_rejected() {
++        assert!(toml::from_str::<WebSearchConfig>("engine = []\n").is_err());
++        assert!(toml::from_str::<WebSearchConfig>("engine = [\"google\"]\n").is_err());
++    }
++
++    #[test]
++    fn default_policy_retains_duckduckgo_then_bing() {
++        assert_eq!(
++            WebSearchConfig::default().engine,
++            vec![WebSearchEngine::Duckduckgo, WebSearchEngine::Bing]
++        );
++    }
++}

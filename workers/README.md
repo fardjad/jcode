@@ -13,7 +13,6 @@ This directory versions personal worker blueprints installed locally under
 | `fixer.md` | `swarm_fixer` | Fast implementation specialist for small, well-scoped tasks. |
 | `research.md` | `swarm_research` | Web and documentation research without file modification. |
 | `automation.md` | `swarm_automation` | Browser, UI, and Gmail workflows. |
-| `mcp-specialist.md` | `swarm_mcp-specialist` | MCP tool discovery and invocation. |
 
 ### Built-in tool ownership
 
@@ -30,7 +29,13 @@ this ownership list.
 | `swarm_fixer` | `agentgrep`, `apply_patch`, `batch`, `bash`, `bg`, `debug_socket`, `edit`, `ls`, `multiedit`, `patch`, `read`, `selfdev`, `write` |
 | `swarm_research` | `jcode_docs`, `read`, `webfetch`, `websearch` |
 | `swarm_automation` | `browser`, `gmail`, `macos_computer_use`, `open`, `side_panel` |
-| `swarm_mcp-specialist` | `jcode_docs`, `mcp`, `mcp_call`, `mcp_search`, `skill_manage` |
+
+All ordinary workers also have `mcp`, `mcp_search`, `mcp_call`, `skill_manage`,
+and `jcode_docs`. These tools are available only for explicitly requested,
+task-scoped capabilities. Workers must discover MCP tools before calling them,
+must obtain explicit approval before connecting untrusted servers or taking
+consequential remote actions, and must not use MCP for arbitrary browsing or
+open-ended internet research.
 
 The automation worker owns `open` because it supports user-facing UI and
 artifact workflows. These assignments do not change the existing internet-use
@@ -154,10 +159,11 @@ session. No restart needed.
    have write tools. Non-research workers must not use available browser,
    Gmail, MCP, or shell capabilities for arbitrary or open-ended internet
    access. Task-specific exceptions are limited to automation's explicitly
-   requested UI or email workflow, MCP integration's explicitly requested MCP
-   capability, and a shell worker's explicitly requested specific network
-   operation. Research remains the web and documentation research role. Each
-   blueprint's `enabled-tools` list enforces the capability boundary.
+   requested UI or email workflow and a shell worker's explicitly requested
+   specific network operation. MCP is available to every ordinary worker only
+   for explicitly requested, task-scoped capabilities. Research remains the web
+   and documentation research role. Each blueprint's `enabled-tools` list
+   enforces the capability boundary.
 
 4. **Workers implement, they do not plan.** A fixer receives clear
    instructions and executes. It does not research, spawn subagents, or
