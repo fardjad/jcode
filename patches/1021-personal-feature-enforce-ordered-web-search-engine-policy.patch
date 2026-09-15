@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Fardjad Davari <public@fardjad.com>
-Date: Sat, 12 Sep 2026 14:50:24 +0200
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Mon, 14 Sep 2026 17:33:56 +0200
 Subject: [PATCH] feat: enforce ordered web-search engine policy
 
 X-Jcode-Patch-Intent: Make web-search engine selection an ordered,
@@ -42,17 +42,23 @@ scripts/isolate_config.py -- cargo test -p jcode-config-types websearch_config_t
 scripts/isolate_config.py -- cargo test -p jcode-app-core tool::websearch::tests --lib
 scripts/isolate_config.py -- cargo test -p jcode-base websearch_ --lib
 ---
- Cargo.lock                                    |   1 +
- README.md                                     |  14 ++
- crates/jcode-app-core/src/tool/websearch.rs   |  63 +++++-
- crates/jcode-base/src/config.rs               |   1 +
- crates/jcode-base/src/config/config_file.rs   |  34 +++
- crates/jcode-base/src/config/default_file.rs  |  13 +-
- crates/jcode-base/src/config/env_overrides.rs |  67 +++++-
- crates/jcode-base/src/config_tests.rs         |  77 ++++++-
- crates/jcode-config-types/Cargo.toml          |   3 +
- crates/jcode-config-types/src/lib.rs          | 193 +++++++++++++++++-
- 10 files changed, 431 insertions(+), 35 deletions(-)
+ Cargo.lock                                    |  1 +
+ README.md                                     | 14 ++++
+ crates/jcode-app-core/src/tool/websearch.rs   | 63 ++++++++++++++---
+ crates/jcode-base/src/config/config_file.rs   | 36 ++++++++++
+ crates/jcode-base/src/config/default_file.rs  | 13 ++--
+ crates/jcode-base/src/config/env_overrides.rs | 67 ++++++++++++++++---
+ crates/jcode-base/src/hooks.rs                | 12 ++--
+ .../jcode-base/src/provider/catalog_routes.rs | 17 +++--
+ crates/jcode-base/src/provider/pricing.rs     |  8 ++-
+ crates/jcode-base/src/provider/tests.rs       | 18 +++--
+ crates/jcode-config-types/Cargo.toml          |  3 +
+ crates/jcode-config-types/src/display.rs      | 10 ++-
+ .../src/openrouter_provider_impl.rs           |  4 +-
+ crates/jcode-tui/src/tui/session_picker.rs    |  5 +-
+ .../jcode-tui/src/tui/session_picker_tests.rs | 51 ++++++++------
+ crates/jcode-tui/src/tui/ui_header.rs         |  5 +-
+ 16 files changed, 240 insertions(+), 87 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
 index 56c6f1dbc..ddd6f1cad 100644
@@ -67,10 +73,10 @@ index 56c6f1dbc..ddd6f1cad 100644
  
  [[package]]
 diff --git a/README.md b/README.md
-index c310e7625..48f82f1c9 100644
+index e5d147ee5..acc4577b3 100644
 --- a/README.md
 +++ b/README.md
-@@ -330,6 +330,20 @@ Jcode is left-aligned by default. You can switch to centered mode with the `Alt+
+@@ -315,6 +315,20 @@ Jcode is left-aligned by default. You can switch to centered mode with the `Alt+
  
  To disable emoji globally in TUI and CLI output, set `emoji = false` under `[display]` in `~/.jcode/config.toml`, or launch with `JCODE_NO_EMOJI=1`. Jcode replaces emoji with compact ASCII markers while preserving other Unicode text.
  
@@ -198,20 +204,8 @@ index 0d9dab329..88f29c58a 100644
 +        );
 +    }
  }
-diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index 96c50784e..c9eab6682 100644
---- a/crates/jcode-base/src/config.rs
-+++ b/crates/jcode-base/src/config.rs
-@@ -184,6 +184,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
-     "JCODE_TYPING_SCROLL_LOCK_TOGGLE_KEY",
-     "JCODE_UPDATE_CHANNEL",
-     "JCODE_WEBSEARCH_ENGINE",
-+    "JCODE_WEBSEARCH_ENGINES",
-     "JCODE_WEBSEARCH_FALLBACK_ENGINES",
-     "JCODE_WORKSPACE_DOWN_KEY",
-     "JCODE_WORKSPACE_LEFT_KEY",
 diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
-index 214b02dde..bf3504e98 100644
+index 214b02dde..14c0439b7 100644
 --- a/crates/jcode-base/src/config/config_file.rs
 +++ b/crates/jcode-base/src/config/config_file.rs
 @@ -21,6 +21,7 @@ impl Config {
@@ -222,7 +216,7 @@ index 214b02dde..bf3504e98 100644
          config.apply_env_overrides();
          Ok(config)
      }
-@@ -712,6 +713,39 @@ impl Config {
+@@ -712,6 +713,41 @@ impl Config {
      }
  }
  
@@ -237,7 +231,9 @@ index 214b02dde..bf3504e98 100644
 +        };
 +        let value = value.to_string_lossy();
 +        if key == "JCODE_WEBSEARCH_ENGINE" {
-+            if value.trim().is_empty() || jcode_config_types::WebSearchEngine::parse(&value).is_none() {
++            if value.trim().is_empty()
++                || jcode_config_types::WebSearchEngine::parse(&value).is_none()
++            {
 +                anyhow::bail!("{key} must name a supported websearch engine");
 +            }
 +        } else {
@@ -378,101 +374,186 @@ index 89adb667d..390f3867e 100644
 +        }
 +    });
 +}
-diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index 7a4d737f8..cdc8e4d94 100644
---- a/crates/jcode-base/src/config_tests.rs
-+++ b/crates/jcode-base/src/config_tests.rs
-@@ -1,7 +1,7 @@
- use super::{
-     AmbientConfig, Config, DiffDisplayMode, DisplayConfig, HookCommands, LatexRenderingMode,
-     McpToolsMode, ProviderConfig, SessionPickerResumeAction, SwarmSpawnMode, ToolConfig,
--    config_env_fingerprint, populate_context_limits_from_config_ref,
-+    WebSearchEngine, config_env_fingerprint, populate_context_limits_from_config_ref,
- };
- use std::ffi::OsString;
- use std::path::Path;
-@@ -14,6 +14,81 @@ fn restore_env_var(key: &str, previous: Option<OsString>) {
+diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
+index c457cafd7..1953d9a62 100644
+--- a/crates/jcode-base/src/hooks.rs
++++ b/crates/jcode-base/src/hooks.rs
+@@ -630,11 +630,8 @@ mod tests {
+             "nonzero.sh",
+             "#!/bin/sh\ncat >/dev/null\nexit 1\n",
+         );
+-        let empty_stdout = write_executable_script(
+-            temp.path(),
+-            "empty.sh",
+-            "#!/bin/sh\ncat >/dev/null\n",
+-        );
++        let empty_stdout =
++            write_executable_script(temp.path(), "empty.sh", "#!/bin/sh\ncat >/dev/null\n");
+         let non_object = write_executable_script(
+             temp.path(),
+             "array.sh",
+@@ -675,7 +672,7 @@ mod tests {
+         // Spawn failure (command does not exist) leaves input unchanged.
+         let _env = transform_test_config(
+             &serde_json::to_string(&[
+-                "/nonexistent/path/that/does/not/exist/transform.sh".to_string(),
++                "/nonexistent/path/that/does/not/exist/transform.sh".to_string()
+             ])
+             .expect("serialize"),
+             5000,
+@@ -706,8 +703,7 @@ mod tests {
+             "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in\n*dangerous*) echo 'blocked: dangerous' >&2; exit 2;;\n*safe*) exit 0;;\n*) echo \"unexpected: $input\" >&2; exit 2;;\nesac\n",
+         );
+ 
+-        let _transform_env =
+-            transform_test_config(&transformer.to_string_lossy(), 5000);
++        let _transform_env = transform_test_config(&transformer.to_string_lossy(), 5000);
+         let _gate_env = gate_test_config(&gate.to_string_lossy(), 5000);
+ 
+         // Step 1: transform the input.
+diff --git a/crates/jcode-base/src/provider/catalog_routes.rs b/crates/jcode-base/src/provider/catalog_routes.rs
+index 5e2ced64b..e0fa14116 100644
+--- a/crates/jcode-base/src/provider/catalog_routes.rs
++++ b/crates/jcode-base/src/provider/catalog_routes.rs
+@@ -341,7 +341,12 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
+             }
+         })
+         .unwrap_or("openrouter");
+-    append_openrouter_routes(provider, openrouter_namespace, &mut routes, &mut openrouter_stats);
++    append_openrouter_routes(
++        provider,
++        openrouter_namespace,
++        &mut routes,
++        &mut openrouter_stats,
++    );
+ 
+     if !has_openrouter_transport && !added_direct_openai_compatible_routes {
+         // OpenRouter not configured - show a placeholder as unavailable.
+@@ -363,8 +368,8 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
+         );
      }
+ 
+-    let active_is_eu = active_openrouter
+-        .is_some_and(|runtime| runtime.runtime_key() == RuntimeKey::OpenRouterEu);
++    let active_is_eu =
++        active_openrouter.is_some_and(|runtime| runtime.runtime_key() == RuntimeKey::OpenRouterEu);
+     if active_is_eu {
+         for route in &mut routes {
+             if route.api_method == "openrouter" {
+@@ -894,7 +899,8 @@ fn append_openrouter_alternative_routes(
+                 stats.endpoint_routes += 1;
+                 routes.push(build_openrouter_endpoint_route(&model, ep, true, None));
+             }
+-        } else if openrouter::catalog_lists_model_for_namespace(namespace, &or_model) != Some(false) {
++        } else if openrouter::catalog_lists_model_for_namespace(namespace, &or_model) != Some(false)
++        {
+             routes.push(build_openrouter_fallback_provider_route(
+                 &model,
+                 &or_model,
+@@ -913,7 +919,8 @@ fn append_openrouter_alternative_routes(
+                 stats.endpoint_routes += 1;
+                 routes.push(build_openrouter_endpoint_route(model, ep, true, None));
+             }
+-        } else if openrouter::catalog_lists_model_for_namespace(namespace, &or_model) != Some(false) {
++        } else if openrouter::catalog_lists_model_for_namespace(namespace, &or_model) != Some(false)
++        {
+             // Skip fallback routes for models OpenRouter definitively does not
+             // serve (e.g. openai/gpt-5.3-codex-spark) so the picker never
+             // offers a route that would 400 at request time.
+diff --git a/crates/jcode-base/src/provider/pricing.rs b/crates/jcode-base/src/provider/pricing.rs
+index 4a8ea9f19..9db739f8f 100644
+--- a/crates/jcode-base/src/provider/pricing.rs
++++ b/crates/jcode-base/src/provider/pricing.rs
+@@ -396,13 +396,15 @@ mod tests {
+         .expect("endpoints");
+         openrouter::save_endpoints_disk_cache(model, &endpoints);
+ 
+-        let pinned = openrouter_route_pricing("openrouter", &format!("{model}@Sail Research"), "auto")
+-            .expect("pinned endpoint priced");
++        let pinned =
++            openrouter_route_pricing("openrouter", &format!("{model}@Sail Research"), "auto")
++                .expect("pinned endpoint priced");
+         assert_eq!(pinned.source, RouteCostSource::OpenRouterEndpoint);
+         assert_eq!(pinned.input_price_per_mtok_micros, Some(500_000));
+         assert_eq!(pinned.output_price_per_mtok_micros, Some(1_500_000));
+ 
+-        let bare = openrouter_route_pricing("openrouter", model, "auto").expect("auto route priced");
++        let bare =
++            openrouter_route_pricing("openrouter", model, "auto").expect("auto route priced");
+         assert_eq!(bare.input_price_per_mtok_micros, Some(300_000));
+ 
+         let _ = std::fs::remove_file(
+diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
+index 8a06e6bd0..48880f74b 100644
+--- a/crates/jcode-base/src/provider/tests.rs
++++ b/crates/jcode-base/src/provider/tests.rs
+@@ -1657,7 +1657,7 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
+         );
+     });
+ }
+- 
++
+ /// Failover must not escalate to a provider family the policy denies. When
+ /// the active provider is disallowed, `complete_with_failover` bails before
+ /// trying any fallback candidate.
+@@ -1691,7 +1691,6 @@ fn policy_blocks_failover_to_disallowed_family() {
+     });
  }
  
-+#[test]
-+fn websearch_environment_list_replaces_complete_policy() {
-+    let _guard = crate::storage::lock_test_env();
-+    let previous = save_websearch_env();
-+    clear_websearch_env();
-+    crate::env::set_var("JCODE_WEBSEARCH_ENGINES", "searxng");
-+    let mut config = Config::default();
-+    config.apply_env_overrides();
-+    assert_eq!(config.websearch.engine, vec![WebSearchEngine::Searxng]);
-+    restore_websearch_env(previous);
-+}
-+
-+#[test]
-+fn websearch_scalar_environment_override_replaces_only_primary() {
-+    let _guard = crate::storage::lock_test_env();
-+    let previous = save_websearch_env();
-+    clear_websearch_env();
-+    crate::env::set_var("JCODE_WEBSEARCH_ENGINE", "searxng");
-+    let mut config = Config::default();
-+    config.apply_env_overrides();
-+    assert_eq!(
-+        config.websearch.engine,
-+        vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
-+    );
-+    restore_websearch_env(previous);
-+}
-+
-+#[test]
-+fn websearch_list_environment_override_has_precedence_over_legacy_overrides() {
-+    let _guard = crate::storage::lock_test_env();
-+    let previous = save_websearch_env();
-+    clear_websearch_env();
-+    crate::env::set_var("JCODE_WEBSEARCH_ENGINES", "searxng,bing,searx");
-+    crate::env::set_var("JCODE_WEBSEARCH_ENGINE", "duckduckgo");
-+    crate::env::set_var("JCODE_WEBSEARCH_FALLBACK_ENGINES", "duckduckgo");
-+
-+    let mut config = Config::default();
-+    config.apply_env_overrides();
-+
-+    assert_eq!(
-+        config.websearch.engine,
-+        vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
-+    );
-+    restore_websearch_env(previous);
-+}
-+
-+fn save_websearch_env() -> [(&'static str, Option<OsString>); 3] {
-+    [
-+        (
-+            "JCODE_WEBSEARCH_ENGINES",
-+            std::env::var_os("JCODE_WEBSEARCH_ENGINES"),
-+        ),
-+        (
-+            "JCODE_WEBSEARCH_ENGINE",
-+            std::env::var_os("JCODE_WEBSEARCH_ENGINE"),
-+        ),
-+        (
-+            "JCODE_WEBSEARCH_FALLBACK_ENGINES",
-+            std::env::var_os("JCODE_WEBSEARCH_FALLBACK_ENGINES"),
-+        ),
-+    ]
-+}
-+
-+fn clear_websearch_env() {
-+    for (key, _) in save_websearch_env() {
-+        crate::env::remove_var(key);
-+    }
-+}
-+
-+fn restore_websearch_env(previous: [(&'static str, Option<OsString>); 3]) {
-+    for (key, value) in previous {
-+        restore_env_var(key, value);
-+    }
-+}
-+
- #[test]
- fn test_openai_reasoning_effort_defaults_to_low() {
-     assert_eq!(
+-
+ /// Catalog route filtering must remove all routes whose API method maps to a
+ /// denied provider family. This is a narrowly named regression for the
+ /// `filter_routes_by_policy` boundary.
+@@ -1746,7 +1745,6 @@ fn policy_filters_catalog_routes_by_family() {
+     assert_eq!(filtered[0].api_method, "openai-oauth");
+ }
+ 
+-
+ /// Persisted route restoration must reject a selection whose runtime key is
+ /// denied by the policy. This is a narrowly named regression for the
+ /// `set_route_selection` boundary.
+@@ -1817,7 +1815,10 @@ fn eu_and_standard_caches_are_namespace_isolated() {
+             jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter-eu")
+                 .expect("EU cache should exist");
+         assert!(
+-            !eu_cache.models.iter().any(|m| m.id == "openai/std-only-model"),
++            !eu_cache
++                .models
++                .iter()
++                .any(|m| m.id == "openai/std-only-model"),
+             "standard-only model must not appear in EU cache"
+         );
+ 
+@@ -1835,7 +1836,6 @@ fn eu_and_standard_caches_are_namespace_isolated() {
+     });
+ }
+ 
+-
+ /// EU pricing must use the EU cache, not the standard cache. A model present
+ /// in both caches with different prices must return the EU price when queried
+ /// from the EU namespace.
+@@ -1887,9 +1887,8 @@ fn eu_pricing_is_isolated_from_standard_cache() {
+             "EU pricing must use the EU cache, not the standard cache"
+         );
+ 
+-        let std_estimate =
+-            pricing::metered_pricing_for_source("openrouter", "openai/dual-priced")
+-                .expect("standard pricing should resolve");
++        let std_estimate = pricing::metered_pricing_for_source("openrouter", "openai/dual-priced")
++            .expect("standard pricing should resolve");
+         assert_eq!(
+             std_estimate.input_price_per_mtok_micros,
+             Some(2_200_000),
+@@ -1984,8 +1983,7 @@ fn eu_dispatch_enforced_by_allowed_providers() {
+             crate::config::invalidate_config_cache();
+ 
+             let mut provider = test_multi_provider_with_openai();
+-            *provider.active.write().expect("active provider lock") =
+-                ActiveProvider::OpenRouter;
++            *provider.active.write().expect("active provider lock") = ActiveProvider::OpenRouter;
+             // Install a standard OpenRouter stub as the active runtime.
+             let standard = Arc::new(StubExternalRuntime::new(
+                 "OpenRouter",
 diff --git a/crates/jcode-config-types/Cargo.toml b/crates/jcode-config-types/Cargo.toml
 index f71508e30..fac92bca4 100644
 --- a/crates/jcode-config-types/Cargo.toml
@@ -484,226 +565,205 @@ index f71508e30..fac92bca4 100644
 +
 +[dev-dependencies]
 +toml = "0.8"
-diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 7bf26d384..7f23d9fef 100644
---- a/crates/jcode-config-types/src/lib.rs
-+++ b/crates/jcode-config-types/src/lib.rs
-@@ -1,4 +1,4 @@
--use serde::{Deserialize, Serialize};
-+use serde::{Deserialize, Deserializer, Serialize, de};
+diff --git a/crates/jcode-config-types/src/display.rs b/crates/jcode-config-types/src/display.rs
+index d3c084356..852e24b4b 100644
+--- a/crates/jcode-config-types/src/display.rs
++++ b/crates/jcode-config-types/src/display.rs
+@@ -3,8 +3,7 @@
+ use crate::{
+     DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
+     NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, SessionPickerDefaultFilter,
+-    SessionPickerSort,
+-    default_true,
++    SessionPickerSort, default_true,
+ };
+ use serde::{Deserialize, Serialize};
  
- mod display;
- pub use display::DisplayConfig;
-@@ -1243,12 +1243,16 @@ impl WebSearchEngine {
+@@ -275,10 +274,9 @@ mod tests {
+             DisplayConfig::default().session_picker_default_filter,
+             crate::SessionPickerDefaultFilter::All
+         );
+-        let current_dir: DisplayConfig = serde_json::from_str(
+-            r#"{"session_picker_default_filter":"current-dir"}"#,
+-        )
+-        .expect("config");
++        let current_dir: DisplayConfig =
++            serde_json::from_str(r#"{"session_picker_default_filter":"current-dir"}"#)
++                .expect("config");
+         assert_eq!(
+             current_dir.session_picker_default_filter,
+             crate::SessionPickerDefaultFilter::CurrentDir
+diff --git a/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs b/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
+index f32b1a66e..e40f03fbe 100644
+--- a/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
++++ b/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
+@@ -418,8 +418,8 @@ impl Provider for OpenRouterProvider {
+             // such as `gpt-5.6-sol`. The chat API requires its catalog ID
+             // (`openai/gpt-5.6-sol`) whether or not a concrete backend pin is
+             // present. Keep opaque IDs untouched when they cannot be recognized.
+-            let model_id = jcode_base::provider::openrouter_catalog_model_id(&model_id)
+-                .unwrap_or(model_id);
++            let model_id =
++                jcode_base::provider::openrouter_catalog_model_id(&model_id).unwrap_or(model_id);
+             (model_id, provider)
+         } else {
+             // Generic OpenAI-compatible backends often use arbitrary model IDs.
+diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
+index dbfc4deb7..dcf5a474b 100644
+--- a/crates/jcode-tui/src/tui/session_picker.rs
++++ b/crates/jcode-tui/src/tui/session_picker.rs
+@@ -485,7 +485,10 @@ impl SessionPicker {
+     /// Apply the configured initial filter after recording the directory where
+     /// `/resume` was opened.
+     pub fn apply_configured_default_filter(&mut self) {
+-        self.filter_mode = match crate::config::config().display.session_picker_default_filter {
++        self.filter_mode = match crate::config::config()
++            .display
++            .session_picker_default_filter
++        {
+             jcode_config_types::SessionPickerDefaultFilter::All => SessionFilterMode::All,
+             jcode_config_types::SessionPickerDefaultFilter::CurrentDir => {
+                 SessionFilterMode::CurrentDir
+diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
+index b0dd84ce9..ec16e625c 100644
+--- a/crates/jcode-tui/src/tui/session_picker_tests.rs
++++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
+@@ -2582,9 +2582,15 @@ fn sort_ordering_applies_to_filtered_rows() {
+         picker.filter_mode = SessionFilterMode::CurrentDir;
+         picker.rebuild_items();
+ 
+-        let visible_ids: Vec<&str> =
+-            picker.visible_session_iter().map(|s| s.id.as_str()).collect();
+-        assert_eq!(visible_ids.len(), 2, "filter should show 2 sessions for {mode:?}");
++        let visible_ids: Vec<&str> = picker
++            .visible_session_iter()
++            .map(|s| s.id.as_str())
++            .collect();
++        assert_eq!(
++            visible_ids.len(),
++            2,
++            "filter should show 2 sessions for {mode:?}"
++        );
+ 
+         let expected_first = match mode {
+             SessionPickerSort::Recent => "charlie",
+@@ -2601,7 +2607,6 @@ fn sort_ordering_applies_to_filtered_rows() {
+     crate::config::invalidate_config_cache();
  }
  
- /// Configuration for the websearch tool.
--#[derive(Debug, Clone, Serialize, Deserialize)]
--#[serde(default)]
-+///
-+/// `engine` is the complete, ordered policy.  Deserialization accepts the
-+/// historical scalar form as well as the canonical array form and folds the
-+/// deprecated `fallback_engines` key into that policy.
-+#[derive(Debug, Clone)]
- pub struct WebSearchConfig {
--    /// Preferred engine when the tool input does not specify one.
--    pub engine: WebSearchEngine,
--    /// Keyless HTML engines to try after the preferred engine fails.
-+    /// Engines to try in priority order.  This is also the complete allowlist.
-+    pub engine: Vec<WebSearchEngine>,
-+    /// Deprecated compatibility view of legacy fallback configuration.
-+    /// Dispatch uses `engine`, never this field.
-     pub fallback_engines: Vec<WebSearchEngine>,
-     /// Optional Bing API key for primary Bing searches. Fallback Bing uses keyless HTML search.
-     pub bing_api_key: Option<String>,
-@@ -1264,10 +1268,136 @@ pub struct WebSearchConfig {
-     pub searxng_url_env: String,
+-
+ /// The sort ordering must apply to saved sessions within the grouped
+ /// (server-grouped) picker view. Saved sessions are sorted separately by
+ /// `compare_sessions` inside `rebuild_items`.
+@@ -2649,15 +2654,22 @@ fn sort_ordering_applies_to_saved_sessions_in_grouped_view() {
+         // Use new_grouped with no server groups so saved sessions appear in the
+         // orphan list. With filter All, rebuild_items separates saved sessions
+         // and sorts them by compare_sessions.
+-        let mut picker =
+-            SessionPicker::new_grouped(Vec::new(), vec![alpha.clone(), bravo.clone()]);
++        let mut picker = SessionPicker::new_grouped(Vec::new(), vec![alpha.clone(), bravo.clone()]);
+         picker.rebuild_items();
+ 
+         // Find the saved session IDs in the visible list.
+-        let visible_ids: Vec<&str> =
+-            picker.visible_session_iter().map(|s| s.id.as_str()).collect();
+-        assert!(visible_ids.contains(&"saved_alpha"), "alpha should be visible for {mode:?}");
+-        assert!(visible_ids.contains(&"saved_bravo"), "bravo should be visible for {mode:?}");
++        let visible_ids: Vec<&str> = picker
++            .visible_session_iter()
++            .map(|s| s.id.as_str())
++            .collect();
++        assert!(
++            visible_ids.contains(&"saved_alpha"),
++            "alpha should be visible for {mode:?}"
++        );
++        assert!(
++            visible_ids.contains(&"saved_bravo"),
++            "bravo should be visible for {mode:?}"
++        );
+ 
+         // The first visible session is the first saved session after sorting.
+         let expected_first = match mode {
+@@ -2708,16 +2720,13 @@ fn default_filter_current_dir_shows_only_matching_sessions_after_set_current_dir
+ 
+     assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
+     assert_eq!(picker.visible_session_count(), 1);
+-    assert!(picker
+-        .visible_session_iter()
+-        .all(|s| s.id == "same_dir"));
++    assert!(picker.visible_session_iter().all(|s| s.id == "same_dir"));
+ 
+     // Reset config so it does not leak.
+     std::fs::write(&config_path, "").expect("reset config");
+     crate::config::invalidate_config_cache();
  }
  
-+#[derive(Debug, Deserialize)]
-+#[serde(untagged)]
-+enum WebSearchEngineList {
-+    Scalar(String),
-+    Array(Vec<String>),
-+}
-+
-+impl WebSearchEngineList {
-+    fn parse<E>(self, field: &str, allow_empty: bool) -> Result<Vec<WebSearchEngine>, E>
-+    where
-+        E: de::Error,
-+    {
-+        let values = match self {
-+            Self::Scalar(value) => vec![value],
-+            Self::Array(values) => values,
-+        };
-+        if values.is_empty() && !allow_empty {
-+            return Err(de::Error::custom(format!(
-+                "[websearch].{field} must contain at least one engine"
-+            )));
-+        }
-+        let mut parsed = Vec::with_capacity(values.len());
-+        for value in values {
-+            let Some(engine) = WebSearchEngine::parse(&value) else {
-+                return Err(de::Error::custom(format!(
-+                    "unknown websearch engine {value:?} in [websearch].{field}; expected duckduckgo, bing, or searxng"
-+                )));
-+            };
-+            if !parsed.contains(&engine) {
-+                parsed.push(engine);
-+            }
-+        }
-+        if parsed.is_empty() && !allow_empty {
-+            return Err(de::Error::custom(format!(
-+                "[websearch].{field} must contain at least one engine"
-+            )));
-+        }
-+        Ok(parsed)
-+    }
-+}
-+
-+#[derive(Debug, Deserialize)]
-+struct RawWebSearchConfig {
-+    #[serde(default)]
-+    engine: Option<WebSearchEngineList>,
-+    #[serde(default)]
-+    fallback_engines: Option<WebSearchEngineList>,
-+    #[serde(default)]
-+    bing_api_key: Option<String>,
-+    #[serde(default = "default_bing_api_key_env")]
-+    bing_api_key_env: String,
-+    #[serde(default = "default_bing_market")]
-+    bing_market: String,
-+    #[serde(default)]
-+    searxng_url: Option<String>,
-+    #[serde(default = "default_searxng_url_env")]
-+    searxng_url_env: String,
-+}
-+
-+fn default_bing_api_key_env() -> String {
-+    "JCODE_BING_API_KEY".to_string()
-+}
-+
-+fn default_bing_market() -> String {
-+    "en-US".to_string()
-+}
-+
-+fn default_searxng_url_env() -> String {
-+    "JCODE_SEARXNG_URL".to_string()
-+}
-+
-+impl<'de> Deserialize<'de> for WebSearchConfig {
-+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-+    where
-+        D: Deserializer<'de>,
-+    {
-+        let raw = RawWebSearchConfig::deserialize(deserializer)?;
-+        let engine_was_present = raw.engine.is_some();
-+        let mut engine = raw
-+            .engine
-+            .map(|value| value.parse("engine", false))
-+            .transpose()?
-+            .unwrap_or_else(|| vec![WebSearchEngine::Duckduckgo]);
-+        let fallback = match raw.fallback_engines {
-+            Some(value) => value.parse("fallback_engines", true)?,
-+            // Preserve the old effective default only when no primary engine
-+            // was explicitly selected.  `engine = "searxng"` must remain
-+            // exactly `[searxng]`.
-+            None if !engine_was_present => vec![WebSearchEngine::Bing],
-+            None => Vec::new(),
-+        };
-+        for fallback_engine in &fallback {
-+            if !engine.contains(fallback_engine) {
-+                engine.push(*fallback_engine);
-+            }
-+        }
-+
-+        Ok(Self {
-+            engine,
-+            fallback_engines: fallback,
-+            bing_api_key: raw.bing_api_key,
-+            bing_api_key_env: raw.bing_api_key_env,
-+            bing_market: raw.bing_market,
-+            searxng_url: raw.searxng_url,
-+            searxng_url_env: raw.searxng_url_env,
-+        })
-+    }
-+}
-+
-+impl Serialize for WebSearchConfig {
-+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-+    where
-+        S: serde::Serializer,
-+    {
-+        use serde::ser::SerializeStruct;
-+        let mut state = serializer.serialize_struct("WebSearchConfig", 7)?;
-+        state.serialize_field("engine", &self.engine)?;
-+        state.serialize_field("bing_api_key", &self.bing_api_key)?;
-+        state.serialize_field("bing_api_key_env", &self.bing_api_key_env)?;
-+        state.serialize_field("bing_market", &self.bing_market)?;
-+        state.serialize_field("searxng_url", &self.searxng_url)?;
-+        state.serialize_field("searxng_url_env", &self.searxng_url_env)?;
-+        state.end()
-+    }
-+}
-+
- impl Default for WebSearchConfig {
-     fn default() -> Self {
-         Self {
--            engine: WebSearchEngine::Duckduckgo,
-+            engine: vec![WebSearchEngine::Duckduckgo, WebSearchEngine::Bing],
-             fallback_engines: vec![WebSearchEngine::Bing],
-             bing_api_key: None,
-             bing_api_key_env: "JCODE_BING_API_KEY".to_string(),
-@@ -1664,3 +1794,52 @@ mod reasoning_display_defaults_tests {
-         assert!(!display.show_thinking);
+-
+ /// The `all` default must show every session regardless of current dir.
+ #[test]
+ fn default_filter_all_shows_every_session() {
+@@ -2752,7 +2761,6 @@ fn default_filter_all_shows_every_session() {
+     crate::config::invalidate_config_cache();
+ }
+ 
+-
+ /// The async loaded-picker fallback path must also apply the default filter
+ /// after recording the current dir. This simulates the fallback that fires
+ /// when the cached grouped list arrives: `new_grouped` then `set_current_dir`
+@@ -2786,9 +2794,7 @@ fn default_filter_current_dir_applied_on_async_loaded_picker() {
+ 
+     assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
+     assert_eq!(picker.visible_session_count(), 1);
+-    assert!(picker
+-        .visible_session_iter()
+-        .all(|s| s.id == "same_dir"));
++    assert!(picker.visible_session_iter().all(|s| s.id == "same_dir"));
+ 
+     std::fs::write(&config_path, "").expect("reset config");
+     crate::config::invalidate_config_cache();
+@@ -2807,7 +2813,12 @@ fn ctrl_d_deletes_external_transcript_session() {
+     let external_file = temp.path().join("claude_session.jsonl");
+     std::fs::write(&external_file, "{\"type\":\"assistant\"}").expect("write external file");
+ 
+-    let mut session = make_session("external_claude", "claude-ext", false, SessionStatus::Closed);
++    let mut session = make_session(
++        "external_claude",
++        "claude-ext",
++        false,
++        SessionStatus::Closed,
++    );
+     session.source = SessionSource::ClaudeCode;
+     session.resume_target = ResumeTarget::ClaudeCodeSession {
+         session_id: "external_claude".to_string(),
+@@ -2833,7 +2844,6 @@ fn ctrl_d_deletes_external_transcript_session() {
      }
  }
-+
-+#[cfg(test)]
-+mod websearch_config_tests {
-+    use super::*;
-+
-+    fn parse(input: &str) -> WebSearchConfig {
-+        toml::from_str(input).expect("websearch config should parse")
-+    }
-+
-+    #[test]
-+    fn scalar_engine_normalizes_to_a_single_strict_policy() {
-+        let config = parse("engine = \"searxng\"\n");
-+        assert_eq!(config.engine, vec![WebSearchEngine::Searxng]);
-+    }
-+
-+    #[test]
-+    fn array_engine_preserves_priority_and_deduplicates_aliases() {
-+        let config = parse("engine = [\"searx\", \"bing\", \"searxng\"]\n");
-+        assert_eq!(
-+            config.engine,
-+            vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
-+        );
-+    }
-+
-+    #[test]
-+    fn legacy_fallbacks_are_appended_during_migration() {
-+        let config = parse(
-+            "engine = \"searxng\"\nfallback_engines = [\"bing\", \"searx\"]\n",
-+        );
-+        assert_eq!(
-+            config.engine,
-+            vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
-+        );
-+    }
-+
-+    #[test]
-+    fn empty_and_unknown_engine_lists_are_rejected() {
-+        assert!(toml::from_str::<WebSearchConfig>("engine = []\n").is_err());
-+        assert!(toml::from_str::<WebSearchConfig>("engine = [\"google\"]\n").is_err());
-+    }
-+
-+    #[test]
-+    fn default_policy_retains_duckduckgo_then_bing() {
-+        assert_eq!(
-+            WebSearchConfig::default().engine,
-+            vec![WebSearchEngine::Duckduckgo, WebSearchEngine::Bing]
-+        );
-+    }
-+}
+ 
+-
+ /// Deleting a session whose backing files are already gone must not error and
+ /// must still remove the row from the picker.
+ #[test]
+@@ -2867,7 +2877,6 @@ fn ctrl_d_deletes_session_with_missing_backing_files() {
+     }
+ }
+ 
+-
+ /// After deleting a session, the disk cache must be invalidated so the
+ /// deleted session does not reappear when the picker is reopened from the
+ /// cache. This verifies `invalidate_session_list_cache` is called on delete.
+diff --git a/crates/jcode-tui/src/tui/ui_header.rs b/crates/jcode-tui/src/tui/ui_header.rs
+index 279fc48d1..c1fe09aec 100644
+--- a/crates/jcode-tui/src/tui/ui_header.rs
++++ b/crates/jcode-tui/src/tui/ui_header.rs
+@@ -861,10 +861,7 @@ fn build_header_lines_with_auth(
+         // The native protocol reports the active route, not a complete remote
+         // credential inventory. Do not render the laptop's (or an empty)
+         // inventory as if it described providers configured on the server.
+-        (
+-            format!("/login to authenticate on {host}"),
+-            Vec::new(),
+-        )
++        (format!("/login to authenticate on {host}"), Vec::new())
+     } else {
+         (
+             "/login to add provider".to_string(),

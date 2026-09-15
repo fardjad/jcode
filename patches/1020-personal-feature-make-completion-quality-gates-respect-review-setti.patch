@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Fardjad Davari <public@fardjad.com>
-Date: Thu, 10 Sep 2026 22:01:55 +0200
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Mon, 14 Sep 2026 17:33:32 +0200
 Subject: [PATCH] feat: make completion quality gates respect review settings
 
 X-Jcode-Patch-Intent: Skip automatic post-completion todo quality
@@ -29,12 +29,12 @@ incomplete-work progress reminders, and require both review settings to be off.
 Validation:
 scripts/cargo_exec.sh test -p jcode-tui completion_quality_gates_are_disabled_only_when_review_and_judge_are_off --lib
 ---
- crates/jcode-tui/src/tui/app/input.rs          | 15 +++++++++++++++
- .../tui/app/tests/remote_events_reload_05.rs   | 18 ++++++++++++++++++
- 2 files changed, 33 insertions(+)
+ crates/jcode-tui/src/tui/app/input.rs         | 20 ++++++++++++++++++-
+ .../tui/app/tests/remote_events_reload_05.rs  | 18 +++++++++++++++++
+ 2 files changed, 37 insertions(+), 1 deletion(-)
 
 diff --git a/crates/jcode-tui/src/tui/app/input.rs b/crates/jcode-tui/src/tui/app/input.rs
-index e10c42314..af0751941 100644
+index e10c42314..4bb3b2385 100644
 --- a/crates/jcode-tui/src/tui/app/input.rs
 +++ b/crates/jcode-tui/src/tui/app/input.rs
 @@ -1687,6 +1687,21 @@ impl App {
@@ -59,6 +59,18 @@ index e10c42314..af0751941 100644
              // Deferred quality checks land here, once, instead of interrupting
              // every todo write during the turn. Every point recorded during the
              // turn is raised, including ones whose score later climbed: work
+@@ -2931,7 +2946,10 @@ fn paste_placeholder(content: &str) -> String {
+ impl App {
+     pub(super) fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) {
+         if self.remote_login.is_some() {
+-            if matches!(event.kind, crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat) {
++            if matches!(
++                event.kind,
++                crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat
++            ) {
+                 let _ = self.handle_key_press_event(event);
+             }
+             return;
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
 index ae6aaabe9..2ef0f588d 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs

@@ -181,13 +181,15 @@ learn-upstream-exclusions:
   trap - ERR
   printf 'learned clean-upstream exclusions for: %s\n' "$base"
 
-# Sync local master from upstream, learn exclusions, and create patched copy.
-sync release="master":
+# Sync local master from the newest upstream release tag by default, learn
+# exclusions, and create patched copy. Pass `master` or a specific vX.Y.Z tag
+# to select a non-default upstream ref.
+sync release="":
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  release="{{release}}"
+  requested_release="{{release}}"
   current_branch=$(git branch --show-current)
 
   if [[ "$current_branch" != personalized ]]; then
@@ -203,6 +205,20 @@ sync release="master":
     exit 1
   fi
 
+  if [[ -z "$requested_release" ]]; then
+    release=$(git ls-remote --tags --refs upstream \
+      | awk -F/ '$3 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ { print $3 }' \
+      | sort -V \
+      | tail -n 1)
+    [[ -n "$release" ]] || {
+      printf 'upstream has no stable vX.Y.Z release tags\n' >&2
+      exit 1
+    }
+    printf 'selected latest upstream release tag: %s\n' "$release"
+  else
+    release="$requested_release"
+  fi
+
   if [[ "$release" == master ]]; then
     git fetch upstream master
     selected_ref=upstream/master
@@ -211,8 +227,10 @@ sync release="master":
       printf 'invalid upstream tag name: %s\n' "$release" >&2
       exit 1
     }
-    git fetch upstream "refs/tags/$release:refs/tags/$release"
-    selected_ref="refs/tags/$release"
+    # Fetch into FETCH_HEAD rather than refs/tags/$release: local tags can
+    # legitimately name catalog commits and must not block or be overwritten.
+    git fetch upstream "refs/tags/$release"
+    selected_ref=FETCH_HEAD
   fi
 
   selected_base=$(git rev-parse "$selected_ref^{commit}")

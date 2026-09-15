@@ -49,10 +49,10 @@ just validate-patch-files
  delete mode 100644 docs/SPONSOR_IMPLEMENTATION.md
 
 diff --git a/README.md b/README.md
-index 73b11570a..3610dddaf 100644
+index 795bc87d0..1406d133c 100644
 --- a/README.md
 +++ b/README.md
-@@ -789,7 +789,6 @@ Notes:
+@@ -772,7 +772,6 @@ Notes:
  - [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
  - [Server Architecture](docs/SERVER_ARCHITECTURE.md)
  - [Safety System](docs/SAFETY_SYSTEM.md)

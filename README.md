@@ -76,13 +76,19 @@ or modify personal configuration as part of normal workflows.
 
 ### 1. Sync jcode and carry patches forward
 
-Sync to the latest upstream `master`:
+Sync to the newest stable upstream release tag:
 
 ```bash
 just sync
 ```
 
-Or sync to a specific upstream release tag:
+To follow unreleased upstream changes instead, sync to `master` explicitly:
+
+```bash
+just sync master
+```
+
+Or choose a specific upstream release tag:
 
 ```bash
 just sync vX.Y.Z
