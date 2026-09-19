@@ -47,6 +47,7 @@ irm https://raw.githubusercontent.com/fardjad/jcode/personalized/install.ps1 -Ou
 - [`patches/`](patches/) contains the ordered source changes applied to jcode.
 - [`plugins/`](plugins/) contains personal plugins kept separately from source
   patches.
+- [`docs/`](docs/) documents features added by patches.
 
 The generated `.patched-jcode/` directory is your local, fully patched jcode
 checkout. It is not committed.
@@ -152,7 +153,7 @@ just validate-patch-files
 Test one patch and its declared validation command:
 
 ```bash
-just test-patch-file patches/1001-personal-release-installer-path-opt-in.patch
+just test-patch-file patches/1001-personal-release-installer-isolate-release-installer-path-opt-in.patch
 ```
 
 Use this after snapshotting a change, and before relying on it after an

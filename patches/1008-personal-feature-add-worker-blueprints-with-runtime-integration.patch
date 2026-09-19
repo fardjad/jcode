@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Mon, 14 Sep 2026 17:33:28 +0200
+Date: Sat, 19 Sep 2026 13:57:23 +0200
 Subject: [PATCH] feat: add worker blueprints with runtime integration
 
 X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 0001-candidate-pre-tool-input-transformers.patch, 1001-personal-release-installer-path-opt-in.patch, 1002-personal-provider-family-allowlist.patch, 1003-personal-feature-configure-session-picker-sorting.patch, 1004-personal-feature-configure-session-picker-default-filter.patch, 1005-personal-feature-delete-sessions-from-picker.patch, 1006-personal-openrouter-eu.patch, 1007-personal-feature-disable-telemetry-delivery-and-remove-telemetry-controls.patch, 1008-personal-feature-remove-hosted-subscription-and-promotional-commands.patch, 1009-personal-feature-remove-promotional-onboarding-content.patch, 1010-personal-feature-remove-sponsored-integration-discovery.patch, 1011-personal-feature-disable-automatic-onboarding.patch, 1012-personal-feature-remove-hosted-account-cli-commands.patch, 1013-personal-feature-remove-hosted-account-tui-commands.patch, 1014-personal-feature-docs-remove-sponsored-discovery-documentation.patch, 1015-personal-feature-refactor-remove-hosted-subscription-account-api.patch, 1016-personal-feature-docs-remove-hosted-account-and-cloud-documentation.patch, 1017-personal-feature-refactor-route-jcode-choice-through-direct-endpoin.patch, 1018-personal-feature-allow-selecting-the-self-update-repository.patch
+X-Jcode-Patch-Depends-On: 0001-candidate-pre-tool-input-transformers.patch, 1001-personal-release-installer-isolate-release-installer-path-opt-in.patch, 1002-personal-provider-policy-add-provider-family-execution-allowlist.patch, 1003-personal-feature-configure-session-picker-sort-and-filter.patch, 1004-personal-feature-delete-sessions-from-picker-with-ctrl-d.patch, 1005-personal-provider-add-typed-openrouter-eu-provider.patch, 1006-personal-feature-remove-hosted-services-and-telemetry.patch, 1007-personal-feature-allow-selecting-the-self-update-repository.patch
 
 Patch intent:
 Add a worker blueprint system that lets a jcode user define reusable,
@@ -138,14 +138,14 @@ cargo test -p jcode-base coordinator_md_malformed_returns_invalid --lib
 cargo test -p jcode-base coordinator_id_rejected_in_ordinary_blueprint --lib
 cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
 ---
- crates/jcode-app-core/src/agent.rs            |   95 +-
+ crates/jcode-app-core/src/agent.rs            |   97 +-
  crates/jcode-app-core/src/agent/prompting.rs  |   20 +-
  .../src/agent/turn_execution.rs               |   39 +
- crates/jcode-app-core/src/agent_tests.rs      |  201 ++
+ crates/jcode-app-core/src/agent_tests.rs      |  199 ++
  .../src/protocol_tests/comm_requests.rs       |    1 +
  .../src/server/client_actions.rs              |    4 +
  .../src/server/client_actions_tests.rs        |    5 +
- .../src/server/client_comm_message.rs         |   21 +
+ .../src/server/client_comm_message.rs         |   19 +
  .../src/server/client_comm_tests.rs           |   12 +
  .../server/client_disconnect_grace_tests.rs   |    1 +
  .../src/server/client_lifecycle.rs            |    2 +
@@ -159,8 +159,8 @@ cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
  .../jcode-app-core/src/server/comm_control.rs |    1 +
  .../src/server/comm_control_tests.rs          |    1 +
  .../src/server/comm_plan_tests.rs             |    1 +
- .../jcode-app-core/src/server/comm_session.rs |  124 +-
- .../src/server/comm_session_tests.rs          |   50 +-
+ .../jcode-app-core/src/server/comm_session.rs |  131 +-
+ .../src/server/comm_session_tests.rs          |   42 +-
  .../jcode-app-core/src/server/debug_tests.rs  |    1 +
  crates/jcode-app-core/src/server/headless.rs  |    1 +
  .../jcode-app-core/src/server/reload_tests.rs |    1 +
@@ -168,32 +168,32 @@ cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
  crates/jcode-app-core/src/server/swarm.rs     |    1 +
  .../src/server/swarm_persistence_tests.rs     |    8 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  481 ++++
- .../src/tool/blueprint_tests.rs               |  974 +++++++
+ crates/jcode-app-core/src/tool/blueprint.rs   |  496 ++++
+ .../src/tool/blueprint_tests.rs               |  963 +++++++
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
  .../src/tool/communicate_tests.rs             |    2 +-
  .../src/tool/communicate_tests/end_to_end.rs  |  121 +
- crates/jcode-app-core/src/tool/mod.rs         |   58 +-
- crates/jcode-app-core/src/tool/tests.rs       |    5 +-
- crates/jcode-base/src/config.rs               |    3 +-
+ crates/jcode-app-core/src/tool/mod.rs         |   61 +-
+ crates/jcode-app-core/src/tool/tests.rs       |    7 +-
+ crates/jcode-base/src/config.rs               |    2 +-
  .../jcode-base/src/config/display_summary.rs  |   78 +-
- crates/jcode-base/src/config_tests.rs         |   88 +-
+ crates/jcode-base/src/config_tests.rs         |   11 +
  crates/jcode-base/src/lib.rs                  |    1 +
- crates/jcode-base/src/worker_blueprint.rs     | 2322 +++++++++++++++++
- crates/jcode-config-types/src/lib.rs          |  250 +-
+ crates/jcode-base/src/worker_blueprint.rs     | 2222 +++++++++++++++++
+ crates/jcode-config-types/src/lib.rs          |   59 +
  .../src/protocol_tests/comm_requests.rs       |    1 +
  crates/jcode-protocol/src/wire.rs             |    7 +
- 46 files changed, 4949 insertions(+), 65 deletions(-)
+ 46 files changed, 4598 insertions(+), 53 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index aa437a027..4c925e657 100644
+index aa437a027..09c7c0479 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -69,6 +69,74 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
+@@ -69,6 +69,76 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
      LazyLock::new(|| StdMutex::new(HashMap::new()));
  const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
  
@@ -213,16 +213,15 @@ index aa437a027..4c925e657 100644
 +        .agents
 +        .worker_blueprints
 +        .get(crate::worker_blueprint::COORDINATOR_ID);
-+    let coordinator_enabled =
-+        coordinator_override
-+            .and_then(|ov| ov.enabled.as_ref())
-+            .map(|tools| {
-+                tools
-+                    .iter()
-+                    .map(|t| t.trim().to_string())
-+                    .filter(|t| !t.is_empty())
-+                    .collect::<HashSet<String>>()
-+            });
++    let coordinator_enabled = coordinator_override
++        .and_then(|ov| ov.enabled.as_ref())
++        .map(|tools| {
++            tools
++                .iter()
++                .map(|t| t.trim().to_string())
++                .filter(|t| !t.is_empty())
++                .collect::<HashSet<String>>()
++        });
 +    match (global_allowed, coordinator_enabled) {
 +        // Both present: intersect.
 +        (Some(global), Some(coord)) => Some(global.intersection(&coord).cloned().collect()),
@@ -258,7 +257,10 @@ index aa437a027..4c925e657 100644
 +        crate::worker_blueprint::CoordinatorLoadResult::Missing => None,
 +        crate::worker_blueprint::CoordinatorLoadResult::Invalid(diags) => {
 +            for diag in &diags {
-+                logging::warn(&format!("coordinator.md: {}", diag));
++                logging::warn(&format!(
++                    "coordinator.md: {}",
++                    diag
++                ));
 +            }
 +            None
 +        }
@@ -268,7 +270,7 @@ index aa437a027..4c925e657 100644
  fn stable_hash_str(value: &str) -> u64 {
      let mut hasher = std::collections::hash_map::DefaultHasher::new();
      value.hash(&mut hasher);
-@@ -244,6 +312,13 @@ pub struct Agent {
+@@ -244,6 +314,13 @@ pub struct Agent {
      agents_md_snapshot: (Option<String>, crate::prompt::ContextInfo),
      /// Whether memory features are enabled for this session
      memory_enabled: bool,
@@ -282,7 +284,7 @@ index aa437a027..4c925e657 100644
      /// One-step undo snapshot captured before the most recent rewind.
      rewind_undo_snapshot: Option<RewindUndoSnapshot>,
      /// Channel for tools to request stdin input from the user
-@@ -333,6 +408,8 @@ impl Agent {
+@@ -333,6 +410,8 @@ impl Agent {
              system_prompt_override: None,
              agents_md_snapshot,
              memory_enabled: crate::config::config().features.memory,
@@ -291,7 +293,7 @@ index aa437a027..4c925e657 100644
              rewind_undo_snapshot: None,
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
-@@ -413,6 +490,18 @@ impl Agent {
+@@ -413,6 +492,18 @@ impl Agent {
      ) -> Self {
          let start = Instant::now();
          let tool_selection = crate::config::config().tools.selection();
@@ -310,7 +312,7 @@ index aa437a027..4c925e657 100644
          let mut session = Session::create(parent_id, None);
          if let Some(working_dir) = working_dir {
              session.working_dir = Some(working_dir.to_string());
-@@ -421,10 +510,14 @@ impl Agent {
+@@ -421,10 +512,14 @@ impl Agent {
              provider,
              registry,
              session,
@@ -431,10 +433,10 @@ index ef313c869..4c73c85b8 100644
              && !crate::tool::tool_name_is_allowed(allowed, name)
          {
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 026e3a4ba..33f30acef 100644
+index 026e3a4ba..e9fb2aab5 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -964,6 +964,207 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
+@@ -964,6 +964,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
      crate::config::Config::invalidate_cache();
  }
  
@@ -560,9 +562,7 @@ index 026e3a4ba..33f30acef 100644
 +        "normal tools outside the coordinator allowlist remain available"
 +    );
 +    assert!(
-+        definitions
-+            .iter()
-+            .all(|definition| definition.name != "bash"),
++        definitions.iter().all(|definition| definition.name != "bash"),
 +        "global disabled tools remain hidden"
 +    );
 +    let error = agent
@@ -670,7 +670,7 @@ index f2ad66a3b..f23f4a850 100644
                  let _ = client_event_tx.send(ServerEvent::Done { id });
                  return;
 diff --git a/crates/jcode-app-core/src/server/client_actions_tests.rs b/crates/jcode-app-core/src/server/client_actions_tests.rs
-index a029ffe49..5e5b94fa7 100644
+index a029ffe49..74ac31041 100644
 --- a/crates/jcode-app-core/src/server/client_actions_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_actions_tests.rs
 @@ -402,6 +402,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
@@ -709,15 +709,15 @@ index a029ffe49..5e5b94fa7 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
      };
      (member, attach_rx)
  }
 diff --git a/crates/jcode-app-core/src/server/client_comm_message.rs b/crates/jcode-app-core/src/server/client_comm_message.rs
-index 34332d579..0f7e9f4c0 100644
+index 34332d579..8f441af2a 100644
 --- a/crates/jcode-app-core/src/server/client_comm_message.rs
 +++ b/crates/jcode-app-core/src/server/client_comm_message.rs
-@@ -154,6 +154,27 @@ pub(super) async fn handle_comm_message(
+@@ -154,6 +154,25 @@ pub(super) async fn handle_comm_message(
      );
      let swarm_id = swarm_id_for_session(&from_session, swarm_members).await;
  
@@ -732,9 +732,7 @@ index 34332d579..0f7e9f4c0 100644
 +            if member.communication_policy.as_deref() == Some("none") {
 +                let _ = client_event_tx.send(ServerEvent::Error {
 +                    id,
-+                    message:
-+                        "Communication policy 'none' prevents this worker from sending messages."
-+                            .to_string(),
++                    message: "Communication policy 'none' prevents this worker from sending messages.".to_string(),
 +                    retry_after_secs: None,
 +                });
 +                return;
@@ -746,14 +744,14 @@ index 34332d579..0f7e9f4c0 100644
          let friendly_name = friendly_name_for_session(&from_session, swarm_members).await;
  
 diff --git a/crates/jcode-app-core/src/server/client_comm_tests.rs b/crates/jcode-app-core/src/server/client_comm_tests.rs
-index 78f524eb2..76f8ce111 100644
+index 78f524eb2..3f74007f7 100644
 --- a/crates/jcode-app-core/src/server/client_comm_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_comm_tests.rs
 @@ -86,6 +86,7 @@ async fn comm_message_default_does_not_queue_soft_interrupt_for_connected_sessio
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -761,7 +759,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -769,7 +767,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -777,7 +775,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -785,7 +783,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -793,7 +791,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -801,7 +799,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -809,7 +807,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -817,7 +815,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -825,7 +823,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -833,7 +831,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
          ),
@@ -841,7 +839,7 @@ index 78f524eb2..76f8ce111 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+                communication_policy: None,
++            communication_policy: None,
                  task_label: None,
              },
              event_rx,
@@ -922,14 +920,14 @@ index e24884c98..1c0cb6552 100644
              );
              inserted = true;
 diff --git a/crates/jcode-app-core/src/server/client_session_tests.rs b/crates/jcode-app-core/src/server/client_session_tests.rs
-index a74445eea..ac7107bcd 100644
+index a74445eea..71d6f651b 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_session_tests.rs
 @@ -120,6 +120,7 @@ fn test_swarm_member(session_id: &str, status: &str) -> SwarmMember {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
      }
  }
  
@@ -966,14 +964,14 @@ index 47058071c..4161a1b63 100644
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
 diff --git a/crates/jcode-app-core/src/server/client_target_attach_tests.rs b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
-index 47b44e31d..33d588e93 100644
+index 47b44e31d..5ab0e113b 100644
 --- a/crates/jcode-app-core/src/server/client_target_attach_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
 @@ -170,6 +170,7 @@ async fn target_subscribe_busy_live_agent_uses_member_root_without_waiting() {
              todo_progress: None,
              todo_items: vec![],
              runtime: Default::default(),
-+            communication_policy: None,
++                communication_policy: None,
          },
      )])));
      let _busy = agent.lock().await;
@@ -990,31 +988,31 @@ index 3b18ba7ec..3b5243ca6 100644
                  global_session_id,
                  provider_template,
 diff --git a/crates/jcode-app-core/src/server/comm_control_tests.rs b/crates/jcode-app-core/src/server/comm_control_tests.rs
-index 541e64090..b44b29b22 100644
+index 541e64090..4358ac229 100644
 --- a/crates/jcode-app-core/src/server/comm_control_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_control_tests.rs
 @@ -72,6 +72,7 @@ fn member(session_id: &str, swarm_id: &str, status: &str) -> SwarmMember {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }
  }
 diff --git a/crates/jcode-app-core/src/server/comm_plan_tests.rs b/crates/jcode-app-core/src/server/comm_plan_tests.rs
-index 0a854c81e..12a2bc546 100644
+index 0a854c81e..5b9863831 100644
 --- a/crates/jcode-app-core/src/server/comm_plan_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_plan_tests.rs
 @@ -69,6 +69,7 @@ fn member(session_id: &str, swarm_id: &str, role: &str) -> SwarmMember {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }
  }
 diff --git a/crates/jcode-app-core/src/server/comm_session.rs b/crates/jcode-app-core/src/server/comm_session.rs
-index 7ffd473c2..d2131189e 100644
+index 7ffd473c2..433008373 100644
 --- a/crates/jcode-app-core/src/server/comm_session.rs
 +++ b/crates/jcode-app-core/src/server/comm_session.rs
 @@ -18,6 +18,7 @@ use crate::config::SwarmSpawnMode;
@@ -1025,7 +1023,7 @@ index 7ffd473c2..d2131189e 100644
  use std::collections::{HashMap, HashSet};
  use std::path::PathBuf;
  use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
-@@ -28,6 +29,43 @@ type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+@@ -28,6 +29,48 @@ type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
  type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
  type ClientConnections = Arc<RwLock<HashMap<String, ClientConnectionInfo>>>;
  
@@ -1048,7 +1046,10 @@ index 7ffd473c2..d2131189e 100644
 +
 +    // Log diagnostics for any issues found during loading.
 +    for diag in &report.diagnostics {
-+        crate::logging::info(&format!("Worker blueprint diagnostic: {}", diag));
++        crate::logging::info(&format!(
++            "Worker blueprint diagnostic: {}",
++            diag
++        ));
 +    }
 +
 +    report.registry.get(id).cloned().map(Some).ok_or_else(|| {
@@ -1063,13 +1064,15 @@ index 7ffd473c2..d2131189e 100644
 +/// The role instructions come first, followed by a clear separator and the
 +/// labeled task.
 +fn compose_blueprint_prompt(role_instructions: &str, task: &str) -> String {
-+    format!("{role_instructions}\n\n---\n\n## Task\n\n{task}")
++    format!(
++        "{role_instructions}\n\n---\n\n## Task\n\n{task}"
++    )
 +}
 +
  /// Serialize spawn admission through member registration within one swarm.
  /// Without a reservation or lock, many recursive agents can all observe the same
  /// free slot and burst past the configured limit before any child is registered.
-@@ -523,6 +561,7 @@ async fn register_visible_spawned_member(
+@@ -523,6 +566,7 @@ async fn register_visible_spawned_member(
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1077,7 +1080,7 @@ index 7ffd473c2..d2131189e 100644
              },
          );
      }
-@@ -580,6 +619,7 @@ pub(super) async fn spawn_swarm_agent(
+@@ -580,6 +624,7 @@ pub(super) async fn spawn_swarm_agent(
      requested_model: Option<String>,
      requested_effort: Option<String>,
      label: Option<String>,
@@ -1085,7 +1088,7 @@ index 7ffd473c2..d2131189e 100644
      sessions: &SessionAgents,
      global_session_id: &Arc<RwLock<String>>,
      provider_template: &Arc<dyn Provider>,
-@@ -606,8 +646,24 @@ pub(super) async fn spawn_swarm_agent(
+@@ -606,8 +651,24 @@ pub(super) async fn spawn_swarm_agent(
      let agents_config = &crate::config::config().agents;
      let configured_swarm_model = agents_config.swarm_model.clone();
      let resolved_spawn_mode = spawn_mode.unwrap_or(agents_config.swarm_spawn_mode);
@@ -1111,36 +1114,36 @@ index 7ffd473c2..d2131189e 100644
          configured_swarm_model.clone(),
          &coordinator,
      );
-@@ -615,7 +671,7 @@ pub(super) async fn spawn_swarm_agent(
+@@ -615,7 +676,9 @@ pub(super) async fn spawn_swarm_agent(
      let spawn_provider_key = selection.provider_key.clone();
      let spawn_route_api_method = selection.route_api_method.clone();
      let spawn_effort = resolve_swarm_spawn_effort(
 -        requested_effort.as_deref(),
-+        requested_effort.as_deref().or(blueprint_effort.as_deref()),
++        requested_effort
++            .as_deref()
++            .or(blueprint_effort.as_deref()),
          agents_config.swarm_effort.as_deref(),
      );
      crate::logging::info(&format!(
-@@ -632,9 +688,16 @@ pub(super) async fn spawn_swarm_agent(
-         spawn_route_api_method,
-     ));
+@@ -634,7 +697,16 @@ pub(super) async fn spawn_swarm_agent(
  
--    let startup_message = initial_message
--        .as_deref()
+     let startup_message = initial_message
+         .as_deref()
 -        .map(append_swarm_completion_report_instructions);
-+    let startup_message = initial_message.as_deref().map(|msg| {
-+        // When a blueprint is active, compose its durable role instructions
-+        // first and the clearly labeled runtime task second, exactly once.
-+        if let Some(bp) = &blueprint {
-+            let task = append_swarm_completion_report_instructions(msg);
-+            compose_blueprint_prompt(&bp.body, &task)
-+        } else {
-+            append_swarm_completion_report_instructions(msg)
-+        }
-+    });
++        .map(|msg| {
++            // When a blueprint is active, compose its durable role instructions
++            // first and the clearly labeled runtime task second, exactly once.
++            if let Some(bp) = &blueprint {
++                let task = append_swarm_completion_report_instructions(msg);
++                compose_blueprint_prompt(&bp.body, &task)
++            } else {
++                append_swarm_completion_report_instructions(msg)
++            }
++        });
  
      let visible_spawn = match resolved_spawn_mode {
          // Inline workers run in-process like headless ones; the difference is
-@@ -711,6 +774,54 @@ pub(super) async fn spawn_swarm_agent(
+@@ -711,6 +783,56 @@ pub(super) async fn spawn_swarm_agent(
          }
      }?;
  
@@ -1156,8 +1159,10 @@ index 7ffd473c2..d2131189e 100644
 +            // restore a globally disabled or unpermitted tool.
 +            let global_allowed = crate::config::config().tools.selection().allowed_tools;
 +            let effective_allowed = if let Some(global) = global_allowed {
-+                let intersection: HashSet<String> =
-+                    allowed_set.intersection(&global).cloned().collect();
++                let intersection: HashSet<String> = allowed_set
++                    .intersection(&global)
++                    .cloned()
++                    .collect();
 +                Some(intersection)
 +            } else {
 +                Some(allowed_set)
@@ -1195,7 +1200,7 @@ index 7ffd473c2..d2131189e 100644
      let startup_message = startup_message.clone();
      {
          let mut plans = swarm_plans.write().await;
-@@ -854,6 +965,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -854,6 +976,7 @@ pub(super) async fn handle_comm_spawn(
      model: Option<String>,
      effort: Option<String>,
      label: Option<String>,
@@ -1203,7 +1208,7 @@ index 7ffd473c2..d2131189e 100644
      client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
      sessions: &SessionAgents,
      global_session_id: &Arc<RwLock<String>>,
-@@ -913,6 +1025,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -913,6 +1036,7 @@ pub(super) async fn handle_comm_spawn(
              effort.clone().unwrap_or_default(),
              model.clone().unwrap_or_default(),
              label.clone().unwrap_or_default(),
@@ -1211,7 +1216,7 @@ index 7ffd473c2..d2131189e 100644
          ],
      );
      let Some(mutation_state) = begin_or_replay(
-@@ -937,6 +1050,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -937,6 +1061,7 @@ pub(super) async fn handle_comm_spawn(
          model,
          effort,
          label,
@@ -1220,7 +1225,7 @@ index 7ffd473c2..d2131189e 100644
          global_session_id,
          provider_template,
 diff --git a/crates/jcode-app-core/src/server/comm_session_tests.rs b/crates/jcode-app-core/src/server/comm_session_tests.rs
-index 262118733..c7cd0bdc6 100644
+index 262118733..aae87cb2e 100644
 --- a/crates/jcode-app-core/src/server/comm_session_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_session_tests.rs
 @@ -2,11 +2,12 @@
@@ -1228,11 +1233,9 @@ index 262118733..c7cd0bdc6 100644
  use super::{
      CoordinatorSpawnIdentity, ensure_spawn_coordinator_swarm, prepare_visible_spawn_session,
 -    register_visible_spawned_member, resolve_coordinator_spawn_identity, resolve_spawn_working_dir,
--    resolve_stop_target_session, resolve_swarm_spawn_selection, spawn_admission_lock,
--    swarm_stop_allowed_by_owner,
-+    register_visible_spawned_member, resolve_blueprint_for_spawn,
-+    resolve_coordinator_spawn_identity, resolve_spawn_working_dir, resolve_stop_target_session,
-+    resolve_swarm_spawn_selection, spawn_admission_lock, swarm_stop_allowed_by_owner,
++    register_visible_spawned_member, resolve_blueprint_for_spawn, resolve_coordinator_spawn_identity, resolve_spawn_working_dir,
+     resolve_stop_target_session, resolve_swarm_spawn_selection, spawn_admission_lock,
+     swarm_stop_allowed_by_owner,
  };
  use crate::agent::Agent;
 +use crate::config::AgentsConfig;
@@ -1247,7 +1250,7 @@ index 262118733..c7cd0bdc6 100644
              task_label: None,
          },
          event_rx,
-@@ -464,6 +466,48 @@ fn coordinator_identity(
+@@ -464,6 +466,44 @@ fn coordinator_identity(
      }
  }
  
@@ -1281,15 +1284,11 @@ index 262118733..c7cd0bdc6 100644
 +        .expect("the generated tool's blueprint ID should resolve");
 +    assert!(blueprint.model.is_none());
 +    let selection = resolve_swarm_spawn_selection(
-+        blueprint.model.clone(),
-+        agents_config.swarm_model.clone(),
++        blueprint.model.clone(), agents_config.swarm_model.clone(),
 +        &coordinator_identity(Some("other-model"), Some("other"), None),
 +    );
 +
-+    assert_eq!(
-+        selection.model.as_deref(),
-+        Some("openrouter-eu:gpt-5.6-luna")
-+    );
++    assert_eq!(selection.model.as_deref(), Some("openrouter-eu:gpt-5.6-luna"));
 +    assert_eq!(selection.provider_key.as_deref(), Some("openrouter-eu"));
 +}
 +
@@ -1321,14 +1320,14 @@ index 8ad4704b3..dfa8b8f14 100644
          );
      }
 diff --git a/crates/jcode-app-core/src/server/reload_tests.rs b/crates/jcode-app-core/src/server/reload_tests.rs
-index 72d5f5459..7ce4fe65c 100644
+index 72d5f5459..1aabe496c 100644
 --- a/crates/jcode-app-core/src/server/reload_tests.rs
 +++ b/crates/jcode-app-core/src/server/reload_tests.rs
 @@ -42,6 +42,7 @@ fn member(session_id: &str, status: &str) -> SwarmMember {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
      }
  }
  
@@ -1371,14 +1370,14 @@ index fbe513a04..569e1ea41 100644
              event_rx,
          )
 diff --git a/crates/jcode-app-core/src/server/swarm_persistence_tests.rs b/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
-index dfefe247e..f7dddce12 100644
+index dfefe247e..bea209355 100644
 --- a/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
 +++ b/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
 @@ -94,6 +94,7 @@ fn persisted_swarm_state_round_trips_and_marks_running_stale() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }];
  
@@ -1386,7 +1385,7 @@ index dfefe247e..f7dddce12 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }];
  
@@ -1394,7 +1393,7 @@ index dfefe247e..f7dddce12 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }];
  
@@ -1402,7 +1401,7 @@ index dfefe247e..f7dddce12 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: Some("retention test".to_string()),
      };
      let loaded_at = 10_000_000;
@@ -1410,7 +1409,7 @@ index dfefe247e..f7dddce12 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      };
      let loaded_at = 20_000_000;
@@ -1418,7 +1417,7 @@ index dfefe247e..f7dddce12 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      };
      let loaded_at = 300_000_000;
@@ -1426,7 +1425,7 @@ index dfefe247e..f7dddce12 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }];
      persist_swarm_state("swarm-expired", None, None, &members);
@@ -1434,19 +1433,19 @@ index dfefe247e..f7dddce12 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }];
  
 diff --git a/crates/jcode-app-core/src/server/tests.rs b/crates/jcode-app-core/src/server/tests.rs
-index 044c3244c..e7fe5325b 100644
+index 044c3244c..fa94f0f9f 100644
 --- a/crates/jcode-app-core/src/server/tests.rs
 +++ b/crates/jcode-app-core/src/server/tests.rs
 @@ -286,6 +286,7 @@ fn attached_swarm_member(
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }
  }
@@ -1454,16 +1453,16 @@ index 044c3244c..e7fe5325b 100644
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+        communication_policy: None,
++            communication_policy: None,
          task_label: None,
      }
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
 new file mode 100644
-index 000000000..8b465c031
+index 000000000..6c38aef0f
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
-@@ -0,0 +1,481 @@
+@@ -0,0 +1,496 @@
 +//! Generated coordinator-visible tools for worker blueprints.
 +//!
 +//! Every valid effective blueprint generates a tool named `swarm_<id>`. The
@@ -1556,8 +1555,7 @@ index 000000000..8b465c031
 +const FOLLOW_UP_DEFAULT_LIMIT: usize = 2000;
 +
 +/// Suffix appended when the summary is truncated.
-+const SUMMARY_TRUNCATED_SUFFIX: &str =
-+    "\n\n[... truncated. Use follow_up_session with offset/limit to read more.]";
++const SUMMARY_TRUNCATED_SUFFIX: &str = "\n\n[... truncated. Use follow_up_session with offset/limit to read more.]";
 +
 +/// Return a follow-up session ID only when a caller supplied a meaningful one.
 +///
@@ -1721,9 +1719,7 @@ index 000000000..8b465c031
 +
 +        // ── Follow-up mode: read paginated output from an existing worker ──
 +        if let Some(session_id) = nonblank_follow_up_session(params.follow_up_session.as_deref()) {
-+            return self
-+                .execute_follow_up(session_id, params.offset, params.limit, &ctx)
-+                .await;
++            return self.execute_follow_up(session_id, params.offset, params.limit, &ctx).await;
 +        }
 +
 +        // ── Spawn mode: spawn, wait, return compact summary ──
@@ -1764,7 +1760,10 @@ index 000000000..8b465c031
 +                ));
 +            }
 +            Err(e) => {
-+                return Err(anyhow::anyhow!("Failed to spawn blueprint worker: {}", e));
++                return Err(anyhow::anyhow!(
++                    "Failed to spawn blueprint worker: {}",
++                    e
++                ));
 +            }
 +        };
 +
@@ -1825,7 +1824,10 @@ index 000000000..8b465c031
 +                ));
 +            }
 +            Err(e) => {
-+                return Err(anyhow::anyhow!("Failed to await blueprint worker: {}", e));
++                return Err(anyhow::anyhow!(
++                    "Failed to await blueprint worker: {}",
++                    e
++                ));
 +            }
 +        }
 +
@@ -1838,13 +1840,16 @@ index 000000000..8b465c031
 +
 +        match send_request(read_context_request).await {
 +            Ok(ServerEvent::CommContextHistory { messages, .. }) => {
-+                let report = messages.iter().rev().find_map(|msg| {
-+                    if msg.role != "assistant" {
-+                        return None;
-+                    }
-+                    let content = msg.content.trim();
-+                    (!content.is_empty()).then(|| content.to_string())
-+                });
++                let report = messages
++                    .iter()
++                    .rev()
++                    .find_map(|msg| {
++                        if msg.role != "assistant" {
++                            return None;
++                        }
++                        let content = msg.content.trim();
++                        (!content.is_empty()).then(|| content.to_string())
++                    });
 +
 +                match report {
 +                    Some(text) => {
@@ -1917,7 +1922,11 @@ index 000000000..8b465c031
 +                }
 +
 +                let end = (offset + limit).min(total_chars);
-+                let chunk: String = full.chars().skip(offset).take(limit).collect();
++                let chunk: String = full
++                    .chars()
++                    .skip(offset)
++                    .take(limit)
++                    .collect();
 +
 +                let more = end < total_chars;
 +                let header = format!(
@@ -1937,20 +1946,25 @@ index 000000000..8b465c031
 +
 +                Ok(ToolOutput::new(format!("{header}{chunk}{footer}")))
 +            }
-+            Ok(ServerEvent::Error { message, .. }) => Err(anyhow::anyhow!("{}", message)),
++            Ok(ServerEvent::Error { message, .. }) => {
++                Err(anyhow::anyhow!("{}", message))
++            }
 +            Ok(_) => Err(anyhow::anyhow!(
 +                "Unexpected response reading worker output."
 +            )),
-+            Err(e) => Err(anyhow::anyhow!("Failed to read worker output: {}", e)),
++            Err(e) => Err(anyhow::anyhow!(
++                "Failed to read worker output: {}",
++                e
++            )),
 +        }
 +    }
 +}
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
 new file mode 100644
-index 000000000..d86329901
+index 000000000..ff2c8d6b6
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -0,0 +1,974 @@
+@@ -0,0 +1,963 @@
 +//! Phase two integration tests for worker blueprints.
 +//!
 +//! These tests verify the runtime integration of worker blueprints:
@@ -1985,7 +1999,11 @@ index 000000000..d86329901
 +    tempfile::tempdir().unwrap()
 +}
 +
-+fn make_blueprint(name: &str, description: &str, body: &str) -> WorkerBlueprint {
++fn make_blueprint(
++    name: &str,
++    description: &str,
++    body: &str,
++) -> WorkerBlueprint {
 +    WorkerBlueprint {
 +        source_path: PathBuf::from(format!("/tmp/{name}.md")),
 +        name: name.to_string(),
@@ -2031,15 +2049,18 @@ index 000000000..d86329901
 +
 +#[test]
 +fn coordinator_override_intersects_with_global_allowed() {
-+    let global: HashSet<String> = ["read", "write", "bash", "swarm", "swarm_reviewer"]
-+        .iter()
-+        .map(|s| s.to_string())
-+        .collect();
-+    let coord: HashSet<String> = ["read", "agentgrep", "swarm_reviewer"]
-+        .iter()
-+        .map(|s| s.to_string())
-+        .collect();
-+    let intersection: HashSet<String> = global.intersection(&coord).cloned().collect();
++    let global: HashSet<String> =
++        ["read", "write", "bash", "swarm", "swarm_reviewer"]
++            .iter()
++            .map(|s| s.to_string())
++            .collect();
++    let coord: HashSet<String> =
++        ["read", "agentgrep", "swarm_reviewer"]
++            .iter()
++            .map(|s| s.to_string())
++            .collect();
++    let intersection: HashSet<String> =
++        global.intersection(&coord).cloned().collect();
 +    assert!(intersection.contains("read"));
 +    assert!(intersection.contains("swarm_reviewer"));
 +    assert!(!intersection.contains("bash"));
@@ -2062,17 +2083,16 @@ index 000000000..d86329901
 +
 +#[test]
 +fn coordinator_override_disabled_deny_takes_precedence() {
-+    let global: HashSet<String> = ["read", "write", "bash"]
-+        .iter()
-+        .map(|s| s.to_string())
-+        .collect();
-+    let coord_enabled: HashSet<String> = ["read", "write", "bash"]
-+        .iter()
-+        .map(|s| s.to_string())
-+        .collect();
-+    let coord_disabled: HashSet<String> = ["bash"].iter().map(|s| s.to_string()).collect();
-+    let intersected: HashSet<String> = global.intersection(&coord_enabled).cloned().collect();
-+    let effective: HashSet<String> = intersected.difference(&coord_disabled).cloned().collect();
++    let global: HashSet<String> =
++        ["read", "write", "bash"].iter().map(|s| s.to_string()).collect();
++    let coord_enabled: HashSet<String> =
++        ["read", "write", "bash"].iter().map(|s| s.to_string()).collect();
++    let coord_disabled: HashSet<String> =
++        ["bash"].iter().map(|s| s.to_string()).collect();
++    let intersected: HashSet<String> =
++        global.intersection(&coord_enabled).cloned().collect();
++    let effective: HashSet<String> =
++        intersected.difference(&coord_disabled).cloned().collect();
 +    assert!(effective.contains("read"));
 +    assert!(effective.contains("write"));
 +    assert!(!effective.contains("bash"));
@@ -2247,17 +2267,11 @@ index 000000000..d86329901
 +
 +    // A blueprint named "swarm" would generate "swarm_swarm"
 +    let tool_name = "swarm_swarm";
-+    assert!(
-+        !tools.contains(tool_name),
-+        "no collision expected for swarm_swarm"
-+    );
++    assert!(!tools.contains(tool_name), "no collision expected for swarm_swarm");
 +
 +    // A blueprint named "reviewer" would generate "swarm_reviewer"
 +    let reviewer_name = "swarm_reviewer";
-+    assert!(
-+        !tools.contains(reviewer_name),
-+        "no collision for swarm_reviewer"
-+    );
++    assert!(!tools.contains(reviewer_name), "no collision for swarm_reviewer");
 +
 +    // If somehow a tool named "swarm_reviewer" already exists, skip it
 +    tools.insert("swarm_reviewer".to_string());
@@ -2285,7 +2299,10 @@ index 000000000..d86329901
 +         You are a reviewer.",
 +    );
 +
-+    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
 +    let bp = report.registry.get("reviewer").unwrap();
 +    assert_eq!(bp.model.as_deref(), Some("openai-api:gpt-5.5"));
 +
@@ -2310,7 +2327,10 @@ index 000000000..d86329901
 +         You are a reviewer.",
 +    );
 +
-+    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
 +    let bp = report.registry.get("reviewer").unwrap();
 +
 +    // In the spawn path, requested_model.or(blueprint_model) uses the
@@ -2369,7 +2389,10 @@ index 000000000..d86329901
 +         You are a worker.",
 +    );
 +
-+    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
 +    let bp = report.registry.get("worker").unwrap();
 +    assert_eq!(bp.effort, Some(BlueprintEffort::High));
 +
@@ -2377,7 +2400,9 @@ index 000000000..d86329901
 +    // effort is given.
 +    let blueprint_effort = bp.effort.as_ref().map(|e| e.as_str().to_string());
 +    let requested_effort: Option<String> = None;
-+    let effective = requested_effort.as_deref().or(blueprint_effort.as_deref());
++    let effective = requested_effort
++        .as_deref()
++        .or(blueprint_effort.as_deref());
 +    assert_eq!(effective, Some("high"));
 +}
 +
@@ -2388,14 +2413,10 @@ index 000000000..d86329901
 +#[test]
 +fn blueprint_enabled_tools_intersected_with_global() {
 +    // Simulate the tool policy intersection logic from spawn_swarm_agent.
-+    let blueprint_enabled: HashSet<String> = ["read", "agentgrep", "bash"]
-+        .iter()
-+        .map(|s| s.to_string())
-+        .collect();
-+    let global_allowed: HashSet<String> = ["read", "agentgrep", "write", "edit"]
-+        .iter()
-+        .map(|s| s.to_string())
-+        .collect();
++    let blueprint_enabled: HashSet<String> =
++        ["read", "agentgrep", "bash"].iter().map(|s| s.to_string()).collect();
++    let global_allowed: HashSet<String> =
++        ["read", "agentgrep", "write", "edit"].iter().map(|s| s.to_string()).collect();
 +
 +    // Intersection: blueprint can only further restrict, never expand.
 +    let effective: HashSet<String> = blueprint_enabled
@@ -2405,30 +2426,22 @@ index 000000000..d86329901
 +
 +    assert!(effective.contains("read"));
 +    assert!(effective.contains("agentgrep"));
-+    assert!(
-+        !effective.contains("bash"),
-+        "bash not in global, must not be restored"
-+    );
++    assert!(!effective.contains("bash"), "bash not in global, must not be restored");
 +    assert!(!effective.contains("write"));
 +}
 +
 +#[test]
 +fn blueprint_empty_enabled_tools_means_no_tools() {
 +    let blueprint_enabled: HashSet<String> = HashSet::new();
-+    let global_allowed: HashSet<String> = ["read", "bash", "swarm"]
-+        .iter()
-+        .map(|s| s.to_string())
-+        .collect();
++    let global_allowed: HashSet<String> =
++        ["read", "bash", "swarm"].iter().map(|s| s.to_string()).collect();
 +
 +    let effective: HashSet<String> = blueprint_enabled
 +        .intersection(&global_allowed)
 +        .cloned()
 +        .collect();
 +
-+    assert!(
-+        effective.is_empty(),
-+        "empty enabled-tools means no worker tools"
-+    );
++    assert!(effective.is_empty(), "empty enabled-tools means no worker tools");
 +}
 +
 +#[test]
@@ -2467,9 +2480,8 @@ index 000000000..d86329901
 +        effort: None,
 +        timeout_minutes: None,
 +    };
-+    let coord_set: Option<HashSet<String>> = coord_override
-+        .enabled
-+        .map(|tools| tools.iter().cloned().collect());
++    let coord_set: Option<HashSet<String>> =
++        coord_override.enabled.map(|tools| tools.iter().cloned().collect());
 +
 +    if root_session {
 +        let global: Option<HashSet<String>> =
@@ -2481,10 +2493,7 @@ index 000000000..d86329901
 +        };
 +        let eff = effective.unwrap();
 +        assert!(eff.contains("read"));
-+        assert!(
-+            !eff.contains("bash"),
-+            "coordinator policy removed bash from root"
-+        );
++        assert!(!eff.contains("bash"), "coordinator policy removed bash from root");
 +    }
 +
 +    if !worker_session {
@@ -2493,10 +2502,7 @@ index 000000000..d86329901
 +        let effective = global;
 +        let eff = effective.unwrap();
 +        assert!(eff.contains("read"));
-+        assert!(
-+            eff.contains("bash"),
-+            "worker retains bash despite coordinator policy"
-+        );
++        assert!(eff.contains("bash"), "worker retains bash despite coordinator policy");
 +    }
 +}
 +
@@ -2526,7 +2532,10 @@ index 000000000..d86329901
 +         You run shell commands.",
 +    );
 +
-+    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
 +
 +    assert_eq!(report.registry.len(), 2);
 +    assert!(report.registry.get("reviewer").is_some());
@@ -2565,7 +2574,11 @@ index 000000000..d86329901
 +
 +#[test]
 +fn generated_tool_description_mentions_waiting_for_output() {
-+    let bp = make_blueprint("reviewer", "Reviews code.", "You are a reviewer.");
++    let bp = make_blueprint(
++        "reviewer",
++        "Reviews code.",
++        "You are a reviewer.",
++    );
 +    // The description should mention that the tool waits for output,
 +    // not just spawns a worker.
 +    let desc = format!(
@@ -2606,10 +2619,7 @@ index 000000000..d86329901
 +fn empty_task_is_rejected() {
 +    // The BlueprintTool rejects blank tasks before spawning.
 +    let task = "   ".trim();
-+    assert!(
-+        task.is_empty(),
-+        "whitespace-only task should be empty after trim"
-+    );
++    assert!(task.is_empty(), "whitespace-only task should be empty after trim");
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -2649,10 +2659,7 @@ index 000000000..d86329901
 +    let blueprint = Some(15u32);
 +    let config = 20u32;
 +    let effective = per_call.filter(|&n| n > 0).or(blueprint).unwrap_or(config);
-+    assert_eq!(
-+        effective, 15,
-+        "zero per-call timeout falls through to blueprint"
-+    );
++    assert_eq!(effective, 15, "zero per-call timeout falls through to blueprint");
 +}
 +
 +#[test]
@@ -2669,7 +2676,10 @@ index 000000000..d86329901
 +         You are a worker.",
 +    );
 +
-+    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
 +    let bp = report.registry.get("worker").unwrap();
 +    assert_eq!(bp.timeout_minutes, Some(45));
 +}
@@ -2688,16 +2698,18 @@ index 000000000..d86329901
 +         You are a worker.",
 +    );
 +
-+    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
 +    // Blueprint still loads, but timeout_minutes is None (ignored).
 +    let bp = report.registry.get("worker").unwrap();
 +    assert_eq!(bp.timeout_minutes, None);
 +    // A diagnostic should mention the invalid timeout.
 +    assert!(
-+        report
-+            .diagnostics
-+            .iter()
-+            .any(|d| { d.message.contains("timeout-minutes") }),
++        report.diagnostics.iter().any(|d| {
++            d.message.contains("timeout-minutes")
++        }),
 +        "expected diagnostic for timeout-minutes 0"
 +    );
 +}
@@ -2746,7 +2758,10 @@ index 000000000..d86329901
 +         You are a worker.",
 +    );
 +
-+    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let report = load_worker_blueprints(
++        dir.path().to_str(),
++        &BTreeMap::new(),
++    );
 +    let bp = report.registry.get("worker").unwrap();
 +    assert_eq!(bp.timeout_minutes, None);
 +}
@@ -2783,14 +2798,8 @@ index 000000000..d86329901
 +    // Strict tool-schema transports can require every property and represent an
 +    // omitted optional string as "". This must retain the documented spawn
 +    // behavior instead of trying to read a worker with an empty session ID.
-+    assert_eq!(
-+        crate::tool::blueprint::nonblank_follow_up_session(None),
-+        None
-+    );
-+    assert_eq!(
-+        crate::tool::blueprint::nonblank_follow_up_session(Some("")),
-+        None
-+    );
++    assert_eq!(crate::tool::blueprint::nonblank_follow_up_session(None), None);
++    assert_eq!(crate::tool::blueprint::nonblank_follow_up_session(Some("")), None);
 +    assert_eq!(
 +        crate::tool::blueprint::nonblank_follow_up_session(Some("  \t\n")),
 +        None
@@ -2835,10 +2844,7 @@ index 000000000..d86329901
 +    let offset = 200usize;
 +    let total = full.chars().count();
 +
-+    assert!(
-+        offset >= total,
-+        "offset beyond total should report no more output"
-+    );
++    assert!(offset >= total, "offset beyond total should report no more output");
 +}
 +
 +#[test]
@@ -2874,10 +2880,7 @@ index 000000000..d86329901
 +        out
 +    };
 +
-+    assert!(
-+        summary.chars().count() <= max + 100,
-+        "summary should be approximately max chars"
-+    );
++    assert!(summary.chars().count() <= max + 100, "summary should be approximately max chars");
 +    assert!(summary.contains("truncated"));
 +    assert!(summary.contains("Use follow_up_session"));
 +}
@@ -3131,19 +3134,17 @@ index 83a896805..5991e3ba5 100644
  async fn communicate_await_members_background_returns_immediately_and_notifies() {
      let _env_lock = crate::storage::lock_test_env();
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 893b0eadf..42aa01bdb 100644
+index 893b0eadf..4434128b7 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -4,6 +4,9 @@ mod apply_patch;
- mod bash;
- mod batch;
- mod bg;
+@@ -1,4 +1,7 @@
+ mod agentgrep;
 +mod blueprint;
 +#[cfg(test)]
 +mod blueprint_tests;
- mod browser;
- mod communicate;
- #[cfg(target_os = "macos")]
+ pub mod ambient;
+ mod apply_patch;
+ mod bash;
 @@ -56,6 +59,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
      disabled.contains(name) || (disabled.contains("mcp") && is_mcp_tool_name(name))
  }
@@ -3155,7 +3156,7 @@ index 893b0eadf..42aa01bdb 100644
  fn is_fixed_mcp_tool(name: &str) -> bool {
      matches!(name, "mcp_search" | "mcp_call")
  }
-@@ -459,22 +466,66 @@ impl Registry {
+@@ -459,22 +466,69 @@ impl Registry {
          );
          let session_tools_ms = session_tools_start.elapsed().as_millis();
  
@@ -3216,14 +3217,17 @@ index 893b0eadf..42aa01bdb 100644
 +
 +        // Log diagnostics for any blueprint loading issues.
 +        for diag in &report.diagnostics {
-+            crate::logging::info(&format!("Worker blueprint diagnostic: {}", diag));
++            crate::logging::info(&format!(
++                "Worker blueprint diagnostic: {}",
++                diag
++            ));
 +        }
 +    }
 +
      /// Get all tool definitions for the API
      pub async fn definitions(
          &self,
-@@ -510,6 +561,11 @@ impl Registry {
+@@ -510,6 +564,11 @@ impl Registry {
          tools.keys().cloned().collect()
      }
  
@@ -3236,7 +3240,7 @@ index 893b0eadf..42aa01bdb 100644
      /// Called when session is marked as debug
      pub async fn enable_memory_test_mode(&self) {
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 655ff2aa1..6cf55b848 100644
+index 655ff2aa1..4a23866ce 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
 @@ -613,7 +613,8 @@ async fn tool_descriptions_stay_under_token_cap() {
@@ -3249,17 +3253,19 @@ index 655ff2aa1..6cf55b848 100644
      const EXEMPT: &[&str] = &["batch", "jcode_docs", "swarm"];
  
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
-@@ -622,7 +623,7 @@ async fn tool_descriptions_stay_under_token_cap() {
+@@ -622,7 +623,9 @@ async fn tool_descriptions_stay_under_token_cap() {
          .definitions(None)
          .await
          .into_iter()
 -        .filter(|def| !EXEMPT.contains(&def.name.as_str()))
-+        .filter(|def| !EXEMPT.contains(&def.name.as_str()) && !def.name.starts_with("swarm_"))
++        .filter(|def| {
++            !EXEMPT.contains(&def.name.as_str()) && !def.name.starts_with("swarm_")
++        })
          .filter(|def| def.description_token_estimate() > DESCRIPTION_TOKEN_CAP)
          .map(|def| {
              format!(
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index a8ecfe925..c9eab6682 100644
+index a8ecfe925..96c50784e 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
 @@ -12,7 +12,7 @@ pub use jcode_config_types::{
@@ -3271,14 +3277,6 @@ index a8ecfe925..c9eab6682 100644
  };
  use serde::{Deserialize, Serialize};
  use std::collections::{BTreeMap, BTreeSet, HashSet};
-@@ -184,6 +184,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
-     "JCODE_TYPING_SCROLL_LOCK_TOGGLE_KEY",
-     "JCODE_UPDATE_CHANNEL",
-     "JCODE_WEBSEARCH_ENGINE",
-+    "JCODE_WEBSEARCH_ENGINES",
-     "JCODE_WEBSEARCH_FALLBACK_ENGINES",
-     "JCODE_WORKSPACE_DOWN_KEY",
-     "JCODE_WORKSPACE_LEFT_KEY",
 diff --git a/crates/jcode-base/src/config/display_summary.rs b/crates/jcode-base/src/config/display_summary.rs
 index b658e839c..145c2facd 100644
 --- a/crates/jcode-base/src/config/display_summary.rs
@@ -3383,101 +3381,10 @@ index b658e839c..145c2facd 100644
              self.gateway.bind_addr,
              self.gateway.port,
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index 481ab7505..cdc8e4d94 100644
+index 481ab7505..7a4d737f8 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
-@@ -1,7 +1,7 @@
- use super::{
-     AmbientConfig, Config, DiffDisplayMode, DisplayConfig, HookCommands, LatexRenderingMode,
-     McpToolsMode, ProviderConfig, SessionPickerResumeAction, SwarmSpawnMode, ToolConfig,
--    config_env_fingerprint, populate_context_limits_from_config_ref,
-+    WebSearchEngine, config_env_fingerprint, populate_context_limits_from_config_ref,
- };
- use std::ffi::OsString;
- use std::path::Path;
-@@ -14,6 +14,81 @@ fn restore_env_var(key: &str, previous: Option<OsString>) {
-     }
- }
- 
-+#[test]
-+fn websearch_environment_list_replaces_complete_policy() {
-+    let _guard = crate::storage::lock_test_env();
-+    let previous = save_websearch_env();
-+    clear_websearch_env();
-+    crate::env::set_var("JCODE_WEBSEARCH_ENGINES", "searxng");
-+    let mut config = Config::default();
-+    config.apply_env_overrides();
-+    assert_eq!(config.websearch.engine, vec![WebSearchEngine::Searxng]);
-+    restore_websearch_env(previous);
-+}
-+
-+#[test]
-+fn websearch_scalar_environment_override_replaces_only_primary() {
-+    let _guard = crate::storage::lock_test_env();
-+    let previous = save_websearch_env();
-+    clear_websearch_env();
-+    crate::env::set_var("JCODE_WEBSEARCH_ENGINE", "searxng");
-+    let mut config = Config::default();
-+    config.apply_env_overrides();
-+    assert_eq!(
-+        config.websearch.engine,
-+        vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
-+    );
-+    restore_websearch_env(previous);
-+}
-+
-+#[test]
-+fn websearch_list_environment_override_has_precedence_over_legacy_overrides() {
-+    let _guard = crate::storage::lock_test_env();
-+    let previous = save_websearch_env();
-+    clear_websearch_env();
-+    crate::env::set_var("JCODE_WEBSEARCH_ENGINES", "searxng,bing,searx");
-+    crate::env::set_var("JCODE_WEBSEARCH_ENGINE", "duckduckgo");
-+    crate::env::set_var("JCODE_WEBSEARCH_FALLBACK_ENGINES", "duckduckgo");
-+
-+    let mut config = Config::default();
-+    config.apply_env_overrides();
-+
-+    assert_eq!(
-+        config.websearch.engine,
-+        vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
-+    );
-+    restore_websearch_env(previous);
-+}
-+
-+fn save_websearch_env() -> [(&'static str, Option<OsString>); 3] {
-+    [
-+        (
-+            "JCODE_WEBSEARCH_ENGINES",
-+            std::env::var_os("JCODE_WEBSEARCH_ENGINES"),
-+        ),
-+        (
-+            "JCODE_WEBSEARCH_ENGINE",
-+            std::env::var_os("JCODE_WEBSEARCH_ENGINE"),
-+        ),
-+        (
-+            "JCODE_WEBSEARCH_FALLBACK_ENGINES",
-+            std::env::var_os("JCODE_WEBSEARCH_FALLBACK_ENGINES"),
-+        ),
-+    ]
-+}
-+
-+fn clear_websearch_env() {
-+    for (key, _) in save_websearch_env() {
-+        crate::env::remove_var(key);
-+    }
-+}
-+
-+fn restore_websearch_env(previous: [(&'static str, Option<OsString>); 3]) {
-+    for (key, value) in previous {
-+        restore_env_var(key, value);
-+    }
-+}
-+
- #[test]
- fn test_openai_reasoning_effort_defaults_to_low() {
-     assert_eq!(
-@@ -50,6 +125,17 @@ fn swarm_max_concurrent_agents_defaults_to_safe_live_worker_budget() {
+@@ -50,6 +50,17 @@ fn swarm_max_concurrent_agents_defaults_to_safe_live_worker_budget() {
      assert_eq!(Config::default().agents.swarm_max_concurrent_agents, 32);
  }
  
@@ -3509,10 +3416,10 @@ index b7d18eb48..d70aaf961 100644
  pub use jcode_core::{terminal_eprint, terminal_eprintln, terminal_print, terminal_println};
 diff --git a/crates/jcode-base/src/worker_blueprint.rs b/crates/jcode-base/src/worker_blueprint.rs
 new file mode 100644
-index 000000000..358b1d11b
+index 000000000..cfb3fd02b
 --- /dev/null
 +++ b/crates/jcode-base/src/worker_blueprint.rs
-@@ -0,0 +1,2322 @@
+@@ -0,0 +1,2222 @@
 +//! Worker blueprint discovery, parsing, validation, and override merging.
 +//!
 +//! This module owns the phase-one data and configuration boundary for worker
@@ -3950,18 +3857,20 @@ index 000000000..358b1d11b
 +    let (yaml_text, body) = match split_front_matter(&raw) {
 +        Ok(v) => v,
 +        Err(msg) => {
-+            return CoordinatorLoadResult::Invalid(vec![WorkerBlueprintDiagnostic::file_excluded(
-+                &path, msg,
-+            )]);
++            return CoordinatorLoadResult::Invalid(vec![
++                WorkerBlueprintDiagnostic::file_excluded(&path, msg),
++            ]);
 +        }
 +    };
 +    let yaml_value: serde_yaml::Value = match serde_yaml::from_str(&yaml_text) {
 +        Ok(v) => v,
 +        Err(e) => {
-+            return CoordinatorLoadResult::Invalid(vec![WorkerBlueprintDiagnostic::file_excluded(
-+                &path,
-+                format!("invalid YAML in coordinator front matter: {e}"),
-+            )]);
++            return CoordinatorLoadResult::Invalid(vec![
++                WorkerBlueprintDiagnostic::file_excluded(
++                    &path,
++                    format!("invalid YAML in coordinator front matter: {e}"),
++                ),
++            ]);
 +        }
 +    };
 +
@@ -3993,10 +3902,12 @@ index 000000000..358b1d11b
 +    let fm: CoordinatorFrontMatter = match serde_yaml::from_value(yaml_value) {
 +        Ok(fm) => fm,
 +        Err(e) => {
-+            return CoordinatorLoadResult::Invalid(vec![WorkerBlueprintDiagnostic::file_excluded(
-+                &path,
-+                format!("failed to deserialize coordinator front matter: {e}"),
-+            )]);
++            return CoordinatorLoadResult::Invalid(vec![
++                WorkerBlueprintDiagnostic::file_excluded(
++                    &path,
++                    format!("failed to deserialize coordinator front matter: {e}"),
++                ),
++            ]);
 +        }
 +    };
 +    let enabled_tools = parse_yaml_tools(&path, fm.enabled_tools, "enabled-tools", &mut diags);
@@ -4174,10 +4085,7 @@ index 000000000..358b1d11b
 +fn parse_blueprint_file_with_diagnostics(
 +    path: &Path,
 +    raw: &str,
-+) -> (
-+    Option<WorkerBlueprintSource>,
-+    Vec<WorkerBlueprintDiagnostic>,
-+) {
++) -> (Option<WorkerBlueprintSource>, Vec<WorkerBlueprintDiagnostic>) {
 +    let (yaml_text, body) = match split_front_matter(raw) {
 +        Ok(v) => v,
 +        Err(msg) => {
@@ -4407,33 +4315,29 @@ index 000000000..358b1d11b
 +    let (enabled_tools, disabled_tools) = match overrides {
 +        None => (source.enabled_tools.clone(), source.disabled_tools.clone()),
 +        Some(ov) => {
-+            let resolve_tools =
-+                |override_tools: &Option<Vec<String>>,
-+                 source_tools: &Option<Vec<String>>,
-+                 field: &str,
-+                 diags: &mut Vec<WorkerBlueprintDiagnostic>| {
-+                    match override_tools {
-+                        None => source_tools.clone(),
-+                        Some(values) => {
-+                            let mut result = Vec::new();
-+                            for value in values {
-+                                let trimmed = value.trim();
-+                                if trimmed.is_empty() {
-+                                    diags.push(WorkerBlueprintDiagnostic::config_field_ignored(
-+                                        format!(
-+                                            "agents.worker_blueprints.{}.{}",
-+                                            source.name, field
-+                                        ),
-+                                        format!("blank entry in {field} override; entry skipped"),
-+                                    ));
-+                                } else {
-+                                    result.push(trimmed.to_string());
-+                                }
++            let resolve_tools = |override_tools: &Option<Vec<String>>,
++                                 source_tools: &Option<Vec<String>>,
++                                 field: &str,
++                                 diags: &mut Vec<WorkerBlueprintDiagnostic>| {
++                match override_tools {
++                    None => source_tools.clone(),
++                    Some(values) => {
++                        let mut result = Vec::new();
++                        for value in values {
++                            let trimmed = value.trim();
++                            if trimmed.is_empty() {
++                                diags.push(WorkerBlueprintDiagnostic::config_field_ignored(
++                                    format!("agents.worker_blueprints.{}.{}", source.name, field),
++                                    format!("blank entry in {field} override; entry skipped"),
++                                ));
++                            } else {
++                                result.push(trimmed.to_string());
 +                            }
-+                            Some(result)
 +                        }
++                        Some(result)
 +                    }
-+                };
++                }
++            };
 +            (
 +                resolve_tools(&ov.enabled, &source.enabled_tools, "enabled", &mut diags),
 +                resolve_tools(&ov.disabled, &source.disabled_tools, "disabled", &mut diags),
@@ -4566,8 +4470,7 @@ index 000000000..358b1d11b
 +            for path in discover_markdown_files(&dir) {
 +                match std::fs::read_to_string(&path) {
 +                    Ok(raw) => {
-+                        let (source, file_diags) =
-+                            parse_blueprint_file_with_diagnostics(&path, &raw);
++                        let (source, file_diags) = parse_blueprint_file_with_diagnostics(&path, &raw);
 +                        diagnostics.extend(file_diags);
 +                        if let Some(src) = source {
 +                            if src.name == COORDINATOR_ID {
@@ -4589,7 +4492,9 @@ index 000000000..358b1d11b
 +                                         This file excluded.",
 +                                        src.name,
 +                                        path.display(),
-+                                        sources[&src.name].source_path.display(),
++                                        sources[&src.name]
++                                            .source_path
++                                            .display(),
 +                                    ),
 +                                ));
 +                            } else {
@@ -4725,10 +4630,7 @@ index 000000000..358b1d11b
 +    #[test]
 +    fn missing_default_dir_loads_empty_registry() {
 +        // Use a nonexistent path.
-+        let report = load_worker_blueprints(
-+            Some("/nonexistent/path/that/does/not/exist"),
-+            &BTreeMap::new(),
-+        );
++        let report = load_worker_blueprints(Some("/nonexistent/path/that/does/not/exist"), &BTreeMap::new());
 +        assert!(report.registry.is_empty());
 +        assert!(report.diagnostics.is_empty());
 +    }
@@ -4744,7 +4646,10 @@ index 000000000..358b1d11b
 +            ("subdir/d.md", MINIMAL_BP),
 +        ]);
 +
-+        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        let report = load_worker_blueprints(
++            dir.path().to_str(),
++            &BTreeMap::new(),
++        );
 +        // Only a.md and b.md (direct, regular .md files); subdir/d.md is not
 +        // discovered (no recursion).
 +        // a.md has name "shell-runner", b.md has name "reviewer".
@@ -4795,7 +4700,9 @@ index 000000000..358b1d11b
 +    #[test]
 +    fn correct_front_matter_preserves_body() {
 +        let body = "You are a rigorous code reviewer.\n\nReview the change.";
-+        let content = format!("---\nname: reviewer\ndescription: Reviews changes.\n---\n{body}\n");
++        let content = format!(
++            "---\nname: reviewer\ndescription: Reviews changes.\n---\n{body}\n"
++        );
 +        let dir = make_dir(&[("review.md", &content)]);
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
@@ -4816,9 +4723,11 @@ index 000000000..358b1d11b
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert_eq!(report.registry.len(), 1);
 +        assert!(report.registry.get("shell-runner").is_some());
-+        assert!(report.diagnostics.iter().any(|d| d.source
-+            == DiagnosticSource::File(dir.path().join("no_fm.md"))
-+            && d.severity == DiagnosticSeverity::Excluded));
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.source == DiagnosticSource::File(dir.path().join("no_fm.md"))
++                && d.severity == DiagnosticSeverity::Excluded));
 +    }
 +
 +    #[test]
@@ -4828,12 +4737,10 @@ index 000000000..358b1d11b
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert_eq!(report.registry.len(), 1);
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("unclosed"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("unclosed")));
 +    }
 +
 +    #[test]
@@ -4843,12 +4750,10 @@ index 000000000..358b1d11b
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert_eq!(report.registry.len(), 1);
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("blank"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("blank")));
 +    }
 +
 +    // Test 5: Required name validation accepts valid IDs, rejects invalid
@@ -4884,12 +4789,9 @@ index 000000000..358b1d11b
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert_eq!(report.registry.len(), 1);
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("invalid blueprint ID"))
-+        );
++        assert!(report.diagnostics.iter().any(|d| d
++            .message
++            .contains("invalid blueprint ID")));
 +    }
 +
 +    #[test]
@@ -4910,18 +4812,22 @@ index 000000000..358b1d11b
 +
 +Body two.
 +";
-+        let dir = make_dir(&[("first.md", bp1), ("second.md", bp2)]);
++        let dir = make_dir(&[
++            ("first.md", bp1),
++            ("second.md", bp2),
++        ]);
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        // Only the first file's blueprint should be registered.
 +        assert_eq!(report.registry.len(), 1);
-+        assert_eq!(report.registry.get("dup").unwrap().description, "First.");
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("duplicate blueprint ID 'dup'"))
++        assert_eq!(
++            report.registry.get("dup").unwrap().description,
++            "First."
 +        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("duplicate blueprint ID 'dup'")));
 +    }
 +
 +    // Test 6: Required description and nonblank Markdown body are enforced.
@@ -4938,12 +4844,10 @@ index 000000000..358b1d11b
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert_eq!(report.registry.len(), 1);
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("description"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("description")));
 +    }
 +
 +    #[test]
@@ -4960,12 +4864,10 @@ index 000000000..358b1d11b
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert_eq!(report.registry.len(), 1);
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("description"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("description")));
 +    }
 +
 +    // Test 7: enabled-tools accepts only arrays of nonblank strings and
@@ -5012,12 +4914,10 @@ index 000000000..358b1d11b
 +        assert_eq!(report.registry.len(), 1);
 +        let bp = report.registry.get("scalar-tools").unwrap();
 +        assert!(bp.enabled_tools.is_none());
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("enabled-tools") && d.message.contains("array"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("enabled-tools") && d.message.contains("array")));
 +    }
 +
 +    #[test]
@@ -5111,12 +5011,11 @@ index 000000000..358b1d11b
 +        assert_eq!(report.registry.len(), 1);
 +        let bp = report.registry.get("bad-effort").unwrap();
 +        assert!(bp.effort.is_none());
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("invalid effort") && d.message.contains("ridiculous"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("invalid effort")
++                && d.message.contains("ridiculous")));
 +    }
 +
 +    #[test]
@@ -5136,13 +5035,13 @@ index 000000000..358b1d11b
 +        assert_eq!(report.registry.len(), 1);
 +        let bp = report.registry.get("bad-comm").unwrap();
 +        assert!(bp.communication_policy.is_none());
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("invalid communication-policy")
-+                    && d.message.contains("telepathy"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d
++                .message
++                .contains("invalid communication-policy")
++                && d.message.contains("telepathy")));
 +    }
 +
 +    // Test 9: Valid TOML model and effort overrides replace only their
@@ -5243,12 +5142,9 @@ index 000000000..358b1d11b
 +        let bp = report.registry.get("reviewer").unwrap();
 +        // Falls back to source model.
 +        assert_eq!(bp.model.as_deref(), Some("openai-api:gpt-5.5"));
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| { d.message.contains("model override is blank") })
-+        );
++        assert!(report.diagnostics.iter().any(|d| {
++            d.message.contains("model override is blank")
++        }));
 +    }
 +
 +    // Test 11: An override with no Markdown blueprint is diagnosed and
@@ -5274,7 +5170,8 @@ index 000000000..358b1d11b
 +        assert!(report.registry.get("shell-runner").is_some());
 +        assert!(report.registry.get("nonexistent").is_none());
 +        assert!(report.diagnostics.iter().any(|d| {
-+            d.source == DiagnosticSource::Config("agents.worker_blueprints.nonexistent".into())
++            d.source
++                == DiagnosticSource::Config("agents.worker_blueprints.nonexistent".into())
 +                && d.message.contains("no matching Markdown source file")
 +        }));
 +    }
@@ -5358,10 +5255,7 @@ index 000000000..358b1d11b
 +            BlueprintEffort::parse("MINIMAL"),
 +            Some(BlueprintEffort::Minimal)
 +        );
-+        assert_eq!(
-+            BlueprintEffort::parse("  High  "),
-+            Some(BlueprintEffort::High)
-+        );
++        assert_eq!(BlueprintEffort::parse("  High  "), Some(BlueprintEffort::High));
 +        assert_eq!(
 +            BlueprintEffort::parse("swarm-deep"),
 +            Some(BlueprintEffort::SwarmDeep)
@@ -5474,12 +5368,10 @@ index 000000000..358b1d11b
 +
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert_eq!(report.registry.len(), 1);
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("content before opening"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("content before opening")));
 +    }
 +
 +    // Additional coverage: whitespace around delimiters is tolerated.
@@ -5518,12 +5410,12 @@ index 000000000..358b1d11b
 +        #[cfg(unix)]
 +        {
 +            // The unreadable file should have a diagnostic.
-+            assert!(
-+                report
-+                    .diagnostics
-+                    .iter()
-+                    .any(|d| d.source == DiagnosticSource::File(bad_path.clone()))
-+            );
++            assert!(report
++                .diagnostics
++                .iter()
++                .any(|d| d
++                    .source
++                    == DiagnosticSource::File(bad_path.clone())));
 +        }
 +
 +        #[cfg(unix)]
@@ -5559,12 +5451,10 @@ index 000000000..358b1d11b
 +            bp.enabled_tools.as_deref(),
 +            Some(&["read".to_string(), "bash".to_string()][..])
 +        );
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("non-string entry"))
-+        );
++        assert!(report
++            .diagnostics
++            .iter()
++            .any(|d| d.message.contains("non-string entry")));
 +    }
 +
 +    #[test]
@@ -5575,14 +5465,8 @@ index 000000000..358b1d11b
 +        )]);
 +        match load_coordinator_blueprint(dir.path().to_str()) {
 +            CoordinatorLoadResult::Ok(coord) => {
-+                assert_eq!(
-+                    coord.enabled_tools.as_deref(),
-+                    Some(&["read".to_string(), "agentgrep".to_string()][..])
-+                );
-+                assert_eq!(
-+                    coord.disabled_tools.as_deref(),
-+                    Some(&["bash".to_string()][..])
-+                );
++                assert_eq!(coord.enabled_tools.as_deref(), Some(&["read".to_string(), "agentgrep".to_string()][..]));
++                assert_eq!(coord.disabled_tools.as_deref(), Some(&["bash".to_string()][..]));
 +                assert_eq!(coord.body, "Delegate tasks to workers.");
 +            }
 +            _ => panic!("expected Ok"),
@@ -5592,43 +5476,25 @@ index 000000000..358b1d11b
 +    #[test]
 +    fn coordinator_md_missing_returns_missing() {
 +        let dir = make_dir(&[("other.md", MINIMAL_BP)]);
-+        assert!(matches!(
-+            load_coordinator_blueprint(dir.path().to_str()),
-+            CoordinatorLoadResult::Missing
-+        ));
++        assert!(matches!(load_coordinator_blueprint(dir.path().to_str()), CoordinatorLoadResult::Missing));
 +    }
 +
 +    #[test]
 +    fn coordinator_md_malformed_returns_invalid() {
 +        let dir = make_dir(&[("coordinator.md", "no front matter at all")]);
-+        assert!(matches!(
-+            load_coordinator_blueprint(dir.path().to_str()),
-+            CoordinatorLoadResult::Invalid(_)
-+        ));
++        assert!(matches!(load_coordinator_blueprint(dir.path().to_str()), CoordinatorLoadResult::Invalid(_)));
 +    }
 +
 +    #[test]
 +    fn coordinator_md_blank_body_returns_invalid() {
-+        let dir = make_dir(&[(
-+            "coordinator.md",
-+            "---\nenabled-tools:\n  - read\n---\n\n  \n",
-+        )]);
-+        assert!(matches!(
-+            load_coordinator_blueprint(dir.path().to_str()),
-+            CoordinatorLoadResult::Invalid(_)
-+        ));
++        let dir = make_dir(&[("coordinator.md", "---\nenabled-tools:\n  - read\n---\n\n  \n")]);
++        assert!(matches!(load_coordinator_blueprint(dir.path().to_str()), CoordinatorLoadResult::Invalid(_)));
 +    }
 +
 +    #[test]
 +    fn coordinator_md_unknown_key_returns_invalid() {
-+        let dir = make_dir(&[(
-+            "coordinator.md",
-+            "---\nname: coordinator\ndescription: bad\n---\n\nBody.",
-+        )]);
-+        assert!(matches!(
-+            load_coordinator_blueprint(dir.path().to_str()),
-+            CoordinatorLoadResult::Invalid(_)
-+        ));
++        let dir = make_dir(&[("coordinator.md", "---\nname: coordinator\ndescription: bad\n---\n\nBody.")]);
++        assert!(matches!(load_coordinator_blueprint(dir.path().to_str()), CoordinatorLoadResult::Invalid(_)));
 +    }
 +
 +    #[test]
@@ -5637,12 +5503,7 @@ index 000000000..358b1d11b
 +        let dir = make_dir(&[("fake.md", bp), ("valid.md", MINIMAL_BP)]);
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert!(report.registry.get("coordinator").is_none());
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .any(|d| d.message.contains("reserved"))
-+        );
++        assert!(report.diagnostics.iter().any(|d| d.message.contains("reserved")));
 +    }
 +
 +    #[test]
@@ -5651,79 +5512,41 @@ index 000000000..358b1d11b
 +        let dir = make_dir(&[("restricted.md", bp)]);
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        let bp = report.registry.get("restricted").unwrap();
-+        assert_eq!(
-+            bp.enabled_tools.as_deref(),
-+            Some(&["read".to_string(), "agentgrep".to_string()][..])
-+        );
-+        assert_eq!(
-+            bp.disabled_tools.as_deref(),
-+            Some(&["bash".to_string()][..])
-+        );
++        assert_eq!(bp.enabled_tools.as_deref(), Some(&["read".to_string(), "agentgrep".to_string()][..]));
++        assert_eq!(bp.disabled_tools.as_deref(), Some(&["bash".to_string()][..]));
 +    }
 +
 +    #[test]
 +    fn old_allowed_tools_key_diagnosed_as_unknown() {
-+        let bp =
-+            "---\nname: old-tools\ndescription: Test.\nallowed-tools:\n  - read\n---\n\nBody.\n";
++        let bp = "---\nname: old-tools\ndescription: Test.\nallowed-tools:\n  - read\n---\n\nBody.\n";
 +        let dir = make_dir(&[("old.md", bp)]);
 +        let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
 +        assert_eq!(report.registry.len(), 1);
-+        assert!(report.diagnostics.iter().any(|d| {
-+            d.message
-+                .contains("unknown front-matter key 'allowed-tools'")
-+        }));
++        assert!(report.diagnostics.iter().any(|d| d.message.contains("unknown front-matter key 'allowed-tools'")));
 +    }
 +
 +    #[test]
 +    fn override_enabled_replaces_source() {
 +        let dir = make_dir(&[("bp.md", VALID_BP)]);
 +        let mut overrides = BTreeMap::new();
-+        overrides.insert(
-+            "reviewer".to_string(),
-+            WorkerBlueprintOverride {
-+                model: None,
-+                effort: None,
-+                timeout_minutes: None,
-+                enabled: Some(vec!["read".to_string()]),
-+                disabled: None,
-+            },
-+        );
++        overrides.insert("reviewer".to_string(), WorkerBlueprintOverride {
++            model: None, effort: None, timeout_minutes: None,
++            enabled: Some(vec!["read".to_string()]), disabled: None,
++        });
 +        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
-+        assert_eq!(
-+            report
-+                .registry
-+                .get("reviewer")
-+                .unwrap()
-+                .enabled_tools
-+                .as_deref(),
-+            Some(&["read".to_string()][..])
-+        );
++        assert_eq!(report.registry.get("reviewer").unwrap().enabled_tools.as_deref(), Some(&["read".to_string()][..]));
 +    }
 +
 +    #[test]
 +    fn override_enabled_empty_clears_source() {
 +        let dir = make_dir(&[("bp.md", VALID_BP)]);
 +        let mut overrides = BTreeMap::new();
-+        overrides.insert(
-+            "reviewer".to_string(),
-+            WorkerBlueprintOverride {
-+                model: None,
-+                effort: None,
-+                timeout_minutes: None,
-+                enabled: Some(vec![]),
-+                disabled: None,
-+            },
-+        );
++        overrides.insert("reviewer".to_string(), WorkerBlueprintOverride {
++            model: None, effort: None, timeout_minutes: None,
++            enabled: Some(vec![]), disabled: None,
++        });
 +        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
-+        assert_eq!(
-+            report
-+                .registry
-+                .get("reviewer")
-+                .unwrap()
-+                .enabled_tools
-+                .as_deref(),
-+            Some(&[][..])
-+        );
++        assert_eq!(report.registry.get("reviewer").unwrap().enabled_tools.as_deref(), Some(&[][..]));
 +    }
 +
 +    #[test]
@@ -5731,42 +5554,22 @@ index 000000000..358b1d11b
 +        let bp = "---\nname: worker\ndescription: Test.\ndisabled-tools:\n  - bash\n---\n\nBody.\n";
 +        let dir = make_dir(&[("worker.md", bp)]);
 +        let mut overrides = BTreeMap::new();
-+        overrides.insert(
-+            "worker".to_string(),
-+            WorkerBlueprintOverride {
-+                model: None,
-+                effort: None,
-+                timeout_minutes: None,
-+                enabled: None,
-+                disabled: Some(vec!["write".to_string()]),
-+            },
-+        );
++        overrides.insert("worker".to_string(), WorkerBlueprintOverride {
++            model: None, effort: None, timeout_minutes: None,
++            enabled: None, disabled: Some(vec!["write".to_string()]),
++        });
 +        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
-+        assert_eq!(
-+            report
-+                .registry
-+                .get("worker")
-+                .unwrap()
-+                .disabled_tools
-+                .as_deref(),
-+            Some(&["write".to_string()][..])
-+        );
++        assert_eq!(report.registry.get("worker").unwrap().disabled_tools.as_deref(), Some(&["write".to_string()][..]));
 +    }
 +
 +    #[test]
 +    fn omitted_override_inherits_source() {
 +        let dir = make_dir(&[("bp.md", VALID_BP)]);
 +        let mut overrides = BTreeMap::new();
-+        overrides.insert(
-+            "reviewer".to_string(),
-+            WorkerBlueprintOverride {
-+                model: None,
-+                effort: None,
-+                timeout_minutes: None,
-+                enabled: None,
-+                disabled: None,
-+            },
-+        );
++        overrides.insert("reviewer".to_string(), WorkerBlueprintOverride {
++            model: None, effort: None, timeout_minutes: None,
++            enabled: None, disabled: None,
++        });
 +        let report = load_worker_blueprints(dir.path().to_str(), &overrides);
 +        let bp = report.registry.get("reviewer").unwrap();
 +        assert_eq!(bp.enabled_tools.as_ref().unwrap().len(), 4);
@@ -5786,26 +5589,30 @@ index 000000000..358b1d11b
 +                disabled: None,
 +            },
 +        );
-+        let report = load_worker_blueprints(Some("/nonexistent/path"), &overrides);
++        let report = load_worker_blueprints(
++            Some("/nonexistent/path"),
++            &overrides,
++        );
 +        // The coordinator override is not a worker blueprint; it does not
 +        // appear in the registry.
 +        assert!(report.registry.get(COORDINATOR_ID).is_none());
 +        // Worker-only fields are diagnosed.
 +        assert!(report.diagnostics.iter().any(|d| {
-+            d.source
-+                == DiagnosticSource::Config("agents.worker_blueprints.coordinator.model".into())
++            d.source == DiagnosticSource::Config(
++                "agents.worker_blueprints.coordinator.model".into()
++            )
 +                && d.message.contains("worker-only field 'model'")
 +        }));
 +        assert!(report.diagnostics.iter().any(|d| {
-+            d.source
-+                == DiagnosticSource::Config("agents.worker_blueprints.coordinator.effort".into())
++            d.source == DiagnosticSource::Config(
++                "agents.worker_blueprints.coordinator.effort".into()
++            )
 +                && d.message.contains("worker-only field 'effort'")
 +        }));
 +        assert!(report.diagnostics.iter().any(|d| {
-+            d.source
-+                == DiagnosticSource::Config(
-+                    "agents.worker_blueprints.coordinator.timeout_minutes".into(),
-+                )
++            d.source == DiagnosticSource::Config(
++                "agents.worker_blueprints.coordinator.timeout_minutes".into()
++            )
 +                && d.message.contains("worker-only field 'timeout_minutes'")
 +        }));
 +    }
@@ -5825,26 +5632,20 @@ index 000000000..358b1d11b
 +                disabled: Some(vec!["bash".to_string()]),
 +            },
 +        );
-+        let report = load_worker_blueprints(Some("/nonexistent/path"), &overrides);
-+        assert!(report.registry.get(COORDINATOR_ID).is_none());
-+        assert!(
-+            report
-+                .diagnostics
-+                .iter()
-+                .all(|d| { !d.message.contains("worker-only field") })
++        let report = load_worker_blueprints(
++            Some("/nonexistent/path"),
++            &overrides,
 +        );
++        assert!(report.registry.get(COORDINATOR_ID).is_none());
++        assert!(report.diagnostics.iter().all(|d| {
++            !d.message.contains("worker-only field")
++        }));
 +    }
 +}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 01735a693..6f6134d10 100644
+index 01735a693..7bf26d384 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1,4 +1,4 @@
--use serde::{Deserialize, Serialize};
-+use serde::{Deserialize, Deserializer, Serialize, de};
- 
- mod display;
- pub use display::DisplayConfig;
 @@ -649,6 +649,62 @@ pub struct AgentsConfig {
      /// Env override: `JCODE_SWARM_MAX_CONCURRENT_AGENTS`.
      #[serde(default = "default_swarm_max_concurrent_agents")]
@@ -5918,217 +5719,6 @@ index 01735a693..6f6134d10 100644
          }
      }
  }
-@@ -1184,12 +1243,16 @@ impl WebSearchEngine {
- }
- 
- /// Configuration for the websearch tool.
--#[derive(Debug, Clone, Serialize, Deserialize)]
--#[serde(default)]
-+///
-+/// `engine` is the complete, ordered policy.  Deserialization accepts the
-+/// historical scalar form as well as the canonical array form and folds the
-+/// deprecated `fallback_engines` key into that policy.
-+#[derive(Debug, Clone)]
- pub struct WebSearchConfig {
--    /// Preferred engine when the tool input does not specify one.
--    pub engine: WebSearchEngine,
--    /// Keyless HTML engines to try after the preferred engine fails.
-+    /// Engines to try in priority order.  This is also the complete allowlist.
-+    pub engine: Vec<WebSearchEngine>,
-+    /// Deprecated compatibility view of legacy fallback configuration.
-+    /// Dispatch uses `engine`, never this field.
-     pub fallback_engines: Vec<WebSearchEngine>,
-     /// Optional Bing API key for primary Bing searches. Fallback Bing uses keyless HTML search.
-     pub bing_api_key: Option<String>,
-@@ -1205,10 +1268,136 @@ pub struct WebSearchConfig {
-     pub searxng_url_env: String,
- }
- 
-+#[derive(Debug, Deserialize)]
-+#[serde(untagged)]
-+enum WebSearchEngineList {
-+    Scalar(String),
-+    Array(Vec<String>),
-+}
-+
-+impl WebSearchEngineList {
-+    fn parse<E>(self, field: &str, allow_empty: bool) -> Result<Vec<WebSearchEngine>, E>
-+    where
-+        E: de::Error,
-+    {
-+        let values = match self {
-+            Self::Scalar(value) => vec![value],
-+            Self::Array(values) => values,
-+        };
-+        if values.is_empty() && !allow_empty {
-+            return Err(de::Error::custom(format!(
-+                "[websearch].{field} must contain at least one engine"
-+            )));
-+        }
-+        let mut parsed = Vec::with_capacity(values.len());
-+        for value in values {
-+            let Some(engine) = WebSearchEngine::parse(&value) else {
-+                return Err(de::Error::custom(format!(
-+                    "unknown websearch engine {value:?} in [websearch].{field}; expected duckduckgo, bing, or searxng"
-+                )));
-+            };
-+            if !parsed.contains(&engine) {
-+                parsed.push(engine);
-+            }
-+        }
-+        if parsed.is_empty() && !allow_empty {
-+            return Err(de::Error::custom(format!(
-+                "[websearch].{field} must contain at least one engine"
-+            )));
-+        }
-+        Ok(parsed)
-+    }
-+}
-+
-+#[derive(Debug, Deserialize)]
-+struct RawWebSearchConfig {
-+    #[serde(default)]
-+    engine: Option<WebSearchEngineList>,
-+    #[serde(default)]
-+    fallback_engines: Option<WebSearchEngineList>,
-+    #[serde(default)]
-+    bing_api_key: Option<String>,
-+    #[serde(default = "default_bing_api_key_env")]
-+    bing_api_key_env: String,
-+    #[serde(default = "default_bing_market")]
-+    bing_market: String,
-+    #[serde(default)]
-+    searxng_url: Option<String>,
-+    #[serde(default = "default_searxng_url_env")]
-+    searxng_url_env: String,
-+}
-+
-+fn default_bing_api_key_env() -> String {
-+    "JCODE_BING_API_KEY".to_string()
-+}
-+
-+fn default_bing_market() -> String {
-+    "en-US".to_string()
-+}
-+
-+fn default_searxng_url_env() -> String {
-+    "JCODE_SEARXNG_URL".to_string()
-+}
-+
-+impl<'de> Deserialize<'de> for WebSearchConfig {
-+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-+    where
-+        D: Deserializer<'de>,
-+    {
-+        let raw = RawWebSearchConfig::deserialize(deserializer)?;
-+        let engine_was_present = raw.engine.is_some();
-+        let mut engine = raw
-+            .engine
-+            .map(|value| value.parse("engine", false))
-+            .transpose()?
-+            .unwrap_or_else(|| vec![WebSearchEngine::Duckduckgo]);
-+        let fallback = match raw.fallback_engines {
-+            Some(value) => value.parse("fallback_engines", true)?,
-+            // Preserve the old effective default only when no primary engine
-+            // was explicitly selected.  `engine = "searxng"` must remain
-+            // exactly `[searxng]`.
-+            None if !engine_was_present => vec![WebSearchEngine::Bing],
-+            None => Vec::new(),
-+        };
-+        for fallback_engine in &fallback {
-+            if !engine.contains(fallback_engine) {
-+                engine.push(*fallback_engine);
-+            }
-+        }
-+
-+        Ok(Self {
-+            engine,
-+            fallback_engines: fallback,
-+            bing_api_key: raw.bing_api_key,
-+            bing_api_key_env: raw.bing_api_key_env,
-+            bing_market: raw.bing_market,
-+            searxng_url: raw.searxng_url,
-+            searxng_url_env: raw.searxng_url_env,
-+        })
-+    }
-+}
-+
-+impl Serialize for WebSearchConfig {
-+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-+    where
-+        S: serde::Serializer,
-+    {
-+        use serde::ser::SerializeStruct;
-+        let mut state = serializer.serialize_struct("WebSearchConfig", 7)?;
-+        state.serialize_field("engine", &self.engine)?;
-+        state.serialize_field("bing_api_key", &self.bing_api_key)?;
-+        state.serialize_field("bing_api_key_env", &self.bing_api_key_env)?;
-+        state.serialize_field("bing_market", &self.bing_market)?;
-+        state.serialize_field("searxng_url", &self.searxng_url)?;
-+        state.serialize_field("searxng_url_env", &self.searxng_url_env)?;
-+        state.end()
-+    }
-+}
-+
- impl Default for WebSearchConfig {
-     fn default() -> Self {
-         Self {
--            engine: WebSearchEngine::Duckduckgo,
-+            engine: vec![WebSearchEngine::Duckduckgo, WebSearchEngine::Bing],
-             fallback_engines: vec![WebSearchEngine::Bing],
-             bing_api_key: None,
-             bing_api_key_env: "JCODE_BING_API_KEY".to_string(),
-@@ -1605,3 +1794,50 @@ mod reasoning_display_defaults_tests {
-         assert!(!display.show_thinking);
-     }
- }
-+
-+#[cfg(test)]
-+mod websearch_config_tests {
-+    use super::*;
-+
-+    fn parse(input: &str) -> WebSearchConfig {
-+        toml::from_str(input).expect("websearch config should parse")
-+    }
-+
-+    #[test]
-+    fn scalar_engine_normalizes_to_a_single_strict_policy() {
-+        let config = parse("engine = \"searxng\"\n");
-+        assert_eq!(config.engine, vec![WebSearchEngine::Searxng]);
-+    }
-+
-+    #[test]
-+    fn array_engine_preserves_priority_and_deduplicates_aliases() {
-+        let config = parse("engine = [\"searx\", \"bing\", \"searxng\"]\n");
-+        assert_eq!(
-+            config.engine,
-+            vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
-+        );
-+    }
-+
-+    #[test]
-+    fn legacy_fallbacks_are_appended_during_migration() {
-+        let config = parse("engine = \"searxng\"\nfallback_engines = [\"bing\", \"searx\"]\n");
-+        assert_eq!(
-+            config.engine,
-+            vec![WebSearchEngine::Searxng, WebSearchEngine::Bing]
-+        );
-+    }
-+
-+    #[test]
-+    fn empty_and_unknown_engine_lists_are_rejected() {
-+        assert!(toml::from_str::<WebSearchConfig>("engine = []\n").is_err());
-+        assert!(toml::from_str::<WebSearchConfig>("engine = [\"google\"]\n").is_err());
-+    }
-+
-+    #[test]
-+    fn default_policy_retains_duckduckgo_then_bing() {
-+        assert_eq!(
-+            WebSearchConfig::default().engine,
-+            vec![WebSearchEngine::Duckduckgo, WebSearchEngine::Bing]
-+        );
-+    }
-+}
 diff --git a/crates/jcode-protocol/src/protocol_tests/comm_requests.rs b/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
 index 1a1a54390..5298ba8a5 100644
 --- a/crates/jcode-protocol/src/protocol_tests/comm_requests.rs

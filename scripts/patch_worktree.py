@@ -60,7 +60,11 @@ def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-"
             raise CatalogError(f"existing worktree is dirty: {path}")
         print(f"reusing worktree {path}", file=sys.stderr)
         resolved_revision = git("rev-parse", f"{revision}^{{commit}}", cwd=root)
-        git("checkout", "--detach", resolved_revision, cwd=path)
+        # Use reset --hard instead of checkout --detach to avoid git's
+        # "leaving N commits behind" warning when the worktree HEAD already
+        # has commits not on any branch.
+        git("checkout", "--detach", resolved_revision, cwd=path, quiet=True)
+        git("reset", "--hard", resolved_revision, cwd=path, quiet=True)
     else:
         git("worktree", "add", "--detach", str(path), revision)
     normalize_checkout(path)

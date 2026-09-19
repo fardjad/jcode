@@ -12,6 +12,27 @@ results: file contents, grep output, command logs, and long web pages.
 Delegate token-heavy work to workers to keep the coordinator's context small,
 but keep trivially small work inline to avoid spawn latency overhead.
 
+## Delegation guard safety net
+
+A runtime plugin called the delegation guard automatically replaces oversized
+coordinator tool results before they enter your context. When a tool result
+exceeds the threshold (default 8 KB), you see a compact nudge instead of the
+full output:
+
+> Tool result was N bytes, which exceeds the delegation guard threshold.
+> Delegate inspection according to the delegation guidance. Full output is
+> available at: /path/to/result
+
+The guard is a safety net, not a replacement for proactive delegation.
+Pre-emptive delegation is cheaper: the guard fires only after the call has
+already run, so you still paid the latency, and recovering the information
+requires a second round-trip (spawning a worker). The guard does not fire on
+workers, so nested delegation and worker tool calls are unaffected.
+
+When you see a guard nudge, delegate the inspection. Reference the result file
+path from the nudge in the worker task so the worker can read the full output.
+Do not try to read the result file yourself — that defeats the purpose.
+
 ## When to delegate
 
 Delegate when the work would flood the coordinator's context with large tool
@@ -47,7 +68,11 @@ question.
 ## When NOT to delegate
 
 Keep work inline when tool output is small or spawn overhead exceeds the
-savings. Do NOT delegate:
+savings. The delegation guard is a safety net here: if you underestimate the
+output size, the guard catches it and you can delegate the inspection after
+the fact. So you can make small bets without context-bloat risk. But the guard
+recovery is expensive, so still prefer pre-emptive delegation when you expect
+large output. Do NOT delegate:
 
 - Reading a single small config file or the prompt overlay.
 - A targeted grep that returns a few lines.
@@ -93,6 +118,6 @@ workers in parallel rather than serializing.
 
 The goal is minimizing coordinator context size, not eliminating coordinator
 work. A good rule of thumb: if the expected tool output would add more than
-roughly 50 lines to your context, delegate. If it is a few lines, do it
-inline. When in doubt, delegate the token-heavy part and keep the
-judgment-heavy part.
+roughly 50 lines (about 8 KB, which is also the delegation guard threshold) to
+your context, delegate. If it is a few lines, do it inline. When in doubt,
+delegate the token-heavy part and keep the judgment-heavy part.

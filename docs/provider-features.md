@@ -1,7 +1,7 @@
 # Provider features
 
-These settings require catalog patches `1002-personal-openrouter-eu.patch` and
-`1003-personal-provider-family-allowlist.patch` to be applied.
+These settings require catalog patches `1005-personal-provider-add-typed-openrouter-eu-provider.patch` and
+`1002-personal-provider-policy-add-provider-family-execution-allowlist.patch` to be applied.
 
 jcode reads user configuration from `~/.jcode/config.toml`.
 

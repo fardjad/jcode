@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Replace oversized coordinator tool results with a delegation nudge.
+
+Empty stdout is deliberate: jcode then preserves the original tool result.
+"""
+
+import json
+import os
+import sys
+
+DEFAULT_THRESHOLD = 8192
+
+
+def threshold_from_environment() -> int:
+    value = os.environ.get("JCODE_DELEGATION_GUARD_THRESHOLD")
+    if value is None:
+        return DEFAULT_THRESHOLD
+    try:
+        threshold = int(value)
+    except ValueError:
+        return DEFAULT_THRESHOLD
+    return threshold if threshold >= 0 else DEFAULT_THRESHOLD
+
+
+def main() -> None:
+    if os.environ.get("JCODE_HOOK_SWARM_ENABLED") != "1":
+        return
+    if os.environ.get("JCODE_HOOK_PROCESS_ROLE") != "coordinator":
+        return
+
+    try:
+        envelope = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        return
+
+    output_bytes = envelope.get("output_bytes")
+    if isinstance(output_bytes, bool) or not isinstance(output_bytes, int):
+        return
+    if output_bytes <= threshold_from_environment():
+        return
+
+    nudge = (
+        f"Tool result was {output_bytes} bytes, which exceeds the delegation "
+        "guard threshold. Delegate inspection according to the delegation "
+        "guidance."
+    )
+    result_file = envelope.get("tool_result_file")
+    if isinstance(result_file, str) and result_file:
+        nudge += f" Full output is available at: {result_file}"
+
+    json.dump({"tool_result": nudge}, sys.stdout, separators=(",", ":"))
+
+
+if __name__ == "__main__":
+    main()

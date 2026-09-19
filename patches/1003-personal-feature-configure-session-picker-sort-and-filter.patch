@@ -1,54 +1,58 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Fri, 4 Sep 2026 07:01:31 +0200
-Subject: [PATCH] feat: configure session picker sorting
+Subject: [PATCH] feat: configure session picker sort and filter
 
-X-Jcode-Patch-Intent: Let users choose how the /sessions picker orders sessions.
+X-Jcode-Patch-Intent: Allow configuring session picker sort order and
+default filter
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-Depends-On: 1002-personal-provider-policy-add-provider-family-execution-allowlist.patch
 
 Patch intent:
-Add display.session_picker_sort with recent, created, and name modes. Apply it
-consistently to loaded sessions, filtered rows, saved sessions, and both picker
-caches.
+Add configurable sorting and default filter for the session picker,
+controlling the initial sort order and filter applied when opening the
+picker.
 
 Why it exists:
-The picker defaulted to recent activity with no user-visible choice, while saved
-and server sections can make the effective ordering difficult to navigate.
+The session picker defaults were not configurable, forcing users to
+manually re-sort and filter on each use.
 
 Upstream integration points:
-DisplayConfig defines the persisted setting. The session picker loading and
-filtering paths own ordering, and its memory and disk caches key cached results
-by the chosen mode.
+crates/jcode-base/src/config/default_file.rs, crates/jcode-base/src/
+config/config_file.rs, crates/jcode-tui/src/tui/session_picker.rs,
+crates/jcode-config-types/src/lib.rs
 
 Update guidance:
-Preserve recent as the default and route every session list ordering path through
-the shared comparator. Update cache keys when adding a new sort-dependent view.
+Keep the sort and filter configuration options in the session picker
+section of the config. Preserve the default values when options are
+unset.
 
 Validation:
-cargo test -p jcode-config-types session_picker_sort_defaults_to_recent_and_accepts_named_orders --lib
-cargo test -p jcode-tui session_sort_orders_by_the_configured_field --lib
-cargo test -p jcode-tui cached_grouped_sessions_round_trip_from_disk --lib
-cargo test -p jcode-tui sort_ordering_is_consistent --lib
-cargo test -p jcode-tui sort_ordering_applies --lib
+scripts/cargo_exec.sh test -p jcode-tui --lib session_picker
 ---
- crates/jcode-base/src/config/default_file.rs  |   4 +
- crates/jcode-config-types/src/display.rs      |  26 ++-
- crates/jcode-config-types/src/lib.rs          |  13 ++
- .../src/tui/session_picker/filter.rs          |  40 ++---
- .../src/tui/session_picker/loading.rs         |  40 ++++-
- .../src/tui/session_picker/loading_tests.rs   | 131 +++++++++++++++-
- .../jcode-tui/src/tui/session_picker_tests.rs | 148 ++++++++++++++++++
- 7 files changed, 372 insertions(+), 30 deletions(-)
+ crates/jcode-base/src/config/default_file.rs  |   8 +
+ crates/jcode-config-types/src/display.rs      |  43 ++-
+ crates/jcode-config-types/src/lib.rs          |  24 ++
+ .../src/tui/app/inline_interactive.rs         |   2 +
+ crates/jcode-tui/src/tui/session_picker.rs    |  12 +
+ .../src/tui/session_picker/filter.rs          |  40 ++-
+ .../src/tui/session_picker/loading.rs         |  40 ++-
+ .../src/tui/session_picker/loading_tests.rs   | 131 ++++++++-
+ .../jcode-tui/src/tui/session_picker_tests.rs | 267 ++++++++++++++++++
+ 9 files changed, 537 insertions(+), 30 deletions(-)
 
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 2cd0bd6a4..45cd35a5f 100644
+index 2cd0bd6a4..c09de1bf9 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -220,6 +220,10 @@ prompt_entry_animation = true
+@@ -220,6 +220,14 @@ prompt_entry_animation = true
  # (default: true). Set false to list only jcode's own sessions.
  # external_sessions = true
  
++# Initial filter in the /resume picker: "all" (default), or "current-dir"
++# to show only sessions from the directory where /resume was opened.
++# session_picker_default_filter = "all"
++
 +# Session ordering in the /resume picker: "recent" (last activity first,
 +# default), "created" (newest first), or "name" (alphabetical).
 +# session_picker_sort = "recent"
@@ -57,38 +61,42 @@ index 2cd0bd6a4..45cd35a5f 100644
  #   "overscroll" - elastic reveal when scrolling past the bottom (default)
  #   "on"         - always visible
 diff --git a/crates/jcode-config-types/src/display.rs b/crates/jcode-config-types/src/display.rs
-index a413d63d8..3efefb52c 100644
+index a413d63d8..d3c084356 100644
 --- a/crates/jcode-config-types/src/display.rs
 +++ b/crates/jcode-config-types/src/display.rs
-@@ -2,7 +2,8 @@
+@@ -2,7 +2,9 @@
  
  use crate::{
      DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
 -    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, default_true,
-+    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, SessionPickerSort,
++    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, SessionPickerDefaultFilter,
++    SessionPickerSort,
 +    default_true,
  };
  use serde::{Deserialize, Serialize};
  
-@@ -119,6 +120,9 @@ pub struct DisplayConfig {
+@@ -119,6 +121,11 @@ pub struct DisplayConfig {
      /// sessions (issue #674).
      #[serde(default = "default_true")]
      pub external_sessions: bool,
++    /// Initial filter for the `/resume` picker: all (default) or current-dir.
++    pub session_picker_default_filter: SessionPickerDefaultFilter,
 +    /// Ordering for sessions in the `/resume` picker: recent (default),
 +    /// created, or name.
 +    pub session_picker_sort: SessionPickerSort,
      /// Usage percentage wording: "left" (default) or "used".
      pub usage_display: String,
      /// When to show the overscroll status line below the input
-@@ -164,6 +168,7 @@ impl Default for DisplayConfig {
+@@ -164,6 +171,8 @@ impl Default for DisplayConfig {
              colors: std::collections::BTreeMap::new(),
              active_sessions_manager: false,
              external_sessions: true,
++            session_picker_default_filter: SessionPickerDefaultFilter::All,
 +            session_picker_sort: SessionPickerSort::Recent,
              usage_display: "left".to_string(),
              overscroll_status: OverscrollStatusMode::default(),
          }
-@@ -244,6 +249,25 @@ mod tests {
+@@ -244,6 +253,38 @@ mod tests {
          assert!(!disabled.pin_todos);
      }
  
@@ -109,19 +117,43 @@ index a413d63d8..3efefb52c 100644
 +        let name: DisplayConfig =
 +            serde_json::from_str(r#"{"session_picker_sort":"name"}"#).expect("config");
 +        assert_eq!(name.session_picker_sort, crate::SessionPickerSort::Name);
++
++        assert_eq!(
++            DisplayConfig::default().session_picker_default_filter,
++            crate::SessionPickerDefaultFilter::All
++        );
++        let current_dir: DisplayConfig = serde_json::from_str(
++            r#"{"session_picker_default_filter":"current-dir"}"#,
++        )
++        .expect("config");
++        assert_eq!(
++            current_dir.session_picker_default_filter,
++            crate::SessionPickerDefaultFilter::CurrentDir
++        );
 +    }
 +
      #[test]
      fn usage_percentage_wording_defaults_to_left_and_accepts_used() {
          assert_eq!(DisplayConfig::default().usage_display, "left");
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 674fe7d0a..0c3b7da9a 100644
+index 674fe7d0a..fe26278e6 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -52,6 +52,19 @@ pub enum SessionPickerResumeAction {
+@@ -52,6 +52,30 @@ pub enum SessionPickerResumeAction {
      CurrentTerminal,
  }
  
++/// Initial filter for the `/resume` picker.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum SessionPickerDefaultFilter {
++    /// Show sessions from every directory (default).
++    #[default]
++    All,
++    /// Show only sessions from the directory where `/resume` was opened.
++    CurrentDir,
++}
++
 +/// How sessions are ordered in the `/resume` picker.
 +#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 +#[serde(rename_all = "kebab-case")]
@@ -138,6 +170,49 @@ index 674fe7d0a..0c3b7da9a 100644
  impl SessionPickerResumeAction {
      pub fn alternate(self) -> Self {
          match self {
+diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
+index 0965269d9..90ab02b18 100644
+--- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
++++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
+@@ -2432,6 +2432,7 @@ impl App {
+             (SessionPicker::loading(), "Loading sessions...")
+         };
+         picker.set_current_dir(current_dir);
++        picker.apply_configured_default_filter();
+         picker.set_current_session_id(Some(super::commands::active_session_id(self)));
+         self.session_picker_overlay = Some(RefCell::new(picker));
+         self.session_picker_mode = SessionPickerMode::Resume;
+@@ -2556,6 +2557,7 @@ impl App {
+             SessionPickerMode::Resume => {
+                 let mut picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
+                 picker.set_current_dir(self.session.working_dir.clone());
++                picker.apply_configured_default_filter();
+                 picker.set_current_session_id(Some(super::commands::active_session_id(self)));
+                 self.session_picker_overlay = Some(RefCell::new(picker));
+                 self.set_status_notice("Sessions loaded");
+diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
+index 7c0e12cee..96ebf74ae 100644
+--- a/crates/jcode-tui/src/tui/session_picker.rs
++++ b/crates/jcode-tui/src/tui/session_picker.rs
+@@ -482,6 +482,18 @@ impl SessionPicker {
+         self.current_dir = dir.map(|d| normalize_dir(&d));
+     }
+ 
++    /// Apply the configured initial filter after recording the directory where
++    /// `/resume` was opened.
++    pub fn apply_configured_default_filter(&mut self) {
++        self.filter_mode = match crate::config::config().display.session_picker_default_filter {
++            jcode_config_types::SessionPickerDefaultFilter::All => SessionFilterMode::All,
++            jcode_config_types::SessionPickerDefaultFilter::CurrentDir => {
++                SessionFilterMode::CurrentDir
++            }
++        };
++        self.rebuild_items();
++    }
++
+     /// Whether the given session's working directory matches the directory the
+     /// picker was opened from.
+     pub(super) fn session_in_current_dir(&self, session: &SessionInfo) -> bool {
 diff --git a/crates/jcode-tui/src/tui/session_picker/filter.rs b/crates/jcode-tui/src/tui/session_picker/filter.rs
 index 91596228f..f3200d915 100644
 --- a/crates/jcode-tui/src/tui/session_picker/filter.rs
@@ -508,10 +583,10 @@ index 96b7a9851..91ec15d9e 100644
          );
      }
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index 3398241fa..12535d0c1 100644
+index 3398241fa..553e43f0d 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
-@@ -2487,3 +2487,151 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
+@@ -2487,3 +2487,270 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
          "no search means no highlight color in preview"
      );
  }
@@ -659,6 +734,125 @@ index 3398241fa..12535d0c1 100644
 +            "wrong first saved session for {mode:?}: {visible_ids:?}"
 +        );
 +    }
++
++    std::fs::write(&config_path, "").expect("reset config");
++    crate::config::invalidate_config_cache();
++}
++
++/// The default-filter entry point must record the current directory before
++/// applying the filter, so `current-dir` filtering only shows matching
++/// sessions. This simulates the `/resume` path: `set_current_dir` then
++/// `apply_configured_default_filter`.
++#[test]
++fn default_filter_current_dir_shows_only_matching_sessions_after_set_current_dir() {
++    let _guard = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let _home = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let config_path = crate::config::Config::path().expect("config path");
++    std::fs::create_dir_all(config_path.parent().expect("config parent"))
++        .expect("create config parent");
++    std::fs::write(
++        &config_path,
++        "[display]\nsession_picker_default_filter = \"current-dir\"\n",
++    )
++    .expect("write config");
++    crate::config::invalidate_config_cache();
++
++    let mut same = make_session("same_dir", "same", false, SessionStatus::Closed);
++    same.working_dir = Some("/work/project".to_string());
++    let mut other = make_session("other_dir", "other", false, SessionStatus::Closed);
++    other.working_dir = Some("/home/elsewhere".to_string());
++
++    let mut picker = SessionPicker::new(vec![same, other]);
++    // The entry point records the current dir before applying the filter.
++    picker.set_current_dir(Some("/work/project/".to_string()));
++    picker.apply_configured_default_filter();
++
++    assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
++    assert_eq!(picker.visible_session_count(), 1);
++    assert!(picker
++        .visible_session_iter()
++        .all(|s| s.id == "same_dir"));
++
++    // Reset config so it does not leak.
++    std::fs::write(&config_path, "").expect("reset config");
++    crate::config::invalidate_config_cache();
++}
++
++
++/// The `all` default must show every session regardless of current dir.
++#[test]
++fn default_filter_all_shows_every_session() {
++    let _guard = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let _home = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let config_path = crate::config::Config::path().expect("config path");
++    std::fs::create_dir_all(config_path.parent().expect("config parent"))
++        .expect("create config parent");
++    std::fs::write(
++        &config_path,
++        "[display]\nsession_picker_default_filter = \"all\"\n",
++    )
++    .expect("write config");
++    crate::config::invalidate_config_cache();
++
++    let mut same = make_session("same_dir", "same", false, SessionStatus::Closed);
++    same.working_dir = Some("/work/project".to_string());
++    let mut other = make_session("other_dir", "other", false, SessionStatus::Closed);
++    other.working_dir = Some("/home/elsewhere".to_string());
++
++    let mut picker = SessionPicker::new(vec![same, other]);
++    picker.set_current_dir(Some("/work/project/".to_string()));
++    picker.apply_configured_default_filter();
++
++    assert_eq!(picker.filter_mode, SessionFilterMode::All);
++    assert_eq!(picker.visible_session_count(), 2);
++
++    std::fs::write(&config_path, "").expect("reset config");
++    crate::config::invalidate_config_cache();
++}
++
++
++/// The async loaded-picker fallback path must also apply the default filter
++/// after recording the current dir. This simulates the fallback that fires
++/// when the cached grouped list arrives: `new_grouped` then `set_current_dir`
++/// then `apply_configured_default_filter`.
++#[test]
++fn default_filter_current_dir_applied_on_async_loaded_picker() {
++    let _guard = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("temp dir");
++    let _home = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", temp.path());
++
++    let config_path = crate::config::Config::path().expect("config path");
++    std::fs::create_dir_all(config_path.parent().expect("config parent"))
++        .expect("create config parent");
++    std::fs::write(
++        &config_path,
++        "[display]\nsession_picker_default_filter = \"current-dir\"\n",
++    )
++    .expect("write config");
++    crate::config::invalidate_config_cache();
++
++    let mut same = make_session("same_dir", "same", false, SessionStatus::Closed);
++    same.working_dir = Some("/work/project".to_string());
++    let mut other = make_session("other_dir", "other", false, SessionStatus::Closed);
++    other.working_dir = Some("/home/elsewhere".to_string());
++
++    // Simulate the async fallback: new_grouped with empty server groups.
++    let mut picker = SessionPicker::new_grouped(Vec::new(), vec![same, other]);
++    picker.set_current_dir(Some("/work/project/".to_string()));
++    picker.apply_configured_default_filter();
++
++    assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
++    assert_eq!(picker.visible_session_count(), 1);
++    assert!(picker
++        .visible_session_iter()
++        .all(|s| s.id == "same_dir"));
 +
 +    std::fs::write(&config_path, "").expect("reset config");
 +    crate::config::invalidate_config_cache();

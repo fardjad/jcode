@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Mon, 14 Sep 2026 17:33:15 +0200
+From: Fardjad Davari <public@fardjad.com>
+Date: Wed, 9 Sep 2026 01:07:09 +0200
 Subject: [PATCH] feat: allow selecting the self-update repository
 
 X-Jcode-Patch-Intent: let fork builds check and install updates from a selected GitHub repository
@@ -33,22 +33,26 @@ scripts/cargo_exec.sh test -p jcode-app-core update_repository --lib
 scripts/cargo_exec.sh test -p jcode-app-core github_comparison_uses_selected_update_repository --lib
 scripts/cargo_exec.sh check -p jcode-app-core
 ---
- README.md                                     |   9 +
- crates/jcode-app-core/src/update.rs           | 230 +++++--
+ README.md                                     |  24 +
+ crates/jcode-app-core/src/update.rs           | 244 ++++++--
  crates/jcode-app-core/src/update_dev_guard.rs | 580 ++++++++++++++++++
  crates/jcode-update-core/src/lib.rs           |   1 +
- 4 files changed, 772 insertions(+), 48 deletions(-)
+ 4 files changed, 800 insertions(+), 49 deletions(-)
  create mode 100644 crates/jcode-app-core/src/update_dev_guard.rs
 
 diff --git a/README.md b/README.md
-index 1406d133c..e5d147ee5 100644
+index 1406d133c..c310e7625 100644
 --- a/README.md
 +++ b/README.md
-@@ -45,6 +45,15 @@ irm https://jcode.sh/install.ps1 | iex
+@@ -45,6 +45,30 @@ irm https://jcode.sh/install.ps1 | iex
  Need Homebrew, source builds, provider setup, or want an agent to set it up for you?
  [Jump to detailed installation](#detailed-installation).
  
 +### Updating
++
++Run `/update` in the TUI to download the latest stable release in the background
++and reload with your session preserved. From a terminal, use `jcode update`, then
++restart the client. Both commands use the same update policy, including for dev builds.
 +
 +Set `JCODE_UPDATE_REPO=OWNER/REPOSITORY` to use releases and main-channel
 +source updates published by a GitHub fork. Fork releases must retain jcode's
@@ -57,22 +61,33 @@ index 1406d133c..e5d147ee5 100644
 +checkout remotes. Source checkouts continue to update from their configured
 +tracking upstream.
 +
++Older or equal release versions are skipped. For a development build, Jcode also
++compares the running binary's Git commit with the release tag. Builds ahead of,
++identical to, or diverged from the release are preserved. If ancestry cannot be
++verified locally or through GitHub, the update stops rather than risking a downgrade.
++The displayed dev patch includes a commit-count offset, so it is not used as a
++release version comparison.
++
++This is the default `features.update_channel = "stable"` behavior. An explicit
++`"main"` channel still opts into source-branch updates. Use `/rebuild` or the
++self-dev build workflow to rebuild your own checkout.
++
  ---
  
  
 diff --git a/crates/jcode-app-core/src/update.rs b/crates/jcode-app-core/src/update.rs
-index b6d623f58..169796fba 100644
+index b6d623f58..e78dbfdad 100644
 --- a/crates/jcode-app-core/src/update.rs
 +++ b/crates/jcode-app-core/src/update.rs
-@@ -17,6 +17,8 @@ use std::io::Read;
- use std::path::{Path, PathBuf};
- use std::time::{Duration, Instant, SystemTime};
- 
+@@ -1,6 +1,8 @@
+ use crate::build;
+ use crate::storage;
+ use anyhow::{Context, Result};
 +#[path = "update_dev_guard.rs"]
 +mod update_dev_guard;
- #[path = "update_metadata.rs"]
- mod update_metadata;
- #[path = "update_rate_limit.rs"]
+ use jcode_update_core::{
+     BACKGROUND_UPDATE_THRESHOLD, estimate_release_update_duration, estimate_source_update_duration,
+     format_duration_estimate, get_asset_name, summarize_git_pull_failure, update_estimate,
 @@ -26,7 +28,75 @@ use update_metadata::{record_release_update_duration, record_source_update_durat
  pub use update_rate_limit::{RATE_LIMIT_ERROR_PREFIX, is_rate_limit_error};
  use update_rate_limit::{clear_rate_limit_backoff, rate_limit_error};
@@ -150,7 +165,7 @@ index b6d623f58..169796fba 100644
  /// Minimum gap between *automatic* update checks.
  ///
  /// Every automatic check costs one or two unauthenticated `api.github.com`
-@@ -100,6 +170,21 @@ fn current_update_semver() -> &'static str {
+@@ -100,6 +170,33 @@ fn current_update_semver() -> &'static str {
      jcode_build_meta::update_semver()
  }
  
@@ -158,21 +173,33 @@ index b6d623f58..169796fba 100644
 +/// Use the base version to reject older releases, then verify that installing
 +/// a newer release would not discard commits from the running development build.
 +fn release_is_update(release: &GitHubRelease, repository: &UpdateRepository) -> Result<bool> {
-+    let release_version = release.tag_name.trim_start_matches('v');
-+    let current_version = current_update_semver().trim_start_matches('v');
-+    if !version_is_newer(release_version, current_version) {
++    release_is_update_with(
++        &release.tag_name,
++        current_update_semver(),
++        is_release_build(),
++        || update_dev_guard::should_install_release(&release.tag_name, repository),
++    )
++}
++
++fn release_is_update_with(
++    release: &str,
++    current: &str,
++    release_build: bool,
++    dev_guard: impl FnOnce() -> Result<bool>,
++) -> Result<bool> {
++    if !version_is_newer(release, current) {
 +        return Ok(false);
 +    }
-+    if is_release_build() {
++    if release_build {
 +        return Ok(true);
 +    }
-+    update_dev_guard::should_install_release(&release.tag_name, repository)
++    dev_guard()
 +}
 +
  fn source_build_root() -> Result<PathBuf> {
      Ok(storage::jcode_dir()?.join("builds").join("source"))
  }
-@@ -161,10 +246,12 @@ fn is_inside_git_repo(path: &std::path::Path) -> bool {
+@@ -161,10 +258,12 @@ fn is_inside_git_repo(path: &std::path::Path) -> bool {
  }
  
  pub fn fetch_latest_release_blocking() -> Result<GitHubRelease> {
@@ -189,7 +216,7 @@ index b6d623f58..169796fba 100644
  
      let client = reqwest::blocking::Client::builder()
          .timeout(UPDATE_CHECK_TIMEOUT)
-@@ -212,8 +299,8 @@ fn github_api_request(
+@@ -212,8 +311,8 @@ fn github_api_request(
      }
  }
  
@@ -200,7 +227,7 @@ index b6d623f58..169796fba 100644
      let client = reqwest::blocking::Client::builder()
          .timeout(UPDATE_CHECK_TIMEOUT)
          .user_agent("jcode-updater")
-@@ -278,19 +365,22 @@ fn verify_asset_checksum_if_available(
+@@ -278,19 +377,22 @@ fn verify_asset_checksum_if_available(
      Ok(())
  }
  
@@ -227,7 +254,7 @@ index b6d623f58..169796fba 100644
      crate::logging::info(&format!(
          "Main channel: built successfully at {}",
          path.display()
-@@ -321,18 +411,11 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
+@@ -321,18 +423,11 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
      Ok(path)
  }
  
@@ -237,19 +264,20 @@ index b6d623f58..169796fba 100644
 -    let current_update_version = current_update_semver();
 -    let release = fetch_latest_release_blocking()?;
 -    let release_version = release.tag_name.trim_start_matches('v');
-+    let release = fetch_latest_release_blocking_for(repository)?;
- 
+-
 -    if release_version == current_update_version.trim_start_matches('v')
 -        || !version_is_newer(
 -            release_version,
 -            current_update_version.trim_start_matches('v'),
 -        )
 -    {
++    let release = fetch_latest_release_blocking_for(repository)?;
++
 +    if !release_is_update(&release, repository)? {
          return Ok(PreparedUpdate::None {
              current: current_version.to_string(),
          });
-@@ -365,7 +448,7 @@ fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
+@@ -365,7 +460,7 @@ fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
      })
  }
  
@@ -258,7 +286,7 @@ index b6d623f58..169796fba 100644
      let current_hash = jcode_build_meta::git_hash();
      if current_hash.is_empty() || current_hash == "unknown" {
          crate::logging::info("Main channel: no git hash in binary, skipping update check");
-@@ -374,7 +457,7 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+@@ -374,7 +469,7 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
          });
      }
  
@@ -267,7 +295,7 @@ index b6d623f58..169796fba 100644
      if latest_sha.is_empty() {
          return Ok(PreparedUpdate::None {
              current: current_hash.to_string(),
-@@ -427,19 +510,21 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+@@ -427,19 +522,21 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
          );
          return Ok(PreparedUpdate::MainSource {
              latest_sha,
@@ -292,7 +320,7 @@ index b6d623f58..169796fba 100644
      }
  }
  
-@@ -509,6 +594,7 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -509,6 +606,7 @@ pub fn spawn_background_session_update(session_id: String) {
              }
              Ok(PreparedUpdate::MainSource {
                  latest_sha,
@@ -300,7 +328,7 @@ index b6d623f58..169796fba 100644
                  estimate,
              }) => {
                  publish(SessionUpdateStatus::Status {
-@@ -525,7 +611,9 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -525,7 +623,9 @@ pub fn spawn_background_session_update(session_id: String) {
                          format_duration_estimate(estimate.duration)
                      ),
                  });
@@ -311,7 +339,7 @@ index b6d623f58..169796fba 100644
                      Ok(_) => publish(SessionUpdateStatus::ReadyToReload {
                          session_id,
                          action,
-@@ -548,23 +636,20 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -548,23 +648,20 @@ pub fn spawn_background_session_update(session_id: String) {
  }
  
  pub fn check_for_update_blocking() -> Result<Option<GitHubRelease>> {
@@ -343,7 +371,7 @@ index b6d623f58..169796fba 100644
          let asset_name = get_asset_name();
          let has_asset = release
              .assets
-@@ -584,14 +669,14 @@ fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -584,14 +681,14 @@ fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
  /// If a new commit is found:
  ///   - Tries to build from source if cargo is available
  ///   - Falls back to latest GitHub Release if not
@@ -360,7 +388,7 @@ index b6d623f58..169796fba 100644
  
      if latest_sha.is_empty() {
          return Ok(None);
-@@ -617,9 +702,9 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -617,9 +714,9 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
      // Try to build from source
      if has_cargo() {
          crate::logging::info("Main channel: cargo found, attempting build from source");
@@ -372,7 +400,7 @@ index b6d623f58..169796fba 100644
              }
              Err(e) => {
                  crate::logging::error(&format!("Main channel: build failed: {}", e));
-@@ -631,16 +716,14 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -631,16 +728,14 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
      }
  
      // Fallback: use latest stable release if available
@@ -391,7 +419,7 @@ index b6d623f58..169796fba 100644
                  return Ok(Some(release));
              }
          }
-@@ -659,7 +742,7 @@ fn has_cargo() -> bool {
+@@ -659,7 +754,7 @@ fn has_cargo() -> bool {
  }
  
  /// Build jcode from source by cloning/pulling the repo and running cargo build
@@ -400,7 +428,7 @@ index b6d623f58..169796fba 100644
      let started = Instant::now();
      let build_dir = source_build_root()?;
      fs::create_dir_all(&build_dir)?;
-@@ -705,7 +788,7 @@ fn build_from_source() -> Result<PathBuf> {
+@@ -705,7 +800,7 @@ fn build_from_source() -> Result<PathBuf> {
      } else {
          // Clone
          crate::logging::info("Main channel: cloning repository...");
@@ -409,7 +437,7 @@ index b6d623f58..169796fba 100644
          let output = std::process::Command::new("git")
              .args([
                  "clone", "--depth", "1", "--branch", "main", &clone_url, "jcode",
-@@ -1201,6 +1284,57 @@ mod tests {
+@@ -1201,6 +1296,57 @@ mod tests {
      use jcode_update_core::parse_sha256sums;
      use sha2::{Digest, Sha256};
  

@@ -109,7 +109,7 @@ def _next_number(existing: set[str], prefix_range: int) -> int:
                 numbers.append(num)
             elif prefix_range == 1000 and num >= 1000:
                 numbers.append(num)
-    return (max(numbers) + 1) if numbers else prefix_range
+    return (max(numbers) + 1) if numbers else prefix_range + 1
 
 
 def _slugify(subject: str) -> str:

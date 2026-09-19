@@ -5,7 +5,7 @@ Subject: [PATCH] feat: delete sessions from picker with Ctrl+D
 
 X-Jcode-Patch-Intent: Delete the selected session directly from the session picker.
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 1004-personal-feature-configure-session-picker-default-filter.patch
+X-Jcode-Patch-Depends-On: 1002-personal-provider-policy-add-provider-family-execution-allowlist.patch
 
 Patch intent:
 Add Ctrl+D to delete the selected session from the session picker without a

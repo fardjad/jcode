@@ -1428,7 +1428,7 @@ index d9cddddeb..8802296ed 100644
                      profile_id: Some(profile_id),
                  } => return format!("{profile_id}:{model}"),
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index d8c9292fd..414bcd17c 100644
+index d8c9292fd..ca83434ef 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
 @@ -1,6 +1,142 @@
@@ -1904,7 +1904,7 @@ index d8c9292fd..414bcd17c 100644
          );
      });
  }
-+ 
++
 +/// Failover must not escalate to a provider family the policy denies. When
 +/// the active provider is disallowed, `complete_with_failover` bails before
 +/// trying any fallback candidate.

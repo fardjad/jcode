@@ -5,7 +5,7 @@ Subject: [PATCH] feat: add typed OpenRouter EU provider
 
 X-Jcode-Patch-Intent: typed EU deployment identity, auth, caches, and pricing
 X-Jcode-Patch-Kind: personal-provider
-X-Jcode-Patch-Depends-On: 1002-personal-provider-family-allowlist.patch
+X-Jcode-Patch-Depends-On: 1002-personal-provider-policy-add-provider-family-execution-allowlist.patch
 
 Patch intent:
 Add OpenRouter EU as a first-class typed deployment with an EU endpoint,
@@ -1239,7 +1239,7 @@ index a8fdd3653..7fba3ef36 100644
                  Ok(p) => Some(p),
                  Err(e) => {
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index 414bcd17c..8a06e6bd0 100644
+index ca83434ef..4f3bc0472 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
 @@ -1049,6 +1049,34 @@ impl StubExternalRuntime {
