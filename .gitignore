@@ -2,3 +2,6 @@
 __pycache__/
 .tools/
 .tools/nextest/exclusions/
+.tmp-*/
+.venv/
+*.py[cod]

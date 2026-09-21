@@ -115,6 +115,11 @@ install-patched-version:
     cd "$worktree"
     JCODE_INSTALL_DIR="$install_dir" ./scripts/install_release.sh --fast
   )
+  plugin_dir="${JCODE_PLUGIN_DIR:-$HOME/.jcode/plugins/delegation-efficiency}"
+  "$worktree/plugins/delegation-efficiency/install.sh" "$plugin_dir"
+  guard_plugin="${JCODE_DELEGATION_GUARD_PLUGIN:-$HOME/.jcode/plugins/delegation-guard-transform}"
+  mkdir -p "$(dirname "$guard_plugin")"
+  install -m 755 "$worktree/plugins/delegation-guard/delegation-guard-transform" "$guard_plugin"
 
 # Apply one patch in a clean worktree and run its validation/tests.
 test-patch-file patch:

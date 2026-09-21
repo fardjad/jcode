@@ -1,0 +1,1 @@
+"""Delegation efficiency plugin package."""
