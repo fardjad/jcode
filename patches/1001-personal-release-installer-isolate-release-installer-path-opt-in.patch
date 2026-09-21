@@ -49,10 +49,10 @@ bash scripts/test_install_release_metadata.sh
  create mode 100755 scripts/test_install_release_policy.sh
 
 diff --git a/README.md b/README.md
-index 5649cef51..795bc87d0 100644
+index 92201385a..bdd6e6a41 100644
 --- a/README.md
 +++ b/README.md
-@@ -909,6 +909,13 @@ Then symlink to your PATH:
+@@ -943,6 +943,13 @@ Then symlink to your PATH:
  scripts/install_release.sh
  ```
  

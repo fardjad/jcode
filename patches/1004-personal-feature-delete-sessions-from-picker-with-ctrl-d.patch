@@ -40,10 +40,10 @@ cargo test -p jcode-tui ctrl_d_deletes_session_from_server_group --lib
  4 files changed, 288 insertions(+), 2 deletions(-)
 
 diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
-index 96ebf74ae..dbfc4deb7 100644
+index d1c3da027..053440a90 100644
 --- a/crates/jcode-tui/src/tui/session_picker.rs
 +++ b/crates/jcode-tui/src/tui/session_picker.rs
-@@ -838,6 +838,55 @@ impl SessionPicker {
+@@ -837,6 +837,55 @@ impl SessionPicker {
          self.selected_session_ids.len()
      }
  
@@ -99,7 +99,7 @@ index 96ebf74ae..dbfc4deb7 100644
      fn toggle_selected_session(&mut self) {
          let Some(session_id) = self.selected_session().map(|session| session.id.clone()) else {
              return;
-@@ -1268,6 +1317,9 @@ impl SessionPicker {
+@@ -1267,6 +1316,9 @@ impl SessionPicker {
              KeyCode::Char('/') => {
                  self.search_active = true;
              }
@@ -141,7 +141,7 @@ index 04fa4c557..b3603adf8 100644
              }
          };
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index 553e43f0d..b0dd84ce9 100644
+index b880807d7..b11b44fb2 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
 @@ -1152,6 +1152,45 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
@@ -190,7 +190,7 @@ index 553e43f0d..b0dd84ce9 100644
  #[test]
  fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
      let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
-@@ -2754,3 +2793,195 @@ fn default_filter_current_dir_applied_on_async_loaded_picker() {
+@@ -2866,3 +2905,195 @@ fn default_filter_current_dir_applied_on_async_loaded_picker() {
      std::fs::write(&config_path, "").expect("reset config");
      crate::config::invalidate_config_cache();
  }

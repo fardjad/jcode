@@ -55,10 +55,10 @@ scripts/isolate_config.py -- cargo test -p jcode-base websearch_ --lib
  10 files changed, 431 insertions(+), 35 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 56c6f1dbc..ddd6f1cad 100644
+index 24dfff035..0641ec8c6 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -3309,6 +3309,7 @@ version = "0.1.0"
+@@ -3437,6 +3437,7 @@ version = "0.1.0"
  dependencies = [
   "serde",
   "serde_json",
@@ -211,7 +211,7 @@ index 96c50784e..c9eab6682 100644
      "JCODE_WORKSPACE_DOWN_KEY",
      "JCODE_WORKSPACE_LEFT_KEY",
 diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
-index 214b02dde..bf3504e98 100644
+index 010520dd8..af5647af6 100644
 --- a/crates/jcode-base/src/config/config_file.rs
 +++ b/crates/jcode-base/src/config/config_file.rs
 @@ -21,6 +21,7 @@ impl Config {
@@ -222,7 +222,7 @@ index 214b02dde..bf3504e98 100644
          config.apply_env_overrides();
          Ok(config)
      }
-@@ -712,6 +713,39 @@ impl Config {
+@@ -719,6 +720,39 @@ impl Config {
      }
  }
  
@@ -263,10 +263,10 @@ index 214b02dde..bf3504e98 100644
  mod issue_1056_tests {
      use super::Config;
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index e8e017e4b..513137d0e 100644
+index c5a19ef99..09f64afe4 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -304,10 +304,13 @@ kv_cache_miss_notices = true
+@@ -300,10 +300,13 @@ kv_cache_miss_notices = true
  update_channel = "stable"
  
  [websearch]
@@ -284,7 +284,7 @@ index e8e017e4b..513137d0e 100644
  # Bring your own Bing Search API key for primary Bing searches. Prefer using an env var.
  # Fallback Bing searches intentionally use keyless HTML search.
  # bing_api_key_env = "JCODE_BING_API_KEY"
-@@ -319,7 +322,7 @@ bing_market = "en-US"
+@@ -315,7 +318,7 @@ bing_market = "en-US"
  # reputation and return an anti-bot page with no results. Pointing at a SearXNG
  # instance (self-hosted or trusted public) with the JSON format enabled avoids
  # this. Configure here or via the JCODE_SEARXNG_URL environment variable, then
@@ -294,10 +294,10 @@ index e8e017e4b..513137d0e 100644
  
  [tools]
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 89adb667d..390f3867e 100644
+index 51ea31863..6ac8621a1 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
-@@ -507,20 +507,36 @@ impl Config {
+@@ -519,20 +519,36 @@ impl Config {
              }
          }
  
@@ -345,7 +345,7 @@ index 89adb667d..390f3867e 100644
          }
          if let Ok(v) = std::env::var("JCODE_BING_API_KEY")
              && !v.trim().is_empty()
-@@ -851,3 +867,32 @@ fn parse_env_list(raw: &str) -> Vec<String> {
+@@ -878,3 +894,32 @@ fn parse_env_list(raw: &str) -> Vec<String> {
          .map(ToString::to_string)
          .collect()
  }
@@ -485,7 +485,7 @@ index f71508e30..fac92bca4 100644
 +[dev-dependencies]
 +toml = "0.8"
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 7bf26d384..7f23d9fef 100644
+index 79d48c166..933a451cb 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -1,4 +1,4 @@
@@ -494,7 +494,7 @@ index 7bf26d384..7f23d9fef 100644
  
  mod display;
  pub use display::DisplayConfig;
-@@ -1243,12 +1243,16 @@ impl WebSearchEngine {
+@@ -1306,12 +1306,16 @@ impl WebSearchEngine {
  }
  
  /// Configuration for the websearch tool.
@@ -516,7 +516,7 @@ index 7bf26d384..7f23d9fef 100644
      pub fallback_engines: Vec<WebSearchEngine>,
      /// Optional Bing API key for primary Bing searches. Fallback Bing uses keyless HTML search.
      pub bing_api_key: Option<String>,
-@@ -1264,10 +1268,136 @@ pub struct WebSearchConfig {
+@@ -1327,10 +1331,136 @@ pub struct WebSearchConfig {
      pub searxng_url_env: String,
  }
  
@@ -654,7 +654,7 @@ index 7bf26d384..7f23d9fef 100644
              fallback_engines: vec![WebSearchEngine::Bing],
              bing_api_key: None,
              bing_api_key_env: "JCODE_BING_API_KEY".to_string(),
-@@ -1664,3 +1794,52 @@ mod reasoning_display_defaults_tests {
+@@ -1742,3 +1872,52 @@ mod reasoning_display_defaults_tests {
          assert!(!display.show_thinking);
      }
  }

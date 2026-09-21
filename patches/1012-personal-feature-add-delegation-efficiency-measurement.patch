@@ -70,6 +70,7 @@ scripts/isolate_config.py -- bash scripts/test_install_patched_version_recipe.sh
  crates/jcode-app-core/src/agent/turn_loops.rs |   33 +
  .../src/agent/turn_streaming_mpsc.rs          |   36 +-
  crates/jcode-app-core/src/agent_tests.rs      |    1 +
+ .../src/agent_tests/desktop_selfdev.rs        |    1 +
  .../delegation-efficiency-golden.json         |   74 +
  .../delegation-efficiency-malformed.json      |    1 +
  .../delegation-efficiency-null-heavy.json     |    1 +
@@ -79,6 +80,7 @@ scripts/isolate_config.py -- bash scripts/test_install_patched_version_recipe.sh
  .../src/protocol_tests/comm_requests.rs       |    1 +
  .../src/server/client_actions.rs              |    1 +
  .../src/server/client_lifecycle.rs            |   30 +-
+ .../src/server/client_lifecycle_tests.rs      |    1 +
  .../src/server/client_lightweight_control.rs  |   24 +
  .../jcode-app-core/src/server/comm_session.rs |  146 +-
  crates/jcode-app-core/src/server/comm_sync.rs |  126 +-
@@ -90,26 +92,34 @@ scripts/isolate_config.py -- bash scripts/test_install_patched_version_recipe.sh
  .../src/tool/apply_patch_tests.rs             |    2 +
  crates/jcode-app-core/src/tool/bash_tests.rs  |    3 +
  crates/jcode-app-core/src/tool/batch_tests.rs |    1 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  415 ++-
- .../src/tool/blueprint_tests.rs               |  210 +-
- crates/jcode-app-core/src/tool/communicate.rs |  115 +-
+ crates/jcode-app-core/src/tool/blueprint.rs   |  433 ++-
+ .../src/tool/blueprint_tests.rs               |  225 +-
+ .../src/tool/browser_fast_live_tests.rs       |    1 +
+ .../src/tool/browser_fast_tests.rs            |    1 +
+ .../jcode-app-core/src/tool/browser_tests.rs  |    1 +
+ crates/jcode-app-core/src/tool/communicate.rs |  117 +-
  .../src/tool/communicate_tests.rs             |    1 +
  .../src/tool/communicate_tests/end_to_end.rs  |  512 +++-
- .../tool/communicate_tests/input_format.rs    |    1 +
+ .../tool/communicate_tests/input_format.rs    |    7 +-
+ .../src/tool/compile_remote/tests.rs          |    1 +
  .../src/tool/computer/coverage_tests.rs       |    1 +
  .../jcode-app-core/src/tool/computer/tests.rs |    1 +
  .../src/tool/config_edit_notice_tests.rs      |    2 +
  .../src/tool/conversation_search.rs           |    1 +
+ .../src/tool/desktop_selfdev_tests.rs         |    1 +
+ crates/jcode-app-core/src/tool/edit_stats.rs  |    1 +
+ crates/jcode-app-core/src/tool/file_diff.rs   |    1 +
  crates/jcode-app-core/src/tool/goal_tests.rs  |    3 +
  crates/jcode-app-core/src/tool/mcp.rs         |    1 +
  crates/jcode-app-core/src/tool/memory.rs      |    1 +
  crates/jcode-app-core/src/tool/mod.rs         |  527 +++-
  crates/jcode-app-core/src/tool/open_tests.rs  |    1 +
+ crates/jcode-app-core/src/tool/panel_tests.rs |    1 +
  crates/jcode-app-core/src/tool/read/tests.rs  |    1 +
  .../jcode-app-core/src/tool/selfdev/tests.rs  |    1 +
  .../src/tool/side_panel_tests.rs              |    2 +
  crates/jcode-app-core/src/tool/skill.rs       |    1 +
- crates/jcode-app-core/src/tool/tests.rs       |  229 +-
+ crates/jcode-app-core/src/tool/tests.rs       |  261 +-
  crates/jcode-app-core/src/tool/todo.rs        |    1 +
  crates/jcode-base/src/config/default_file.rs  |    3 +
  crates/jcode-base/src/config/env_overrides.rs |    9 +
@@ -124,6 +134,8 @@ scripts/isolate_config.py -- bash scripts/test_install_patched_version_recipe.sh
  .../src/lib.rs                                |    3 +
  .../jcode-provider-copilot-runtime/src/lib.rs |    1 +
  .../src/attempt_tracker.rs                    |    1 +
+ .../jcode-provider-core/src/fallback_pick.rs  |    2 +-
+ crates/jcode-provider-core/src/lib.rs         |   17 +-
  .../src/live_provider_probes.rs               |    1 +
  .../jcode-provider-gemini-runtime/src/lib.rs  |    1 +
  crates/jcode-provider-openai/src/stream.rs    |    1 +
@@ -154,7 +166,7 @@ scripts/isolate_config.py -- bash scripts/test_install_patched_version_recipe.sh
  src/bin/harness.rs                            |    2 +
  src/cli/selfdev_tests.rs                      |    1 +
  tests/e2e/provider_behavior.rs                |    1 +
- 90 files changed, 9164 insertions(+), 289 deletions(-)
+ 102 files changed, 9238 insertions(+), 317 deletions(-)
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-golden.json
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-malformed.json
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-null-heavy.json
@@ -182,10 +194,10 @@ scripts/isolate_config.py -- bash scripts/test_install_patched_version_recipe.sh
  create mode 100644 scripts/test_install_patched_version_recipe.sh
 
 diff --git a/Cargo.lock b/Cargo.lock
-index ddd6f1cad..677c67002 100644
+index 0641ec8c6..dc40b08c7 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -3116,6 +3116,7 @@ dependencies = [
+@@ -3240,6 +3240,7 @@ dependencies = [
   "futures",
   "glob",
   "global-hotkey",
@@ -194,10 +206,10 @@ index ddd6f1cad..677c67002 100644
   "jcode-ambient-types",
   "jcode-base",
 diff --git a/crates/jcode-app-core/Cargo.toml b/crates/jcode-app-core/Cargo.toml
-index d0bdf12b7..0e0310be9 100644
+index da1848482..16f678962 100644
 --- a/crates/jcode-app-core/Cargo.toml
 +++ b/crates/jcode-app-core/Cargo.toml
-@@ -54,6 +54,7 @@ jcode-import-core = { path = "../jcode-import-core" }
+@@ -55,6 +55,7 @@ jcode-import-core = { path = "../jcode-import-core" }
  # OAuth
  base64 = "0.22"
  sha2 = "0.10"
@@ -206,10 +218,10 @@ index d0bdf12b7..0e0310be9 100644
  url = "2"
  open = "5"               # Open URLs in browser
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index ca4ece939..883a4bbbd 100644
+index 391866f42..1d1bc7b0c 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
-@@ -640,6 +640,7 @@ impl Agent {
+@@ -696,6 +696,7 @@ impl Agent {
              session_id: self.session.id.clone(),
              message_id: self.session.id.clone(),
              tool_call_id: call_id,
@@ -218,10 +230,10 @@ index ca4ece939..883a4bbbd 100644
              stdin_request_tx: self.stdin_request_tx.clone(),
              graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
 diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
-index be682149c..da5c1e24a 100644
+index 5cb6b9b02..4c679c154 100644
 --- a/crates/jcode-app-core/src/agent/turn_loops.rs
 +++ b/crates/jcode-app-core/src/agent/turn_loops.rs
-@@ -153,6 +153,7 @@ impl Agent {
+@@ -154,6 +154,7 @@ impl Agent {
                  tools.len()
              ));
              let api_start = Instant::now();
@@ -229,7 +241,7 @@ index be682149c..da5c1e24a 100644
  
              // Publish status for TUI to show during Task execution
              Bus::global().publish(BusEvent::SubagentStatus(SubagentStatus {
-@@ -236,6 +237,8 @@ impl Agent {
+@@ -237,6 +238,8 @@ impl Agent {
              let mut usage_output: Option<u64> = None;
              let mut usage_cache_read: Option<u64> = None;
              let mut usage_cache_creation: Option<u64> = None;
@@ -238,7 +250,7 @@ index be682149c..da5c1e24a 100644
              let mut saw_message_end = false;
              let mut stop_reason: Option<String> = None;
              let mut _thinking_start: Option<Instant> = None;
-@@ -460,6 +463,7 @@ impl Agent {
+@@ -461,6 +464,7 @@ impl Agent {
                          output_tokens,
                          cache_read_input_tokens,
                          cache_creation_input_tokens,
@@ -246,7 +258,7 @@ index be682149c..da5c1e24a 100644
                      } => {
                          if let Some(input) = input_tokens {
                              usage_input = Some(input);
-@@ -480,6 +484,31 @@ impl Agent {
+@@ -481,6 +485,31 @@ impl Agent {
                                  usage_cache_creation,
                              );
                          }
@@ -278,7 +290,7 @@ index be682149c..da5c1e24a 100644
                          if trace {
                              eprintln!(
                                  "[trace] token_usage input={} output={} cache_read={} cache_write={}",
-@@ -509,6 +538,8 @@ impl Agent {
+@@ -510,6 +539,8 @@ impl Agent {
                          self.last_status_detail = Some(detail);
                      }
                      StreamEvent::RetryRollback { attempt, max } => {
@@ -287,7 +299,7 @@ index be682149c..da5c1e24a 100644
                          // Transient transport fault mid-stream; the provider is
                          // replaying the request. Discard this attempt's partial
                          // output so the replay doesn't duplicate it in history.
-@@ -617,6 +648,7 @@ impl Agent {
+@@ -619,6 +650,7 @@ impl Agent {
                              session_id: self.session.id.clone(),
                              message_id: self.session.id.clone(),
                              tool_call_id: request_id.clone(),
@@ -295,7 +307,7 @@ index be682149c..da5c1e24a 100644
                              working_dir: self.working_dir().map(PathBuf::from),
                              stdin_request_tx: self.stdin_request_tx.clone(),
                              graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
-@@ -1037,6 +1069,7 @@ impl Agent {
+@@ -1040,6 +1072,7 @@ impl Agent {
                      session_id: self.session.id.clone(),
                      message_id: message_id.clone(),
                      tool_call_id: tc.id.clone(),
@@ -304,10 +316,10 @@ index be682149c..da5c1e24a 100644
                      stdin_request_tx: self.stdin_request_tx.clone(),
                      graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index d0616b7b4..2082395b2 100644
+index 70f0dbe80..b42caed5b 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-@@ -219,6 +219,7 @@ impl Agent {
+@@ -220,6 +220,7 @@ impl Agent {
                  tools.len()
              ));
              let api_start = Instant::now();
@@ -315,7 +327,7 @@ index d0616b7b4..2082395b2 100644
  
              let stamped = crate::config::config()
                  .features
-@@ -351,6 +352,8 @@ impl Agent {
+@@ -352,6 +353,8 @@ impl Agent {
              let mut usage_output: Option<u64> = None;
              let mut usage_cache_read: Option<u64> = None;
              let mut usage_cache_creation: Option<u64> = None;
@@ -324,7 +336,7 @@ index d0616b7b4..2082395b2 100644
              let mut saw_message_end = false;
              let mut stop_reason: Option<String> = None;
              let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
-@@ -690,6 +693,7 @@ impl Agent {
+@@ -694,6 +697,7 @@ impl Agent {
                          output_tokens,
                          cache_read_input_tokens,
                          cache_creation_input_tokens,
@@ -332,7 +344,7 @@ index d0616b7b4..2082395b2 100644
                      } => {
                          if let Some(input) = input_tokens {
                              usage_input = Some(input);
-@@ -710,6 +714,31 @@ impl Agent {
+@@ -714,6 +718,31 @@ impl Agent {
                                  usage_cache_creation,
                              );
                          }
@@ -364,7 +376,7 @@ index d0616b7b4..2082395b2 100644
                      }
                      StreamEvent::ConnectionType { connection } => {
                          crate::telemetry::record_connection_type(&connection);
-@@ -726,6 +755,8 @@ impl Agent {
+@@ -730,6 +759,8 @@ impl Agent {
                          let _ = event_tx.send(ServerEvent::StatusDetail { detail });
                      }
                      StreamEvent::RetryRollback { attempt, max } => {
@@ -373,7 +385,7 @@ index d0616b7b4..2082395b2 100644
                          // A transient transport fault hit mid-stream after partial
                          // output was already emitted; the provider is replaying the
                          // request from the top. Discard everything accumulated for
-@@ -845,6 +876,7 @@ impl Agent {
+@@ -856,6 +887,7 @@ impl Agent {
                              session_id: self.session.id.clone(),
                              message_id: self.session.id.clone(),
                              tool_call_id: request_id.clone(),
@@ -381,7 +393,7 @@ index d0616b7b4..2082395b2 100644
                              working_dir: self.working_dir().map(PathBuf::from),
                              stdin_request_tx: self.stdin_request_tx.clone(),
                              graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
-@@ -1368,6 +1400,7 @@ impl Agent {
+@@ -1383,6 +1415,7 @@ impl Agent {
                      session_id: self.session.id.clone(),
                      message_id: message_id.clone(),
                      tool_call_id: tc.id.clone(),
@@ -389,7 +401,7 @@ index d0616b7b4..2082395b2 100644
                      working_dir: self.working_dir().map(PathBuf::from),
                      stdin_request_tx: self.stdin_request_tx.clone(),
                      graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
-@@ -1397,8 +1430,7 @@ impl Agent {
+@@ -1412,8 +1445,7 @@ impl Agent {
                  let tool_handle = tokio::spawn(async move {
                      crate::hooks::with_swarm_context(
                          swarm_ctx,
@@ -400,10 +412,10 @@ index d0616b7b4..2082395b2 100644
                      .await
                  });
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 95283f4cb..45711333e 100644
+index 273961465..22e99487a 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -379,6 +379,7 @@ impl Provider for NativeCompactionStreamProvider {
+@@ -499,6 +499,7 @@ impl Provider for NativeCompactionStreamProvider {
                      output_tokens: Some(10),
                      cache_read_input_tokens: None,
                      cache_creation_input_tokens: None,
@@ -411,6 +423,18 @@ index 95283f4cb..45711333e 100644
                  }))
                  .await;
              let _ = tx
+diff --git a/crates/jcode-app-core/src/agent_tests/desktop_selfdev.rs b/crates/jcode-app-core/src/agent_tests/desktop_selfdev.rs
+index 763630d5f..dd4211360 100644
+--- a/crates/jcode-app-core/src/agent_tests/desktop_selfdev.rs
++++ b/crates/jcode-app-core/src/agent_tests/desktop_selfdev.rs
+@@ -95,6 +95,7 @@ async fn desktop_selfdev_is_automatic_separate_and_restored() {
+                     session_id: agent.session_id().to_string(),
+                     message_id: "test".into(),
+                     tool_call_id: name.into(),
++                    guard_event_id: None,
+                     working_dir: Some(cwd.clone()),
+                     stdin_request_tx: None,
+                     graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/fixtures/delegation-efficiency-golden.json b/crates/jcode-app-core/src/fixtures/delegation-efficiency-golden.json
 new file mode 100644
 index 000000000..9d9bfdbc2
@@ -3145,10 +3169,10 @@ index f23f4a850..b98a4eab6 100644
              stdin_request_tx: None,
              graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index 45cca3195..82a3f3e5f 100644
+index f166484aa..26b49cb85 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
-@@ -2521,6 +2521,10 @@ pub(super) async fn handle_client(
+@@ -2538,6 +2538,10 @@ pub(super) async fn handle_client(
                  effort,
                  label,
                  blueprint,
@@ -3159,7 +3183,7 @@ index 45cca3195..82a3f3e5f 100644
              } => {
                  let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                      Some(spawn_mode) => spawn_mode,
-@@ -2537,6 +2541,10 @@ pub(super) async fn handle_client(
+@@ -2554,6 +2558,10 @@ pub(super) async fn handle_client(
                      effort,
                      label,
                      blueprint,
@@ -3170,7 +3194,7 @@ index 45cca3195..82a3f3e5f 100644
                      &client_event_tx,
                      &sessions,
                      &global_session_id,
-@@ -2630,9 +2638,13 @@ pub(super) async fn handle_client(
+@@ -2647,9 +2655,13 @@ pub(super) async fn handle_client(
              Request::CommSummary {
                  id,
                  session_id: req_session_id,
@@ -3187,7 +3211,7 @@ index 45cca3195..82a3f3e5f 100644
                  handle_comm_summary(
                      id,
                      req_session_id,
-@@ -2641,6 +2653,10 @@ pub(super) async fn handle_client(
+@@ -2658,6 +2670,10 @@ pub(super) async fn handle_client(
                      &sessions,
                      &swarm_members,
                      &client_event_tx,
@@ -3198,7 +3222,7 @@ index 45cca3195..82a3f3e5f 100644
                  )
                  .await;
              }
-@@ -2718,6 +2734,10 @@ pub(super) async fn handle_client(
+@@ -2735,6 +2751,10 @@ pub(super) async fn handle_client(
                  id,
                  session_id: req_session_id,
                  target_session,
@@ -3209,7 +3233,7 @@ index 45cca3195..82a3f3e5f 100644
              } => {
                  handle_comm_read_context(
                      id,
-@@ -2726,6 +2746,10 @@ pub(super) async fn handle_client(
+@@ -2743,6 +2763,10 @@ pub(super) async fn handle_client(
                      &sessions,
                      &swarm_members,
                      &client_event_tx,
@@ -3220,11 +3244,23 @@ index 45cca3195..82a3f3e5f 100644
                  )
                  .await;
              }
+diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
+index af6008150..267ba9da8 100644
+--- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
++++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
+@@ -21,6 +21,7 @@ fn names_only_catalog_preserves_runtime_key() {
+             api_method: "openai-compatible:corp-gateway".to_string(),
+             available: true,
+             detail: String::new(),
++            usage: None,
+             cheapness: None,
+         }],
+     };
 diff --git a/crates/jcode-app-core/src/server/client_lightweight_control.rs b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-index b2af7ae67..f4773b876 100644
+index 4b350f580..daffde31d 100644
 --- a/crates/jcode-app-core/src/server/client_lightweight_control.rs
 +++ b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-@@ -419,6 +419,10 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -445,6 +445,10 @@ pub(super) async fn handle_lightweight_control_request(
              effort,
              label,
              blueprint,
@@ -3235,7 +3271,7 @@ index b2af7ae67..f4773b876 100644
          } => {
              let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                  Some(spawn_mode) => spawn_mode,
-@@ -435,6 +439,10 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -461,6 +465,10 @@ pub(super) async fn handle_lightweight_control_request(
                  effort,
                  label,
                  blueprint,
@@ -3246,7 +3282,7 @@ index b2af7ae67..f4773b876 100644
                  &client_event_tx,
                  sessions,
                  global_session_id,
-@@ -520,6 +528,10 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -546,6 +554,10 @@ pub(super) async fn handle_lightweight_control_request(
              session_id: req_session_id,
              target_session,
              limit,
@@ -3257,7 +3293,7 @@ index b2af7ae67..f4773b876 100644
          } => {
              handle_comm_summary(
                  id,
-@@ -529,6 +541,10 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -555,6 +567,10 @@ pub(super) async fn handle_lightweight_control_request(
                  sessions,
                  swarm_members,
                  &client_event_tx,
@@ -3268,7 +3304,7 @@ index b2af7ae67..f4773b876 100644
              )
              .await;
          }
-@@ -602,6 +618,10 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -628,6 +644,10 @@ pub(super) async fn handle_lightweight_control_request(
              id,
              session_id: req_session_id,
              target_session,
@@ -3279,7 +3315,7 @@ index b2af7ae67..f4773b876 100644
          } => {
              handle_comm_read_context(
                  id,
-@@ -610,6 +630,10 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -636,6 +656,10 @@ pub(super) async fn handle_lightweight_control_request(
                  sessions,
                  swarm_members,
                  &client_event_tx,
@@ -3786,26 +3822,26 @@ index 911fa24de..cf5047912 100644
      )
      .await;
 diff --git a/crates/jcode-app-core/src/tool/agentgrep_tests.rs b/crates/jcode-app-core/src/tool/agentgrep_tests.rs
-index 199d35159..475e154d4 100644
+index 199d35159..0e561ff4f 100644
 --- a/crates/jcode-app-core/src/tool/agentgrep_tests.rs
 +++ b/crates/jcode-app-core/src/tool/agentgrep_tests.rs
 @@ -7,6 +7,7 @@ fn test_ctx(root: &Path) -> ToolContext {
          session_id: "test".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(root.to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/ambient/tests.rs b/crates/jcode-app-core/src/tool/ambient/tests.rs
-index 56fd4205c..06dc14b74 100644
+index 56fd4205c..6ff1e2d0a 100644
 --- a/crates/jcode-app-core/src/tool/ambient/tests.rs
 +++ b/crates/jcode-app-core/src/tool/ambient/tests.rs
 @@ -270,6 +270,7 @@ async fn test_request_permission_rejects_non_ambient_session() {
          session_id: "normal_session_test".to_string(),
          message_id: "msg_1".to_string(),
          tool_call_id: "call_1".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: None,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -3813,7 +3849,7 @@ index 56fd4205c..06dc14b74 100644
          session_id: "origin_session".to_string(),
          message_id: "msg_1".to_string(),
          tool_call_id: "call_1".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: None,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -3821,19 +3857,19 @@ index 56fd4205c..06dc14b74 100644
          session_id: "test_session".to_string(),
          message_id: "msg_1".to_string(),
          tool_call_id: "call_1".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: None,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/apply_patch_tests.rs b/crates/jcode-app-core/src/tool/apply_patch_tests.rs
-index cd1e1be2e..f7b515ce5 100644
+index cd1e1be2e..fb18a7d6a 100644
 --- a/crates/jcode-app-core/src/tool/apply_patch_tests.rs
 +++ b/crates/jcode-app-core/src/tool/apply_patch_tests.rs
 @@ -275,6 +275,7 @@ async fn apply_patch_refuses_to_delete_a_protected_path() {
                  session_id: "patch-gate".to_string(),
                  message_id: "m".to_string(),
                  tool_call_id: "c".to_string(),
-+            guard_event_id: None,
++                guard_event_id: None,
                  working_dir: Some(std::path::PathBuf::from("/tmp")),
                  stdin_request_tx: None,
                  graceful_shutdown_signal: None,
@@ -3841,19 +3877,19 @@ index cd1e1be2e..f7b515ce5 100644
                  session_id: "patch-ok".to_string(),
                  message_id: "m".to_string(),
                  tool_call_id: "c".to_string(),
-+            guard_event_id: None,
++                guard_event_id: None,
                  working_dir: Some(temp.path().to_path_buf()),
                  stdin_request_tx: None,
                  graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/bash_tests.rs b/crates/jcode-app-core/src/tool/bash_tests.rs
-index b29042f13..9f1bf207d 100644
+index 2848a4898..e03725265 100644
 --- a/crates/jcode-app-core/src/tool/bash_tests.rs
 +++ b/crates/jcode-app-core/src/tool/bash_tests.rs
 @@ -61,6 +61,7 @@ fn make_ctx(stdin_tx: Option<mpsc::UnboundedSender<StdinInputRequest>>) -> ToolC
          session_id: "test-session".to_string(),
          message_id: "test-msg".to_string(),
          tool_call_id: "test-call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::path::PathBuf::from("/tmp")),
          stdin_request_tx: stdin_tx,
          graceful_shutdown_signal: None,
@@ -3861,32 +3897,32 @@ index b29042f13..9f1bf207d 100644
          session_id: "test-session".to_string(),
          message_id: "test-msg".to_string(),
          tool_call_id: "test-call-agent".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::path::PathBuf::from("/tmp")),
          stdin_request_tx: None,
          graceful_shutdown_signal: Some(signal),
-@@ -892,6 +894,7 @@ fn gate_ctx(working_dir: &str) -> ToolContext {
+@@ -899,6 +901,7 @@ fn gate_ctx(working_dir: &str) -> ToolContext {
          session_id: "gate-test".to_string(),
          message_id: "m".to_string(),
          tool_call_id: "c".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::path::PathBuf::from(working_dir)),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/batch_tests.rs b/crates/jcode-app-core/src/tool/batch_tests.rs
-index 2a2168294..2ee466648 100644
+index e094cfb94..50d9604e5 100644
 --- a/crates/jcode-app-core/src/tool/batch_tests.rs
 +++ b/crates/jcode-app-core/src/tool/batch_tests.rs
 @@ -28,6 +28,7 @@ fn test_context() -> ToolContext {
          session_id: "batch-registry-lifetime".to_string(),
          message_id: "message".to_string(),
          tool_call_id: "batch-call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: None,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
-index 6c38aef0f..0e5818db9 100644
+index 6c38aef0f..de9ab589c 100644
 --- a/crates/jcode-app-core/src/tool/blueprint.rs
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
 @@ -58,6 +58,14 @@ struct BlueprintToolInput {
@@ -3904,17 +3940,39 @@ index 6c38aef0f..0e5818db9 100644
  }
  
  /// A generated coordinator-visible tool for worker blueprints.
-@@ -90,7 +98,8 @@ const SUMMARY_MAX_CHARS: usize = 2000;
+@@ -89,18 +97,28 @@ const SUMMARY_MAX_CHARS: usize = 2000;
+ /// Default character limit for follow-up reads.
  const FOLLOW_UP_DEFAULT_LIMIT: usize = 2000;
  
- /// Suffix appended when the summary is truncated.
+-/// Suffix appended when the summary is truncated.
 -const SUMMARY_TRUNCATED_SUFFIX: &str = "\n\n[... truncated. Use follow_up_session with offset/limit to read more.]";
-+const SUMMARY_TRUNCATED_SUFFIX: &str =
-+    "\n\n[... truncated. Use follow_up_session with offset/limit to read more.]";
- 
+-
  /// Return a follow-up session ID only when a caller supplied a meaningful one.
  ///
-@@ -231,6 +240,14 @@ impl Tool for BlueprintTool {
+ /// Some strict tool-schema transports must represent every property and use an
+ /// empty string for an omitted optional string. Treat that placeholder as
+ /// absent so it selects spawn mode, as the public tool contract promises.
+ pub(crate) fn nonblank_follow_up_session(value: Option<&str>) -> Option<&str> {
++    nonblank_optional_string(value)
++}
++
++/// Treat blank optional string inputs from strict schema transports as absent.
++pub(crate) fn nonblank_optional_string(value: Option<&str>) -> Option<&str> {
+     value.map(str::trim).filter(|value| !value.is_empty())
+ }
+ 
++pub(crate) fn has_conflicting_delegation_lineage(
++    delegation_token: Option<&str>,
++    spawn_request_id: Option<&str>,
++) -> bool {
++    nonblank_optional_string(delegation_token).is_some()
++        && nonblank_optional_string(spawn_request_id).is_some()
++}
++
+ /// Generated blueprint tools synchronously return a worker's result, so their
+ /// default must be an in-process worker. A headed default creates a separate
+ /// client which must attach to the just-created persisted session before the
+@@ -231,6 +249,14 @@ impl Tool for BlueprintTool {
                      "minimum": 1,
                      "description": "Maximum characters to return in a follow-up read. Defaults to 2000."
                  },
@@ -3929,7 +3987,7 @@ index 6c38aef0f..0e5818db9 100644
                  "working_dir": {
                      "type": "string",
                      "description": "Optional working directory for the spawned worker."
-@@ -254,7 +271,121 @@ impl Tool for BlueprintTool {
+@@ -254,7 +280,121 @@ impl Tool for BlueprintTool {
  
          // ── Follow-up mode: read paginated output from an existing worker ──
          if let Some(session_id) = nonblank_follow_up_session(params.follow_up_session.as_deref()) {
@@ -4052,17 +4110,19 @@ index 6c38aef0f..0e5818db9 100644
          }
  
          // ── Spawn mode: spawn, wait, return compact summary ──
-@@ -267,6 +398,39 @@ impl Tool for BlueprintTool {
+@@ -267,6 +407,41 @@ impl Tool for BlueprintTool {
          }
  
          // 1. Spawn the blueprint-backed worker.
 +        let provenance = crate::measurement::current_provenance();
-+        if params.delegation_token.is_some() && params.spawn_request_id.is_some() {
++        let delegation_token = nonblank_optional_string(params.delegation_token.as_deref());
++        if has_conflicting_delegation_lineage(delegation_token, params.spawn_request_id.as_deref())
++        {
 +            return Err(anyhow::anyhow!(
 +                "Pass delegation_token without spawn_request_id; the token carries its exact lineage."
 +            ));
 +        }
-+        let token_lineage = match params.delegation_token.as_deref() {
++        let token_lineage = match delegation_token {
 +            Some(token) => Some(
 +                crate::measurement::claim_delegation_token(&ctx.session_id, token)
 +                    .map_err(anyhow::Error::msg)?,
@@ -4083,7 +4143,7 @@ index 6c38aef0f..0e5818db9 100644
 +        let guard_event_id = lineage
 +            .as_ref()
 +            .map(|(guard, _)| guard.clone())
-+            .or_else(|| params.delegation_token.as_ref().and(provenance.guard_event_id.clone()));
++            .or_else(|| delegation_token.and(provenance.guard_event_id.clone()));
 +        let _delegation_guard = if crate::measurement::enabled() {
 +            Some(delegation_id.clone())
 +        } else {
@@ -4092,7 +4152,7 @@ index 6c38aef0f..0e5818db9 100644
          let spawn_request = Request::CommSpawn {
              id: 1,
              session_id: ctx.session_id.clone(),
-@@ -278,30 +442,162 @@ impl Tool for BlueprintTool {
+@@ -278,37 +453,166 @@ impl Tool for BlueprintTool {
              effort: None,
              label: None,
              blueprint: Some(self.blueprint_id.clone()),
@@ -4104,22 +4164,20 @@ index 6c38aef0f..0e5818db9 100644
  
 -        let new_session_id = match send_request(spawn_request).await {
 -            Ok(ServerEvent::CommSpawnResponse { new_session_id, .. })
+-                if !new_session_id.is_empty() =>
+-            {
+-                new_session_id
 +        let cleanup_failed_lineage = || {
 +            if let Some(request_id) = spawn_request_id {
 +                crate::measurement::discard_guard_delegation(&ctx.session_id, request_id);
-+            }
+             }
 +        };
 +        let (new_session_id, guard_delegation_activated) = match send_request(spawn_request).await {
 +            Ok(ServerEvent::CommSpawnResponse {
 +                new_session_id,
 +                guard_delegation_activated,
 +                ..
-+            })
-                 if !new_session_id.is_empty() =>
-             {
--                new_session_id
-+                (new_session_id, guard_delegation_activated)
-             }
++            }) if !new_session_id.is_empty() => (new_session_id, guard_delegation_activated),
              Ok(ServerEvent::Error { message, .. }) => {
 +                cleanup_failed_lineage();
                  return Err(anyhow::anyhow!("{}", message));
@@ -4262,7 +4320,16 @@ index 6c38aef0f..0e5818db9 100644
          // Resolve timeout: per-call > blueprint > config > default.
          let config_timeout = crate::config::config().agents.swarm_timeout_minutes;
          let timeout_minutes = params
-@@ -359,10 +655,7 @@ impl Tool for BlueprintTool {
+             .timeout_minutes
+             .filter(|&n| n > 0)
+             .or(self.blueprint_timeout_minutes)
+-            .unwrap_or(config_timeout);
++            .or_else(|| (config_timeout > 0).then_some(config_timeout))
++            .unwrap_or(DEFAULT_TIMEOUT_MINUTES);
+         let timeout_secs = (timeout_minutes as u64) * 60;
+ 
+         // 2. Wait for the worker to reach a terminal status.
+@@ -359,10 +663,7 @@ impl Tool for BlueprintTool {
                  ));
              }
              Err(e) => {
@@ -4274,7 +4341,7 @@ index 6c38aef0f..0e5818db9 100644
              }
          }
  
-@@ -371,20 +664,50 @@ impl Tool for BlueprintTool {
+@@ -371,20 +672,50 @@ impl Tool for BlueprintTool {
              id: 3,
              session_id: ctx.session_id.clone(),
              target_session: new_session_id.clone(),
@@ -4334,7 +4401,7 @@ index 6c38aef0f..0e5818db9 100644
  
                  match report {
                      Some(text) => {
-@@ -426,8 +749,17 @@ impl BlueprintTool {
+@@ -426,8 +757,17 @@ impl BlueprintTool {
          session_id: &str,
          offset: Option<usize>,
          limit: Option<usize>,
@@ -4352,7 +4419,7 @@ index 6c38aef0f..0e5818db9 100644
          let offset = offset.unwrap_or(0);
          let limit = limit.unwrap_or(FOLLOW_UP_DEFAULT_LIMIT).max(1);
  
-@@ -435,12 +767,36 @@ impl BlueprintTool {
+@@ -435,12 +775,36 @@ impl BlueprintTool {
              id: 1,
              session_id: ctx.session_id.clone(),
              target_session: session_id.to_string(),
@@ -4389,7 +4456,7 @@ index 6c38aef0f..0e5818db9 100644
                  let full: String = messages
                      .iter()
                      .map(|msg| format!("[{}]\n{}\n\n", msg.role, msg.content))
-@@ -457,11 +813,7 @@ impl BlueprintTool {
+@@ -457,11 +821,7 @@ impl BlueprintTool {
                  }
  
                  let end = (offset + limit).min(total_chars);
@@ -4402,7 +4469,7 @@ index 6c38aef0f..0e5818db9 100644
  
                  let more = end < total_chars;
                  let header = format!(
-@@ -481,16 +833,11 @@ impl BlueprintTool {
+@@ -481,16 +841,11 @@ impl BlueprintTool {
  
                  Ok(ToolOutput::new(format!("{header}{chunk}{footer}")))
              }
@@ -4422,18 +4489,21 @@ index 6c38aef0f..0e5818db9 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-index ff2c8d6b6..894145ddb 100644
+index ff2c8d6b6..7091d11a3 100644
 --- a/crates/jcode-app-core/src/tool/blueprint_tests.rs
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,10 @@
  
  use crate::config::{AgentsConfig, ToolSelection, WorkerBlueprintOverride};
  use crate::protocol::Request;
-+use crate::tool::{Tool, blueprint::BlueprintTool};
++use crate::tool::{
++    Tool,
++    blueprint::{BlueprintTool, has_conflicting_delegation_lineage, nonblank_optional_string},
++};
  use crate::worker_blueprint::{
      self, BlueprintEffort, CommunicationPolicy, WorkerBlueprint, WorkerBlueprintRegistry,
      load_worker_blueprints,
-@@ -32,11 +33,7 @@ fn temp_blueprints_dir() -> tempfile::TempDir {
+@@ -32,11 +36,7 @@ fn temp_blueprints_dir() -> tempfile::TempDir {
      tempfile::tempdir().unwrap()
  }
  
@@ -4446,7 +4516,7 @@ index ff2c8d6b6..894145ddb 100644
      WorkerBlueprint {
          source_path: PathBuf::from(format!("/tmp/{name}.md")),
          name: name.to_string(),
-@@ -82,18 +79,15 @@ fn coordinator_override_no_enabled_means_no_restriction() {
+@@ -82,18 +82,15 @@ fn coordinator_override_no_enabled_means_no_restriction() {
  
  #[test]
  fn coordinator_override_intersects_with_global_allowed() {
@@ -4474,7 +4544,7 @@ index ff2c8d6b6..894145ddb 100644
      assert!(intersection.contains("read"));
      assert!(intersection.contains("swarm_reviewer"));
      assert!(!intersection.contains("bash"));
-@@ -116,16 +110,17 @@ fn coordinator_override_empty_enabled_clears_restriction() {
+@@ -116,16 +113,17 @@ fn coordinator_override_empty_enabled_clears_restriction() {
  
  #[test]
  fn coordinator_override_disabled_deny_takes_precedence() {
@@ -4502,7 +4572,7 @@ index ff2c8d6b6..894145ddb 100644
      assert!(effective.contains("read"));
      assert!(effective.contains("write"));
      assert!(!effective.contains("bash"));
-@@ -255,6 +250,10 @@ fn comm_spawn_with_blueprint_roundtrips() {
+@@ -255,6 +253,10 @@ fn comm_spawn_with_blueprint_roundtrips() {
          effort: None,
          label: Some("reviewer".to_string()),
          blueprint: Some("reviewer".to_string()),
@@ -4513,7 +4583,7 @@ index ff2c8d6b6..894145ddb 100644
      };
      let json = serde_json::to_string(&req).unwrap();
      assert!(json.contains("\"blueprint\":\"reviewer\""));
-@@ -300,11 +299,17 @@ fn generated_tool_does_not_overwrite_existing_tool() {
+@@ -300,11 +302,17 @@ fn generated_tool_does_not_overwrite_existing_tool() {
  
      // A blueprint named "swarm" would generate "swarm_swarm"
      let tool_name = "swarm_swarm";
@@ -4533,7 +4603,7 @@ index ff2c8d6b6..894145ddb 100644
  
      // If somehow a tool named "swarm_reviewer" already exists, skip it
      tools.insert("swarm_reviewer".to_string());
-@@ -332,10 +337,7 @@ fn blueprint_model_feeds_into_spawn_precedence() {
+@@ -332,10 +340,7 @@ fn blueprint_model_feeds_into_spawn_precedence() {
           You are a reviewer.",
      );
  
@@ -4545,7 +4615,7 @@ index ff2c8d6b6..894145ddb 100644
      let bp = report.registry.get("reviewer").unwrap();
      assert_eq!(bp.model.as_deref(), Some("openai-api:gpt-5.5"));
  
-@@ -360,10 +362,7 @@ fn per_spawn_model_overrides_blueprint_model() {
+@@ -360,10 +365,7 @@ fn per_spawn_model_overrides_blueprint_model() {
           You are a reviewer.",
      );
  
@@ -4557,7 +4627,7 @@ index ff2c8d6b6..894145ddb 100644
      let bp = report.registry.get("reviewer").unwrap();
  
      // In the spawn path, requested_model.or(blueprint_model) uses the
-@@ -422,10 +421,7 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
+@@ -422,10 +424,7 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
           You are a worker.",
      );
  
@@ -4569,7 +4639,7 @@ index ff2c8d6b6..894145ddb 100644
      let bp = report.registry.get("worker").unwrap();
      assert_eq!(bp.effort, Some(BlueprintEffort::High));
  
-@@ -433,9 +429,7 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
+@@ -433,9 +432,7 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
      // effort is given.
      let blueprint_effort = bp.effort.as_ref().map(|e| e.as_str().to_string());
      let requested_effort: Option<String> = None;
@@ -4580,7 +4650,7 @@ index ff2c8d6b6..894145ddb 100644
      assert_eq!(effective, Some("high"));
  }
  
-@@ -446,10 +440,14 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
+@@ -446,10 +443,14 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
  #[test]
  fn blueprint_enabled_tools_intersected_with_global() {
      // Simulate the tool policy intersection logic from spawn_swarm_agent.
@@ -4599,7 +4669,7 @@ index ff2c8d6b6..894145ddb 100644
  
      // Intersection: blueprint can only further restrict, never expand.
      let effective: HashSet<String> = blueprint_enabled
-@@ -459,22 +457,30 @@ fn blueprint_enabled_tools_intersected_with_global() {
+@@ -459,22 +460,30 @@ fn blueprint_enabled_tools_intersected_with_global() {
  
      assert!(effective.contains("read"));
      assert!(effective.contains("agentgrep"));
@@ -4634,7 +4704,7 @@ index ff2c8d6b6..894145ddb 100644
  }
  
  #[test]
-@@ -513,8 +519,9 @@ fn coordinator_policy_only_applies_to_root_sessions() {
+@@ -513,8 +522,9 @@ fn coordinator_policy_only_applies_to_root_sessions() {
          effort: None,
          timeout_minutes: None,
      };
@@ -4646,7 +4716,7 @@ index ff2c8d6b6..894145ddb 100644
  
      if root_session {
          let global: Option<HashSet<String>> =
-@@ -526,7 +533,10 @@ fn coordinator_policy_only_applies_to_root_sessions() {
+@@ -526,7 +536,10 @@ fn coordinator_policy_only_applies_to_root_sessions() {
          };
          let eff = effective.unwrap();
          assert!(eff.contains("read"));
@@ -4658,7 +4728,7 @@ index ff2c8d6b6..894145ddb 100644
      }
  
      if !worker_session {
-@@ -535,7 +545,10 @@ fn coordinator_policy_only_applies_to_root_sessions() {
+@@ -535,7 +548,10 @@ fn coordinator_policy_only_applies_to_root_sessions() {
          let effective = global;
          let eff = effective.unwrap();
          assert!(eff.contains("read"));
@@ -4670,7 +4740,7 @@ index ff2c8d6b6..894145ddb 100644
      }
  }
  
-@@ -565,10 +578,7 @@ fn register_blueprint_tools_loads_from_configured_dir() {
+@@ -565,10 +581,7 @@ fn register_blueprint_tools_loads_from_configured_dir() {
           You run shell commands.",
      );
  
@@ -4682,7 +4752,7 @@ index ff2c8d6b6..894145ddb 100644
  
      assert_eq!(report.registry.len(), 2);
      assert!(report.registry.get("reviewer").is_some());
-@@ -607,11 +617,7 @@ fn communication_policy_stored_on_member_for_enforcement() {
+@@ -607,11 +620,7 @@ fn communication_policy_stored_on_member_for_enforcement() {
  
  #[test]
  fn generated_tool_description_mentions_waiting_for_output() {
@@ -4695,7 +4765,7 @@ index ff2c8d6b6..894145ddb 100644
      // The description should mention that the tool waits for output,
      // not just spawns a worker.
      let desc = format!(
-@@ -652,7 +658,32 @@ fn completion_report_is_truncated_for_bounded_result() {
+@@ -652,7 +661,44 @@ fn completion_report_is_truncated_for_bounded_result() {
  fn empty_task_is_rejected() {
      // The BlueprintTool rejects blank tasks before spawning.
      let task = "   ".trim();
@@ -4708,28 +4778,40 @@ index ff2c8d6b6..894145ddb 100644
 +
 +#[test]
 +fn blueprint_tool_schema_advertises_optional_delegation_token() {
-+    let schema = BlueprintTool::new(
-+        "reviewer",
-+        "Reviews code.",
-+        None,
-+        None,
-+        None,
-+        None,
-+        None,
-+    )
-+    .parameters_schema();
++    let schema = BlueprintTool::new("reviewer", "Reviews code.", None, None, None, None, None)
++        .parameters_schema();
 +    assert_eq!(schema["properties"]["delegation_token"]["type"], "string");
 +    assert_eq!(
 +        schema["properties"]["delegation_token"]["description"],
 +        "Single-use signed token from a guard nudge. Omit for proactive delegation."
 +    );
-+    assert!(!schema["required"]
-+        .as_array()
-+        .is_some_and(|required| required.iter().any(|item| item == "delegation_token")));
++    assert!(
++        !schema["required"]
++            .as_array()
++            .is_some_and(|required| required.iter().any(|item| item == "delegation_token"))
++    );
++}
++
++#[test]
++fn blank_optional_delegation_inputs_are_absent() {
++    assert_eq!(nonblank_optional_string(Some("  ")), None);
++    assert_eq!(nonblank_optional_string(Some(" token ")), Some("token"));
++    assert!(!has_conflicting_delegation_lineage(
++        Some("dt1.token"),
++        Some("")
++    ));
++    assert!(!has_conflicting_delegation_lineage(
++        Some(""),
++        Some("request")
++    ));
++    assert!(has_conflicting_delegation_lineage(
++        Some("dt1.token"),
++        Some("request")
++    ));
  }
  
  // ---------------------------------------------------------------------------
-@@ -692,7 +723,10 @@ fn timeout_precedence_zero_per_call_ignored() {
+@@ -692,7 +738,10 @@ fn timeout_precedence_zero_per_call_ignored() {
      let blueprint = Some(15u32);
      let config = 20u32;
      let effective = per_call.filter(|&n| n > 0).or(blueprint).unwrap_or(config);
@@ -4741,7 +4823,7 @@ index ff2c8d6b6..894145ddb 100644
  }
  
  #[test]
-@@ -709,10 +743,7 @@ fn timeout_minutes_parses_from_front_matter() {
+@@ -709,10 +758,7 @@ fn timeout_minutes_parses_from_front_matter() {
           You are a worker.",
      );
  
@@ -4753,7 +4835,7 @@ index ff2c8d6b6..894145ddb 100644
      let bp = report.registry.get("worker").unwrap();
      assert_eq!(bp.timeout_minutes, Some(45));
  }
-@@ -731,18 +762,16 @@ fn timeout_minutes_zero_is_diagnosed() {
+@@ -731,18 +777,16 @@ fn timeout_minutes_zero_is_diagnosed() {
           You are a worker.",
      );
  
@@ -4777,7 +4859,7 @@ index ff2c8d6b6..894145ddb 100644
          "expected diagnostic for timeout-minutes 0"
      );
  }
-@@ -791,10 +820,7 @@ fn timeout_minutes_omitted_means_none() {
+@@ -791,10 +835,7 @@ fn timeout_minutes_omitted_means_none() {
           You are a worker.",
      );
  
@@ -4789,7 +4871,7 @@ index ff2c8d6b6..894145ddb 100644
      let bp = report.registry.get("worker").unwrap();
      assert_eq!(bp.timeout_minutes, None);
  }
-@@ -831,8 +857,14 @@ fn blank_follow_up_session_selects_spawn_mode() {
+@@ -831,8 +872,14 @@ fn blank_follow_up_session_selects_spawn_mode() {
      // Strict tool-schema transports can require every property and represent an
      // omitted optional string as "". This must retain the documented spawn
      // behavior instead of trying to read a worker with an empty session ID.
@@ -4806,7 +4888,7 @@ index ff2c8d6b6..894145ddb 100644
      assert_eq!(
          crate::tool::blueprint::nonblank_follow_up_session(Some("  \t\n")),
          None
-@@ -877,7 +909,10 @@ fn follow_up_mode_offset_beyond_end_returns_empty() {
+@@ -877,7 +924,10 @@ fn follow_up_mode_offset_beyond_end_returns_empty() {
      let offset = 200usize;
      let total = full.chars().count();
  
@@ -4818,7 +4900,7 @@ index ff2c8d6b6..894145ddb 100644
  }
  
  #[test]
-@@ -913,7 +948,10 @@ fn spawn_mode_summary_is_truncated_with_session_id() {
+@@ -913,7 +963,10 @@ fn spawn_mode_summary_is_truncated_with_session_id() {
          out
      };
  
@@ -4830,8 +4912,44 @@ index ff2c8d6b6..894145ddb 100644
      assert!(summary.contains("truncated"));
      assert!(summary.contains("Use follow_up_session"));
  }
+diff --git a/crates/jcode-app-core/src/tool/browser_fast_live_tests.rs b/crates/jcode-app-core/src/tool/browser_fast_live_tests.rs
+index 1e3b1456e..ce84d4284 100644
+--- a/crates/jcode-app-core/src/tool/browser_fast_live_tests.rs
++++ b/crates/jcode-app-core/src/tool/browser_fast_live_tests.rs
+@@ -19,6 +19,7 @@ fn fixture_context() -> ToolContext {
+         session_id: "browser-fast-live-acceptance".into(),
+         message_id: "browser-fast-live-acceptance".into(),
+         tool_call_id: "browser-fast-live-acceptance".into(),
++        guard_event_id: None,
+         working_dir: None,
+         stdin_request_tx: None,
+         graceful_shutdown_signal: None,
+diff --git a/crates/jcode-app-core/src/tool/browser_fast_tests.rs b/crates/jcode-app-core/src/tool/browser_fast_tests.rs
+index 84cbcb35d..c086b4d93 100644
+--- a/crates/jcode-app-core/src/tool/browser_fast_tests.rs
++++ b/crates/jcode-app-core/src/tool/browser_fast_tests.rs
+@@ -122,6 +122,7 @@ fn ctx() -> ToolContext {
+         session_id: "browser-test".into(),
+         message_id: "m".into(),
+         tool_call_id: "t".into(),
++        guard_event_id: None,
+         working_dir: None,
+         stdin_request_tx: None,
+         graceful_shutdown_signal: None,
+diff --git a/crates/jcode-app-core/src/tool/browser_tests.rs b/crates/jcode-app-core/src/tool/browser_tests.rs
+index 6c3f7bd65..6105df585 100644
+--- a/crates/jcode-app-core/src/tool/browser_tests.rs
++++ b/crates/jcode-app-core/src/tool/browser_tests.rs
+@@ -356,6 +356,7 @@ async fn handoff_disabled_switch_removes_schema_and_rejects_execution_before_pro
+             session_id: "browser-disable-test".into(),
+             message_id: "m".into(),
+             tool_call_id: "t".into(),
++            guard_event_id: None,
+             working_dir: None,
+             stdin_request_tx: None,
+             graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/communicate.rs b/crates/jcode-app-core/src/tool/communicate.rs
-index 6e40f62bb..631f5ee74 100644
+index 6e40f62bb..2f2be77f8 100644
 --- a/crates/jcode-app-core/src/tool/communicate.rs
 +++ b/crates/jcode-app-core/src/tool/communicate.rs
 @@ -1527,6 +1527,7 @@ async fn run_swarm_plan_loop(
@@ -4910,7 +5028,7 @@ index 6e40f62bb..631f5ee74 100644
                  let request = Request::CommSpawn {
                      id: REQUEST_ID,
                      session_id: ctx.session_id.clone(),
-@@ -2750,24 +2784,75 @@ impl Tool for CommunicateTool {
+@@ -2750,24 +2784,73 @@ impl Tool for CommunicateTool {
                      effort: params.effort.clone(),
                      label: Some(label),
                      blueprint: params.blueprint.clone(),
@@ -4922,16 +5040,16 @@ index 6e40f62bb..631f5ee74 100644
  
                  match send_request(request).await {
 -                    Ok(ServerEvent::CommSpawnResponse { new_session_id, .. })
+-                        if !new_session_id.is_empty() =>
+-                    {
 +                    Ok(ServerEvent::CommSpawnResponse {
 +                        new_session_id,
 +                        guard_delegation_activated,
 +                        ..
-+                    })
-                         if !new_session_id.is_empty() =>
-                     {
++                    }) if !new_session_id.is_empty() => {
 +                        if guard_delegation_activated != Some(false)
 +                            && let (Some(guard_event_id), Some(delegation_id)) =
-+                            (guard_event_id.as_deref(), delegation_id.as_deref())
++                                (guard_event_id.as_deref(), delegation_id.as_deref())
 +                        {
 +                            crate::measurement::emit_communication_observation(
 +                                ctx.session_id.clone(),
@@ -4988,7 +5106,7 @@ index 6e40f62bb..631f5ee74 100644
                  }
              }
  
-@@ -2914,12 +2999,25 @@ impl Tool for CommunicateTool {
+@@ -2914,12 +2997,25 @@ impl Tool for CommunicateTool {
                  let target = params.target_session.ok_or_else(|| {
                      anyhow::anyhow!("'target_session' is required for summary action")
                  })?;
@@ -5014,7 +5132,7 @@ index 6e40f62bb..631f5ee74 100644
                  };
  
                  match send_request(request).await {
-@@ -2938,11 +3036,24 @@ impl Tool for CommunicateTool {
+@@ -2938,11 +3034,24 @@ impl Tool for CommunicateTool {
                  let target = params.target_session.ok_or_else(|| {
                      anyhow::anyhow!("'target_session' is required for read_context action")
                  })?;
@@ -5040,14 +5158,14 @@ index 6e40f62bb..631f5ee74 100644
  
                  match send_request(request).await {
 diff --git a/crates/jcode-app-core/src/tool/communicate_tests.rs b/crates/jcode-app-core/src/tool/communicate_tests.rs
-index f4b39d077..2a942e713 100644
+index 89e8f4b9d..d8105497c 100644
 --- a/crates/jcode-app-core/src/tool/communicate_tests.rs
 +++ b/crates/jcode-app-core/src/tool/communicate_tests.rs
-@@ -1629,6 +1629,7 @@ fn test_ctx(session_id: &str, working_dir: &Path) -> ToolContext {
+@@ -1635,6 +1635,7 @@ fn test_ctx(session_id: &str, working_dir: &Path) -> ToolContext {
          session_id: session_id.to_string(),
          message_id: "msg-1".to_string(),
          tool_call_id: "call-1".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(working_dir.to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -5602,50 +5720,75 @@ index 5991e3ba5..66d7cc117 100644
  async fn communicate_await_members_background_returns_immediately_and_notifies() {
      let _env_lock = crate::storage::lock_test_env();
 diff --git a/crates/jcode-app-core/src/tool/communicate_tests/input_format.rs b/crates/jcode-app-core/src/tool/communicate_tests/input_format.rs
-index 0e9fa7f66..40e09e820 100644
+index 0e9fa7f66..5eec973ef 100644
 --- a/crates/jcode-app-core/src/tool/communicate_tests/input_format.rs
 +++ b/crates/jcode-app-core/src/tool/communicate_tests/input_format.rs
 @@ -202,6 +202,7 @@ fn format_members_includes_status_and_detail() {
          session_id: "sess-self".to_string(),
          message_id: "msg-1".to_string(),
          tool_call_id: "call-1".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: None,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
+@@ -429,9 +430,9 @@ fn format_status_snapshot_includes_activity_and_metadata() {
+     assert!(output.output.contains("Activity: busy (bash)"));
+     assert!(output.output.contains("Swarm: swarm-test"));
+     assert!(
+-        output
+-            .output
+-            .contains("Meta: headless · attachments=0 · active=3s ago · status_age=7s · joined=42s")
++        output.output.contains(
++            "Meta: headless · attachments=0 · active=3s ago · status_age=7s · joined=42s"
++        )
+     );
+     assert!(output.output.contains("Files: src/server/comm_sync.rs"));
+ }
+diff --git a/crates/jcode-app-core/src/tool/compile_remote/tests.rs b/crates/jcode-app-core/src/tool/compile_remote/tests.rs
+index b6984da2d..474f472b9 100644
+--- a/crates/jcode-app-core/src/tool/compile_remote/tests.rs
++++ b/crates/jcode-app-core/src/tool/compile_remote/tests.rs
+@@ -115,6 +115,7 @@ fn context(root: &Path) -> ToolContext {
+         session_id: "remote-test-session".into(),
+         message_id: "message".into(),
+         tool_call_id: "remote-test-call".into(),
++        guard_event_id: None,
+         working_dir: Some(root.into()),
+         stdin_request_tx: None,
+         graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/computer/coverage_tests.rs b/crates/jcode-app-core/src/tool/computer/coverage_tests.rs
-index f049e1562..d5d29c94e 100644
+index f049e1562..0b8d592b9 100644
 --- a/crates/jcode-app-core/src/tool/computer/coverage_tests.rs
 +++ b/crates/jcode-app-core/src/tool/computer/coverage_tests.rs
 @@ -14,6 +14,7 @@ fn ctx() -> ToolContext {
          session_id: "cov".into(),
          message_id: "cov".into(),
          tool_call_id: "cov".into(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: None,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/computer/tests.rs b/crates/jcode-app-core/src/tool/computer/tests.rs
-index 7de066233..35ca52e24 100644
+index 7de066233..bedfe5864 100644
 --- a/crates/jcode-app-core/src/tool/computer/tests.rs
 +++ b/crates/jcode-app-core/src/tool/computer/tests.rs
 @@ -9,6 +9,7 @@ fn ctx() -> ToolContext {
          session_id: "test".into(),
          message_id: "test".into(),
          tool_call_id: "test".into(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: None,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/config_edit_notice_tests.rs b/crates/jcode-app-core/src/tool/config_edit_notice_tests.rs
-index 7ab7f5172..996311bff 100644
+index 7ab7f5172..8376f88ec 100644
 --- a/crates/jcode-app-core/src/tool/config_edit_notice_tests.rs
 +++ b/crates/jcode-app-core/src/tool/config_edit_notice_tests.rs
 @@ -160,6 +160,7 @@ async fn the_write_tool_reports_config_changes_end_to_end() {
          session_id: "test".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(dir.path().to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -5653,7 +5796,7 @@ index 7ab7f5172..996311bff 100644
          session_id: "test".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(dir.path().to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -5669,15 +5812,51 @@ index d7ea60c96..f91c7eec8 100644
              working_dir: None,
              stdin_request_tx: None,
              graceful_shutdown_signal: None,
+diff --git a/crates/jcode-app-core/src/tool/desktop_selfdev_tests.rs b/crates/jcode-app-core/src/tool/desktop_selfdev_tests.rs
+index dc7f8b474..5577e123d 100644
+--- a/crates/jcode-app-core/src/tool/desktop_selfdev_tests.rs
++++ b/crates/jcode-app-core/src/tool/desktop_selfdev_tests.rs
+@@ -9,6 +9,7 @@ fn context(working_dir: Option<PathBuf>) -> ToolContext {
+         session_id: "desktop-test".into(),
+         message_id: "test".into(),
+         tool_call_id: "test".into(),
++        guard_event_id: None,
+         working_dir,
+         stdin_request_tx: None,
+         graceful_shutdown_signal: None,
+diff --git a/crates/jcode-app-core/src/tool/edit_stats.rs b/crates/jcode-app-core/src/tool/edit_stats.rs
+index 529f99906..c099339cc 100644
+--- a/crates/jcode-app-core/src/tool/edit_stats.rs
++++ b/crates/jcode-app-core/src/tool/edit_stats.rs
+@@ -83,6 +83,7 @@ mod tests {
+             session_id: "stats_test".into(),
+             message_id: "m".into(),
+             tool_call_id: "t".into(),
++            guard_event_id: None,
+             working_dir: Some(home.path().into()),
+             stdin_request_tx: None,
+             graceful_shutdown_signal: None,
+diff --git a/crates/jcode-app-core/src/tool/file_diff.rs b/crates/jcode-app-core/src/tool/file_diff.rs
+index 715003c84..22c4a0cb7 100644
+--- a/crates/jcode-app-core/src/tool/file_diff.rs
++++ b/crates/jcode-app-core/src/tool/file_diff.rs
+@@ -135,6 +135,7 @@ mod tests {
+             session_id: "file_diff_test".into(),
+             message_id: "m".into(),
+             tool_call_id: "t".into(),
++            guard_event_id: None,
+             working_dir: Some(home.path().into()),
+             stdin_request_tx: None,
+             graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/goal_tests.rs b/crates/jcode-app-core/src/tool/goal_tests.rs
-index fdfe5a751..b864078e2 100644
+index fdfe5a751..defe4b45f 100644
 --- a/crates/jcode-app-core/src/tool/goal_tests.rs
 +++ b/crates/jcode-app-core/src/tool/goal_tests.rs
 @@ -15,6 +15,7 @@ async fn initiative_tool_create_and_resume_round_trip() {
          session_id: "ses_goal_tool".to_string(),
          message_id: "msg1".to_string(),
          tool_call_id: "tool1".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(project.clone()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -5685,7 +5864,7 @@ index fdfe5a751..b864078e2 100644
          session_id: "ses_goal_list".to_string(),
          message_id: "msg1".to_string(),
          tool_call_id: "tool1".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(project.clone()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -5693,15 +5872,15 @@ index fdfe5a751..b864078e2 100644
          session_id: "ses_goal_update".to_string(),
          message_id: "msg1".to_string(),
          tool_call_id: "tool1".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(project.clone()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/mcp.rs b/crates/jcode-app-core/src/tool/mcp.rs
-index e38f5cd4f..cf0ada806 100644
+index 70255bdaa..a1a225a48 100644
 --- a/crates/jcode-app-core/src/tool/mcp.rs
 +++ b/crates/jcode-app-core/src/tool/mcp.rs
-@@ -699,6 +699,7 @@ mod tests {
+@@ -800,6 +800,7 @@ mod tests {
              session_id: "test-session".to_string(),
              message_id: "test-message".to_string(),
              tool_call_id: "test-tool-call".to_string(),
@@ -5710,10 +5889,10 @@ index e38f5cd4f..cf0ada806 100644
              stdin_request_tx: None,
              graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/memory.rs b/crates/jcode-app-core/src/tool/memory.rs
-index 012345037..cda199864 100644
+index bf06c8bac..07daa8a3f 100644
 --- a/crates/jcode-app-core/src/tool/memory.rs
 +++ b/crates/jcode-app-core/src/tool/memory.rs
-@@ -488,6 +488,7 @@ mod tests {
+@@ -496,6 +496,7 @@ mod tests {
              session_id: "test-session".to_string(),
              message_id: "test-message".to_string(),
              tool_call_id: "test-tool-call".to_string(),
@@ -5722,7 +5901,7 @@ index 012345037..cda199864 100644
              stdin_request_tx: None,
              graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index f7060ac11..741876565 100644
+index df98a3081..e4fab67f4 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,12 +1,12 @@
@@ -5740,8 +5919,8 @@ index f7060ac11..741876565 100644
 +mod blueprint_tests;
  mod browser;
  mod communicate;
- #[cfg(target_os = "macos")]
-@@ -78,6 +78,11 @@ pub use jcode_tool_core::{StdinInputRequest, Tool, ToolContext, ToolExecutionMod
+ // Remote compilation remains reachable through the remote-session protocol,
+@@ -86,6 +86,11 @@ pub use jcode_tool_core::{StdinInputRequest, Tool, ToolContext, ToolExecutionMod
  pub use jcode_tool_types::{ToolImage, ToolOutput};
  pub(crate) use session_search::spawn_recent_index_warmup;
  
@@ -5753,7 +5932,7 @@ index f7060ac11..741876565 100644
  #[derive(Clone, Debug, Default)]
  struct SessionToolPolicy {
      allowed_tools: Option<HashSet<String>>,
-@@ -522,10 +527,7 @@ impl Registry {
+@@ -561,10 +566,7 @@ impl Registry {
  
          // Log diagnostics for any blueprint loading issues.
          for diag in &report.diagnostics {
@@ -5765,7 +5944,7 @@ index f7060ac11..741876565 100644
          }
      }
  
-@@ -811,6 +813,109 @@ impl Registry {
+@@ -850,6 +852,109 @@ impl Registry {
  
      /// Execute a tool by name
      pub async fn execute(&self, name: &str, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
@@ -5875,7 +6054,7 @@ index f7060ac11..741876565 100644
          // Mark this call in-flight for the whole execution so the missing
          // tool-output repair paths do not mistake a slow tool for an
          // interrupted one and inject a duplicate synthetic result. See
-@@ -822,15 +927,18 @@ impl Registry {
+@@ -861,15 +966,18 @@ impl Registry {
              if let Some(allowed) = policy.allowed_tools.as_ref()
                  && !tool_name_is_allowed(allowed, resolved_name)
              {
@@ -5894,7 +6073,7 @@ index f7060ac11..741876565 100644
                  // List available tools so the model can recover instead of
                  // spiraling through hallucinated names like "ToolSearch" (#104).
                  let mut available: Vec<&str> = tools.keys().map(|k| k.as_str()).collect();
-@@ -872,6 +980,7 @@ impl Registry {
+@@ -911,6 +1019,7 @@ impl Registry {
              )
              .await;
              if let crate::hooks::GateDecision::Block { reason } = decision {
@@ -5902,7 +6081,7 @@ index f7060ac11..741876565 100644
                  let mut fields =
                      Self::tool_lifecycle_fields("blocked", name, resolved_name, &input, &ctx);
                  fields.push(("block_reason".to_string(), reason.clone()));
-@@ -888,22 +997,27 @@ impl Registry {
+@@ -927,22 +1036,27 @@ impl Registry {
          );
  
          let started_at = std::time::Instant::now();
@@ -5938,7 +6117,7 @@ index f7060ac11..741876565 100644
              working_dir.as_deref(),
              resolved_name,
              &input,
-@@ -916,6 +1030,94 @@ impl Registry {
+@@ -955,6 +1069,94 @@ impl Registry {
          let mut output = match result {
              Ok(output) => output,
              Err(error) => {
@@ -6033,7 +6212,7 @@ index f7060ac11..741876565 100644
                  let mut fields =
                      Self::tool_lifecycle_fields("error", name, resolved_name, &input, &ctx);
                  fields.push(("elapsed_ms".to_string(), latency_ms.to_string()));
-@@ -925,24 +1127,100 @@ impl Registry {
+@@ -964,24 +1166,100 @@ impl Registry {
              }
          };
  
@@ -6147,7 +6326,7 @@ index f7060ac11..741876565 100644
  
          let mut fields = Self::tool_lifecycle_fields("done", name, resolved_name, &input, &ctx);
          fields.push(("elapsed_ms".to_string(), latency_ms.to_string()));
-@@ -954,6 +1232,109 @@ impl Registry {
+@@ -993,6 +1271,109 @@ impl Registry {
          fields.push(("image_count".to_string(), output.images.len().to_string()));
          crate::logging::event_info("TOOL_LIFECYCLE", fields);
  
@@ -6257,7 +6436,7 @@ index f7060ac11..741876565 100644
          Ok(output)
      }
  
-@@ -966,16 +1347,19 @@ impl Registry {
+@@ -1005,16 +1386,19 @@ impl Registry {
      /// damage was already done by the time they read the warning. Refusing costs
      /// a few dozen tokens, states the price, and lets the caller either narrow
      /// the query or knowingly pay by passing `accept_large_output`.
@@ -6280,7 +6459,7 @@ index f7060ac11..741876565 100644
          }
  
          let current_tokens = compaction.effective_token_count();
-@@ -994,7 +1378,10 @@ impl Registry {
+@@ -1033,7 +1417,10 @@ impl Registry {
          let needs_truncation = projected > threshold_tokens || output_tokens > single_max_tokens;
  
          if !needs_truncation {
@@ -6292,7 +6471,7 @@ index f7060ac11..741876565 100644
          }
  
          // Past the safety threshold there is no room left to spend, so opting in
-@@ -1012,19 +1399,22 @@ impl Registry {
+@@ -1051,19 +1438,22 @@ impl Registry {
                  current_tokens / 1000,
                  budget / 1000,
              ));
@@ -6325,7 +6504,7 @@ index f7060ac11..741876565 100644
              };
          }
  
-@@ -1035,7 +1425,10 @@ impl Registry {
+@@ -1074,7 +1464,10 @@ impl Registry {
          let max_chars = max_tokens * 4;
  
          if output.output.len() <= max_chars {
@@ -6337,7 +6516,7 @@ index f7060ac11..741876565 100644
          }
  
          if !accept_large_output {
-@@ -1048,16 +1441,19 @@ impl Registry {
+@@ -1087,16 +1480,19 @@ impl Registry {
                  budget / 1000,
                  (current_tokens as f32 / budget as f32) * 100.0,
              ));
@@ -6367,7 +6546,7 @@ index f7060ac11..741876565 100644
              };
          }
  
-@@ -1092,14 +1488,29 @@ impl Registry {
+@@ -1131,14 +1527,29 @@ impl Registry {
              max_tokens as f32 / 1000.0,
          );
  
@@ -6403,50 +6582,62 @@ index f7060ac11..741876565 100644
      pub async fn register(&self, name: String, tool: Arc<dyn Tool>) {
          let mut tools = self.tools.write().await;
 diff --git a/crates/jcode-app-core/src/tool/open_tests.rs b/crates/jcode-app-core/src/tool/open_tests.rs
-index ad1413a17..f2940f761 100644
+index ad1413a17..65c8146a1 100644
 --- a/crates/jcode-app-core/src/tool/open_tests.rs
 +++ b/crates/jcode-app-core/src/tool/open_tests.rs
 @@ -5,6 +5,7 @@ fn make_ctx() -> ToolContext {
          session_id: "test-session".to_string(),
          message_id: "test-msg".to_string(),
          tool_call_id: "test-call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::env::temp_dir()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
+diff --git a/crates/jcode-app-core/src/tool/panel_tests.rs b/crates/jcode-app-core/src/tool/panel_tests.rs
+index e5ff0225c..343cd644c 100644
+--- a/crates/jcode-app-core/src/tool/panel_tests.rs
++++ b/crates/jcode-app-core/src/tool/panel_tests.rs
+@@ -6,6 +6,7 @@ fn context(dir: &std::path::Path, session: &str) -> ToolContext {
+         session_id: session.into(),
+         message_id: "msg".into(),
+         tool_call_id: uuid::Uuid::new_v4().to_string(),
++        guard_event_id: None,
+         working_dir: Some(dir.into()),
+         stdin_request_tx: None,
+         graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/read/tests.rs b/crates/jcode-app-core/src/tool/read/tests.rs
-index 36305a896..57b420ef6 100644
+index 36305a896..05429c649 100644
 --- a/crates/jcode-app-core/src/tool/read/tests.rs
 +++ b/crates/jcode-app-core/src/tool/read/tests.rs
 @@ -7,6 +7,7 @@ fn make_ctx(working_dir: std::path::PathBuf) -> ToolContext {
          session_id: "test-session".to_string(),
          message_id: "test-message".to_string(),
          tool_call_id: "test-call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(working_dir),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/selfdev/tests.rs b/crates/jcode-app-core/src/tool/selfdev/tests.rs
-index bee0ec475..759440b01 100644
+index bee0ec475..dfbecae60 100644
 --- a/crates/jcode-app-core/src/tool/selfdev/tests.rs
 +++ b/crates/jcode-app-core/src/tool/selfdev/tests.rs
 @@ -35,6 +35,7 @@ fn create_test_context(session_id: &str, working_dir: Option<std::path::PathBuf>
          session_id: session_id.to_string(),
          message_id: "test-message".to_string(),
          tool_call_id: "test-tool-call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/side_panel_tests.rs b/crates/jcode-app-core/src/tool/side_panel_tests.rs
-index 70e03c456..35ecbf86d 100644
+index 70e03c456..9d074836f 100644
 --- a/crates/jcode-app-core/src/tool/side_panel_tests.rs
 +++ b/crates/jcode-app-core/src/tool/side_panel_tests.rs
 @@ -42,6 +42,7 @@ async fn side_panel_tool_writes_page() {
                  session_id: "ses_side_panel_tool".to_string(),
                  message_id: "msg1".to_string(),
                  tool_call_id: "tool1".to_string(),
-+            guard_event_id: None,
++                guard_event_id: None,
                  working_dir: None,
                  stdin_request_tx: None,
                  graceful_shutdown_signal: None,
@@ -6454,7 +6645,7 @@ index 70e03c456..35ecbf86d 100644
                  session_id: "ses_side_panel_tool_load".to_string(),
                  message_id: "msg1".to_string(),
                  tool_call_id: "tool1".to_string(),
-+            guard_event_id: None,
++                guard_event_id: None,
                  working_dir: Some(temp.path().to_path_buf()),
                  stdin_request_tx: None,
                  graceful_shutdown_signal: None,
@@ -6471,14 +6662,14 @@ index b38bf29ed..333f1859e 100644
              stdin_request_tx: None,
              graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index be8efd2ff..918ab5b87 100644
+index c8e2b4a30..a3f2f180b 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
 @@ -60,6 +60,7 @@ fn mcp_test_context(working_dir: &std::path::Path) -> ToolContext {
          session_id: "mcp-registry-lifetime".to_string(),
          message_id: "message".to_string(),
          tool_call_id: "mcp-call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(working_dir.to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6486,7 +6677,7 @@ index be8efd2ff..918ab5b87 100644
          session_id: "test-batch-function-namespace".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::env::temp_dir()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6494,7 +6685,7 @@ index be8efd2ff..918ab5b87 100644
          session_id: "test-batch-function-namespace-recursion".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::env::temp_dir()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6502,7 +6693,7 @@ index be8efd2ff..918ab5b87 100644
          session_id: "test".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(temp_dir),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6510,7 +6701,7 @@ index be8efd2ff..918ab5b87 100644
          session_id: session_id.to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(temp_dir.clone()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6518,7 +6709,7 @@ index be8efd2ff..918ab5b87 100644
          session_id: "test-pre-tool-hook".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::env::temp_dir()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6526,7 +6717,7 @@ index be8efd2ff..918ab5b87 100644
          session_id: "test-post-transform".to_string(),
          message_id: "message".to_string(),
          tool_call_id: "call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(temp.path().to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6543,7 +6734,7 @@ index be8efd2ff..918ab5b87 100644
          session_id: "test-post-fail-open".to_string(),
          message_id: "message".to_string(),
          tool_call_id: "call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(temp.path().to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6551,7 +6742,7 @@ index be8efd2ff..918ab5b87 100644
          session_id: "test-post-record".to_string(),
          message_id: "message".to_string(),
          tool_call_id: "call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(temp.path().to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
@@ -6559,11 +6750,22 @@ index be8efd2ff..918ab5b87 100644
          session_id: "test-shared-files".to_string(),
          message_id: "message".to_string(),
          tool_call_id: "call".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(temp.path().to_path_buf()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
-@@ -835,6 +845,220 @@ async fn registry_execute_post_tool_transform_and_record_share_temp_files() {
+@@ -812,9 +822,7 @@ async fn registry_execute_post_tool_transform_and_record_share_temp_files() {
+         if let Ok(content) = std::fs::read_to_string(&record_envelope)
+             && !content.trim().is_empty()
+         {
+-            record_env = Some(
+-                serde_json::from_str(&content).expect("valid record envelope"),
+-            );
++            record_env = Some(serde_json::from_str(&content).expect("valid record envelope"));
+             break;
+         }
+         std::thread::sleep(std::time::Duration::from_millis(10));
+@@ -835,6 +843,244 @@ async fn registry_execute_post_tool_transform_and_record_share_temp_files() {
      );
  }
  
@@ -6596,16 +6798,30 @@ index be8efd2ff..918ab5b87 100644
 +    std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o755))
 +        .expect("chmod recorder");
 +    let previous = [
-+        ("JCODE_DELEGATION_EFFICIENCY_STATS", std::env::var_os("JCODE_DELEGATION_EFFICIENCY_STATS")),
-+        ("JCODE_HOOK_POST_TOOL_TRANSFORM", std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM")),
-+        ("JCODE_HOOK_DELEGATION_EFFICIENCY", std::env::var_os("JCODE_HOOK_DELEGATION_EFFICIENCY")),
++        (
++            "JCODE_DELEGATION_EFFICIENCY_STATS",
++            std::env::var_os("JCODE_DELEGATION_EFFICIENCY_STATS"),
++        ),
++        (
++            "JCODE_HOOK_POST_TOOL_TRANSFORM",
++            std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM"),
++        ),
++        (
++            "JCODE_HOOK_DELEGATION_EFFICIENCY",
++            std::env::var_os("JCODE_HOOK_DELEGATION_EFFICIENCY"),
++        ),
 +    ];
 +    crate::env::set_var("JCODE_DELEGATION_EFFICIENCY_STATS", "true");
-+    crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM", transform.to_string_lossy().to_string());
-+    crate::env::set_var("JCODE_HOOK_DELEGATION_EFFICIENCY", recorder.to_string_lossy().to_string());
++    crate::env::set_var(
++        "JCODE_HOOK_POST_TOOL_TRANSFORM",
++        transform.to_string_lossy().to_string(),
++    );
++    crate::env::set_var(
++        "JCODE_HOOK_DELEGATION_EFFICIENCY",
++        recorder.to_string_lossy().to_string(),
++    );
 +    crate::config::invalidate_config_cache();
-+    *registry.compaction.write().await =
-+        CompactionManager::new().with_budget(1_000);
++    *registry.compaction.write().await = CompactionManager::new().with_budget(1_000);
 +    let output = registry
 +        .execute(
 +            "bash",
@@ -6665,8 +6881,14 @@ index be8efd2ff..918ab5b87 100644
 +                "a transformed guard observation must carry its delegation ID"
 +            );
 +            assert!(event.get("price_snapshot_status").is_some());
-+            assert!(event["original_bytes"].as_u64().unwrap() > event["final_visible_bytes"].as_u64().unwrap());
-+            assert!(event["original_lines"].as_u64().unwrap() > event["final_visible_lines"].as_u64().unwrap());
++            assert!(
++                event["original_bytes"].as_u64().unwrap()
++                    > event["final_visible_bytes"].as_u64().unwrap()
++            );
++            assert!(
++                event["original_lines"].as_u64().unwrap()
++                    > event["final_visible_lines"].as_u64().unwrap()
++            );
 +            assert_eq!(event["evidence_level"], "measured");
 +            return;
 +        }
@@ -6691,10 +6913,14 @@ index be8efd2ff..918ab5b87 100644
 +    .expect("write transformer");
 +    std::fs::set_permissions(&transform, std::fs::Permissions::from_mode(0o755))
 +        .expect("chmod transformer");
-+    let previous = [
-+        ("JCODE_HOOK_POST_TOOL_TRANSFORM", std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM")),
-+    ];
-+    crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM", transform.to_string_lossy().to_string());
++    let previous = [(
++        "JCODE_HOOK_POST_TOOL_TRANSFORM",
++        std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM"),
++    )];
++    crate::env::set_var(
++        "JCODE_HOOK_POST_TOOL_TRANSFORM",
++        transform.to_string_lossy().to_string(),
++    );
 +    crate::config::invalidate_config_cache();
 +    *registry.compaction.write().await = CompactionManager::new().with_budget(1_000);
 +
@@ -6784,35 +7010,46 @@ index be8efd2ff..918ab5b87 100644
  #[tokio::test]
  async fn test_definitions_keep_batch_schema_generic() {
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
-@@ -1376,6 +1600,7 @@ async fn unknown_tool_error_lists_available_tools_and_suggestions() {
+@@ -901,9 +1147,7 @@ async fn tool_descriptions_stay_under_token_cap() {
+         .definitions(None)
+         .await
+         .into_iter()
+-        .filter(|def| {
+-            !EXEMPT.contains(&def.name.as_str()) && !def.name.starts_with("swarm_")
+-        })
++        .filter(|def| !EXEMPT.contains(&def.name.as_str()) && !def.name.starts_with("swarm_"))
+         .filter(|def| def.description_token_estimate() > DESCRIPTION_TOKEN_CAP)
+         .map(|def| {
+             format!(
+@@ -1383,6 +1627,7 @@ async fn unknown_tool_error_lists_available_tools_and_suggestions() {
          session_id: "test-unknown-tool".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: None,
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
-@@ -1607,6 +1832,7 @@ async fn execute_big_output(input: Value) -> String {
+@@ -1616,6 +1861,7 @@ async fn execute_big_output(input: Value) -> String {
          session_id: "test-context-guard-execute".to_string(),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::env::temp_dir()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
-@@ -1759,6 +1985,7 @@ async fn test_batch_guards_both_its_subcalls_and_its_own_aggregate() {
+@@ -1768,6 +2014,7 @@ async fn test_batch_guards_both_its_subcalls_and_its_own_aggregate() {
          session_id: format!("test-batch-context-guard-{name}"),
          message_id: "test".to_string(),
          tool_call_id: "test".to_string(),
-+            guard_event_id: None,
++        guard_event_id: None,
          working_dir: Some(std::env::temp_dir()),
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/todo.rs b/crates/jcode-app-core/src/tool/todo.rs
-index dc0fd9ece..9cd3f528e 100644
+index 264efb519..a212db978 100644
 --- a/crates/jcode-app-core/src/tool/todo.rs
 +++ b/crates/jcode-app-core/src/tool/todo.rs
-@@ -1657,6 +1657,7 @@ mod tests {
+@@ -1655,6 +1655,7 @@ mod tests {
              session_id: session_id.to_string(),
              message_id: session_id.to_string(),
              tool_call_id: "call".to_string(),
@@ -6821,10 +7058,10 @@ index dc0fd9ece..9cd3f528e 100644
              stdin_request_tx: None,
              graceful_shutdown_signal: None,
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 5037fa928..71793e42a 100644
+index a8e663dd5..1098aa756 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -299,6 +299,9 @@ persist_memory_injections = false
+@@ -295,6 +295,9 @@ persist_memory_injections = false
  # (avoidable) reason: system prompt, tool set, or message prefix changed. These
  # should essentially never happen and indicate a prefix-cache bug.
  kv_cache_miss_notices = true
@@ -6835,10 +7072,10 @@ index 5037fa928..71793e42a 100644
  # Set to "main" for bleeding edge updates every time code is pushed
  update_channel = "stable"
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 85cb00136..270e7deb0 100644
+index 2af7af596..b544db0df 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
-@@ -366,6 +366,11 @@ impl Config {
+@@ -360,6 +360,11 @@ impl Config {
                  self.features.kv_cache_miss_notices = parsed;
              }
          }
@@ -6850,7 +7087,7 @@ index 85cb00136..270e7deb0 100644
          if let Ok(v) = std::env::var("JCODE_UPDATE_CHANNEL")
              && let Some(channel) = UpdateChannel::parse(&v)
          {
-@@ -514,6 +519,10 @@ impl Config {
+@@ -526,6 +531,10 @@ impl Config {
              &mut self.hooks.post_tool_record,
              "JCODE_HOOK_POST_TOOL_RECORD",
          );
@@ -7523,10 +7760,10 @@ index 0449b0ffb..0d6aea36e 100644
  
          // Step 1: transform the input.
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 9cd5070d6..3bc6bedbd 100644
+index b38941a54..b0f0e268d 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -973,6 +973,15 @@ pub struct HooksConfig {
+@@ -1036,6 +1036,15 @@ pub struct HooksConfig {
      pub post_tool_transform: Option<HookCommands>,
      pub post_tool_transform_timeout_ms: u64,
      pub post_tool_record: Option<HookCommands>,
@@ -7542,7 +7779,7 @@ index 9cd5070d6..3bc6bedbd 100644
      /// When tool_input or tool_result exceeds this many bytes, the full
      /// content is written to a temp file and the in-envelope field is
      /// truncated to this length. Default 4096. Env override:
-@@ -1001,6 +1010,7 @@ impl Default for HooksConfig {
+@@ -1064,6 +1073,7 @@ impl Default for HooksConfig {
              post_tool_transform: None,
              post_tool_transform_timeout_ms: 500,
              post_tool_record: None,
@@ -7550,7 +7787,7 @@ index 9cd5070d6..3bc6bedbd 100644
              post_tool_transform_file_threshold: 4096,
              tool_output_ttl_secs: 3600,
              pre_tool_timeout_ms: 5000,
-@@ -1205,6 +1215,9 @@ pub struct FeatureConfig {
+@@ -1268,6 +1278,9 @@ pub struct FeatureConfig {
      /// that something in the harness silently invalidated the prefix cache
      /// (default: true).
      pub kv_cache_miss_notices: bool,
@@ -7560,7 +7797,7 @@ index 9cd5070d6..3bc6bedbd 100644
      /// Update channel: "stable" (releases only) or "main" (latest commits)
      pub update_channel: UpdateChannel,
  }
-@@ -1220,11 +1233,23 @@ impl Default for FeatureConfig {
+@@ -1283,11 +1296,23 @@ impl Default for FeatureConfig {
              message_timestamps: true,
              persist_memory_injections: false,
              kv_cache_miss_notices: true,
@@ -7585,10 +7822,10 @@ index 9cd5070d6..3bc6bedbd 100644
  #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
  #[serde(rename_all = "lowercase")]
 diff --git a/crates/jcode-message-types/src/lib.rs b/crates/jcode-message-types/src/lib.rs
-index 446677188..d29c65a12 100644
+index e3a4febd7..9b6482ce1 100644
 --- a/crates/jcode-message-types/src/lib.rs
 +++ b/crates/jcode-message-types/src/lib.rs
-@@ -723,6 +723,9 @@ pub enum StreamEvent {
+@@ -743,6 +743,9 @@ pub enum StreamEvent {
          output_tokens: Option<u64>,
          cache_read_input_tokens: Option<u64>,
          cache_creation_input_tokens: Option<u64>,
@@ -7598,7 +7835,7 @@ index 446677188..d29c65a12 100644
      },
      /// Active transport/connection type for this stream
      ConnectionType { connection: String },
-@@ -755,6 +758,24 @@ pub enum StreamEvent {
+@@ -775,6 +778,24 @@ pub enum StreamEvent {
      },
  }
  
@@ -7624,7 +7861,7 @@ index 446677188..d29c65a12 100644
  mod tests {
      use super::*;
 diff --git a/crates/jcode-protocol/src/protocol_tests/comm_requests.rs b/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
-index 5298ba8a5..de812d756 100644
+index 0c809ec6f..7a7ecd6f8 100644
 --- a/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
 +++ b/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
 @@ -458,6 +458,10 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
@@ -7639,10 +7876,10 @@ index 5298ba8a5..de812d756 100644
      let json = serde_json::to_string(&req)?;
      assert!(json.contains("\"type\":\"comm_spawn\""));
 diff --git a/crates/jcode-protocol/src/wire.rs b/crates/jcode-protocol/src/wire.rs
-index 8fb4da11f..f0e045cb2 100644
+index d9b41ac3b..9931ab529 100644
 --- a/crates/jcode-protocol/src/wire.rs
 +++ b/crates/jcode-protocol/src/wire.rs
-@@ -570,6 +570,17 @@ pub enum Request {
+@@ -579,6 +579,17 @@ pub enum Request {
          /// the loaded registry; an unknown ID is a runtime error.
          #[serde(default, skip_serializing_if = "Option::is_none")]
          blueprint: Option<String>,
@@ -7660,7 +7897,7 @@ index 8fb4da11f..f0e045cb2 100644
      },
  
      /// List models/routes available for spawning swarm agents
-@@ -603,6 +614,14 @@ pub enum Request {
+@@ -612,6 +623,14 @@ pub enum Request {
          target_session: String,
          #[serde(default, skip_serializing_if = "Option::is_none")]
          limit: Option<usize>,
@@ -7675,7 +7912,7 @@ index 8fb4da11f..f0e045cb2 100644
      },
  
      /// Get a lightweight status snapshot for an agent, even while it is busy
-@@ -641,6 +660,14 @@ pub enum Request {
+@@ -650,6 +669,14 @@ pub enum Request {
          id: u64,
          session_id: String,
          target_session: String,
@@ -7690,7 +7927,7 @@ index 8fb4da11f..f0e045cb2 100644
      },
  
      /// Attach/resync this session with the swarm plan
-@@ -1420,6 +1447,11 @@ pub enum ServerEvent {
+@@ -1439,6 +1466,11 @@ pub enum ServerEvent {
          id: u64,
          session_id: String,
          new_session_id: String,
@@ -7703,10 +7940,10 @@ index 8fb4da11f..f0e045cb2 100644
  
      /// Response to comm_list_models request
 diff --git a/crates/jcode-provider-anthropic-runtime/src/lib.rs b/crates/jcode-provider-anthropic-runtime/src/lib.rs
-index ee4cb9acc..35bb9910b 100644
+index 1a8c80b07..210f73fcd 100644
 --- a/crates/jcode-provider-anthropic-runtime/src/lib.rs
 +++ b/crates/jcode-provider-anthropic-runtime/src/lib.rs
-@@ -2174,6 +2174,7 @@ async fn stream_response(
+@@ -2177,6 +2177,7 @@ async fn stream_response(
                  output_tokens: sse_state.output_tokens,
                  cache_read_input_tokens: sse_state.cache_read_input_tokens,
                  cache_creation_input_tokens: sse_state.cache_creation_input_tokens,
@@ -7715,7 +7952,7 @@ index ee4cb9acc..35bb9910b 100644
              .await;
      }
 diff --git a/crates/jcode-provider-antigravity-runtime/src/lib.rs b/crates/jcode-provider-antigravity-runtime/src/lib.rs
-index 511a6a267..0d174cc9b 100644
+index 83d23b6e7..3d7f9fc38 100644
 --- a/crates/jcode-provider-antigravity-runtime/src/lib.rs
 +++ b/crates/jcode-provider-antigravity-runtime/src/lib.rs
 @@ -644,6 +644,7 @@ impl Provider for AntigravityProvider {
@@ -7727,7 +7964,7 @@ index 511a6a267..0d174cc9b 100644
                      .await;
              }
 diff --git a/crates/jcode-provider-bedrock/src/lib.rs b/crates/jcode-provider-bedrock/src/lib.rs
-index 47f07eb2c..197eba5e0 100644
+index e970b2167..13270603d 100644
 --- a/crates/jcode-provider-bedrock/src/lib.rs
 +++ b/crates/jcode-provider-bedrock/src/lib.rs
 @@ -1305,6 +1305,7 @@ impl Provider for BedrockProvider {
@@ -7779,10 +8016,10 @@ index bba2030db..5adc26fd8 100644
                                  }))
                                  .await;
 diff --git a/crates/jcode-provider-core/src/attempt_tracker.rs b/crates/jcode-provider-core/src/attempt_tracker.rs
-index 084f104b5..21f6de61e 100644
+index 8c8cd7b84..a878d840e 100644
 --- a/crates/jcode-provider-core/src/attempt_tracker.rs
 +++ b/crates/jcode-provider-core/src/attempt_tracker.rs
-@@ -158,6 +158,7 @@ mod tests {
+@@ -159,6 +159,7 @@ mod tests {
              output_tokens: Some(2),
              cache_read_input_tokens: None,
              cache_creation_input_tokens: None,
@@ -7790,6 +8027,117 @@ index 084f104b5..21f6de61e 100644
          }));
          assert!(!stream_event_is_replay_visible(
              &StreamEvent::StatusDetail {
+diff --git a/crates/jcode-provider-core/src/fallback_pick.rs b/crates/jcode-provider-core/src/fallback_pick.rs
+index 433507198..0b62e6684 100644
+--- a/crates/jcode-provider-core/src/fallback_pick.rs
++++ b/crates/jcode-provider-core/src/fallback_pick.rs
+@@ -20,7 +20,7 @@ fn api_method_is_oauth(api_method: &ModelRouteApiMethod) -> bool {
+         ModelRouteApiMethod::ClaudeOAuth
+             | ModelRouteApiMethod::OpenAIOAuth
+             | ModelRouteApiMethod::CodeAssistOAuth
+-            | ModelRouteApiMethod::GrokBuild
++            | ModelRouteApiMethod::GrokBuildAcp
+     )
+ }
+ 
+diff --git a/crates/jcode-provider-core/src/lib.rs b/crates/jcode-provider-core/src/lib.rs
+index f4b463705..af29a4ad8 100644
+--- a/crates/jcode-provider-core/src/lib.rs
++++ b/crates/jcode-provider-core/src/lib.rs
+@@ -133,7 +133,9 @@ pub trait Provider: Send + Sync {
+     /// multiplexers use it for routing, session persistence, cache isolation, and
+     /// billing identity.
+     fn runtime_key(&self) -> RuntimeKey {
+-        RuntimeKey::Other(self.name().to_ascii_lowercase())
++        RuntimeKey::Other {
++            method: self.name().to_ascii_lowercase(),
++        }
+     }
+ 
+     /// Get the model identifier being used.
+@@ -960,7 +962,6 @@ pub enum RuntimeKey {
+     CodeAssistOAuth,
+     RemoteCatalog,
+     Current,
+-    GrokBuild,
+     /// Catch-all for unrecognized `api_method` strings.
+     ///
+     /// This must be a struct variant, not `Other(String)`. Serde's internally
+@@ -996,7 +997,6 @@ impl RuntimeKey {
+             ModelRouteApiMethod::AntigravityHttps => Self::Antigravity,
+             ModelRouteApiMethod::RemoteCatalog => Self::RemoteCatalog,
+             ModelRouteApiMethod::Current => Self::Current,
+-            ModelRouteApiMethod::GrokBuild => Self::GrokBuild,
+             ModelRouteApiMethod::Other(method) => Self::Other {
+                 method: method.clone(),
+             },
+@@ -1027,7 +1027,6 @@ impl RuntimeKey {
+             Self::CodeAssistOAuth => "code-assist-oauth".to_string(),
+             Self::RemoteCatalog => "remote-catalog".to_string(),
+             Self::Current => "current".to_string(),
+-            Self::GrokBuild => "grok-build".to_string(),
+             Self::Other { method } => method.clone(),
+         }
+     }
+@@ -1054,7 +1053,7 @@ impl RuntimeKey {
+             Self::CodeAssistOAuth | Self::Gemini => ModelRouteApiMethod::CodeAssistOAuth,
+             Self::RemoteCatalog => ModelRouteApiMethod::RemoteCatalog,
+             Self::Current => ModelRouteApiMethod::Current,
+-            Self::Other(method) => ModelRouteApiMethod::Other(method.clone()),
++            Self::Other { method } => ModelRouteApiMethod::Other(method.clone()),
+         }
+     }
+ 
+@@ -1104,7 +1103,7 @@ impl RuntimeKey {
+             Self::Antigravity => Some(ProviderFamily::Antigravity),
+             Self::Cursor => Some(ProviderFamily::Cursor),
+             Self::Bedrock => Some(ProviderFamily::Bedrock),
+-            Self::RemoteCatalog | Self::Current | Self::Other(_) => None,
++            Self::RemoteCatalog | Self::Current | Self::Other { .. } => None,
+         }
+     }
+ }
+@@ -1170,7 +1169,6 @@ impl RouteSelection {
+                 }
+             }
+             RuntimeKey::OpenRouterEu => format!("openrouter-eu:{model}"),
+-            RuntimeKey::GrokBuild => format!("grok-build:{model}"),
+             RuntimeKey::ClaudeCli | RuntimeKey::ChatGptWeb => model.to_string(),
+             RuntimeKey::Copilot => format!("copilot:{model}"),
+             RuntimeKey::Cursor => format!("cursor:{model}"),
+@@ -1232,7 +1230,6 @@ pub enum ModelRouteApiMethod {
+     AntigravityHttps,
+     RemoteCatalog,
+     Current,
+-    GrokBuild,
+     Other(String),
+ }
+ 
+@@ -1259,7 +1256,6 @@ impl ModelRouteApiMethod {
+         }
+         match lower.as_str() {
+             "jcode-subscription" => Self::JcodeSubscription,
+-            "grok-build" | "grok-build-acp" => Self::GrokBuild,
+             "openrouter" => Self::OpenRouter,
+             "openrouter-eu" => Self::OpenRouterEu,
+             "grok-build-acp" => Self::GrokBuildAcp,
+@@ -1350,7 +1346,7 @@ impl ModelRouteApiMethod {
+             Self::AntigravityHttps => Some(ProviderFamily::Antigravity),
+             Self::Cursor => Some(ProviderFamily::Cursor),
+             Self::Bedrock => Some(ProviderFamily::Bedrock),
+-            Self::RemoteCatalog | Self::Current | Self::Other(_) => None,
++            Self::RemoteCatalog | Self::Current | Self::Other { .. } => None,
+         }
+     }
+ 
+@@ -1397,7 +1393,6 @@ impl ModelRouteApiMethod {
+             Self::AntigravityHttps => "https".to_string(),
+             Self::RemoteCatalog => "remote-catalog".to_string(),
+             Self::Current => "current".to_string(),
+-            Self::GrokBuild => "grok-build-acp".to_string(),
+             Self::Other(method) => method
+                 .split_once(':')
+                 .map(|(method, _)| method)
 diff --git a/crates/jcode-provider-doctor/src/live_provider_probes.rs b/crates/jcode-provider-doctor/src/live_provider_probes.rs
 index e74ef1a1e..28b5d61e3 100644
 --- a/crates/jcode-provider-doctor/src/live_provider_probes.rs
@@ -7803,10 +8151,10 @@ index e74ef1a1e..28b5d61e3 100644
                      if let Some(value) = input_tokens {
                          outcome.input_tokens = value;
 diff --git a/crates/jcode-provider-gemini-runtime/src/lib.rs b/crates/jcode-provider-gemini-runtime/src/lib.rs
-index 89da440b8..04bc80bec 100644
+index 116668bbd..310f60a98 100644
 --- a/crates/jcode-provider-gemini-runtime/src/lib.rs
 +++ b/crates/jcode-provider-gemini-runtime/src/lib.rs
-@@ -822,6 +822,7 @@ impl Provider for GeminiProvider {
+@@ -875,6 +875,7 @@ impl Provider for GeminiProvider {
                          output_tokens: usage.candidates_token_count,
                          cache_read_input_tokens: usage.cached_content_token_count,
                          cache_creation_input_tokens: None,
@@ -7815,13 +8163,13 @@ index 89da440b8..04bc80bec 100644
                      .await;
              }
 diff --git a/crates/jcode-provider-openai/src/stream.rs b/crates/jcode-provider-openai/src/stream.rs
-index 29c9ddb5e..ed5160412 100644
+index e95401262..caa54c6dc 100644
 --- a/crates/jcode-provider-openai/src/stream.rs
 +++ b/crates/jcode-provider-openai/src/stream.rs
-@@ -849,6 +849,7 @@ fn extract_usage_from_response(response: &Value) -> Option<StreamEvent> {
+@@ -939,6 +939,7 @@ fn extract_usage_from_response(response: &Value) -> Option<StreamEvent> {
              output_tokens,
              cache_read_input_tokens,
-             cache_creation_input_tokens: None,
+             cache_creation_input_tokens,
 +            provider_response: None,
          })
      } else {
@@ -7998,7 +8346,7 @@ index b386ee6eb..ac2539f32 100644
      fn stream_eof_emits_message_end_with_finish_reason_without_done() {
          let provider_pin = Arc::new(std::sync::Mutex::new(None));
 diff --git a/crates/jcode-tool-core/src/lib.rs b/crates/jcode-tool-core/src/lib.rs
-index a0c23ac47..7b6df58cf 100644
+index 34ef3d256..79c74e65c 100644
 --- a/crates/jcode-tool-core/src/lib.rs
 +++ b/crates/jcode-tool-core/src/lib.rs
 @@ -104,6 +104,8 @@ pub struct ToolContext {
@@ -8010,15 +8358,15 @@ index a0c23ac47..7b6df58cf 100644
      pub working_dir: Option<PathBuf>,
      pub stdin_request_tx: Option<tokio::sync::mpsc::UnboundedSender<StdinInputRequest>>,
      pub graceful_shutdown_signal: Option<InterruptSignal>,
-@@ -122,6 +124,7 @@ impl ToolContext {
-             session_id: self.session_id.clone(),
-             message_id: self.message_id.clone(),
-             tool_call_id,
+@@ -131,6 +133,7 @@ impl ToolContext {
+                 self.tool_call_id,
+                 tool_call_id
+             ),
 +            guard_event_id: self.guard_event_id.clone(),
              working_dir: self.working_dir.clone(),
              stdin_request_tx: self.stdin_request_tx.clone(),
              graceful_shutdown_signal: self.graceful_shutdown_signal.clone(),
-@@ -228,6 +231,27 @@ mod tests {
+@@ -272,6 +275,27 @@ mod tests {
          let out = ensure_intent_in_schema(schema.clone());
          assert_eq!(out, schema);
      }
@@ -8047,7 +8395,7 @@ index a0c23ac47..7b6df58cf 100644
  
  #[cfg(test)]
 diff --git a/crates/jcode-tui/src/tui/app/commands.rs b/crates/jcode-tui/src/tui/app/commands.rs
-index e082d7c50..2194763e2 100644
+index 581419562..45f52e367 100644
 --- a/crates/jcode-tui/src/tui/app/commands.rs
 +++ b/crates/jcode-tui/src/tui/app/commands.rs
 @@ -701,6 +701,7 @@ fn launch_manual_subagent(app: &mut App, spec: ManualSubagentSpec) {
@@ -8059,10 +8407,10 @@ index e082d7c50..2194763e2 100644
              stdin_request_tx: None,
              graceful_shutdown_signal: None,
 diff --git a/crates/jcode-tui/src/tui/app/turn.rs b/crates/jcode-tui/src/tui/app/turn.rs
-index 412f8ff75..b3242d65c 100644
+index 0c6808b2b..3a90a7d8a 100644
 --- a/crates/jcode-tui/src/tui/app/turn.rs
 +++ b/crates/jcode-tui/src/tui/app/turn.rs
-@@ -622,6 +622,7 @@ impl App {
+@@ -616,6 +616,7 @@ impl App {
                                          output_tokens,
                                          cache_read_input_tokens,
                                          cache_creation_input_tokens,
@@ -8070,7 +8418,7 @@ index 412f8ff75..b3242d65c 100644
                                      } => {
                                          let mut usage_changed = self
                                              .apply_stream_usage_input_report(
-@@ -974,6 +975,7 @@ impl App {
+@@ -969,6 +970,7 @@ impl App {
                                              session_id: self.session_id().to_string(),
                                              message_id: self.session_id().to_string(),
                                              tool_call_id: request_id.clone(),
@@ -8078,7 +8426,7 @@ index 412f8ff75..b3242d65c 100644
                                              working_dir: self.session.working_dir.as_deref().map(PathBuf::from),
                                              stdin_request_tx: None,
                                              graceful_shutdown_signal: None,
-@@ -1259,6 +1261,7 @@ impl App {
+@@ -1249,6 +1251,7 @@ impl App {
                      session_id: self.session.id.clone(),
                      message_id: message_id.clone(),
                      tool_call_id: tc.id.clone(),

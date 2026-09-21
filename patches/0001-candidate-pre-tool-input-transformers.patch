@@ -1,4 +1,4 @@
-From 0096897c182e5da33969ce556f9e8cd4d30a44aa Mon Sep 17 00:00:00 2001
+From 1b14c9dd62bda2ddf7fab7c23afde0073dacd53c Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Tue, 18 Aug 2026 10:20:23 +0200
 Subject: [PATCH] feat: add pre-tool input transformers
@@ -46,10 +46,10 @@ scripts/cargo_exec.sh test -p jcode-base pre_tool_gate --lib
  7 files changed, 337 insertions(+), 4 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 446c6a9e9..d56e9424c 100644
+index 1523b530d..34c3dd490 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -801,14 +801,22 @@ impl Registry {
+@@ -880,14 +880,22 @@ impl Registry {
          // Drop the lock before executing
          drop(tools);
  
@@ -77,10 +77,10 @@ index 446c6a9e9..d56e9424c 100644
                  &ctx.session_id,
                  working_dir.as_deref(),
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index e0775844f..b9fc5a3ca 100644
+index 255d970db..8e38da4cd 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
-@@ -87,6 +87,8 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+@@ -91,6 +91,8 @@ const CONFIG_ENV_KEYS: &[&str] = &[
      "JCODE_GATEWAY_PORT",
      "JCODE_HOME",
      "JCODE_HOOK_PRE_TOOL",
@@ -90,10 +90,10 @@ index e0775844f..b9fc5a3ca 100644
      "JCODE_HOOK_POST_TOOL",
      "JCODE_HOOK_SESSION_END",
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 0834c4efe..124280789 100644
+index 2dae73d05..eb3acd9cd 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -559,6 +559,11 @@ swarm_max_concurrent_agents = 32
+@@ -548,6 +548,11 @@ swarm_max_concurrent_agents = 32
  # turn_complete_sound = "Glass"
  
  [hooks]
@@ -106,10 +106,10 @@ index 0834c4efe..124280789 100644
  # programs can observe or gate agent behavior. Commands are parsed shell-style
  # (quotes work) but executed directly, with JCODE_HOOK_* env vars describing
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 8cf979fd6..89adb667d 100644
+index 6b36ca7ee..51ea31863 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
-@@ -491,6 +491,15 @@ impl Config {
+@@ -503,6 +503,15 @@ impl Config {
          hook_env_override(&mut self.hooks.session_start, "JCODE_HOOK_SESSION_START");
          hook_env_override(&mut self.hooks.session_end, "JCODE_HOOK_SESSION_END");
          hook_env_override(&mut self.hooks.pre_tool, "JCODE_HOOK_PRE_TOOL");
@@ -430,10 +430,10 @@ index 32a02938b..c457cafd7 100644
      #[tokio::test]
      async fn pre_tool_gate_allows_on_exit_zero_and_blocks_on_exit_two() {
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index ab74bcbff..d260dfecf 100644
+index 6625f61de..69cb97f9e 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -855,6 +855,12 @@ impl<'de> Deserialize<'de> for HookCommands {
+@@ -918,6 +918,12 @@ impl<'de> Deserialize<'de> for HookCommands {
  #[derive(Debug, Clone, Serialize, Deserialize)]
  #[serde(default)]
  pub struct HooksConfig {
@@ -446,7 +446,7 @@ index ab74bcbff..d260dfecf 100644
      /// Runs when an agent turn begins (after the user message is added and
      /// before the model starts generating). Fires before the first `pre_tool`,
      /// so integrations can detect that the agent is actively working even while
-@@ -889,6 +895,8 @@ pub struct HooksConfig {
+@@ -952,6 +958,8 @@ pub struct HooksConfig {
  impl Default for HooksConfig {
      fn default() -> Self {
          Self {

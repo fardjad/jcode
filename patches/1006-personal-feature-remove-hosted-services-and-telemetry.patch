@@ -44,17 +44,16 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  crates/jcode-app-core/src/tool/discover.rs    | 2981 -----------------
  .../src/tool/discover_secrets.rs              |  193 --
  crates/jcode-app-core/src/tool/feedback.rs    |    8 +-
- crates/jcode-app-core/src/tool/mod.rs         |   12 -
+ crates/jcode-app-core/src/tool/mod.rs         |  308 +-
  crates/jcode-app-core/src/tool/tests.rs       |   24 +-
- crates/jcode-base/src/config.rs               |   29 +-
- crates/jcode-base/src/config/config_file.rs   |   40 -
+ crates/jcode-base/src/config.rs               |   35 +-
+ crates/jcode-base/src/config/config_file.rs   |   16 +-
  crates/jcode-base/src/config/default_file.rs  |   13 +-
- crates/jcode-base/src/config_tests.rs         |   90 -
- crates/jcode-base/src/lib.rs                  |    2 -
+ crates/jcode-base/src/config_tests.rs         |  313 --
+ crates/jcode-base/src/lib.rs                  |    1 -
  crates/jcode-base/src/mcp/manager.rs          |  108 -
  crates/jcode-base/src/sponsors.rs             |  106 -
  crates/jcode-base/src/sponsors/provenance.rs  |  319 --
- crates/jcode-base/src/subscription_api.rs     |  720 ----
  crates/jcode-config-types/src/lib.rs          |   28 -
  crates/jcode-telemetry-core/src/lib.rs        |  125 +-
  crates/jcode-telemetry-core/src/tests.rs      |  163 +-
@@ -68,8 +67,8 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  .../src/tui/app/commands_dispatch.rs          |    2 -
  crates/jcode-tui/src/tui/app/input_help.rs    |    8 +-
  crates/jcode-tui/src/tui/app/observe.rs       |    3 -
- .../jcode-tui/src/tui/app/onboarding_flow.rs  |  101 +-
- .../src/tui/app/onboarding_flow_control.rs    |  168 +-
+ .../jcode-tui/src/tui/app/onboarding_flow.rs  |  105 +-
+ .../src/tui/app/onboarding_flow_control.rs    |  171 +-
  .../jcode-tui/src/tui/app/onboarding_sim.rs   |   36 +-
  .../src/tui/app/remote/server_events.rs       |    6 +-
  .../src/tui/app/state_ui_input_helpers.rs     |   37 +-
@@ -111,15 +110,14 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  src/cli/proctitle.rs                          |    2 -
  src/cli/provider_init.rs                      |   10 +-
  src/cli/provider_init_tests.rs                |   51 +-
- src/cli/startup.rs                            |   92 +-
+ src/cli/startup.rs                            |  264 +-
  src/cli/telemetry.rs                          |   78 -
- 74 files changed, 379 insertions(+), 10348 deletions(-)
+ 73 files changed, 439 insertions(+), 10247 deletions(-)
  delete mode 100644 TELEMETRY.md
  delete mode 100644 crates/jcode-app-core/src/tool/discover.rs
  delete mode 100644 crates/jcode-app-core/src/tool/discover_secrets.rs
  delete mode 100644 crates/jcode-base/src/sponsors.rs
  delete mode 100644 crates/jcode-base/src/sponsors/provenance.rs
- delete mode 100644 crates/jcode-base/src/subscription_api.rs
  delete mode 100644 crates/jcode-tui/src/tui/app/subscribe_nudge.rs
  delete mode 100644 docs/AGENTCARD_DISCOVERY_DEMO.md
  delete mode 100644 docs/ATTRIBUTION_BENCHMARK.md
@@ -139,10 +137,10 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  delete mode 100644 src/cli/telemetry.rs
 
 diff --git a/README.md b/README.md
-index 795bc87d0..1406d133c 100644
+index bdd6e6a41..ad6f20b73 100644
 --- a/README.md
 +++ b/README.md
-@@ -772,7 +772,6 @@ Notes:
+@@ -806,7 +806,6 @@ Notes:
  - [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
  - [Server Architecture](docs/SERVER_ARCHITECTURE.md)
  - [Safety System](docs/SAFETY_SYSTEM.md)
@@ -3820,19 +3818,187 @@ index b34ebd985..7b234cf33 100644
  
      #[test]
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index d56e9424c..893b0eadf 100644
+index 34c3dd490..11c5b0933 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -11,8 +11,6 @@ mod computer;
+@@ -6,19 +6,17 @@ mod batch;
+ mod bg;
+ mod browser;
+ mod communicate;
++// Remote compilation remains reachable through the remote-session protocol,
++// but personal hosted-service removal deliberately omits its local registration.
++#[allow(dead_code)]
+ mod compile_remote;
+ #[cfg(target_os = "macos")]
+ mod computer;
  mod config_edit_notice;
  mod conversation_search;
  mod debug_socket;
+-mod desktop_selfdev;
 -mod discover;
 -mod discover_secrets;
  mod edit;
+-mod edit_stats;
  mod feedback;
+-mod file_diff;
  mod gmail;
-@@ -459,16 +457,6 @@ impl Registry {
+ mod goal;
+ pub mod inflight;
+@@ -29,6 +27,7 @@ pub mod mcp;
+ mod memory;
+ mod multiedit;
+ mod open;
++#[allow(dead_code)] // Legacy panel tool is intentionally unavailable in jcode.
+ mod panel;
+ mod patch;
+ mod read;
+@@ -192,29 +191,14 @@ pub(crate) fn session_mcp_dispatch_is_allowed(
+     session_id: &str,
+     dispatched_name: &str,
+     fixed_surface: &str,
+-) -> bool {
+-    session_mcp_alias_is_allowed(session_id, dispatched_name, dispatched_name, fixed_surface)
+-}
+-
+-/// Enforce both the actual alias and the legacy normalized identity. A deny on
+-/// either spelling wins, including when the caller uses the deferred surface.
+-pub(crate) fn session_mcp_alias_is_allowed(
+-    session_id: &str,
+-    alias: &str,
+-    legacy_name: &str,
+-    fixed_surface: &str,
+ ) -> bool {
+     let Some(policy) = session_tool_policy(session_id) else {
+         return true;
+     };
+     let allowed = policy.allowed_tools.as_ref().is_none_or(|allowed| {
+-        tool_name_is_allowed(allowed, alias)
+-            || tool_name_is_allowed(allowed, legacy_name)
+-            || allowed.contains(fixed_surface)
++        tool_name_is_allowed(allowed, dispatched_name) || allowed.contains(fixed_surface)
+     });
+-    allowed
+-        && !tool_name_is_disabled(&policy.disabled_tools, alias)
+-        && !tool_name_is_disabled(&policy.disabled_tools, legacy_name)
++    allowed && !tool_name_is_disabled(&policy.disabled_tools, dispatched_name)
+ }
+ 
+ /// Whether a tool call opted in to receiving an oversized (truncated) result.
+@@ -243,21 +227,12 @@ fn accepts_large_output(input: &Value) -> bool {
+     }
+ }
+ 
+-/// Aliases are surface-dependent, but policy follows original identities for
+-/// the lifetime of the registry, including aliases retired after a reconnect.
+-#[derive(Default)]
+-struct McpPolicyIndex {
+-    current: HashMap<String, (String, String)>,
+-    history: HashMap<(String, String), HashSet<String>>,
+-}
+-
+ /// Registry of available tools (Arc-wrapped for sharing)
+ ///
+ /// Clone creates a fresh CompactionManager so each subagent gets independent
+ /// message history tracking. Tools and skills are shared via Arc.
+ pub struct Registry {
+     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
+-    mcp_policy: Arc<StdRwLock<McpPolicyIndex>>,
+     skills: Arc<RwLock<SkillRegistry>>,
+     compaction: Arc<RwLock<CompactionManager>>,
+ }
+@@ -268,7 +243,6 @@ pub struct Registry {
+ /// Arc cycle. Upgrade this handle only for the duration of a tool call.
+ pub(super) struct WeakRegistry {
+     tools: std::sync::Weak<RwLock<HashMap<String, Arc<dyn Tool>>>>,
+-    mcp_policy: Arc<StdRwLock<McpPolicyIndex>>,
+     skills: Arc<RwLock<SkillRegistry>>,
+     compaction: Arc<RwLock<CompactionManager>>,
+ }
+@@ -277,7 +251,6 @@ impl WeakRegistry {
+     pub(super) fn upgrade(&self) -> Option<Registry> {
+         Some(Registry {
+             tools: self.tools.upgrade()?,
+-            mcp_policy: Arc::clone(&self.mcp_policy),
+             skills: Arc::clone(&self.skills),
+             compaction: Arc::clone(&self.compaction),
+         })
+@@ -288,7 +261,6 @@ impl Clone for Registry {
+     fn clone(&self) -> Self {
+         Self {
+             tools: self.tools.clone(),
+-            mcp_policy: Arc::clone(&self.mcp_policy),
+             skills: self.skills.clone(),
+             // Each clone gets a fresh CompactionManager to prevent parallel
+             // subagents from corrupting each other's message history
+@@ -301,7 +273,6 @@ impl Registry {
+     fn downgrade(&self) -> WeakRegistry {
+         WeakRegistry {
+             tools: Arc::downgrade(&self.tools),
+-            mcp_policy: Arc::clone(&self.mcp_policy),
+             skills: Arc::clone(&self.skills),
+             compaction: Arc::clone(&self.compaction),
+         }
+@@ -336,7 +307,6 @@ impl Registry {
+     pub fn empty() -> Self {
+         Self {
+             tools: Arc::new(RwLock::new(HashMap::new())),
+-            mcp_policy: Arc::default(),
+             skills: Arc::new(RwLock::new(SkillRegistry::default())),
+             compaction: Arc::new(RwLock::new(CompactionManager::new())),
+         }
+@@ -365,7 +335,6 @@ impl Registry {
+                 "side_panel",
+                 side_panel::SidePanelTool::new,
+             );
+-            Self::insert_tool_timed(&mut m, &mut timings, "panel", panel::PanelTool::new);
+             Self::insert_tool_timed(&mut m, &mut timings, "edit", edit::EditTool::new);
+             Self::insert_tool_timed(
+                 &mut m,
+@@ -382,12 +351,6 @@ impl Registry {
+             );
+             Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
+             Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
+-            Self::insert_tool_timed(
+-                &mut m,
+-                &mut timings,
+-                "compile_remote",
+-                compile_remote::CompileRemoteTool::new,
+-            );
+             Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
+             Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
+             #[cfg(target_os = "macos")]
+@@ -431,17 +394,15 @@ impl Registry {
+                 session_search::SessionSearchTool::new,
+             );
+             Self::insert_tool_timed(&mut m, &mut timings, "memory", memory::MemoryTool::new);
+-            // Initiative is temporarily unavailable. Keep its implementation and
+-            // saved data intact so it can be restored without a migration.
+-            Self::insert_tool_timed(&mut m, &mut timings, "gmail", gmail::GmailTool::new);
+-            Self::insert_tool_timed(&mut m, &mut timings, "schedule", ambient::ScheduleTool::new);
+-            Self::insert_tool_timed(&mut m, &mut timings, "selfdev", selfdev::SelfDevTool::new);
+             Self::insert_tool_timed(
+                 &mut m,
+                 &mut timings,
+-                "desktop_selfdev",
+-                desktop_selfdev::DesktopSelfDevTool::new,
++                "initiative",
++                goal::InitiativeTool::new,
+             );
++            Self::insert_tool_timed(&mut m, &mut timings, "gmail", gmail::GmailTool::new);
++            Self::insert_tool_timed(&mut m, &mut timings, "schedule", ambient::ScheduleTool::new);
++            Self::insert_tool_timed(&mut m, &mut timings, "selfdev", selfdev::SelfDevTool::new);
+             let nonzero: Vec<String> = timings
+                 .iter()
+                 .filter(|(_, ms)| *ms > 0)
+@@ -482,7 +443,6 @@ impl Registry {
+         let registry_struct_start = std::time::Instant::now();
+         let registry = Self {
+             tools: Arc::new(RwLock::new(HashMap::new())),
+-            mcp_policy: Arc::default(),
+             skills: skills.clone(),
+             compaction: compaction.clone(),
+         };
+@@ -504,16 +464,6 @@ impl Registry {
              "conversation_search",
              conversation_search::ConversationSearchTool::new(compaction),
          );
@@ -3849,8 +4015,328 @@ index d56e9424c..893b0eadf 100644
          let session_tools_ms = session_tools_start.elapsed().as_millis();
  
          let write_start = std::time::Instant::now();
+@@ -537,13 +487,14 @@ impl Registry {
+         &self,
+         allowed_tools: Option<&HashSet<String>>,
+     ) -> Vec<ToolDefinition> {
+-        if allowed_tools.is_none_or(|allowed| allowed.contains("compile_remote")) {
+-            self.remote_compile_definition().await;
+-        }
+         let tools = self.tools.read().await;
+         let mut defs: Vec<ToolDefinition> = tools
+             .iter()
+-            .filter(|(name, _)| allowed_tools.is_none_or(|set| self.tool_is_allowed(set, name)))
++            .filter(|(name, _)| {
++                allowed_tools
++                    .map(|set| tool_name_is_allowed(set, name))
++                    .unwrap_or(true)
++            })
+             .map(|(name, tool)| {
+                 let mut def = tool.to_definition();
+                 // Use registry key as the tool name (important for MCP tools where
+@@ -561,15 +512,6 @@ impl Registry {
+         defs
+     }
+ 
+-    /// Subscription guidance is the one built-in definition that can change
+-    /// after sign-in, sign-out, or entitlement refresh. Do not hold the registry
+-    /// lock during the bounded account request.
+-    pub(crate) async fn remote_compile_definition(&self) -> Option<ToolDefinition> {
+-        let tool = self.tools.read().await.get("compile_remote").cloned()?;
+-        compile_remote::refresh_access().await;
+-        Some(tool.to_definition())
+-    }
+-
+     pub async fn tool_names(&self) -> Vec<String> {
+         let tools = self.tools.read().await;
+         tools.keys().cloned().collect()
+@@ -824,39 +766,13 @@ impl Registry {
+         let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
+         let tools = self.tools.read().await;
+         let resolved_name = Self::resolve_tool_name(name);
+-        // Enforce product separation here too: batch/subcalls dispatch through
+-        // the registry without going through Agent::validate_tool_allowed.
+-        if matches!(
+-            resolved_name,
+-            "selfdev" | "debug_socket" | "desktop_selfdev" | "jcode_docs"
+-        ) {
+-            let desktop = ctx
+-                .working_dir
+-                .as_deref()
+-                .and_then(jcode_selfdev_types::desktop_repo_root)
+-                .is_some();
+-            if desktop && resolved_name == "jcode_docs" {
+-                anyhow::bail!(
+-                    "Tool 'jcode_docs' is disabled in Desktop self-development mode. Read the working tree documentation instead."
+-                );
+-            }
+-            if desktop && matches!(resolved_name, "selfdev" | "debug_socket") {
+-                anyhow::bail!(
+-                    "Tool '{}' targets Jcode CLI, not Desktop. Use 'desktop_selfdev'.",
+-                    resolved_name
+-                );
+-            }
+-            if !desktop && resolved_name == "desktop_selfdev" {
+-                anyhow::bail!("Tool 'desktop_selfdev' requires a Jcode Desktop source checkout.");
+-            }
+-        }
+         if let Some(policy) = session_tool_policy(&ctx.session_id) {
+             if let Some(allowed) = policy.allowed_tools.as_ref()
+-                && !self.tool_is_allowed(allowed, resolved_name)
++                && !tool_name_is_allowed(allowed, resolved_name)
+             {
+                 return Err(anyhow::anyhow!("Tool '{}' is not allowed", resolved_name));
+             }
+-            if self.tool_is_disabled(&policy.disabled_tools, resolved_name) {
++            if tool_name_is_disabled(&policy.disabled_tools, resolved_name) {
+                 return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
+             }
+         }
+@@ -1102,154 +1018,7 @@ impl Registry {
+     /// Register a tool dynamically (for MCP tools, etc.)
+     pub async fn register(&self, name: String, tool: Arc<dyn Tool>) {
+         let mut tools = self.tools.write().await;
+-        let is_mcp = tool.mcp_identity().is_some();
+         tools.insert(name, tool);
+-        if is_mcp {
+-            self.record_mcp_surface(&tools);
+-        }
+-    }
+-
+-    fn record_mcp_surface(&self, tools: &HashMap<String, Arc<dyn Tool>>) {
+-        let mut index = self.mcp_policy.write().unwrap_or_else(|e| e.into_inner());
+-        index.current.clear();
+-        for (alias, tool) in tools {
+-            if let Some((server, raw)) = tool.mcp_identity() {
+-                let identity = (server.to_string(), raw.to_string());
+-                index.current.insert(alias.clone(), identity.clone());
+-                let names = index.history.entry(identity).or_default();
+-                names.insert(alias.clone());
+-                names.insert(crate::mcp::dispatch_name(server, raw));
+-            }
+-        }
+-    }
+-
+-    fn mcp_alias(&self, server: &str, raw: &str) -> Option<String> {
+-        self.mcp_policy
+-            .read()
+-            .unwrap_or_else(|e| e.into_inner())
+-            .current
+-            .iter()
+-            .find(|(_, identity)| identity.0 == server && identity.1 == raw)
+-            .map(|(alias, _)| alias.clone())
+-    }
+-
+-    fn mcp_policy_names(&self, server: &str, raw: &str) -> HashSet<String> {
+-        let index = self.mcp_policy.read().unwrap_or_else(|e| e.into_inner());
+-        let mut names = index
+-            .history
+-            .get(&(server.into(), raw.into()))
+-            .cloned()
+-            .unwrap_or_default();
+-        names.insert(crate::mcp::dispatch_name(server, raw));
+-        names
+-    }
+-
+-    fn policy_names(&self, name: &str) -> HashSet<String> {
+-        let index = self.mcp_policy.read().unwrap_or_else(|e| e.into_inner());
+-        let mut names = index
+-            .current
+-            .get(name)
+-            .and_then(|identity| index.history.get(identity))
+-            .cloned()
+-            .unwrap_or_default();
+-        names.insert(name.to_string());
+-        names
+-    }
+-
+-    pub(crate) fn tool_is_allowed(&self, allowed: &HashSet<String>, name: &str) -> bool {
+-        self.policy_names(name)
+-            .iter()
+-            .any(|name| tool_name_is_allowed(allowed, name))
+-    }
+-
+-    pub(crate) fn tool_is_disabled(&self, disabled: &HashSet<String>, name: &str) -> bool {
+-        self.policy_names(name)
+-            .iter()
+-            .any(|name| tool_name_is_disabled(disabled, name))
+-    }
+-
+-    fn mcp_dispatch_is_allowed(
+-        &self,
+-        session: &str,
+-        server: &str,
+-        raw: &str,
+-        alias: &str,
+-        surface: &str,
+-    ) -> bool {
+-        let Some(policy) = session_tool_policy(session) else {
+-            return true;
+-        };
+-        let mut names = self.mcp_policy_names(server, raw);
+-        names.insert(alias.to_string());
+-        policy.allowed_tools.as_ref().is_none_or(|allowed| {
+-            allowed.contains(surface)
+-                || names.iter().any(|name| tool_name_is_allowed(allowed, name))
+-        }) && !names
+-            .iter()
+-            .any(|name| tool_name_is_disabled(&policy.disabled_tools, name))
+-    }
+-
+-    /// Refresh connected servers, retaining cached proxies for offline servers.
+-    /// Recompute aliases over the combined surface, not only the live subset.
+-    pub async fn refresh_mcp_tools(
+-        &self,
+-        fresh: Vec<(String, Arc<dyn Tool>)>,
+-        refreshed_servers: &[String],
+-    ) {
+-        let mut tools = self.tools.write().await;
+-        let mut proxies: Vec<Arc<dyn Tool>> = tools
+-            .values()
+-            .filter(|tool| {
+-                tool.mcp_identity()
+-                    .is_some_and(|(server, _)| !refreshed_servers.iter().any(|s| s == server))
+-            })
+-            .cloned()
+-            .collect();
+-        proxies.extend(fresh.into_iter().map(|(_, tool)| tool));
+-        let defs: Vec<_> = proxies
+-            .iter()
+-            .map(|tool| {
+-                let (server, raw) = tool.mcp_identity().expect("MCP proxy");
+-                (
+-                    server.to_string(),
+-                    crate::mcp::McpToolDef {
+-                        name: raw.to_string(),
+-                        description: None,
+-                        input_schema: Value::Null,
+-                    },
+-                )
+-            })
+-            .collect();
+-        let names = crate::mcp::dispatch_names(&defs);
+-        tools.retain(|_, tool| tool.mcp_identity().is_none());
+-        tools.extend(names.into_iter().zip(proxies));
+-        self.record_mcp_surface(&tools);
+-    }
+-
+-    /// Atomically replace the MCP surface. Aliases depend on the complete set,
+-    /// so inserting only new keys leaves obsolete cached aliases callable.
+-    pub async fn reconcile_mcp_tools(&self, fresh: Vec<(String, Arc<dyn Tool>)>) {
+-        let mut tools = self.tools.write().await;
+-        tools.retain(|_, tool| tool.mcp_identity().is_none());
+-        tools.extend(fresh);
+-        self.record_mcp_surface(&tools);
+-    }
+-
+-    /// Remove exact server membership, never a lossy normalized prefix.
+-    pub async fn unregister_mcp_server(&self, server: &str) -> Vec<String> {
+-        let mut tools = self.tools.write().await;
+-        let mut removed = Vec::new();
+-        tools.retain(|name, tool| {
+-            let keep = !tool
+-                .mcp_identity()
+-                .is_some_and(|(owner, _)| owner == server);
+-            if !keep {
+-                removed.push(name.clone());
+-            }
+-            keep
+-        });
+-        self.record_mcp_surface(&tools);
+-        removed
+     }
+ 
+     /// Register MCP tools (MCP management and server tools)
+@@ -1299,14 +1068,12 @@ impl Registry {
+             .await;
+         self.register(
+             "mcp_search".to_string(),
+-            Arc::new(mcp::McpSearchTool::new(Arc::clone(&mcp_manager)).with_registry(self.clone()))
+-                as Arc<dyn Tool>,
++            Arc::new(mcp::McpSearchTool::new(Arc::clone(&mcp_manager))) as Arc<dyn Tool>,
+         )
+         .await;
+         self.register(
+             "mcp_call".to_string(),
+-            Arc::new(mcp::McpCallTool::new(Arc::clone(&mcp_manager)).with_registry(self.clone()))
+-                as Arc<dyn Tool>,
++            Arc::new(mcp::McpCallTool::new(Arc::clone(&mcp_manager))) as Arc<dyn Tool>,
+         )
+         .await;
+ 
+@@ -1374,20 +1141,20 @@ impl Registry {
+                         .collect()
+                 };
+                 let mut advertised_tool_count = 0usize;
+-                let mut cached_tools = Vec::new();
+                 for (server, cfg) in &config_servers {
+                     if let Some(cached) = schema_cache.tools_for(server, cfg) {
+-                        advertised_tool_count += cached.len();
+-                        cached_tools
+-                            .extend(cached.iter().cloned().map(|tool| (server.clone(), tool)));
++                        let tools = crate::mcp::create_mcp_tools_from_cached(
++                            server,
++                            cached,
++                            Arc::clone(&mcp_manager),
++                        );
++                        advertised_tool_count += tools.len();
++                        for (name, tool) in tools {
++                            self.register(name, tool).await;
++                        }
+                         advertised_servers.insert(server.clone());
+                     }
+                 }
+-                self.reconcile_mcp_tools(crate::mcp::create_mcp_tools_from_cached_many(
+-                    &cached_tools,
+-                    Arc::clone(&mcp_manager),
+-                ))
+-                .await;
+                 if advertised_tool_count > 0 {
+                     crate::logging::info(&format!(
+                         "MCP: advertised {} cached tool(s) from {} server(s) at spawn \
+@@ -1441,13 +1208,17 @@ impl Registry {
+                 let tools = crate::mcp::create_mcp_tools(Arc::clone(&mcp_manager)).await;
+                 let mut server_counts: std::collections::BTreeMap<String, usize> =
+                     std::collections::BTreeMap::new();
+-                for (_, tool) in &tools {
+-                    if let Some((server, _)) = tool.mcp_identity() {
++                for (name, tool) in &tools {
++                    if let Some(rest) = name.strip_prefix("mcp__")
++                        && let Some((server, _)) = rest.split_once("__")
++                    {
+                         *server_counts.entry(server.to_string()).or_default() += 1;
+                     }
++                    // Idempotent: advertise-early may have already registered an
++                    // identical proxy. Re-registering refreshes it with the live
++                    // schema, which is correct (handles schema drift).
++                    registry.register(name.clone(), tool.clone()).await;
+                 }
+-                let connected = mcp_manager.read().await.connected_servers().await;
+-                registry.refresh_mcp_tools(tools, &connected).await;
+ 
+                 // Reconcile the on-disk schema cache with the live schemas so the
+                 // next spawn can advertise the up-to-date tools with zero cache
+@@ -1562,9 +1333,7 @@ impl Registry {
+     /// Unregister a tool
+     pub async fn unregister(&self, name: &str) -> Option<Arc<dyn Tool>> {
+         let mut tools = self.tools.write().await;
+-        let removed = tools.remove(name);
+-        self.record_mcp_surface(&tools);
+-        removed
++        tools.remove(name)
+     }
+ 
+     /// Unregister all tools matching a prefix
+@@ -1578,7 +1347,6 @@ impl Registry {
+         for name in &to_remove {
+             tools.remove(name);
+         }
+-        self.record_mcp_surface(&tools);
+         to_remove
+     }
+ 
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 03e126fd8..655ff2aa1 100644
+index f19f3eed4..e03fd2d40 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
 @@ -243,22 +243,6 @@ fn test_resolve_skill_aliases_to_skill_manage() {
@@ -3892,7 +4378,7 @@ index 03e126fd8..655ff2aa1 100644
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
      let registry = Registry::new(provider).await;
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index b9fc5a3ca..a8ecfe925 100644
+index 8e38da4cd..a8ecfe925 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
 @@ -11,8 +11,8 @@ pub use jcode_config_types::{
@@ -3906,7 +4392,27 @@ index b9fc5a3ca..a8ecfe925 100644
  };
  use serde::{Deserialize, Serialize};
  use std::collections::{BTreeMap, BTreeSet, HashSet};
-@@ -542,12 +542,6 @@ pub struct Config {
+@@ -58,10 +58,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+     "JCODE_COPY_BADGE_ALT_LABEL",
+     "JCODE_COPY_SELECTION_TOGGLE_KEY",
+     "JCODE_COPILOT_PREMIUM",
+-    "JCODE_GEMINI_FORCE_OAUTH",
+-    "GOOGLE_CLOUD_PROJECT",
+-    "GOOGLE_CLOUD_PROJECT_ID",
+-    "JCODE_WAKE_MODE",
+     "JCODE_CROSS_PROVIDER_FAILOVER",
+     "JCODE_DEBUG_SOCKET",
+     "JCODE_DEFAULT_REASONING_DISPLAY",
+@@ -174,8 +170,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+     "JCODE_RETRY_BACKOFF_CAP_SECS",
+     "JCODE_SWARM_ENABLED",
+     "JCODE_SWARM_EFFORT",
+-    "JCODE_SWARM_ROOT_EFFORT",
+-    "JCODE_SWARM_DEEP_ROOT_EFFORT",
+     "JCODE_SWARM_MODEL",
+     "JCODE_SWARM_MAX_CONCURRENT_AGENTS",
+     "JCODE_SWARM_SPAWN_MODE",
+@@ -548,12 +542,6 @@ pub struct Config {
      /// Auto-judge configuration
      pub autojudge: AutoJudgeConfig,
  
@@ -3919,7 +4425,7 @@ index b9fc5a3ca..a8ecfe925 100644
      /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
      pub launch_hotkeys: LaunchHotkeysConfig,
  }
-@@ -826,22 +820,3 @@ mod tests;
+@@ -832,22 +820,3 @@ mod tests;
  #[cfg(test)]
  #[path = "config_color_tests.rs"]
  mod color_tests;
@@ -3935,7 +4441,7 @@ index b9fc5a3ca..a8ecfe925 100644
 -    sponsors.enabled && is_default_discovery_endpoint(&sponsors.endpoint)
 -}
 -
--/// Endpoints that only ever came from a shipped default, never a user choice.
+-/// Endpoints used by shipped defaults. These may also be explicit user choices.
 -fn is_default_discovery_endpoint(endpoint: &str) -> bool {
 -    matches!(
 -        endpoint.trim_end_matches('/'),
@@ -3943,64 +4449,51 @@ index b9fc5a3ca..a8ecfe925 100644
 -    )
 -}
 diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
-index 3d566ddc5..214b02dde 100644
+index 42f9bb0f9..010520dd8 100644
 --- a/crates/jcode-base/src/config/config_file.rs
 +++ b/crates/jcode-base/src/config/config_file.rs
-@@ -61,49 +61,9 @@ impl Config {
+@@ -61,8 +61,6 @@ impl Config {
              anyhow::anyhow!("Failed to parse config file {}: {}", path.display(), e)
          })?;
          config.display.apply_legacy_compat();
--        config.repair_frozen_sponsors_optout(&content);
+-        // An explicit discovery opt-out is authoritative. Older saves wrote the
+-        // default endpoint too, so table shape cannot establish user intent.
          Ok(Some(config))
      }
  
--    /// Undo a machine-frozen partner-discovery opt-out.
--    ///
--    /// Discovery shipped opt-in (`enabled = false`), and because [`Self::save`]
--    /// serializes the whole struct, any config write during that window baked
--    /// the old default into the user's file. Those users keep discovery
--    /// permanently disabled even after the default flipped to opt-out, and
--    /// telemetry shows this is the single largest discovery blocker.
--    ///
--    /// A machine-written section is exactly `enabled` plus `endpoint` with a
--    /// known default endpoint. A hand-written opt-out (`enabled = false` alone,
--    /// or paired with a custom endpoint) is always respected. Repair happens in
--    /// memory only; the section then disappears on the next save because it
--    /// serializes back to the default.
--    pub(crate) fn repair_frozen_sponsors_optout(&mut self, raw: &str) {
--        if self.sponsors.enabled {
--            return;
--        }
--        let Ok(doc) = raw.parse::<toml::Value>() else {
--            return;
--        };
--        let Some(table) = doc.get("sponsors").and_then(toml::Value::as_table) else {
--            return;
--        };
--        let machine_written = table.len() == 2
--            && table.get("enabled").and_then(toml::Value::as_bool) == Some(false)
--            && table
--                .get("endpoint")
--                .and_then(toml::Value::as_str)
--                .is_some_and(super::is_default_discovery_endpoint);
--        if !machine_written {
--            return;
--        }
--        self.sponsors = SponsorsConfig::default();
--        crate::logging::info(
--            "config: restored integration discovery default (legacy opt-in value was frozen by an \
--             earlier config save)",
--        );
+@@ -86,13 +84,6 @@ impl Config {
+         super::invalidate_config_cache();
+     }
+ 
+-    /// Persist the Anthropic cache duration for clients and the shared daemon.
+-    pub fn set_anthropic_cache_ttl_1h(enabled: bool) -> anyhow::Result<()> {
+-        let mut cfg = Self::load_for_update()?;
+-        cfg.provider.anthropic_cache_ttl_1h = enabled;
+-        cfg.save()
 -    }
 -
-     /// Save config to file
-     pub fn save(&self) -> anyhow::Result<()> {
-         let path = Self::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;
+     /// Update the copilot premium mode in the config file.
+     /// Reloads, patches, and saves so it doesn't clobber other fields.
+     pub fn set_copilot_premium(mode: Option<&str>) -> anyhow::Result<()> {
+@@ -719,6 +710,13 @@ impl Config {
+         }
+         Ok(())
+     }
++
++    /// Persist the Anthropic cache TTL preference (1h vs 5m default).
++    pub fn set_anthropic_cache_ttl_1h(enabled: bool) -> anyhow::Result<()> {
++        let mut cfg = Self::load_for_update()?;
++        cfg.provider.anthropic_cache_ttl_1h = enabled;
++        cfg.save()
++    }
+ }
+ 
+ #[cfg(test)]
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index db8577dff..e8e017e4b 100644
+index b82ddd433..c5a19ef99 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -717,18 +717,7 @@ desktop_notifications = true
+@@ -706,18 +706,7 @@ desktop_notifications = true
  # jade_relay_reply_enabled = false   # Deliver cloud prompts to one configured live session.
  # jade_relay_launch_enabled = false  # Allow cloud device commands to open headed local sessions.
  # jade_relay_launch_working_dir = "" # Optional default cwd for launched sessions.
@@ -4021,30 +4514,168 @@ index db8577dff..e8e017e4b 100644
          // Substitute platform-specific defaults from the keybinding registry.
          let p = jcode_config_types::KeybindingPlatform::current();
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index c8bf72b3b..481ab7505 100644
+index 3bfbeb500..481ab7505 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
-@@ -1363,96 +1363,6 @@ fn migrate_idle_animation_off_noops_without_enabled_value() {
-     restore_env_var("JCODE_HOME", prev_home);
+@@ -14,116 +14,6 @@ fn restore_env_var(key: &str, previous: Option<OsString>) {
+     }
  }
  
+-struct GeminiConfigEnv {
+-    _home: tempfile::TempDir,
+-    previous: Vec<(&'static str, Option<OsString>)>,
+-}
+-
+-impl GeminiConfigEnv {
+-    fn new() -> Self {
+-        let previous = [
+-            "JCODE_HOME",
+-            "JCODE_GEMINI_FORCE_OAUTH",
+-            "GOOGLE_CLOUD_PROJECT",
+-            "GOOGLE_CLOUD_PROJECT_ID",
+-        ]
+-        .into_iter()
+-        .map(|key| (key, std::env::var_os(key)))
+-        .collect();
+-        let home = tempfile::tempdir().unwrap();
+-        crate::env::set_var("JCODE_HOME", home.path());
+-        for key in [
+-            "JCODE_GEMINI_FORCE_OAUTH",
+-            "GOOGLE_CLOUD_PROJECT",
+-            "GOOGLE_CLOUD_PROJECT_ID",
+-        ] {
+-            crate::env::remove_var(key);
+-        }
+-        Config::invalidate_cache();
+-        Self {
+-            _home: home,
+-            previous,
+-        }
+-    }
+-}
+-
+-impl Drop for GeminiConfigEnv {
+-    fn drop(&mut self) {
+-        for (key, previous) in self.previous.drain(..) {
+-            restore_env_var(key, previous);
+-        }
+-        Config::invalidate_cache();
+-    }
+-}
+-
 -#[test]
--fn frozen_machine_written_sponsors_optout_is_repaired() {
--    let raw = "[sponsors]\nenabled = false\nendpoint = \"https://api.jcode.sh/v1/discovery\"\n";
--    let mut config: Config = toml::from_str(raw).expect("parse");
--    assert!(!config.sponsors.enabled);
--    config.repair_frozen_sponsors_optout(raw);
--    assert!(
--        config.sponsors.enabled,
--        "a whole-struct config save must not permanently disable discovery"
+-fn gemini_config_reload_does_not_export_sticky_environment_overrides() {
+-    let _lock = crate::storage::lock_test_env();
+-    let _env = GeminiConfigEnv::new();
+-    let mut cfg = Config::default();
+-    cfg.provider.gemini_force_oauth = true;
+-    cfg.provider.gemini_project = Some(" project-a ".into());
+-    cfg.save().unwrap();
+-    assert!(crate::auth::gemini::force_oauth());
+-    assert_eq!(
+-        crate::auth::gemini::cloud_project().as_deref(),
+-        Some("project-a")
+-    );
+-    assert!(std::env::var_os("JCODE_GEMINI_FORCE_OAUTH").is_none());
+-    assert!(std::env::var_os("GOOGLE_CLOUD_PROJECT").is_none());
+-
+-    cfg.provider.gemini_force_oauth = false;
+-    cfg.provider.gemini_project = Some("project-b".into());
+-    cfg.save().unwrap();
+-    assert!(!crate::auth::gemini::force_oauth());
+-    assert_eq!(
+-        crate::auth::gemini::cloud_project().as_deref(),
+-        Some("project-b")
+-    );
+-
+-    cfg.provider.gemini_project = None;
+-    cfg.save().unwrap();
+-    assert_eq!(crate::auth::gemini::cloud_project(), None);
+-}
+-
+-#[test]
+-fn gemini_environment_overrides_config_without_changing_the_file() {
+-    let _lock = crate::storage::lock_test_env();
+-    let _env = GeminiConfigEnv::new();
+-    let mut cfg = Config::default();
+-    cfg.provider.gemini_force_oauth = true;
+-    cfg.provider.gemini_project = Some("from-config".into());
+-    cfg.save().unwrap();
+-    crate::env::set_var("JCODE_GEMINI_FORCE_OAUTH", "off");
+-    crate::env::set_var("GOOGLE_CLOUD_PROJECT_ID", "from-alias");
+-    Config::invalidate_cache();
+-    assert!(!crate::auth::gemini::force_oauth());
+-    assert_eq!(
+-        crate::auth::gemini::cloud_project().as_deref(),
+-        Some("from-alias")
+-    );
+-    crate::env::set_var("GOOGLE_CLOUD_PROJECT", "from-env");
+-    Config::invalidate_cache();
+-    assert_eq!(
+-        crate::auth::gemini::cloud_project().as_deref(),
+-        Some("from-env")
+-    );
+-
+-    for key in [
+-        "JCODE_GEMINI_FORCE_OAUTH",
+-        "GOOGLE_CLOUD_PROJECT",
+-        "GOOGLE_CLOUD_PROJECT_ID",
+-    ] {
+-        crate::env::remove_var(key);
+-    }
+-    Config::invalidate_cache();
+-    assert!(crate::auth::gemini::force_oauth());
+-    assert_eq!(
+-        crate::auth::gemini::cloud_project().as_deref(),
+-        Some("from-config")
 -    );
 -}
 -
--/// End-to-end: a real config file frozen by an old save must load with
--/// discovery enabled, and the next save must drop the section entirely so the
--/// freeze cannot recur.
+ #[test]
+ fn test_openai_reasoning_effort_defaults_to_low() {
+     assert_eq!(
+@@ -1105,33 +995,6 @@ fn test_env_override_native_scrollbars() {
+     }
+ }
+ 
 -#[test]
--fn frozen_sponsors_optout_recovers_through_a_real_config_file() {
+-fn test_removed_pinned_diff_mode_falls_back_inline() {
+-    let cfg: Config = toml::from_str(
+-        "[display]\ndiff_mode = 'pinned'\ndiff_line_wrap = false\ncentered = true\n",
+-    )
+-    .expect("legacy pinned diff settings must not invalidate the config");
+-    assert_eq!(cfg.display.diff_mode, DiffDisplayMode::Inline);
+-    assert!(cfg.display.centered, "unrelated settings must survive");
+-}
+-
+-#[test]
+-fn test_env_override_removed_pinned_diff_mode_is_ignored() {
+-    let _guard = crate::storage::lock_test_env();
+-    let prev = std::env::var_os("JCODE_DIFF_MODE");
+-    for removed in ["pinned", "pin"] {
+-        crate::env::set_var("JCODE_DIFF_MODE", removed);
+-        let mut cfg = Config::default();
+-        cfg.apply_env_overrides();
+-        assert_eq!(cfg.display.diff_mode, DiffDisplayMode::Inline);
+-
+-        cfg.display.diff_mode = DiffDisplayMode::File;
+-        cfg.apply_env_overrides();
+-        assert_eq!(cfg.display.diff_mode, DiffDisplayMode::File);
+-    }
+-    restore_env_var("JCODE_DIFF_MODE", prev);
+-}
+-
+ #[test]
+ fn test_env_override_diff_mode_full_inline() {
+     let _guard = crate::storage::lock_test_env();
+@@ -1500,72 +1363,6 @@ fn migrate_idle_animation_off_noops_without_enabled_value() {
+     restore_env_var("JCODE_HOME", prev_home);
+ }
+ 
+-/// Explicit opt-outs, including the shape written by older versions, must
+-/// survive real config loads, saves, and unrelated preference updates.
+-#[test]
+-fn sponsors_optout_survives_config_save_and_reload() {
 -    let _guard = crate::storage::lock_test_env();
 -    let prev_home = std::env::var_os("JCODE_HOME");
 -    let dir = tempfile::TempDir::new().expect("tempdir");
@@ -4052,60 +4683,49 @@ index c8bf72b3b..481ab7505 100644
 -    Config::invalidate_cache();
 -
 -    let path = Config::path().expect("config path");
--    std::fs::create_dir_all(path.parent().expect("config parent")).expect("create config parent");
--    std::fs::write(
--        &path,
--        "[display]\ncentered = false\n\n[sponsors]\nenabled = false\nendpoint = \"https://api.jcode.sh/v1/discovery\"\n",
--    )
--    .expect("write frozen config");
--
--    let loaded = Config::load();
--    assert!(
--        loaded.sponsors.enabled,
--        "loading a machine-frozen opt-out must restore the shipped default"
--    );
--
--    loaded.save().expect("save config");
--    let rewritten = std::fs::read_to_string(&path).expect("read config");
--    assert!(
--        !rewritten.contains("[sponsors]"),
--        "saving must not write the discovery section back: {rewritten}"
--    );
--    assert!(
--        Config::load().sponsors.enabled,
--        "discovery must stay enabled after a save/load round trip"
--    );
--
--    if let Some(prev) = prev_home {
--        crate::env::set_var("JCODE_HOME", prev);
--    } else {
--        crate::env::remove_var("JCODE_HOME");
--    }
--    Config::invalidate_cache();
--}
--
--#[test]
--fn legacy_endpoint_optout_is_also_repaired() {
--    let raw =
--        "[sponsors]\nenabled = false\nendpoint = \"https://api.solosystems.dev/v1/discovery\"\n";
--    let mut config: Config = toml::from_str(raw).expect("parse");
--    config.repair_frozen_sponsors_optout(raw);
--    assert!(config.sponsors.enabled);
--}
--
--#[test]
--fn hand_written_sponsors_optout_is_respected() {
--    for raw in [
--        "[sponsors]\nenabled = false\n",
--        "[sponsors]\nenabled = false\nendpoint = \"https://discovery.internal/v1\"\n",
+-    for endpoint in [
+-        None,
+-        Some("https://api.jcode.sh/v1/discovery"),
+-        Some("https://api.solosystems.dev/v1/discovery"),
+-        Some("https://api.jcode.sh/v1/discovery/"),
+-        Some("https://discovery.internal/v1"),
 -    ] {
--        let mut config: Config = toml::from_str(raw).expect("parse");
--        config.repair_frozen_sponsors_optout(raw);
--        assert!(
--            !config.sponsors.enabled,
--            "explicit user opt-out must survive: {raw}"
--        );
+-        let mut raw = String::from("[sponsors]\nenabled = false\n");
+-        if let Some(endpoint) = endpoint {
+-            raw.push_str(&format!("endpoint = {endpoint:?}\n"));
+-        }
+-        std::fs::write(&path, &raw).expect("write opt-out");
+-        let expected_endpoint = endpoint.unwrap_or("https://api.jcode.sh/v1/discovery");
+-
+-        for round in 0..3 {
+-            let loaded = Config::load();
+-            assert!(
+-                !loaded.sponsors.enabled,
+-                "explicit opt-out must survive load {round}: {raw}"
+-            );
+-            assert_eq!(loaded.sponsors.endpoint, expected_endpoint);
+-            loaded.save().expect("save config");
+-
+-            // Exercise the strict read-modify-write path used by preferences too.
+-            Config::set_default_model_only(Some("test-model")).expect("update preference");
+-            let reloaded = Config::load_strict().expect("reload config");
+-            assert!(
+-                !reloaded.sponsors.enabled,
+-                "opt-out lost on round {round}: {raw}"
+-            );
+-            assert_eq!(reloaded.sponsors.endpoint, expected_endpoint);
+-            assert_eq!(
+-                reloaded.provider.default_model.as_deref(),
+-                Some("test-model")
+-            );
+-            let saved = std::fs::read_to_string(&path).expect("read saved config");
+-            let saved: toml::Value = toml::from_str(&saved).expect("parse saved config");
+-            assert_eq!(saved["sponsors"]["enabled"].as_bool(), Some(false));
+-        }
 -    }
+-
+-    restore_env_var("JCODE_HOME", prev_home);
+-    Config::invalidate_cache();
 -}
 -
 -#[test]
@@ -4121,21 +4741,132 @@ index c8bf72b3b..481ab7505 100644
  #[test]
  fn config_reload_generation_increments_on_cache_invalidation() {
      let before = crate::config::config_reload_generation();
+@@ -1576,113 +1373,3 @@ fn config_reload_generation_increments_on_cache_invalidation() {
+         "invalidate_config_cache must bump the reload generation ({before} -> {after})"
+     );
+ }
+-
+-#[test]
+-fn swarm_root_effort_config_defaults_and_independent_modes() {
+-    let defaults = Config::default();
+-    assert_eq!(defaults.agents.root_effort_for_swarm(false), "max");
+-    assert_eq!(defaults.agents.root_effort_for_swarm(true), "max");
+-    let cfg: Config = toml::from_str(
+-        "[agents]\nswarm_root_effort = 'low'\nswarm_deep_root_effort = ' High '\nswarm_effort = 'medium'\n",
+-    ).unwrap();
+-    assert_eq!(cfg.agents.root_effort_for_swarm(false), "low");
+-    assert_eq!(cfg.agents.root_effort_for_swarm(true), "high");
+-    assert_eq!(cfg.agents.swarm_effort.as_deref(), Some("medium"));
+-    assert!(cfg.display_string().contains("Swarm root effort: low"));
+-    assert!(
+-        cfg.display_string()
+-            .contains("Deep swarm root effort: high")
+-    );
+-    let serialized = toml::to_string(&cfg).unwrap();
+-    let round_trip: Config = toml::from_str(&serialized).unwrap();
+-    assert_eq!(round_trip.agents.root_effort_for_swarm(true), "high");
+-
+-    for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+-        let cfg: Config =
+-            toml::from_str(&format!("[agents]\nswarm_root_effort = '{level}'")).unwrap();
+-        assert_eq!(cfg.agents.root_effort_for_swarm(false), level);
+-        assert_eq!(cfg.agents.root_effort_for_swarm(true), "max");
+-    }
+-    for invalid in ["", "swarm", "swarm-deep", "turbo"] {
+-        let cfg: Config = toml::from_str(&format!("[agents]\nswarm_root_effort = '{invalid}'\nswarm_deep_root_effort = '{invalid}'\nswarm_effort = 'low'")).unwrap();
+-        assert_eq!(cfg.agents.root_effort_for_swarm(false), "max");
+-        assert_eq!(cfg.agents.root_effort_for_swarm(true), "max");
+-        assert_eq!(cfg.agents.swarm_effort.as_deref(), Some("low"));
+-    }
+-}
+-
+-#[test]
+-fn swarm_root_effort_env_overrides_and_shared_resolution() {
+-    let _guard = crate::storage::lock_test_env();
+-    let keys = ["JCODE_SWARM_ROOT_EFFORT", "JCODE_SWARM_DEEP_ROOT_EFFORT"];
+-    let previous = keys.map(std::env::var_os);
+-    let fingerprint = config_env_fingerprint();
+-    crate::env::set_var(keys[0], "low");
+-    crate::env::set_var(keys[1], "high");
+-    assert_ne!(config_env_fingerprint(), fingerprint);
+-    let mut cfg = Config::default();
+-    cfg.apply_env_overrides();
+-    assert_eq!(cfg.agents.root_effort_for_swarm(false), "low");
+-    assert_eq!(cfg.agents.root_effort_for_swarm(true), "high");
+-    assert_eq!(
+-        crate::prompt::swarm_root_reasoning_effort("swarm"),
+-        Some("low")
+-    );
+-    assert_eq!(
+-        crate::prompt::swarm_root_reasoning_effort(" Swarm-Deep "),
+-        Some("high")
+-    );
+-    assert_eq!(crate::prompt::swarm_root_reasoning_effort("low"), None);
+-    crate::env::set_var(keys[0], "none");
+-    assert_eq!(
+-        crate::prompt::swarm_root_reasoning_effort("swarm"),
+-        Some("none")
+-    );
+-    // Config changes must not turn orchestration off or misrepresent its effort.
+-    for mode in ["swarm", "swarm-deep"] {
+-        let mut split = crate::prompt::SplitSystemPrompt::default();
+-        crate::prompt::append_swarm_effort_directive(&mut split, Some(mode));
+-        assert!(split.dynamic_part.contains("swarm"));
+-        assert!(!split.dynamic_part.contains("maximum reasoning effort"));
+-    }
+-    for key in keys {
+-        crate::env::set_var(key, " ");
+-    }
+-    cfg.apply_env_overrides();
+-    assert_eq!(cfg.agents.swarm_root_effort, None);
+-    assert_eq!(cfg.agents.swarm_deep_root_effort, None);
+-    for (key, value) in keys.into_iter().zip(previous) {
+-        restore_env_var(key, value);
+-    }
+-}
+-
+-#[test]
+-fn anthropic_cache_preference_persists_and_preserves_other_settings() {
+-    let _guard = crate::storage::lock_test_env();
+-    let prev_home = std::env::var_os("JCODE_HOME");
+-    let dir = tempfile::TempDir::new().unwrap();
+-    crate::env::set_var("JCODE_HOME", dir.path());
+-    Config::invalidate_cache();
+-    let path = Config::path().unwrap();
+-    std::fs::write(&path, "[provider]\ndefault_model = 'keep-me'\n").unwrap();
+-    assert!(crate::config::config().provider.anthropic_cache_ttl_1h);
+-    for enabled in [false, true] {
+-        Config::set_anthropic_cache_ttl_1h(enabled).unwrap();
+-        Config::invalidate_cache();
+-        assert_eq!(Config::load().provider.anthropic_cache_ttl_1h, enabled);
+-        assert_eq!(crate::provider::anthropic::is_cache_ttl_1h(), enabled);
+-        assert_eq!(
+-            crate::config::config().provider.anthropic_cache_ttl_1h,
+-            enabled
+-        );
+-        assert_eq!(
+-            Config::load().provider.default_model.as_deref(),
+-            Some("keep-me")
+-        );
+-    }
+-    std::fs::write(&path, "[broken").unwrap();
+-    assert!(Config::set_anthropic_cache_ttl_1h(false).is_err());
+-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "[broken");
+-    restore_env_var("JCODE_HOME", prev_home);
+-    Config::invalidate_cache();
+-}
 diff --git a/crates/jcode-base/src/lib.rs b/crates/jcode-base/src/lib.rs
-index e5b1da4ce..b7d18eb48 100644
+index 3f39e417d..43c109bbc 100644
 --- a/crates/jcode-base/src/lib.rs
 +++ b/crates/jcode-base/src/lib.rs
-@@ -80,10 +80,8 @@ pub mod side_panel;
+@@ -84,7 +84,6 @@ pub mod side_panel;
  pub mod sidecar;
  pub mod skill;
  pub mod soft_interrupt_store;
 -pub mod sponsors;
  pub mod stdin_detect;
  pub mod storage;
--pub mod subscription_api;
- pub mod subscription_catalog;
- pub mod telegram;
- pub mod telemetry {
+ pub mod subscription_api;
 diff --git a/crates/jcode-base/src/mcp/manager.rs b/crates/jcode-base/src/mcp/manager.rs
 index d1c554fba..b91590599 100644
 --- a/crates/jcode-base/src/mcp/manager.rs
@@ -4738,737 +5469,11 @@ index 9f0579536..000000000
 -        assert!(reports.is_empty());
 -    }
 -}
-diff --git a/crates/jcode-base/src/subscription_api.rs b/crates/jcode-base/src/subscription_api.rs
-deleted file mode 100644
-index 1e3347473..000000000
---- a/crates/jcode-base/src/subscription_api.rs
-+++ /dev/null
-@@ -1,720 +0,0 @@
--//! Typed client for the Jcode account and hosted-model billing API.
--//!
--//! All bearer credentials are sent in authorization headers or JSON response
--//! bodies. They are never placed in URLs, redirects, or diagnostic messages.
--
--use crate::subscription_catalog::{self, JcodeTier};
--use anyhow::{Context, Result};
--use reqwest::{StatusCode, header::RETRY_AFTER};
--use serde::{Deserialize, Serialize};
--use std::fmt;
--use std::time::Duration;
--
--/// Timeout for short account API requests used by the CLI and TUI.
--pub const ME_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
--pub const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
--pub const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
--
--#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
--pub struct SubscriptionUsage {
--    #[serde(default)]
--    pub used_usd: f64,
--    /// User-selected monthly spending limit. `budget_usd` remains accepted for
--    /// compatibility with account servers deployed before metered billing.
--    #[serde(default, alias = "spend_limit_usd", alias = "limit_usd")]
--    pub budget_usd: f64,
--    /// Amount already collected in billing tranches this month.
--    #[serde(default)]
--    pub billed_usd: f64,
--    /// Next usage amount at which a tranche will be collected, when supplied.
--    #[serde(default)]
--    pub next_charge_at_usd: Option<f64>,
--    /// RFC 3339 timestamp for when the usage window resets.
--    #[serde(default)]
--    pub resets_at: Option<String>,
--}
--
--#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
--pub struct SubscriptionMe {
--    pub account_id: String,
--    pub email: String,
--    /// Stable wire tier value: "none", "plus", "pro", "max", "ultra", or "flagship".
--    pub tier: String,
--    pub status: String,
--    #[serde(default)]
--    pub usage: SubscriptionUsage,
--    /// Optional stable public account-management URL. It must never contain a secret.
--    #[serde(default)]
--    pub manage_url: Option<String>,
--}
--
--impl SubscriptionMe {
--    pub fn parsed_tier(&self) -> Option<JcodeTier> {
--        JcodeTier::parse(&self.tier)
--    }
--
--    pub fn has_active_paid_plan(&self) -> bool {
--        self.status.eq_ignore_ascii_case("active")
--            && (self.usage.budget_usd > 0.0 || self.parsed_tier().is_some())
--    }
--
--    pub fn checkout_was_canceled(&self) -> bool {
--        self.status.eq_ignore_ascii_case("canceled")
--            || self.status.eq_ignore_ascii_case("cancelled")
--    }
--}
--
--#[derive(Debug, Clone, PartialEq, Eq)]
--pub struct DeviceAuthorization {
--    /// Secret used only in the token exchange request body.
--    pub device_code: String,
--    /// Public correlation identifier.
--    pub flow_id: String,
--    pub verification_uri: String,
--    pub verification_uri_complete: String,
--    pub expires_in: u64,
--    pub interval: u64,
--}
--
--#[derive(Debug, Clone, PartialEq, Eq)]
--pub struct ApprovedAccountKey {
--    pub api_key: String,
--    pub account_id: String,
--    pub email: String,
--    pub tier: String,
--    pub status: String,
--}
--
--#[derive(Debug, Clone, PartialEq, Eq)]
--pub enum TokenPollOutcome {
--    Pending,
--    SlowDown { retry_after: Option<Duration> },
--    Approved(ApprovedAccountKey),
--    Expired,
--    Denied,
--}
--
--#[derive(Debug, Clone, PartialEq)]
--pub enum ActivationOutcome {
--    Active(SubscriptionMe),
--    Canceled(SubscriptionMe),
--    TimedOut { last_error_was_offline: bool },
--    Revoked,
--    Denied,
--}
--
--/// Redacted API error. Response bodies and bearer values are never retained.
--#[derive(Debug, Clone, PartialEq, Eq)]
--pub enum AccountApiError {
--    Offline(String),
--    Unauthorized,
--    Forbidden,
--    LegacyBackend,
--    Http { status: u16, code: Option<String> },
--    InvalidResponse(&'static str),
--}
--
--impl AccountApiError {
--    pub fn is_temporary(&self) -> bool {
--        matches!(self, Self::Offline(_))
--            || matches!(self, Self::Http { status, .. } if *status >= 500)
--    }
--}
--
--impl fmt::Display for AccountApiError {
--    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
--        match self {
--            Self::Offline(reason) => write!(f, "temporarily offline: {reason}"),
--            Self::Unauthorized => write!(f, "the Jcode account key is revoked or expired"),
--            Self::Forbidden => write!(f, "the Jcode account request was denied"),
--            Self::LegacyBackend => write!(
--                f,
--                "the configured Jcode API uses the legacy email-based login contract; update the backend or use the current https://api.jcode.sh/v1 endpoint"
--            ),
--            Self::Http { status, code } => match code {
--                Some(code) => write!(f, "Jcode account API returned HTTP {status} ({code})"),
--                None => write!(f, "Jcode account API returned HTTP {status}"),
--            },
--            Self::InvalidResponse(detail) => {
--                write!(
--                    f,
--                    "Jcode account API returned an invalid response: {detail}"
--                )
--            }
--        }
--    }
--}
--
--impl std::error::Error for AccountApiError {}
--
--#[derive(Debug, Deserialize, Default)]
--struct ErrorEnvelope {
--    #[serde(default)]
--    error: Option<ErrorField>,
--    #[serde(default)]
--    status: Option<String>,
--}
--
--#[derive(Debug, Deserialize)]
--#[serde(untagged)]
--enum ErrorField {
--    Code(String),
--    Object { code: Option<String> },
--}
--
--impl ErrorEnvelope {
--    fn code(&self) -> Option<String> {
--        match &self.error {
--            Some(ErrorField::Code(code)) => Some(code.clone()),
--            Some(ErrorField::Object { code }) => code.clone(),
--            None => self.status.clone(),
--        }
--    }
--}
--
--#[derive(Debug, Deserialize)]
--struct DeviceAuthorizationWire {
--    #[serde(default)]
--    device_code: Option<String>,
--    #[serde(default)]
--    flow_id: Option<String>,
--    #[serde(default)]
--    verification_uri: Option<String>,
--    #[serde(default)]
--    verification_uri_complete: Option<String>,
--    #[serde(default)]
--    expires_in: Option<u64>,
--    #[serde(default)]
--    interval: Option<u64>,
--    /// Legacy field. Its presence gives a specific compatibility error.
--    #[serde(default)]
--    verify_url: Option<String>,
--}
--
--#[derive(Debug, Deserialize)]
--struct ApprovedAccountKeyWire {
--    api_key: String,
--    account_id: String,
--    email: String,
--    tier: String,
--    status: String,
--}
--
--pub fn configured_api_base() -> String {
--    subscription_catalog::configured_api_base()
--        .unwrap_or_else(|| subscription_catalog::DEFAULT_JCODE_API_BASE.to_string())
--        .trim_end_matches('/')
--        .to_string()
--}
--
--fn endpoint_url(api_base: &str, path: &str) -> String {
--    format!(
--        "{}/{}",
--        api_base.trim().trim_end_matches('/'),
--        path.trim_start_matches('/')
--    )
--}
--
--/// The `/v1/me` endpoint URL for the configured (or default) API base.
--pub fn me_endpoint_url() -> String {
--    endpoint_url(&configured_api_base(), "me")
--}
--
--fn offline(error: reqwest::Error) -> AccountApiError {
--    // reqwest's display contains only the public endpoint URL here. Request and
--    // response bodies, including device codes and API keys, are not included.
--    AccountApiError::Offline(error.to_string())
--}
--
--fn error_code(body: &str) -> Option<String> {
--    serde_json::from_str::<ErrorEnvelope>(body)
--        .ok()
--        .and_then(|error| error.code())
--        .map(|code| code.chars().take(80).collect())
--}
--
--pub async fn request_device_authorization(
--    client: &reqwest::Client,
--    api_base: &str,
--    requested_tier: Option<JcodeTier>,
--) -> std::result::Result<DeviceAuthorization, AccountApiError> {
--    let url = endpoint_url(api_base, "auth/device");
--    let mut payload = serde_json::json!({ "client_name": "jcode-cli" });
--    if let Some(tier) = requested_tier {
--        payload["requested_tier"] = serde_json::Value::String(tier.as_str().to_string());
--    }
--    let response = client
--        .post(url)
--        .json(&payload)
--        .timeout(DEVICE_REQUEST_TIMEOUT)
--        .send()
--        .await
--        .map_err(offline)?;
--    let status = response.status();
--    let body = response.text().await.map_err(offline)?;
--    if !status.is_success() {
--        return Err(match status {
--            StatusCode::UNAUTHORIZED => AccountApiError::Unauthorized,
--            StatusCode::FORBIDDEN => AccountApiError::Forbidden,
--            StatusCode::NOT_FOUND => AccountApiError::LegacyBackend,
--            _ => AccountApiError::Http {
--                status: status.as_u16(),
--                code: error_code(&body),
--            },
--        });
--    }
--
--    let wire: DeviceAuthorizationWire = serde_json::from_str(&body)
--        .map_err(|_| AccountApiError::InvalidResponse("malformed device authorization JSON"))?;
--    if wire.verify_url.is_some() && wire.verification_uri_complete.is_none() {
--        return Err(AccountApiError::LegacyBackend);
--    }
--    let required = |value: Option<String>, detail| {
--        value
--            .filter(|value| !value.trim().is_empty())
--            .ok_or(AccountApiError::InvalidResponse(detail))
--    };
--    Ok(DeviceAuthorization {
--        device_code: required(wire.device_code, "missing device_code")?,
--        flow_id: required(wire.flow_id, "missing flow_id")?,
--        verification_uri: required(wire.verification_uri, "missing verification_uri")?,
--        verification_uri_complete: required(
--            wire.verification_uri_complete,
--            "missing verification_uri_complete",
--        )?,
--        expires_in: wire.expires_in.unwrap_or(600).clamp(1, 3600),
--        interval: wire.interval.unwrap_or(3).clamp(1, 60),
--    })
--}
--
--pub async fn poll_device_token_once(
--    client: &reqwest::Client,
--    api_base: &str,
--    device_code: &str,
--) -> std::result::Result<TokenPollOutcome, AccountApiError> {
--    let url = endpoint_url(api_base, "auth/token");
--    let response = client
--        .post(url)
--        .json(&serde_json::json!({ "device_code": device_code }))
--        .timeout(DEVICE_REQUEST_TIMEOUT)
--        .send()
--        .await
--        .map_err(offline)?;
--    let status = response.status();
--    let retry_after = response
--        .headers()
--        .get(RETRY_AFTER)
--        .and_then(|value| value.to_str().ok())
--        .and_then(|value| value.parse::<u64>().ok())
--        .map(Duration::from_secs);
--    let body = response.text().await.map_err(offline)?;
--
--    if status == StatusCode::TOO_MANY_REQUESTS {
--        return Ok(TokenPollOutcome::SlowDown { retry_after });
--    }
--    if status.as_u16() == 428 || status == StatusCode::ACCEPTED {
--        return Ok(TokenPollOutcome::Pending);
--    }
--    if status.is_success() {
--        if matches!(
--            error_code(&body).as_deref(),
--            Some("authorization_pending" | "pending")
--        ) {
--            return Ok(TokenPollOutcome::Pending);
--        }
--        let approved: ApprovedAccountKeyWire = serde_json::from_str(&body)
--            .map_err(|_| AccountApiError::InvalidResponse("malformed approved token JSON"))?;
--        if approved.api_key.trim().is_empty() {
--            return Err(AccountApiError::InvalidResponse("empty api_key"));
--        }
--        return Ok(TokenPollOutcome::Approved(ApprovedAccountKey {
--            api_key: approved.api_key,
--            account_id: approved.account_id,
--            email: approved.email,
--            tier: approved.tier,
--            status: approved.status,
--        }));
--    }
--
--    let code = error_code(&body);
--    match code.as_deref() {
--        Some("authorization_pending" | "pending") => Ok(TokenPollOutcome::Pending),
--        Some("slow_down") => Ok(TokenPollOutcome::SlowDown { retry_after }),
--        Some("expired_token" | "expired" | "expired_device_code") => Ok(TokenPollOutcome::Expired),
--        Some("access_denied" | "denied") => Ok(TokenPollOutcome::Denied),
--        _ if status == StatusCode::UNAUTHORIZED => Err(AccountApiError::Unauthorized),
--        _ if status == StatusCode::FORBIDDEN => Err(AccountApiError::Forbidden),
--        _ if status == StatusCode::NOT_FOUND => Err(AccountApiError::LegacyBackend),
--        _ => Err(AccountApiError::Http {
--            status: status.as_u16(),
--            code,
--        }),
--    }
--}
--
--pub async fn fetch_subscription_me_with(
--    client: &reqwest::Client,
--    api_base: &str,
--    api_key: &str,
--) -> std::result::Result<SubscriptionMe, AccountApiError> {
--    let response = client
--        .get(endpoint_url(api_base, "me"))
--        .bearer_auth(api_key)
--        .timeout(ME_FETCH_TIMEOUT)
--        .send()
--        .await
--        .map_err(offline)?;
--    let status = response.status();
--    let body = response.text().await.map_err(offline)?;
--    if !status.is_success() {
--        return Err(match status {
--            StatusCode::UNAUTHORIZED => AccountApiError::Unauthorized,
--            StatusCode::FORBIDDEN => AccountApiError::Forbidden,
--            _ => AccountApiError::Http {
--                status: status.as_u16(),
--                code: error_code(&body),
--            },
--        });
--    }
--    let me: SubscriptionMe = serde_json::from_str(&body)
--        .map_err(|_| AccountApiError::InvalidResponse("malformed /v1/me JSON"))?;
--    if let Some(tier) = me.parsed_tier() {
--        let _ = subscription_catalog::store_cached_tier(Some(tier));
--    }
--    Ok(me)
--}
--
--/// Fetch account status using the configured local credential.
--pub async fn fetch_subscription_me() -> Result<SubscriptionMe> {
--    let api_key = subscription_catalog::configured_api_key()
--        .context("no Jcode account credential configured (run `jcode account login`)")?;
--    fetch_subscription_me_with(
--        &crate::provider::shared_http_client(),
--        &configured_api_base(),
--        &api_key,
--    )
--    .await
--    .map_err(anyhow::Error::new)
--}
--
--pub async fn revoke_current_key(
--    client: &reqwest::Client,
--    api_base: &str,
--    api_key: &str,
--) -> std::result::Result<(), AccountApiError> {
--    let response = client
--        .delete(endpoint_url(api_base, "keys/current"))
--        .bearer_auth(api_key)
--        .timeout(ME_FETCH_TIMEOUT)
--        .send()
--        .await
--        .map_err(offline)?;
--    let status = response.status();
--    if status.is_success() {
--        return Ok(());
--    }
--    let body = response.text().await.map_err(offline)?;
--    Err(match status {
--        StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND => AccountApiError::Unauthorized,
--        StatusCode::FORBIDDEN => AccountApiError::Forbidden,
--        _ => AccountApiError::Http {
--            status: status.as_u16(),
--            code: error_code(&body),
--        },
--    })
--}
--
--/// Poll `/v1/me` after a successful token exchange until a paid plan becomes
--/// active or a clear terminal/recovery state is reached.
--pub async fn poll_for_paid_activation(
--    client: &reqwest::Client,
--    api_base: &str,
--    api_key: &str,
--    timeout: Duration,
--    interval: Duration,
--) -> ActivationOutcome {
--    let deadline = tokio::time::Instant::now() + timeout;
--    let mut backoff = PollingBackoff::new(interval.max(Duration::from_secs(1)));
--    let mut last_error_was_offline;
--
--    loop {
--        match fetch_subscription_me_with(client, api_base, api_key).await {
--            Ok(me) if me.has_active_paid_plan() => return ActivationOutcome::Active(me),
--            Ok(me) if me.checkout_was_canceled() => return ActivationOutcome::Canceled(me),
--            Ok(_) => {
--                last_error_was_offline = false;
--                backoff.on_successful_poll();
--            }
--            Err(AccountApiError::Unauthorized) => return ActivationOutcome::Revoked,
--            Err(AccountApiError::Forbidden) => return ActivationOutcome::Denied,
--            Err(error) if error.is_temporary() => {
--                last_error_was_offline = true;
--                backoff.on_offline_error();
--            }
--            Err(_) => {
--                last_error_was_offline = false;
--                backoff.on_server_error();
--            }
--        }
--
--        let delay = backoff.delay();
--        if tokio::time::Instant::now() + delay >= deadline {
--            return ActivationOutcome::TimedOut {
--                last_error_was_offline,
--            };
--        }
--        tokio::time::sleep(delay).await;
--    }
--}
--
--/// Deterministic retry policy shared by device-token and activation polling.
--#[derive(Debug, Clone, PartialEq, Eq)]
--pub struct PollingBackoff {
--    base: Duration,
--    delay: Duration,
--}
--
--impl PollingBackoff {
--    pub fn new(base: Duration) -> Self {
--        let base = base.max(Duration::from_secs(1));
--        Self { base, delay: base }
--    }
--
--    pub fn delay(&self) -> Duration {
--        self.delay
--    }
--
--    pub fn on_pending(&mut self) {
--        self.delay = self.base;
--    }
--
--    pub fn on_slow_down(&mut self, retry_after: Option<Duration>) {
--        self.delay = retry_after
--            .unwrap_or(self.delay + Duration::from_secs(5))
--            .max(self.base)
--            .min(Duration::from_secs(60));
--    }
--
--    pub fn on_offline_error(&mut self) {
--        self.delay = (self.delay * 2).min(Duration::from_secs(30));
--    }
--
--    pub fn on_server_error(&mut self) {
--        self.on_offline_error();
--    }
--
--    pub fn on_successful_poll(&mut self) {
--        self.delay = self.base;
--    }
--}
--
--#[cfg(test)]
--mod tests {
--    use super::*;
--    use std::io::{Read, Write};
--
--    /// (status, extra headers, body) for one canned HTTP response.
--    type CannedResponse = (u16, Vec<(&'static str, &'static str)>, String);
--
--    fn spawn_server(responses: Vec<CannedResponse>) -> String {
--        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
--        let addr = listener.local_addr().expect("addr");
--        std::thread::spawn(move || {
--            for (status, headers, body) in responses {
--                let (mut stream, _) = listener.accept().expect("accept");
--                let mut request = [0u8; 8192];
--                let _ = stream.read(&mut request);
--                let extra = headers
--                    .into_iter()
--                    .map(|(name, value)| format!("{name}: {value}\r\n"))
--                    .collect::<String>();
--                let response = format!(
--                    "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
--                    body.len()
--                );
--                stream.write_all(response.as_bytes()).expect("write");
--            }
--        });
--        format!("http://{addr}/v1")
--    }
--
--    fn client() -> reqwest::Client {
--        reqwest::Client::builder()
--            .no_proxy()
--            .build()
--            .expect("client")
--    }
--
--    #[test]
--    fn subscription_me_parses_expected_shape() {
--        let json = r#"{
--            "account_id": "acct_123", "email": "dev@example.com",
--            "tier": "flagship", "status": "active",
--            "usage": {"used_usd": 12.5, "budget_usd": 3000.0},
--            "manage_url": "https://jcode.sh/account"
--        }"#;
--        let me: SubscriptionMe = serde_json::from_str(json).expect("parse");
--        assert_eq!(me.parsed_tier(), Some(JcodeTier::Flagship));
--        assert!(me.has_active_paid_plan());
--        assert_eq!(me.manage_url.as_deref(), Some("https://jcode.sh/account"));
--    }
--
--    #[test]
--    fn metered_account_parses_spending_limit_and_tranche_state_without_a_tier() {
--        let json = r#"{
--            "account_id": "acct_metered", "email": "dev@example.com",
--            "tier": "none", "status": "active",
--            "usage": {
--                "used_usd": 34.5,
--                "spend_limit_usd": 100.0,
--                "billed_usd": 20.0,
--                "next_charge_at_usd": 60.0
--            }
--        }"#;
--        let me: SubscriptionMe = serde_json::from_str(json).expect("parse metered account");
--        assert_eq!(me.parsed_tier(), None);
--        assert!(me.has_active_paid_plan());
--        assert_eq!(me.usage.budget_usd, 100.0);
--        assert_eq!(me.usage.billed_usd, 20.0);
--        assert_eq!(me.usage.next_charge_at_usd, Some(60.0));
--    }
--
--    #[test]
--    fn polling_backoff_is_deterministic_and_bounded() {
--        let mut state = PollingBackoff::new(Duration::from_secs(3));
--        assert_eq!(state.delay(), Duration::from_secs(3));
--        state.on_slow_down(None);
--        assert_eq!(state.delay(), Duration::from_secs(8));
--        state.on_slow_down(Some(Duration::from_secs(12)));
--        assert_eq!(state.delay(), Duration::from_secs(12));
--        state.on_offline_error();
--        assert_eq!(state.delay(), Duration::from_secs(24));
--        state.on_offline_error();
--        assert_eq!(state.delay(), Duration::from_secs(30));
--        state.on_pending();
--        assert_eq!(state.delay(), Duration::from_secs(3));
--    }
--
--    #[tokio::test]
--    async fn device_request_uses_new_contract_and_parses_public_urls() {
--        let base = spawn_server(vec![(
--            200,
--            vec![],
--            r#"{"device_code":"secret","flow_id":"public-flow","verification_uri":"https://jcode.sh/account","verification_uri_complete":"https://jcode.sh/account?flow=public-flow","verify_url":"https://jcode.sh/account?flow=public-flow","expires_in":600,"interval":3}"#.to_string(),
--        )]);
--        let result = request_device_authorization(&client(), &base, Some(JcodeTier::Pro))
--            .await
--            .expect("device auth");
--        assert_eq!(result.device_code, "secret");
--        assert_eq!(result.flow_id, "public-flow");
--        assert!(!result.verification_uri_complete.contains("secret"));
--    }
--
--    #[tokio::test]
--    async fn metered_device_request_does_not_select_a_subscription_tier() {
--        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
--        let addr = listener.local_addr().expect("addr");
--        let (request_tx, request_rx) = std::sync::mpsc::channel();
--        std::thread::spawn(move || {
--            let (mut stream, _) = listener.accept().expect("accept");
--            let mut request = [0u8; 8192];
--            let count = stream.read(&mut request).expect("read request");
--            request_tx
--                .send(String::from_utf8_lossy(&request[..count]).into_owned())
--                .expect("capture request");
--            let body = r#"{"device_code":"secret","flow_id":"public-flow","verification_uri":"https://jcode.sh/account","verification_uri_complete":"https://jcode.sh/account?flow=public-flow","expires_in":600,"interval":3}"#;
--            let response = format!(
--                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
--                body.len()
--            );
--            stream.write_all(response.as_bytes()).expect("write");
--        });
--
--        request_device_authorization(&client(), &format!("http://{addr}/v1"), None)
--            .await
--            .expect("device auth");
--        let request = request_rx.recv().expect("captured request");
--        assert!(request.contains(r#"{"client_name":"jcode-cli"}"#));
--        assert!(!request.contains("requested_tier"), "{request}");
--    }
--
--    #[tokio::test]
--    async fn legacy_device_response_is_explained_without_echoing_body() {
--        let base = spawn_server(vec![(
--            200,
--            vec![],
--            r#"{"device_code":"do-not-echo","verify_url":"https://old.example/login"}"#.to_string(),
--        )]);
--        let error = request_device_authorization(&client(), &base, Some(JcodeTier::Pro))
--            .await
--            .expect_err("legacy response rejected");
--        assert_eq!(error, AccountApiError::LegacyBackend);
--        assert!(!error.to_string().contains("do-not-echo"));
--    }
--
--    #[tokio::test]
--    async fn token_poll_handles_pending_slow_down_success_denied_and_replay() {
--        let base = spawn_server(vec![
--            (428, vec![], r#"{"error":"authorization_pending"}"#.to_string()),
--            (429, vec![("Retry-After", "9")], r#"{"error":"slow_down"}"#.to_string()),
--            (200, vec![], r#"{"api_key":"jck_live_test","account_id":"acct","email":"user@example.com","tier":"none","status":"active"}"#.to_string()),
--            (400, vec![], r#"{"error":"access_denied"}"#.to_string()),
--            (400, vec![], r#"{"error":"expired_token"}"#.to_string()),
--        ]);
--        let client = client();
--        assert_eq!(
--            poll_device_token_once(&client, &base, "secret")
--                .await
--                .unwrap(),
--            TokenPollOutcome::Pending
--        );
--        assert_eq!(
--            poll_device_token_once(&client, &base, "secret")
--                .await
--                .unwrap(),
--            TokenPollOutcome::SlowDown {
--                retry_after: Some(Duration::from_secs(9))
--            }
--        );
--        assert!(matches!(
--            poll_device_token_once(&client, &base, "secret")
--                .await
--                .unwrap(),
--            TokenPollOutcome::Approved(_)
--        ));
--        assert_eq!(
--            poll_device_token_once(&client, &base, "secret")
--                .await
--                .unwrap(),
--            TokenPollOutcome::Denied
--        );
--        assert_eq!(
--            poll_device_token_once(&client, &base, "secret")
--                .await
--                .unwrap(),
--            TokenPollOutcome::Expired
--        );
--    }
--
--    #[tokio::test]
--    async fn me_and_revoke_classify_revoked_keys_without_leaking_them() {
--        let base = spawn_server(vec![
--            (
--                401,
--                vec![],
--                r#"{"error":"invalid_key","message":"jck_live_do-not-log"}"#.to_string(),
--            ),
--            (401, vec![], r#"{"error":"invalid_key"}"#.to_string()),
--        ]);
--        let client = client();
--        let me_error = fetch_subscription_me_with(&client, &base, "jck_live_secret")
--            .await
--            .expect_err("revoked");
--        assert_eq!(me_error, AccountApiError::Unauthorized);
--        assert!(!me_error.to_string().contains("jck_live"));
--        let revoke_error = revoke_current_key(&client, &base, "jck_live_secret")
--            .await
--            .expect_err("already revoked");
--        assert_eq!(revoke_error, AccountApiError::Unauthorized);
--    }
--}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index fe26278e6..01735a693 100644
+index d096de3ca..5b1e1c674 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -942,34 +942,6 @@ pub struct AutoReviewConfig {
+@@ -1005,34 +1005,6 @@ pub struct AutoReviewConfig {
      pub model: Option<String>,
  }
  
@@ -5504,7 +5509,7 @@ index fe26278e6..01735a693 100644
  #[derive(Debug, Clone, Serialize, Deserialize, Default)]
  #[serde(default)]
 diff --git a/crates/jcode-telemetry-core/src/lib.rs b/crates/jcode-telemetry-core/src/lib.rs
-index d6f7faf3c..e85c32bb7 100644
+index 8e349a152..804352486 100644
 --- a/crates/jcode-telemetry-core/src/lib.rs
 +++ b/crates/jcode-telemetry-core/src/lib.rs
 @@ -7,7 +7,7 @@ pub mod onboarding_trace;
@@ -5979,10 +5984,10 @@ index d717bc45c..3090ce4fb 100644
          "Edit" => "edit",
          "MultiEdit" => "multiedit",
 diff --git a/crates/jcode-tui/src/tui/app.rs b/crates/jcode-tui/src/tui/app.rs
-index 78bf63745..65fe245d7 100644
+index 9ea6dd96a..d338969de 100644
 --- a/crates/jcode-tui/src/tui/app.rs
 +++ b/crates/jcode-tui/src/tui/app.rs
-@@ -101,7 +101,6 @@ mod state_ui_maintenance;
+@@ -102,7 +102,6 @@ mod state_ui_maintenance;
  mod state_ui_messages;
  mod state_ui_runtime;
  mod state_ui_storage;
@@ -5990,7 +5995,7 @@ index 78bf63745..65fe245d7 100644
  mod support;
  mod swarm_hint;
  mod terminal_liveness;
-@@ -1117,10 +1116,6 @@ pub struct App {
+@@ -1126,10 +1125,6 @@ pub struct App {
      /// to target the agent repair brief (`jcode auth-test --provider X`). `None`
      /// when unknown.
      onboarding_import_failed_provider: Option<String>,
@@ -6001,7 +6006,7 @@ index 78bf63745..65fe245d7 100644
      /// Pending first-run model-validation request for the new-session screen.
      /// In remote/client mode the live default model is reported by the server
      /// asynchronously, so we record that a validation is wanted and let the
-@@ -1488,7 +1483,6 @@ pub struct App {
+@@ -1497,7 +1492,6 @@ pub struct App {
      terminal_setup_hint_shown_this_session: bool,
      // Whether the swarm-config-is-a-prompt hint has been surfaced this session.
      swarm_hint_shown_this_session: bool,
@@ -6528,10 +6533,10 @@ index 7936b89d6..2f6a275bd 100644
          provider_id: String,
          label: Option<String>,
 diff --git a/crates/jcode-tui/src/tui/app/commands.rs b/crates/jcode-tui/src/tui/app/commands.rs
-index 9efbd44bd..e082d7c50 100644
+index a74d6c05f..581419562 100644
 --- a/crates/jcode-tui/src/tui/app/commands.rs
 +++ b/crates/jcode-tui/src/tui/app/commands.rs
-@@ -3461,11 +3461,6 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
+@@ -3505,11 +3505,6 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
          return true;
      }
  
@@ -6543,7 +6548,7 @@ index 9efbd44bd..e082d7c50 100644
      if trimmed == "/config" {
          use crate::config::config;
          app.push_display_message(DisplayMessage {
-@@ -3618,59 +3613,6 @@ pub(super) fn handle_feedback_command(app: &mut App, trimmed: &str) -> bool {
+@@ -3662,59 +3657,6 @@ pub(super) fn handle_feedback_command(app: &mut App, trimmed: &str) -> bool {
      true
  }
  
@@ -6604,7 +6609,7 @@ index 9efbd44bd..e082d7c50 100644
  #[path = "commands_tests.rs"]
  mod tests;
 diff --git a/crates/jcode-tui/src/tui/app/commands_dispatch.rs b/crates/jcode-tui/src/tui/app/commands_dispatch.rs
-index 58f80acff..f94dadd18 100644
+index ee143846d..4219e8e38 100644
 --- a/crates/jcode-tui/src/tui/app/commands_dispatch.rs
 +++ b/crates/jcode-tui/src/tui/app/commands_dispatch.rs
 @@ -69,7 +69,6 @@ pub(super) fn ssh_unsupported_command(input: &str) -> bool {
@@ -6624,10 +6629,10 @@ index 58f80acff..f94dadd18 100644
          || super::state_ui::handle_info_command(app, trimmed)
          || super::auth::handle_auth_command(app, trimmed)
 diff --git a/crates/jcode-tui/src/tui/app/input_help.rs b/crates/jcode-tui/src/tui/app/input_help.rs
-index d3100c431..f814810c8 100644
+index c8fd398a8..2f7689ae7 100644
 --- a/crates/jcode-tui/src/tui/app/input_help.rs
 +++ b/crates/jcode-tui/src/tui/app/input_help.rs
-@@ -168,12 +168,6 @@ impl App {
+@@ -171,12 +171,6 @@ impl App {
              "usage" => {
                  "/usage\nFetch and display usage limits for connected providers. This command only reports real connected-provider usage windows and reset times."
              }
@@ -6640,7 +6645,7 @@ index d3100c431..f814810c8 100644
              "version" => "/version\nShow jcode version/build details.",
              "changelog" => "/changelog\nShow recent changes embedded in this build.",
              "quit" => "/quit\nExit jcode.",
-@@ -193,7 +187,7 @@ impl App {
+@@ -196,7 +190,7 @@ impl App {
                  "/tool-call-details\nShow whether the dimmed technical detail (command, path, args) renders next to the model-provided intent on tool rows.\n\n/tool-call-details on\nShow the technical detail after the intent, e.g. `bash · Run tests · $ cargo test`.\n\n/tool-call-details off\nShow only the intent on tool rows that have one. Rows without an intent still show the technical detail, and error summaries always render."
              }
              "auth" | "login" => {
@@ -6650,7 +6655,7 @@ index d3100c431..f814810c8 100644
              "account" | "accounts" => {
                  "/account\nOpen the inline account picker showing both Claude and OpenAI accounts together. It lists saved accounts plus new/replace actions for each provider.\n\n/account claude  or  /account openai\nOpen the inline picker filtered to that provider.\n\n/account <provider> settings\nShow provider-specific account/settings details.\n\n/account <provider> login\nStart or refresh credentials for a provider.\n\n/account claude add  or  /account openai add\nCreate the next numbered OAuth account directly.\n\n/account <provider> switch <label>\nSwitch the active account for multi-account providers.\n\n/account <provider> remove <label>\nRemove a saved account.\n\n/account default-provider <provider|auto>\nSet the preferred default provider for future sessions.\n\n/account default-model <model|clear>\nSet the preferred default model for future sessions.\n\nOpenAI-specific settings:\n  /account openai transport ...\n  /account openai effort ...\n  /account openai fast on|off\n\nCustom provider settings:\n  /account openai-compatible api-base ...\n  /account openai-compatible api-key-name ...\n  /account openai-compatible env-file ...\n  /account openai-compatible default-model ..."
 diff --git a/crates/jcode-tui/src/tui/app/observe.rs b/crates/jcode-tui/src/tui/app/observe.rs
-index e675a4033..0e47249bb 100644
+index 9be8acfd2..5ba161b9c 100644
 --- a/crates/jcode-tui/src/tui/app/observe.rs
 +++ b/crates/jcode-tui/src/tui/app/observe.rs
 @@ -114,9 +114,6 @@ impl App {
@@ -6664,7 +6669,7 @@ index e675a4033..0e47249bb 100644
  
          // The schedule tool queues/cancels ambient tasks, which the ambient panel
 diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
-index d6d9a5d59..72e8f5592 100644
+index d6d9a5d59..ad52e35e8 100644
 --- a/crates/jcode-tui/src/tui/app/onboarding_flow.rs
 +++ b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
 @@ -52,65 +52,6 @@ impl ExternalCli {
@@ -6803,7 +6808,15 @@ index d6d9a5d59..72e8f5592 100644
      }
  
      /// Move the summary pill focus. Keeps `continue_focused` in sync so the
-@@ -369,11 +278,9 @@ impl ImportReview {
+@@ -252,6 +161,7 @@ impl ImportReview {
+ 
+     /// Focus a specific summary pill (used by the onboarding simulator to land
+     /// directly on a given screen state).
++    #[cfg(test)]
+     pub(crate) fn focus_summary_pill(&mut self, pill: SummaryPill) {
+         self.summary_pill = pill;
+         self.continue_focused = pill == SummaryPill::Continue;
+@@ -369,11 +279,9 @@ impl ImportReview {
              .as_secs()
      }
  
@@ -6817,8 +6830,32 @@ index d6d9a5d59..72e8f5592 100644
      }
  }
  
+@@ -404,6 +312,7 @@ pub(crate) enum OnboardingPhase {
+     /// Legacy phase kept for compatibility with older replay/test fixtures.
+     /// New onboarding skips explicit model selection and uses the default route;
+     /// users can still run `/model` later.
++    #[allow(dead_code)] // Compatibility with older replay and test fixtures.
+     ModelSelect,
+     /// "Continue where you left off in <cli>?" Yes/No with a
+     /// [`DECISION_TIMEOUT`] countdown. Highlightable Yes/No selector to match
+@@ -492,6 +401,7 @@ impl OnboardingFlow {
+     /// Start the post-login flow. The app immediately advances this legacy
+     /// phase to continue/suggestions so first-run onboarding no longer blocks on
+     /// choosing a model.
++    #[cfg(test)]
+     pub(crate) fn begin() -> Self {
+         Self {
+             phase: OnboardingPhase::ModelSelect,
+@@ -503,6 +413,7 @@ impl OnboardingFlow {
+     /// were detected. When no logins were detected (`import` is `None`) we ask a
+     /// simple "Log in to OpenAI?" Yes/No instead of dropping straight to the
+     /// provider picker.
++    #[cfg(test)]
+     pub(crate) fn begin_at_login(import: Option<ImportReview>) -> Self {
+         let phase = match import {
+             Some(review) => OnboardingPhase::Login {
 diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
-index fdc0656c1..1268be071 100644
+index fdc0656c1..36d564591 100644
 --- a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
 +++ b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
 @@ -70,99 +70,16 @@ impl App {
@@ -6926,7 +6963,7 @@ index fdc0656c1..1268be071 100644
      }
  
      /// Shared "does this install look brand-new?" check (see
-@@ -203,21 +120,6 @@ impl App {
+@@ -203,26 +120,12 @@ impl App {
          false
      }
  
@@ -6948,7 +6985,29 @@ index fdc0656c1..1268be071 100644
      /// Begin the guided post-login flow. Called once auth becomes available on a
      /// fresh install (login/import completes). New users are not forced through a
      /// model picker; the default route is used and `/model` remains available.
-@@ -296,11 +198,6 @@ impl App {
+     ///
+     /// No-op if a flow is already running or the user is experienced.
++    #[cfg(test)]
+     pub(super) fn begin_onboarding_flow(&mut self) {
+         if self.onboarding_flow.is_some() {
+             return;
+@@ -241,6 +144,7 @@ impl App {
+     /// "Log in to OpenAI?" Yes/No.
+     ///
+     /// No-op if a flow is already running.
++    #[cfg(test)]
+     pub(super) fn begin_onboarding_flow_at_login(&mut self) {
+         if self.onboarding_flow.is_some() {
+             return;
+@@ -286,6 +190,7 @@ impl App {
+     /// on the "Telemetry settings" page, so we only write the default when no
+     /// choice has been recorded. Advance straight to model selection.
+     /// No-op unless the flow is in a login phase.
++    #[cfg(test)]
+     pub(super) fn onboarding_after_login(&mut self) {
+         if !matches!(
+             self.onboarding_phase(),
+@@ -296,11 +201,6 @@ impl App {
          // The import (if any) has resolved; leave the progress state.
          self.onboarding_import_in_progress = None;
          self.onboarding_import_error = None;
@@ -6960,7 +7019,7 @@ index fdc0656c1..1268be071 100644
          self.set_onboarding_phase(OnboardingPhase::ModelSelect);
          self.onboarding_after_model_select();
      }
-@@ -552,33 +449,12 @@ impl App {
+@@ -552,33 +452,12 @@ impl App {
          // Set when the user wants to learn about the hosted Jcode subscription
          // instead of importing one of the detected third-party logins.
          let mut open_pricing = false;
@@ -6996,7 +7055,7 @@ index fdc0656c1..1268be071 100644
                  // Arrows/Tab move; Enter/Space commits the focused one.
                  match code {
                      KeyCode::Left
-@@ -593,8 +469,6 @@ impl App {
+@@ -593,8 +472,6 @@ impl App {
                      | KeyCode::Char('l') => review.summary_step(true),
                      // c is a direct shortcut into choose mode.
                      KeyCode::Char('c') | KeyCode::Char('C') => review.enter_choose_mode(),
@@ -7005,7 +7064,7 @@ index fdc0656c1..1268be071 100644
                      // y = "yes, import everything" regardless of pill focus, so
                      // the timeout is never a forced wait.
                      KeyCode::Char('y') | KeyCode::Char('Y') => finished = true,
-@@ -602,7 +476,6 @@ impl App {
+@@ -602,7 +479,6 @@ impl App {
                          SummaryPill::Continue => finished = true,
                          SummaryPill::Subscription => open_pricing = true,
                          SummaryPill::ImportLess => review.enter_choose_mode(),
@@ -7013,7 +7072,7 @@ index fdc0656c1..1268be071 100644
                      },
                      _ => return false,
                  }
-@@ -627,12 +500,6 @@ impl App {
+@@ -627,12 +503,6 @@ impl App {
                  }
              }
          }
@@ -7026,7 +7085,7 @@ index fdc0656c1..1268be071 100644
          if open_pricing {
              self.onboarding_import_error = None;
              let url = crate::subscription_catalog::JCODE_PRICING_URL;
-@@ -762,15 +629,8 @@ impl App {
+@@ -762,15 +632,8 @@ impl App {
      }
  
      /// Whether the import screen's telemetry settings sub-page is currently
@@ -7043,7 +7102,7 @@ index fdc0656c1..1268be071 100644
      }
  
      /// Refresh the status notice to reflect the current import-list selection.
-@@ -780,14 +640,10 @@ impl App {
+@@ -780,14 +643,10 @@ impl App {
              let total = review.total();
              let secs = review.seconds_remaining();
              let notice = if !review.choosing {
@@ -7144,10 +7203,10 @@ index 6a736e1a1..06bf1daed 100644
              review.summary_step(forward);
              return true;
 diff --git a/crates/jcode-tui/src/tui/app/remote/server_events.rs b/crates/jcode-tui/src/tui/app/remote/server_events.rs
-index 9be92a432..4c0c6a18b 100644
+index 4979d3825..d86983f16 100644
 --- a/crates/jcode-tui/src/tui/app/remote/server_events.rs
 +++ b/crates/jcode-tui/src/tui/app/remote/server_events.rs
-@@ -1251,8 +1251,10 @@ pub(in crate::tui::app) fn handle_server_event(
+@@ -1275,8 +1275,10 @@ pub(in crate::tui::app) fn handle_server_event(
                      .as_ref()
                      .map(|pending| pending.is_system)
                  {
@@ -7161,10 +7220,10 @@ index 9be92a432..4c0c6a18b 100644
                      if is_system {
                          app.set_status_notice("Rate limited; queued system retry");
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index 4c07f3e55..4814c964f 100644
+index aa4756970..b4803ac78 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-@@ -156,10 +156,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
+@@ -160,10 +160,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
      ),
      RegisteredCommand::public("/wrapped", "Alias for /productivity"),
      RegisteredCommand::public("/feedback", "Send feedback about jcode"),
@@ -7175,7 +7234,7 @@ index 4c07f3e55..4814c964f 100644
      RegisteredCommand::public("/config", "Show or edit configuration"),
      RegisteredCommand::public("/log", "Mark the current location in the jcode logs"),
      RegisteredCommand::public(
-@@ -1359,37 +1356,24 @@ impl App {
+@@ -1377,37 +1374,24 @@ impl App {
          true
      }
  
@@ -7220,7 +7279,7 @@ index 4c07f3e55..4814c964f 100644
          match self.onboarding_phase() {
              Some(OnboardingPhase::Login { import }) => {
                  let prompt = import.as_ref().map(|review| {
-@@ -1414,14 +1398,7 @@ impl App {
+@@ -1432,14 +1416,7 @@ impl App {
                                  crate::tui::ImportSummaryPill::Subscription
                              }
                              SummaryPill::ImportLess => crate::tui::ImportSummaryPill::ImportLess,
@@ -7670,10 +7729,10 @@ index ecab2c9a2..dfccd9773 100644
  
  #[test]
 diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
-index 27e8fca8e..9e9072d37 100644
+index afbdc1d3d..51ec01f7e 100644
 --- a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
-@@ -216,7 +216,10 @@ fn login_welcome_kind_shows_import_checkbox_list() {
+@@ -219,7 +219,10 @@ fn login_welcome_kind_shows_import_checkbox_list() {
          };
      }
      match app.onboarding_welcome_kind() {
@@ -7685,7 +7744,7 @@ index 27e8fca8e..9e9072d37 100644
              assert_eq!(prompt.rows.len(), 2);
              assert_eq!(prompt.rows[0].provider_summary, "OpenAI/Codex");
              assert_eq!(prompt.rows[0].source_name, "Codex auth.json");
-@@ -243,7 +246,10 @@ fn import_review_collects_checked_logins() {
+@@ -246,7 +249,10 @@ fn import_review_collects_checked_logins() {
      // The default is the summary screen with Jcode subscription preselected.
      assert!(!review.choosing);
      assert!(!review.continue_focused);
@@ -7697,7 +7756,7 @@ index 27e8fca8e..9e9072d37 100644
      assert_eq!(review.total(), 3);
      // All candidates remain pre-checked when the user chooses an import action.
      assert_eq!(review.approved_indices(), vec![0, 1, 2]);
-@@ -422,14 +428,17 @@ fn import_review_decision_timer_counts_down_and_times_out() {
+@@ -425,14 +431,17 @@ fn import_review_decision_timer_counts_down_and_times_out() {
      use crate::external_auth::ExternalAuthReviewCandidate;
      use crate::tui::app::onboarding_flow::{DECISION_TIMEOUT, ImportReview};
  
@@ -7718,7 +7777,7 @@ index 27e8fca8e..9e9072d37 100644
      assert_eq!(review.seconds_remaining(), 0);
      assert!(review.timed_out());
  }
-@@ -501,7 +510,9 @@ fn pending_login_entry_is_not_intercepted_by_onboarding_login_phase() {
+@@ -504,7 +513,9 @@ fn pending_login_entry_is_not_intercepted_by_onboarding_login_phase() {
          // Simulate having chosen OpenRouter: the picker closed and a pending
          // API-key login prompt is now active.
          app.inline_interactive_state = None;
@@ -7729,7 +7788,7 @@ index 27e8fca8e..9e9072d37 100644
          assert!(app.pending_login.is_some());
          assert!(app.inline_interactive_state.is_none());
  
-@@ -549,14 +560,18 @@ fn openrouter_key_typed_through_full_key_path_does_not_reopen_picker() {
+@@ -552,14 +563,18 @@ fn openrouter_key_typed_through_full_key_path_does_not_reopen_picker() {
          // are no longer swallowed.
          let key = "sk-or-key-no-loop";
          for ch in key.chars() {
@@ -7750,7 +7809,7 @@ index 27e8fca8e..9e9072d37 100644
  
          // Pressing Enter submits the key to the pending-login handler instead of
          // re-opening the provider picker (the old loop).
-@@ -569,12 +584,17 @@ fn openrouter_key_typed_through_full_key_path_does_not_reopen_picker() {
+@@ -572,12 +587,17 @@ fn openrouter_key_typed_through_full_key_path_does_not_reopen_picker() {
              app.inline_interactive_state.is_none(),
              "Enter must not re-open the provider picker"
          );
@@ -7770,7 +7829,7 @@ index 27e8fca8e..9e9072d37 100644
          let contents = std::fs::read_to_string(&env_file)
              .unwrap_or_else(|e| panic!("openrouter.env should exist at {env_file:?}: {e}"));
          assert!(
-@@ -600,9 +620,10 @@ fn import_failure_resets_login_to_manual_prompt() {
+@@ -603,9 +623,10 @@ fn import_failure_resets_login_to_manual_prompt() {
          app.begin_onboarding_flow_at_login();
          // Simulate the walkthrough having approved a candidate and kicked off an
          // import (the per-candidate sub-state is cleared once the import spawns).
@@ -7784,7 +7843,7 @@ index 27e8fca8e..9e9072d37 100644
          if let Some(flow) = app.onboarding_flow.as_mut() {
              flow.phase = OnboardingPhase::Login {
                  import: Some(review),
-@@ -752,7 +773,7 @@ fn startup_check_skips_when_session_already_has_activity() {
+@@ -755,7 +776,7 @@ fn startup_check_skips_when_session_already_has_activity() {
  }
  
  #[test]
@@ -7793,7 +7852,7 @@ index 27e8fca8e..9e9072d37 100644
      with_temp_jcode_home(|| {
          let mut app = create_test_app();
          app.onboarding_flow = None;
-@@ -766,21 +787,30 @@ fn startup_check_ignores_synthetic_scaffolding_messages() {
+@@ -769,21 +790,30 @@ fn startup_check_ignores_synthetic_scaffolding_messages() {
  
          app.maybe_begin_onboarding_flow_on_startup();
  
@@ -7833,7 +7892,7 @@ index 27e8fca8e..9e9072d37 100644
          );
      });
  }
-@@ -853,7 +883,10 @@ fn model_validation_success_appends_single_ready_line() {
+@@ -856,7 +886,10 @@ fn model_validation_success_appends_single_ready_line() {
      let messages = app.display_messages();
      assert_eq!(messages.len(), before + 1, "exactly one summary block");
      let line = &messages.last().unwrap().content;
@@ -7845,7 +7904,7 @@ index 27e8fca8e..9e9072d37 100644
      assert!(
          line.contains("GPT-5.5 (low) (default)"),
          "names the default model: {line:?}"
-@@ -890,7 +923,10 @@ fn model_validation_failure_appends_single_warning_line_with_detail() {
+@@ -893,7 +926,10 @@ fn model_validation_failure_appends_single_warning_line_with_detail() {
          line.contains("Claude Opus 4.8 (default)"),
          "names the default model: {line:?}"
      );
@@ -7857,7 +7916,7 @@ index 27e8fca8e..9e9072d37 100644
      assert!(line.contains("/model"), "offers a way out: {line:?}");
      assert!(
          line.contains('\u{2715}'),
-@@ -919,7 +955,10 @@ fn model_validation_auth_failure_offers_login_fix() {
+@@ -922,7 +958,10 @@ fn model_validation_auth_failure_offers_login_fix() {
      let line = &messages.last().unwrap().content;
      // Auth failures should point the user at /login to re-authenticate, while
      // still offering /model as an alternative.
@@ -7869,7 +7928,7 @@ index 27e8fca8e..9e9072d37 100644
      assert!(line.contains("/model"), "still offers /model: {line:?}");
  }
  
-@@ -1003,11 +1042,8 @@ fn startup_check_skips_user_with_established_session_history() {
+@@ -1006,11 +1045,8 @@ fn startup_check_skips_user_with_established_session_history() {
              .join("sessions");
          std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
          for i in 0..10 {
@@ -7883,7 +7942,7 @@ index 27e8fca8e..9e9072d37 100644
          }
  
          let mut app = create_test_app();
-@@ -1311,9 +1347,10 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
+@@ -1314,9 +1350,10 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
          app.onboarding_flow = None;
          app.begin_onboarding_flow_at_login();
          // Must be in the Login phase for the failure handler to apply.
@@ -7897,7 +7956,7 @@ index 27e8fca8e..9e9072d37 100644
          if let Some(flow) = app.onboarding_flow.as_mut() {
              flow.phase = OnboardingPhase::Login {
                  import: Some(review),
-@@ -1321,7 +1358,8 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
+@@ -1324,7 +1361,8 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
          }
          // A multi-line markdown failure message with marker noise and a
          // lowercase first word, mimicking the importer's render_markdown output.
@@ -7907,7 +7966,7 @@ index 27e8fca8e..9e9072d37 100644
          app.onboarding_handle_login_failed(Some(raw.to_string()));
          let shown = app
              .onboarding_import_error
-@@ -1330,7 +1368,10 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
+@@ -1333,7 +1371,10 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
          // Markdown bold headers and the "Logins imported" line are stripped; the
          // first meaningful line is kept, marker trimmed, first letter uppercased.
          assert!(!shown.contains("**"), "markdown bold stripped: {shown}");
@@ -7919,7 +7978,7 @@ index 27e8fca8e..9e9072d37 100644
          assert!(
              shown.starts_with("The token has expired"),
              "first meaningful line kept + capitalized: {shown}"
-@@ -1366,16 +1407,31 @@ fn import_failure_h_key_prepares_agent_repair_brief() {
+@@ -1369,16 +1410,31 @@ fn import_failure_h_key_prepares_agent_repair_brief() {
              .find(|m| m.content.contains("Agent repair brief"))
              .map(|m| m.content.clone())
              .expect("repair brief message");
@@ -7958,7 +8017,7 @@ index 27e8fca8e..9e9072d37 100644
          // Staying on the recovery screen, Enter still opens the provider picker.
          assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
          assert!(app.inline_interactive_state.is_some());
-@@ -1448,11 +1504,8 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
+@@ -1451,11 +1507,8 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
          let legacy_auth = crate::auth::codex::legacy_auth_file_path().expect("legacy auth path");
          std::fs::create_dir_all(legacy_auth.parent().expect("legacy auth parent"))
              .expect("create legacy auth dir");
@@ -7972,7 +8031,7 @@ index 27e8fca8e..9e9072d37 100644
          crate::auth::AuthStatus::invalidate_cache();
  
          // App construction performs synchronous runtime-backed setup, so build
-@@ -1505,9 +1558,8 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
+@@ -1508,9 +1561,8 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
                  app.onboarding_phase(),
                  Some(OnboardingPhase::StartChoice { .. })
              ));
@@ -7984,7 +8043,7 @@ index 27e8fca8e..9e9072d37 100644
                      loop {
                          match bus_rx.recv().await {
                              Ok(crate::bus::BusEvent::ProviderModelActivated {
-@@ -1521,10 +1573,9 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
+@@ -1524,10 +1576,9 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
                              _ => {}
                          }
                      }
@@ -7998,7 +8057,7 @@ index 27e8fca8e..9e9072d37 100644
  
              assert_eq!(model, jcode_provider_core::DEFAULT_OPENAI_MODEL);
              assert_eq!(provider_key.as_deref(), Some("openai-api"));
-@@ -1653,10 +1704,7 @@ fn starting_recent_project_review_queues_remote_turn_without_stuck_sending() {
+@@ -1656,10 +1707,7 @@ fn starting_recent_project_review_queues_remote_turn_without_stuck_sending() {
          "remote review must stay idle until the remote queue dispatches"
      );
      assert!(app.input.is_empty());
@@ -8010,7 +8069,7 @@ index 27e8fca8e..9e9072d37 100644
  }
  
  #[test]
-@@ -1669,100 +1717,15 @@ fn recent_project_review_falls_back_cleanly_when_no_repo_is_known() {
+@@ -1672,100 +1720,15 @@ fn recent_project_review_falls_back_cleanly_when_no_repo_is_known() {
  
      assert!(!app.pending_turn);
      assert!(app.queued_messages.is_empty());
@@ -8319,10 +8378,10 @@ index 8d4b8fb80..964c1b2d4 100644
 +    assert!(!commands.contains(&"/subscription"));
 +}
 diff --git a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-index d3b7f6519..6180109a5 100644
+index e5ebc447f..4577b0b8c 100644
 --- a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
 +++ b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-@@ -509,7 +509,6 @@ impl App {
+@@ -511,7 +511,6 @@ impl App {
              onboarding_startup_checked: false,
              onboarding_import_in_progress: None,
              onboarding_import_error: None,
@@ -8330,7 +8389,7 @@ index d3b7f6519..6180109a5 100644
              onboarding_import_failed_provider: None,
              onboarding_pending_model_validation: None,
              onboarding_recent_project_prefetch: None,
-@@ -684,7 +683,6 @@ impl App {
+@@ -686,7 +685,6 @@ impl App {
              learn_hint_shown_this_session: false,
              terminal_setup_hint_shown_this_session: false,
              swarm_hint_shown_this_session: false,
@@ -8338,7 +8397,7 @@ index d3b7f6519..6180109a5 100644
              hotkey_feedback: None,
              hotkey_usage: None,
              unknown_hotkey_seen: std::collections::HashMap::new(),
-@@ -961,7 +959,6 @@ impl App {
+@@ -965,7 +963,6 @@ impl App {
              onboarding_startup_checked: false,
              onboarding_import_in_progress: None,
              onboarding_import_error: None,
@@ -8346,7 +8405,7 @@ index d3b7f6519..6180109a5 100644
              onboarding_import_failed_provider: None,
              onboarding_pending_model_validation: None,
              onboarding_recent_project_prefetch: None,
-@@ -1136,7 +1133,6 @@ impl App {
+@@ -1140,7 +1137,6 @@ impl App {
              learn_hint_shown_this_session: false,
              terminal_setup_hint_shown_this_session: false,
              swarm_hint_shown_this_session: false,
@@ -8355,10 +8414,10 @@ index d3b7f6519..6180109a5 100644
              hotkey_usage: None,
              unknown_hotkey_seen: std::collections::HashMap::new(),
 diff --git a/crates/jcode-tui/src/tui/mod.rs b/crates/jcode-tui/src/tui/mod.rs
-index 584e5742d..a3c29c367 100644
+index 2d7686bcf..d4ad27a59 100644
 --- a/crates/jcode-tui/src/tui/mod.rs
 +++ b/crates/jcode-tui/src/tui/mod.rs
-@@ -1064,12 +1064,6 @@ pub struct LoginImportPrompt {
+@@ -1197,12 +1197,6 @@ pub struct LoginImportPrompt {
      pub choosing: bool,
      /// Which summary pill is focused (only meaningful when `choosing` is false).
      pub summary_pill: ImportSummaryPill,
@@ -8371,7 +8430,7 @@ index 584e5742d..a3c29c367 100644
      /// How many rows are currently checked for import.
      pub checked_count: usize,
      /// Seconds left before the screen auto-imports all checked logins.
-@@ -1085,19 +1079,6 @@ pub enum ImportSummaryPill {
+@@ -1218,19 +1212,6 @@ pub enum ImportSummaryPill {
      Subscription,
      /// Open the per-login checkbox list to import fewer logins.
      ImportLess,
@@ -8763,10 +8822,10 @@ index c13773000..759782f4f 100644
                  && !sub_errored
                  && let Some(result) = sub_result
 diff --git a/crates/jcode-tui/src/tui/ui_messages/tests.rs b/crates/jcode-tui/src/tui/ui_messages/tests.rs
-index d4acc9f8b..596529342 100644
+index 60065eb24..0ece90118 100644
 --- a/crates/jcode-tui/src/tui/ui_messages/tests.rs
 +++ b/crates/jcode-tui/src/tui/ui_messages/tests.rs
-@@ -2395,276 +2395,6 @@ fn render_batch_tool_message_shows_flat_and_nested_subcall_intents() {
+@@ -2414,276 +2414,6 @@ fn render_batch_tool_message_shows_flat_and_nested_subcall_intents() {
      crate::tui::ui::tools_ui::tests_tool_call_details_override::set(false);
  }
  
@@ -9313,7 +9372,7 @@ index 9b722192e..f8e56c207 100644
          (
              "request_permission",
 diff --git a/crates/jcode-tui/src/tui/ui_tools.rs b/crates/jcode-tui/src/tui/ui_tools.rs
-index 5239e8eb8..5eb43edea 100644
+index 2f65271a6..d1c6452c4 100644
 --- a/crates/jcode-tui/src/tui/ui_tools.rs
 +++ b/crates/jcode-tui/src/tui/ui_tools.rs
 @@ -1298,33 +1298,6 @@ pub(super) fn get_tool_summary_with_budget(
@@ -9351,7 +9410,7 @@ index 5239e8eb8..5eb43edea 100644
              .input
              .get("query")
 diff --git a/crates/jcode-usage-types/src/lib.rs b/crates/jcode-usage-types/src/lib.rs
-index 69cdb72c6..62e188a33 100644
+index 63f80f653..19c062145 100644
 --- a/crates/jcode-usage-types/src/lib.rs
 +++ b/crates/jcode-usage-types/src/lib.rs
 @@ -420,47 +420,6 @@ pub struct FeedbackEvent {
@@ -11662,7 +11721,7 @@ index 0ff42c556..000000000
 -    }
 -}
 diff --git a/src/cli/args.rs b/src/cli/args.rs
-index 1eb5a5830..cb7195fca 100644
+index 951f0cfd9..1c830bebe 100644
 --- a/src/cli/args.rs
 +++ b/src/cli/args.rs
 @@ -261,12 +261,6 @@ pub(crate) enum Command {
@@ -11819,7 +11878,7 @@ index 706576f78..7e622bb15 100644
 +    assert!(Args::try_parse_from(["jcode", "account", "status"]).is_err());
 +}
 diff --git a/src/cli/dispatch.rs b/src/cli/dispatch.rs
-index 2800f1dad..d4a4a5a74 100644
+index 3b7f08c07..9825b827a 100644
 --- a/src/cli/dispatch.rs
 +++ b/src/cli/dispatch.rs
 @@ -16,8 +16,7 @@ use crate::{
@@ -12254,7 +12313,7 @@ index f044e0194..1b8cf231a 100644
  
  #[test]
 diff --git a/src/cli/startup.rs b/src/cli/startup.rs
-index 8ef40f778..a1bce5395 100644
+index 23c9f7c91..a1bce5395 100644
 --- a/src/cli/startup.rs
 +++ b/src/cli/startup.rs
 @@ -2,9 +2,7 @@ use anyhow::Result;
@@ -12339,10 +12398,210 @@ index 8ef40f778..a1bce5395 100644
  /// Register provider runtimes that live downstream of `jcode-base` with the
  /// base crate's external provider registry. Keep every downstream runtime
  /// registration in this one function so the composition-root wiring stays
-@@ -505,37 +448,6 @@ mod tests {
+@@ -406,8 +349,9 @@ fn spawn_background_update_check(args: &Args) {
+ 
+             let start = std::time::Instant::now();
+             Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::Checking));
+-            let status = source_update_check_status(hot_exec::check_for_updates());
+-            if matches!(status, UpdateStatus::Available { .. }) {
++            if let Some(update_available) = hot_exec::check_for_updates()
++                && update_available
++            {
+                 // A checkout with local commits can never fast-forward, so the
+                 // pull below would always fail and surface a noisy "Update
+                 // diverged. Press Ctrl+Y..." card in every new session.
+@@ -420,7 +364,10 @@ fn spawn_background_update_check(args: &Args) {
+                     );
+                     Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::UpToDate));
+                 } else {
+-                    Bus::global().publish(BusEvent::UpdateStatus(status));
++                    Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::Available {
++                        current: jcode_build_meta::version().to_string(),
++                        latest: "latest source".to_string(),
++                    }));
+                     if auto_update {
+                         logging::info("Update available - auto-updating...");
+                         Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::Installing {
+@@ -442,14 +389,7 @@ fn spawn_background_update_check(args: &Args) {
+                     }
+                 }
+             } else {
+-                match &status {
+-                    UpdateStatus::Error(message) => logging::info(message),
+-                    UpdateStatus::Skipped { reason } => {
+-                        logging::info(&format!("Source update check skipped: {reason}"));
+-                    }
+-                    _ => {}
+-                }
+-                Bus::global().publish(BusEvent::UpdateStatus(status));
++                Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::UpToDate));
+             }
+             logging::info(&format!(
+                 "[TIMING] background_update_check: auto_update={}, total={}ms",
+@@ -460,24 +400,6 @@ fn spawn_background_update_check(args: &Args) {
+     }
+ }
+ 
+-fn source_update_check_status(result: anyhow::Result<Option<bool>>) -> crate::bus::UpdateStatus {
+-    use crate::bus::UpdateStatus;
+-
+-    match result {
+-        Ok(Some(true)) => UpdateStatus::Available {
+-            current: jcode_build_meta::version().to_string(),
+-            latest: "latest source".to_string(),
+-        },
+-        Ok(Some(false)) => UpdateStatus::UpToDate,
+-        Ok(None) => UpdateStatus::Skipped {
+-            reason:
+-                "no upstream configured for the source checkout (local branch or detached HEAD)"
+-                    .to_string(),
+-        },
+-        Err(error) => UpdateStatus::Error(format!("Source update check failed: {error:#}")),
+-    }
+-}
+-
+ fn should_spawn_background_update_check(args: &Args) -> bool {
+     should_spawn_background_update_check_with_config(
+         args,
+@@ -526,172 +448,6 @@ mod tests {
          Args::parse_from(argv)
      }
  
+-    #[test]
+-    fn source_update_check_preserves_git_error() {
+-        let crate::bus::UpdateStatus::Error(message) =
+-            source_update_check_status(Err(anyhow::anyhow!("git fetch: offline")))
+-        else {
+-            panic!("an indeterminate source comparison must report an error");
+-        };
+-        assert_eq!(message, "Source update check failed: git fetch: offline");
+-    }
+-
+-    #[test]
+-    fn source_update_check_false_reports_up_to_date() {
+-        assert!(matches!(
+-            source_update_check_status(Ok(Some(false))),
+-            crate::bus::UpdateStatus::UpToDate
+-        ));
+-    }
+-
+-    #[test]
+-    fn source_update_check_true_reports_available() {
+-        let crate::bus::UpdateStatus::Available { current, latest } =
+-            source_update_check_status(Ok(Some(true)))
+-        else {
+-            panic!("a source update must remain available");
+-        };
+-        assert_eq!(current, jcode_build_meta::version());
+-        assert_eq!(latest, "latest source");
+-    }
+-
+-    #[test]
+-    fn source_update_check_real_git_upstream_states() {
+-        let repo = tempfile::tempdir().expect("temporary source checkout");
+-        let git = |args: &[&str]| {
+-            let output = ProcessCommand::new("git")
+-                .args([
+-                    "-c",
+-                    "user.name=Update Test",
+-                    "-c",
+-                    "user.email=update-test@example.invalid",
+-                    "-c",
+-                    "commit.gpgsign=false",
+-                    "-c",
+-                    "core.hooksPath=/dev/null",
+-                ])
+-                .args(args)
+-                .current_dir(repo.path())
+-                .output()
+-                .expect("run git fixture command");
+-            assert!(
+-                output.status.success(),
+-                "git {args:?}: {}",
+-                String::from_utf8_lossy(&output.stderr)
+-            );
+-        };
+-        git(&["init", "-b", "source"]);
+-        git(&["commit", "--allow-empty", "-m", "initial"]);
+-
+-        // A local branch without tracking is skipped before claiming a fetch slot.
+-        let result = hot_exec::check_for_updates_in(repo.path(), || {
+-            panic!("untracked checkouts must not fetch or claim the fetch slot")
+-        });
+-        assert_eq!(*result.as_ref().unwrap(), None);
+-        assert!(matches!(
+-            source_update_check_status(result),
+-            crate::bus::UpdateStatus::Skipped { .. }
+-        ));
+-
+-        // Local branches supply tracking controls without fetching or networking.
+-        git(&["branch", "upstream"]);
+-        git(&["branch", "--set-upstream-to=upstream", "source"]);
+-        let result = hot_exec::check_for_updates_in(repo.path(), || false);
+-        assert_eq!(*result.as_ref().unwrap(), Some(false));
+-        assert!(matches!(
+-            source_update_check_status(result),
+-            crate::bus::UpdateStatus::UpToDate
+-        ));
+-
+-        git(&["checkout", "upstream"]);
+-        git(&["commit", "--allow-empty", "-m", "upstream update"]);
+-        git(&["checkout", "source"]);
+-        let result = hot_exec::check_for_updates_in(repo.path(), || false);
+-        assert_eq!(*result.as_ref().unwrap(), Some(true));
+-        assert!(matches!(
+-            source_update_check_status(result),
+-            crate::bus::UpdateStatus::Available { .. }
+-        ));
+-
+-        // Local commits alone are not updates.
+-        git(&["checkout", "upstream"]);
+-        git(&["branch", "--set-upstream-to=source", "upstream"]);
+-        let result = hot_exec::check_for_updates_in(repo.path(), || false);
+-        assert_eq!(result.unwrap(), Some(false));
+-
+-        git(&["checkout", "--detach"]);
+-        let result = hot_exec::check_for_updates_in(repo.path(), || {
+-            panic!("detached checkouts must not fetch")
+-        });
+-        assert!(matches!(
+-            source_update_check_status(result),
+-            crate::bus::UpdateStatus::Skipped { .. }
+-        ));
+-
+-        // A configured but missing upstream must still report an error.
+-        git(&["checkout", "source"]);
+-        git(&["branch", "-D", "upstream"]);
+-        let result = hot_exec::check_for_updates_in(repo.path(), || false);
+-        assert!(matches!(
+-            source_update_check_status(result),
+-            crate::bus::UpdateStatus::Error(_)
+-        ));
+-
+-        // Network/fetch failures on tracked branches must not become skips.
+-        git(&["remote", "add", "origin", "./missing-remote"]);
+-        git(&["update-ref", "refs/remotes/origin/source", "HEAD"]);
+-        git(&["config", "branch.source.remote", "origin"]);
+-        git(&["config", "branch.source.merge", "refs/heads/source"]);
+-        let result = hot_exec::check_for_updates_in(repo.path(), || true);
+-        let crate::bus::UpdateStatus::Error(message) = source_update_check_status(result) else {
+-            panic!("failed fetch must report an error");
+-        };
+-        assert!(message.contains("git fetch -q:"));
+-    }
+-
+-    #[test]
+-    fn source_update_check_invalid_checkout_reports_error() {
+-        let directory = tempfile::tempdir().unwrap();
+-        let result = hot_exec::check_for_updates_in(directory.path(), || {
+-            panic!("invalid checkouts must not fetch")
+-        });
+-        assert!(matches!(
+-            source_update_check_status(result),
+-            crate::bus::UpdateStatus::Error(_)
+-        ));
+-    }
+-
 -    #[test]
 -    fn telemetry_subcommand_skips_startup_telemetry() {
 -        assert!(is_telemetry_subcommand_invocation([
