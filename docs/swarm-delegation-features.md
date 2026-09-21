@@ -15,11 +15,8 @@ on a cheaper model and return compact summaries instead of raw tool output.
 Available workers:
 
 ```text
-swarm_explorer      Code investigation, file reading, grep, tracing
-swarm_bash-runner   Shell commands, builds, tests, script execution
-swarm_fixer         Code changes with build/test validation
+swarm_investigator  Read-only investigation, shell commands, grep, file search, file reading, grep, tracing
 swarm_research      Web and documentation research
-swarm_automation    Browser, UI, and Gmail workflows
 ```
 
 Configure the swarm model in `~/.jcode/config.toml`:

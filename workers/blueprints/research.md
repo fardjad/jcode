@@ -51,11 +51,7 @@ material.
 Workers cannot contact or spawn peer workers directly and must request
 coordinator routing via an `ESCALATION` line. Available worker IDs and
 specialties:
-- `explorer`: read-only code/session investigation.
-- `bash-runner`: shell commands and test/build execution.
-- `fixer`: scoped code implementation and validation.
-- `research`: web and jcode documentation research.
-- `automation`: browser/UI/Gmail workflows.
+- `investigator`: read-only investigation and shell execution.
 
 **Capability escalation:**
 If the task needs a specialty, tool, permission, source, or decision outside

@@ -8,11 +8,8 @@ This directory versions personal worker blueprints installed locally under
 | Blueprint | Tool name | Purpose |
 | --- | --- | --- |
 | `coordinator.md` | (reserved, no tool) | Coordinator prompt and tool policy. Not a spawnable worker. |
-| `explorer.md` | `swarm_explorer` | Read-only codebase navigation. Answers "where is X?" questions. |
-| `bash-runner.md` | `swarm_bash-runner` | Runs shell commands and returns concise output. |
-| `fixer.md` | `swarm_fixer` | Fast implementation specialist for small, well-scoped tasks. |
+| `investigator.md` | `swarm_investigator` | Read-only investigation and shell execution. |
 | `research.md` | `swarm_research` | Web and documentation research without file modification. |
-| `automation.md` | `swarm_automation` | Browser, UI, and Gmail workflows. |
 
 ### Built-in tool ownership
 
@@ -24,11 +21,8 @@ this ownership list.
 
 | Worker | Owned tools |
 | --- | --- |
-| `swarm_explorer` | `agentgrep`, `conversation_search`, `ls`, `memory`, `read`, `session_search` |
-| `swarm_bash-runner` | `bash`, `bg`, `read` |
-| `swarm_fixer` | `agentgrep`, `apply_patch`, `batch`, `bash`, `bg`, `debug_socket`, `edit`, `ls`, `multiedit`, `patch`, `read`, `selfdev`, `write` |
+| `swarm_investigator` | `agentgrep`, `bash`, `bg`, `conversation_search`, `ls`, `memory`, `read`, `session_search` |
 | `swarm_research` | `jcode_docs`, `read`, `webfetch`, `websearch` |
-| `swarm_automation` | `browser`, `gmail`, `macos_computer_use`, `open`, `side_panel` |
 
 All ordinary workers also have `mcp`, `mcp_search`, `mcp_call`, `skill_manage`,
 and `jcode_docs`. These tools are available only for explicitly requested,
@@ -74,13 +68,11 @@ mechanism. No separate prompt-overlay installer is needed.
 Set the model for all blueprints in `~/.jcode/config.toml`:
 
 ```toml
-[agents.worker_blueprints.explorer]
+[agents.worker_blueprints.investigator]
 model = "openrouter-eu:gpt-5.6-luna"
 
-[agents.worker_blueprints.bash-runner]
 model = "openrouter-eu:gpt-5.6-luna"
 
-[agents.worker_blueprints.fixer]
 model = "openrouter-eu:gpt-5.6-luna"
 
 [agents.worker_blueprints.research]
@@ -94,8 +86,8 @@ Configure the coordinator's own tool policy via the reserved
 
 ```toml
 [agents.worker_blueprints.coordinator]
-enabled = ["read", "agentgrep", "swarm_explorer", "swarm_fixer"]
-disabled = ["bash", "swarm_automation"]
+enabled = ["read", "agentgrep", "swarm_investigator", ""]
+disabled = ["bash", "swarm_investigator"]
 ```
 
 This uses the same TOML override namespace and policy fields as worker
@@ -165,7 +157,7 @@ session. No restart needed.
    and documentation research role. Each blueprint's `enabled-tools` list
    enforces the capability boundary.
 
-4. **Workers implement, they do not plan.** A fixer receives clear
+4. **Workers implement, they do not plan.** A worker receives clear
    instructions and executes. It does not research, spawn subagents, or
    second-guess the task. This keeps the worker fast and cheap.
 
