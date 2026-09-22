@@ -110,7 +110,7 @@ cd "$JCODE_CATALOG_ROOT/plugins/delegation-guard" && python3 test_transform.py
  crates/jcode-app-core/src/tool/goal_tests.rs  |    3 +
  crates/jcode-app-core/src/tool/mcp.rs         |    1 +
  crates/jcode-app-core/src/tool/memory.rs      |    1 +
- crates/jcode-app-core/src/tool/mod.rs         |  527 +++-
+ crates/jcode-app-core/src/tool/mod.rs         |  537 +++-
  crates/jcode-app-core/src/tool/open_tests.rs  |    1 +
  crates/jcode-app-core/src/tool/panel_tests.rs |    1 +
  crates/jcode-app-core/src/tool/read/tests.rs  |    1 +
@@ -146,7 +146,7 @@ cd "$JCODE_CATALOG_ROOT/plugins/delegation-guard" && python3 test_transform.py
  src/bin/harness.rs                            |    2 +
  src/cli/selfdev_tests.rs                      |    1 +
  tests/e2e/provider_behavior.rs                |    1 +
- 84 files changed, 5853 insertions(+), 314 deletions(-)
+ 84 files changed, 5862 insertions(+), 315 deletions(-)
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-golden.json
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-malformed.json
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-null-heavy.json
@@ -5863,7 +5863,7 @@ index bf06c8bac..07daa8a3f 100644
              stdin_request_tx: None,
              graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 5500df8ab..caff7d4a7 100644
+index 5500df8ab..31e625814 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,12 +1,12 @@
@@ -6174,7 +6174,7 @@ index 5500df8ab..caff7d4a7 100644
                  let mut fields =
                      Self::tool_lifecycle_fields("error", name, resolved_name, &input, &ctx);
                  fields.push(("elapsed_ms".to_string(), latency_ms.to_string()));
-@@ -933,24 +1135,100 @@ impl Registry {
+@@ -933,24 +1135,108 @@ impl Registry {
              }
          };
  
@@ -6233,23 +6233,32 @@ index 5500df8ab..caff7d4a7 100644
 +            None
 +        };
  
-         // Context overflow guard: check if this output would push us over the limit
+-        // Context overflow guard: check if this output would push us over the limit
 -        output = self
 -            .guard_context_overflow(name, output, accepts_large_output(&input))
++        // Context overflow guard: check if this output would push us over
++        // the limit. When the post-tool transform already replaced an
++        // oversized output with a small delegation nudge, the context guard
++        // sees the reduced size and returns "below_threshold". Upgrade the
++        // recorded outcome to "intercepted" so the measurement pipeline
++        // correctly attributes the guard's action.
 +        let guarded = self
 +            .guard_context_overflow_with_outcome(name, output, accepts_large_output(&input))
              .await;
-+        let guard_outcome = guarded.outcome;
++        let guard_outcome = if transform_outcome == Some("applied") && guarded.outcome == "below_threshold" {
++            "intercepted"
++        } else {
++            guarded.outcome
++        };
 +        let mut output = guarded.output;
 +        // These outcomes are coordinator-visible guard nudges. `intercepted`
-+        // is the ordinary refusal path, `context_guard_refused` is used when
-+        // the context is already exhausted, and a below-threshold result after
-+        // an applied transformer means the guard replaced an oversized output
-+        // with a small nudge before checking it again. Issue the same single-use
-+        // handoff token in each case so the nudge can always be acted on.
-+        let guard_spawn_request_id = (matches!(guard_outcome, "intercepted" | "context_guard_refused")
-+            || (guard_outcome == "below_threshold" && transform_outcome == Some("applied")))
-+        .then(|| {
++        // is the ordinary refusal path or a post-transform replacement,
++        // `context_guard_refused` is used when the context is already
++        // exhausted. Issue the same single-use handoff token in each case
++        // so the nudge can always be acted on.
++        let guard_spawn_request_id =
++            matches!(guard_outcome, "intercepted" | "context_guard_refused")
++            .then(|| {
 +            let token_marker = format!("[delegation-token: {transform_delegation_token}]");
 +            if !output.output.contains(&token_marker) {
 +                output.output.push_str(&format!("\n\n{token_marker}"));
@@ -6288,7 +6297,7 @@ index 5500df8ab..caff7d4a7 100644
  
          let mut fields = Self::tool_lifecycle_fields("done", name, resolved_name, &input, &ctx);
          fields.push(("elapsed_ms".to_string(), latency_ms.to_string()));
-@@ -962,6 +1240,109 @@ impl Registry {
+@@ -962,6 +1248,109 @@ impl Registry {
          fields.push(("image_count".to_string(), output.images.len().to_string()));
          crate::logging::event_info("TOOL_LIFECYCLE", fields);
  
@@ -6398,7 +6407,7 @@ index 5500df8ab..caff7d4a7 100644
          Ok(output)
      }
  
-@@ -974,16 +1355,19 @@ impl Registry {
+@@ -974,16 +1363,19 @@ impl Registry {
      /// damage was already done by the time they read the warning. Refusing costs
      /// a few dozen tokens, states the price, and lets the caller either narrow
      /// the query or knowingly pay by passing `accept_large_output`.
@@ -6421,7 +6430,7 @@ index 5500df8ab..caff7d4a7 100644
          }
  
          let current_tokens = compaction.effective_token_count();
-@@ -1002,7 +1386,10 @@ impl Registry {
+@@ -1002,7 +1394,10 @@ impl Registry {
          let needs_truncation = projected > threshold_tokens || output_tokens > single_max_tokens;
  
          if !needs_truncation {
@@ -6433,7 +6442,7 @@ index 5500df8ab..caff7d4a7 100644
          }
  
          // Past the safety threshold there is no room left to spend, so opting in
-@@ -1020,19 +1407,22 @@ impl Registry {
+@@ -1020,19 +1415,22 @@ impl Registry {
                  current_tokens / 1000,
                  budget / 1000,
              ));
@@ -6466,7 +6475,7 @@ index 5500df8ab..caff7d4a7 100644
              };
          }
  
-@@ -1043,7 +1433,10 @@ impl Registry {
+@@ -1043,7 +1441,10 @@ impl Registry {
          let max_chars = max_tokens * 4;
  
          if output.output.len() <= max_chars {
@@ -6478,7 +6487,7 @@ index 5500df8ab..caff7d4a7 100644
          }
  
          if !accept_large_output {
-@@ -1056,16 +1449,19 @@ impl Registry {
+@@ -1056,16 +1457,19 @@ impl Registry {
                  budget / 1000,
                  (current_tokens as f32 / budget as f32) * 100.0,
              ));
@@ -6508,7 +6517,7 @@ index 5500df8ab..caff7d4a7 100644
              };
          }
  
-@@ -1100,14 +1496,29 @@ impl Registry {
+@@ -1100,14 +1504,29 @@ impl Registry {
              max_tokens as f32 / 1000.0,
          );
  

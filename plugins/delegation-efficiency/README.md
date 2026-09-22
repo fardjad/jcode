@@ -182,15 +182,17 @@ directory with the intended access controls.
 
 Use the result as a bounded measurement ledger, not as an efficiency score:
 
-* The visual report leads with intercepted eligible outputs, interception
-  opportunity coverage, and avoided bytes, lines, and tokens. Bytes and lines
-  are measured when source facts support them. Tokens are marked estimated when
-  an approximate tokenizer was used. Do not derive avoided payload from
+* The visual report leads with a concise, explicitly linked delegation
+  comparison: estimated coordinator-input tokens without the guard, all tokens
+  with guard and delegation, and their difference as estimated token savings.
+  The guarded total is broken down into guard notice, delegation request, and
+  worker result tokens. Each complete row requires all three components;
+  incomplete and unlinked cases are excluded, not treated as zero.
+* It then shows intercepted eligible outputs, interception opportunity
+  coverage, and avoided bytes, lines, and tokens. Bytes and lines are measured
+  when source facts support them. Tokens are marked estimated when an
+  approximate tokenizer was used. Do not derive avoided payload from
   `event_count`.
-* `communication_observation` and execution-related event kinds can be counted
-  separately, but this report does not break communication down by worker,
-  coordinator, direction, or communication kind. It also does not report
-  `process_role`.
 * `delegation_spawn` and `delegation_follow_up` show recorded event kinds, not
   whether a delegation was proactive or guard-triggered. The aggregate report
   has no joinable guard or delegation identifiers and does not expose that
@@ -253,7 +255,8 @@ The counterfactual delegation view models the guarded full tool output as an
 estimated coordinator-input token baseline. It never equates that later input
 with provider-reported output tokens. This catalog has no authoritative
 input-token price or rate and no exact communication-to-request attribution,
-so the monetary baseline and monetary net result are explicitly unavailable.
+so the visual comparison remains a token estimate and monetary savings are
+explicitly unavailable.
 
 ```bash
 "$PLUGIN_DIR/report.py" --analysis

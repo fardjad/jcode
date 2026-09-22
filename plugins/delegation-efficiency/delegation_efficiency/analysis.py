@@ -57,7 +57,10 @@ def counterfactual_net_savings(db=None, filters: dict[str, Any] | None = None) -
         result_rows = []
         exclusions = Counter()
         for row in rows:
-            if row["event_kind"] != "delegation_spawn" or row["explicit_delegation_link"] != 1:
+            # Runtime records the initial worker handoff as `child_session`.
+            # `delegation_follow_up` is a later lifecycle observation for the
+            # same delegation, so including it would double-count costs.
+            if row["event_kind"] not in ("delegation_spawn", "child_session") or row["explicit_delegation_link"] != 1:
                 continue
             delegation = db.execute(
                 "SELECT * FROM delegation_observations WHERE event_id = ?", (row["event_id"],)
@@ -79,7 +82,7 @@ def counterfactual_net_savings(db=None, filters: dict[str, Any] | None = None) -
                 (delegation["delegation_id"], delegation["guard_event_id"]),
             ).fetchall()
             guard_notice = [item for item in communications if item["direction"] == "inbound" and item["communication_kind"] == "clarification" and item["process_role"] == "coordinator"]
-            spawn = [item for item in communications if item["direction"] == "outbound" and item["communication_kind"] in ("follow_up", "summary", "escalation") and item["process_role"] == "coordinator"]
+            spawn = [item for item in communications if item["direction"] == "outbound" and item["communication_kind"] in ("follow_up", "spawn", "summary", "escalation") and item["process_role"] == "coordinator"]
             returns = [item for item in communications if item["direction"] == "inbound" and item["communication_kind"] in ("follow_up", "summary", "context_read") and item["process_role"] == "worker"]
             baseline_tokens, baseline_evidence = _token_measurement(guard, "original_tokens")
             notice_tokens = sum(item["tokens"] for item in guard_notice if item["tokens"] is not None)
@@ -109,12 +112,22 @@ def counterfactual_net_savings(db=None, filters: dict[str, Any] | None = None) -
                 monetary_status = "excluded_no_linked_actual_components"
             result_rows.append({
                 "guard_linkage": "explicit", "baseline": {"tokens": baseline_tokens, "token_evidence": baseline_token_evidence, "token_basis": "estimated_coordinator_input_full_original_tool_output", "cost_micros": baseline_cost, "cost_currency": baseline_currency, "cost_status": baseline_cost_status},
-                "actual": {"tokens": actual_tokens if token_complete else None, "token_evidence": token_evidence, "cost_micros": actual_cost, "cost_currency": actual_currency, "cost_status": actual_cost_status},
+                "actual": {"tokens": actual_tokens if token_complete else None, "token_evidence": token_evidence, "components": {"guard_notice_tokens": notice_tokens if token_complete else None, "delegation_request_tokens": spawn_tokens if token_complete else None, "worker_result_tokens": return_tokens if token_complete else None}, "cost_micros": actual_cost, "cost_currency": actual_currency, "cost_status": actual_cost_status},
                 "net": {"tokens": token_net, "token_evidence": "estimated_coordinator_input_counterfactual" if token_net is not None else "unknown", "cost_micros": monetary_net, "cost_currency": baseline_currency if monetary_net is not None else None, "cost_status": monetary_status},
                 "component_counts": {"guard_notice": len(guard_notice), "spawn": len(spawn), "worker_returns_or_reads": len(returns)},
                 "completeness": {"token_components_complete": token_complete, "monetary_components_complete": monetary_net is not None},
             })
-        return {"privacy": "content_free", "scope": "counterfactual_net_savings", "derivation_version": NET_SAVINGS_VERSION, "evidence": "estimated_counterfactual", "rows": result_rows, "exclusions": dict(sorted(exclusions.items())), "summary": {"linked_intercepted_delegations": len(result_rows), "token_rows": sum(item["net"]["tokens"] is not None for item in result_rows), "monetary_rows": sum(item["net"]["cost_micros"] is not None for item in result_rows)}}
+        complete_rows = [item for item in result_rows if item["net"]["tokens"] is not None]
+        comparison = {
+            "complete_delegations": len(complete_rows),
+            "estimated_without_guard_tokens": sum(item["baseline"]["tokens"] for item in complete_rows),
+            "guard_notice_tokens": sum(item["actual"]["components"]["guard_notice_tokens"] for item in complete_rows),
+            "delegation_request_tokens": sum(item["actual"]["components"]["delegation_request_tokens"] for item in complete_rows),
+            "worker_result_tokens": sum(item["actual"]["components"]["worker_result_tokens"] for item in complete_rows),
+            "guarded_total_tokens": sum(item["actual"]["tokens"] for item in complete_rows),
+            "estimated_savings_tokens": sum(item["net"]["tokens"] for item in complete_rows),
+        }
+        return {"privacy": "content_free", "scope": "counterfactual_net_savings", "derivation_version": NET_SAVINGS_VERSION, "evidence": "estimated_counterfactual", "rows": result_rows, "exclusions": dict(sorted(exclusions.items())), "summary": {"linked_intercepted_delegations": len(result_rows), "token_rows": len(complete_rows), "monetary_rows": sum(item["net"]["cost_micros"] is not None for item in result_rows), "comparison": comparison}}
     finally:
         if own:
             db.close()

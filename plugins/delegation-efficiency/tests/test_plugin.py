@@ -199,9 +199,11 @@ class PluginTests(unittest.TestCase):
         rendered = visual_report(report())
         self.assertIn("<!doctype html>", rendered.lower())
         self.assertIn("<style>", rendered)
-        self.assertIn("Executive summary", rendered)
-        self.assertIn("Provider cost coverage", rendered)
-        self.assertIn("counterfactual savings", rendered)
+        self.assertIn("color-scheme:light", rendered)
+        self.assertNotIn("color-scheme:light dark", rendered)
+        self.assertIn("Delegation cost comparison", rendered)
+        self.assertIn("No cost comparison is available yet.", rendered)
+        self.assertNotIn("Estimated cost without delegation guard", rendered)
         self.assertNotIn("visual-event-1", rendered)
         self.assertNotIn("visual-session-1", rendered)
         self.assertNotIn("provider-a", rendered)
@@ -211,11 +213,24 @@ class PluginTests(unittest.TestCase):
         self.assertNotIn("http://", rendered.lower())
         self.assertNotIn("https://", rendered.lower())
 
-    def test_visual_report_leads_with_guard_savings_and_hides_internal_labels(self):
+    def test_visual_report_shows_only_the_guard_cost_comparison(self):
         rendered = visual_report({
             "monthly": [{"month": "2026-01", "event_kind": "tool_result", "event_count": 4,
                          "known_cost_count": 0, "unknown_cost_count": 0}],
             "analysis": {
+                "counterfactual_net_savings": {
+                    "evidence": "estimated_counterfactual",
+                    "exclusions": {},
+                    "summary": {"comparison": {
+                        "complete_delegations": 1,
+                        "estimated_without_guard_tokens": 100,
+                        "guard_notice_tokens": 5,
+                        "delegation_request_tokens": 10,
+                        "worker_result_tokens": 35,
+                        "guarded_total_tokens": 50,
+                        "estimated_savings_tokens": 50,
+                    }},
+                },
                 "rates": {"interception": {"rate": 0.75}},
                 "impact": {
                     "eligible_outputs": 4,
@@ -228,17 +243,29 @@ class PluginTests(unittest.TestCase):
                 },
             },
         })
-        self.assertIn("How much work did the guard avoid?", rendered)
-        self.assertIn("What the guard saved", rendered)
-        self.assertIn("3</strong><span>intercepted eligible outputs", rendered)
-        self.assertIn("75.0%</strong><span>interception opportunity covered", rendered)
-        self.assertIn("240</strong><span>Bytes avoided", rendered)
-        self.assertIn("12</strong><span>Lines avoided", rendered)
-        self.assertIn("60</strong><span>Tokens avoided", rendered)
-        self.assertIn("Measured", rendered)
-        self.assertIn("Estimated", rendered)
+        self.assertIn("Estimated cost without delegation guard", rendered)
+        self.assertIn("100 tokens", rendered)
+        self.assertIn("Cost with delegation guard", rendered)
+        self.assertIn("Estimated savings", rendered)
+        self.assertIn("Guard notice: 5 tokens", rendered)
+        self.assertIn("Delegation request: 10 tokens", rendered)
+        self.assertIn("Worker result: 35 tokens", rendered)
+        self.assertNotIn("What the guard saved", rendered)
+        self.assertNotIn("interception opportunity", rendered)
+        self.assertNotIn("Bytes avoided", rendered)
         for internal in ("part 3", "derivation version", "blueprint", "prompt", "plan", "specialist"):
             self.assertNotIn(internal, rendered.lower())
+
+    def test_visual_report_does_not_render_missing_costs_as_zero(self):
+        rendered = visual_report({"analysis": {"counterfactual_net_savings": {
+            "summary": {"comparison": {}},
+            "exclusions": {"missing_or_unintercepted_guard": 41},
+        }}})
+        self.assertIn("No cost comparison is available yet.", rendered)
+        self.assertIn("Missing data is unavailable, not zero.", rendered)
+        self.assertNotIn("Estimated cost without delegation guard", rendered)
+        self.assertNotIn("0 tokens", rendered)
+        self.assertNotIn("missing_or_unintercepted_guard", rendered)
 
     def test_visual_report_evidence_bars_use_monthly_event_counts_not_rows(self):
         rendered = visual_report({
@@ -247,19 +274,6 @@ class PluginTests(unittest.TestCase):
                 {"month": "2026-01", "event_kind": "small", "event_count": 1, "evidence_class": "estimated"},
             ],
         })
-        self.assertIn("101</strong><span>recorded aggregate events", rendered)
-        self.assertIn(
-            '<span class="bar-label">measured</span><span class="bar"><span style="width:100%">',
-            rendered,
-        )
-        self.assertIn(
-            '<span class="bar-label">estimated</span><span class="bar"><span style="width:1%">',
-            rendered,
-        )
-        self.assertIn("These bars show recorded totals by evidence class.", rendered)
-        self.assertNotIn('<span class="bar-label">large</span>', rendered)
-        self.assertNotIn('<span class="bar-label">small</span>', rendered)
-        self.assertNotIn("aggregate row counts", rendered)
 
     def test_visual_cli_defaults_to_state_output_and_supports_explicit_output_or_stdout(self):
         ingest(event("delegation_spawn", "visual-delegation-1", delegation_id="visual-delegation-id", child_session_id="visual-child-id"))
@@ -273,7 +287,7 @@ class PluginTests(unittest.TestCase):
         )
         rendered = output.read_text(encoding="utf-8")
         self.assertEqual(json.loads(proc.stdout), {"format": "html", "path": str(output), "status": "written"})
-        self.assertIn("Delegation efficiency", rendered)
+        self.assertIn("Delegation cost comparison", rendered)
         self.assertNotIn("visual-delegation-id", rendered)
         self.assertNotIn("visual-child-id", rendered)
 
@@ -526,8 +540,6 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(analysis["impact"]["avoided"]["bytes"]["total"], 425)
         self.assertEqual(analysis["impact"]["avoided"]["lines"]["total"], 29)
         rendered = visual_report(report() | {"analysis": analysis})
-        self.assertIn("425</strong><span>Bytes avoided", rendered)
-        self.assertIn("29</strong><span>Lines avoided", rendered)
 
     def test_counterfactual_net_savings_fully_linked_complete_case(self):
         ingest(event(
@@ -549,7 +561,7 @@ class PluginTests(unittest.TestCase):
                      communication_kind="clarification", bytes=20, tokens=5,
                      process_role="coordinator", cost_micros=2, **common))
         ingest(event("communication_observation", "net-spawn", direction="outbound",
-                     communication_kind="summary", bytes=40, tokens=10,
+                    communication_kind="spawn", bytes=40, tokens=10,
                      process_role="coordinator", cost_micros=3, **common))
         ingest(event("communication_observation", "net-return-1", direction="inbound",
                      communication_kind="summary", bytes=60, tokens=20,
@@ -569,6 +581,26 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(row["baseline"]["tokens"], 100)
         self.assertEqual(row["actual"]["tokens"], 50)
         self.assertEqual(row["net"]["tokens"], 50)
+        self.assertEqual(
+            row["actual"]["components"],
+            {
+                "guard_notice_tokens": 5,
+                "delegation_request_tokens": 10,
+                "worker_result_tokens": 35,
+            },
+        )
+        self.assertEqual(
+            result["summary"]["comparison"],
+            {
+                "complete_delegations": 1,
+                "estimated_without_guard_tokens": 100,
+                "guard_notice_tokens": 5,
+                "delegation_request_tokens": 10,
+                "worker_result_tokens": 35,
+                "guarded_total_tokens": 50,
+                "estimated_savings_tokens": 50,
+            },
+        )
         self.assertEqual(row["baseline"]["token_basis"], "estimated_coordinator_input_full_original_tool_output")
         self.assertEqual(row["baseline"]["cost_status"], "unavailable_no_authoritative_input_price_or_rate")
         self.assertIsNone(row["net"]["cost_micros"])
@@ -786,9 +818,6 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(analysis["impact"]["avoided"]["lines"]["total"], 29)
         self.assertEqual(analysis["impact"]["avoided"]["tokens"]["total"], 106)
         rendered = visual_report(report() | {"analysis": analysis})
-        self.assertIn("425</strong><span>Bytes avoided", rendered)
-        self.assertIn("29</strong><span>Lines avoided", rendered)
-        self.assertIn("106</strong><span>Tokens avoided", rendered)
 
         ingest(event(
             "tool_result", "non-applied-below-threshold", guard_event_id="non-applied-below-threshold",

@@ -27,11 +27,11 @@ session policy, and rebuild the index whenever the MCP tool surface changes.
 Validation:
 scripts/cargo_exec.sh test -p jcode-app-core mcp_collision_refresh_preserves_offline_cache_and_legacy_allowlists --lib
 ---
- crates/jcode-app-core/src/tool/mod.rs | 306 +++++++++++++++++++++-----
- 1 file changed, 245 insertions(+), 61 deletions(-)
+ crates/jcode-app-core/src/tool/mod.rs | 279 +++++++++++++++++++++-----
+ 1 file changed, 231 insertions(+), 48 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index caff7d4a7..0518655ae 100644
+index 31e625814..322d195c9 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -205,14 +205,29 @@ pub(crate) fn session_mcp_dispatch_is_allowed(
@@ -267,40 +267,7 @@ index caff7d4a7..0518655ae 100644
      /// prefix/substring containment, then bounded edit distance. Helps the
      /// model recover from hallucinated tool names (#104).
      fn closest_tool_names(name: &str, available: &[&str]) -> Vec<String> {
-@@ -1191,26 +1222,29 @@ impl Registry {
-         // an applied transformer means the guard replaced an oversized output
-         // with a small nudge before checking it again. Issue the same single-use
-         // handoff token in each case so the nudge can always be acted on.
--        let guard_spawn_request_id = (matches!(guard_outcome, "intercepted" | "context_guard_refused")
--            || (guard_outcome == "below_threshold" && transform_outcome == Some("applied")))
--        .then(|| {
--            let token_marker = format!("[delegation-token: {transform_delegation_token}]");
--            if !output.output.contains(&token_marker) {
--                output.output.push_str(&format!("\n\n{token_marker}"));
--            }
--            (
--                transform_spawn_request_id.clone(),
--                transform_delegation_id.clone(),
--                transform_delegation_token.clone(),
--            )
--        });
-+        let guard_spawn_request_id =
-+            (matches!(guard_outcome, "intercepted" | "context_guard_refused")
-+                || (guard_outcome == "below_threshold" && transform_outcome == Some("applied")))
-+            .then(|| {
-+                let token_marker = format!("[delegation-token: {transform_delegation_token}]");
-+                if !output.output.contains(&token_marker) {
-+                    output.output.push_str(&format!("\n\n{token_marker}"));
-+                }
-+                (
-+                    transform_spawn_request_id.clone(),
-+                    transform_delegation_id.clone(),
-+                    transform_delegation_token.clone(),
-+                )
-+            });
-         if guard_spawn_request_id.is_none() {
-             crate::measurement::discard_guard_delegation(
-                 &ctx.session_id,
+@@ -1218,7 +1249,9 @@ impl Registry {
                  &transform_spawn_request_id,
              );
          }
@@ -311,7 +278,7 @@ index caff7d4a7..0518655ae 100644
              let notice_bytes = output.output.len() as u64;
              crate::measurement::emit_communication_observation(
                  ctx.session_id.clone(),
-@@ -1840,6 +1874,155 @@ impl Registry {
+@@ -1848,6 +1881,155 @@ impl Registry {
          tools.remove(name)
      }
  
@@ -467,7 +434,7 @@ index caff7d4a7..0518655ae 100644
      /// Unregister all tools matching a prefix
      pub async fn unregister_prefix(&self, prefix: &str) -> Vec<String> {
          let mut tools = self.tools.write().await;
-@@ -1851,6 +2034,7 @@ impl Registry {
+@@ -1859,6 +2041,7 @@ impl Registry {
          for name in &to_remove {
              tools.remove(name);
          }

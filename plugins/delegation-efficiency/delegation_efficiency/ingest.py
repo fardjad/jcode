@@ -61,18 +61,23 @@ def _insert(db: sqlite3.Connection, event: dict[str, Any]) -> str:
     return "inserted"
 
 
-def ingest(event: dict[str, Any] | str | bytes, retries: int = 3) -> str:
+def ingest(event: dict[str, Any] | str | bytes, retries: int = 6) -> str:
     validated = parse_event(event) if isinstance(event, (str, bytes)) else parse_event(json.dumps(event))
     last: Exception | None = None
     for attempt in range(retries):
-        db = connect()
+        db = None
         try:
+            # Schema setup and WAL negotiation in `connect` can themselves
+            # briefly contend with another short-lived writer. Keep them in
+            # the same retry envelope as BEGIN IMMEDIATE.
+            db = connect()
             return _insert(db, validated)
         except sqlite3.OperationalError as exc:
             last = exc
             if "locked" not in str(exc).lower() or attempt + 1 == retries:
                 raise
-            time.sleep(0.05 * (attempt + 1))
+            time.sleep(0.05 * 2**attempt)
         finally:
-            db.close()
+            if db is not None:
+                db.close()
     raise last or RuntimeError("ingestion failed")

@@ -48,172 +48,50 @@ def _bar(value: int, maximum: int, label: str) -> str:
 
 
 def visual_report(data: dict) -> str:
-    """Render only the already-aggregated, content-free report as standalone HTML."""
-    rows = [row for row in data.get("monthly", []) if isinstance(row, dict)]
-    total = sum(int(row.get("event_count") or 0) for row in rows)
-    known_cost_count = sum(int(row.get("known_cost_count") or 0) for row in rows)
-    unknown_cost_count = sum(int(row.get("unknown_cost_count") or 0) for row in rows)
-    known_cost_micros = sum(int(row.get("known_cost_micros") or 0) for row in rows)
-    months = sorted({str(row.get("month", "")) for row in rows if row.get("month")})
-
-    event_counts = Counter()
-    evidence_counts = Counter()
-    for row in rows:
-        event_count = int(row.get("event_count") or 0)
-        evidence_counts[str(row.get("evidence_class", "unknown"))] += event_count
-    provider_count = sum(int(row.get("event_count") or 0) for row in rows if row.get("event_kind") == "provider_usage")
+    """Render a minimal, content-free delegation cost comparison as HTML."""
     analysis = data.get("analysis", {}) if isinstance(data.get("analysis", {}), dict) else {}
-    savings = analysis.get("counterfactual_net_savings", {}) if isinstance(analysis.get("counterfactual_net_savings", {}), dict) else {}
-    impact = analysis.get("impact", {}) if isinstance(analysis.get("impact", {}), dict) else {}
-    eligible_outputs = int(impact.get("eligible_outputs") or 0)
-    intercepted_outputs = int(impact.get("intercepted_eligible_outputs") or 0)
-    evidence_html = "\n".join(
-        _bar(count, max(evidence_counts.values(), default=0), label)
-        for label, count in sorted(evidence_counts.items())
-    ) or '<p class="muted">No evidence rows are available.</p>'
+    savings = analysis.get("counterfactual_net_savings", {}) if isinstance(
+        analysis.get("counterfactual_net_savings", {}), dict
+    ) else {}
+    summary = savings.get("summary", {}) if isinstance(savings.get("summary", {}), dict) else {}
+    comparison = summary.get("comparison", {}) if isinstance(summary.get("comparison", {}), dict) else {}
+    complete_delegations = int(comparison.get("complete_delegations") or 0)
+    if complete_delegations == 0:
+        comparison_html = f"""
+<p>No cost comparison is available yet.</p>
+<p class="muted">A comparison appears after a guard interception is explicitly
+linked to a delegation and all three measured costs are recorded: guard notice,
+delegation request, and worker result. Missing data is unavailable, not zero.
+It is not a zero-cost result.</p>"""
+    else:
+        comparison_html = f"""
+<div class="cost"><span>Estimated cost without delegation guard</span><strong>{_number(int(comparison.get('estimated_without_guard_tokens') or 0))} tokens</strong></div>
+<div class="cost"><span>Cost with delegation guard</span><strong>{_number(int(comparison.get('guarded_total_tokens') or 0))} tokens</strong></div>
+<div class="cost saving"><span>Estimated savings</span><strong>{_number(int(comparison.get('estimated_savings_tokens') or 0))} tokens</strong></div>
+<div class="breakdown"><strong>Cost with delegation guard</strong><ul>
+<li>Guard notice: {_number(int(comparison.get('guard_notice_tokens') or 0))} tokens</li>
+<li>Delegation request: {_number(int(comparison.get('delegation_request_tokens') or 0))} tokens</li>
+<li>Worker result: {_number(int(comparison.get('worker_result_tokens') or 0))} tokens</li>
+</ul></div>
+<p class="muted">Based on {_number(complete_delegations)} complete delegations. Missing or unlinked components are excluded, not counted as zero. This is a token-cost estimate, not a monetary estimate.</p>"""
 
-    sections = [
-        f"""
-        <section class="impact">
-          <h2>Counterfactual delegation net savings</h2>
-          <p>Only explicitly guard-linked delegations are included. The token
-          baseline models the guarded full tool output as estimated coordinator
-          input, not provider output usage. Monetary baseline and net savings
-          are unavailable without an authoritative input-token price or exact
-          communication-to-request attribution. Unknown and unlinked
-          components are excluded, not zero.</p>
-          <div class="metrics compact">
-            <div><strong>{_number(int(savings.get('summary', {}).get('linked_intercepted_delegations') or 0))}</strong><span>linked intercepted delegations</span></div>
-            <div><strong>{_number(int(savings.get('summary', {}).get('token_rows') or 0))}</strong><span>complete token rows</span></div>
-            <div><strong>{_number(int(savings.get('summary', {}).get('monetary_rows') or 0))}</strong><span>complete monetary rows</span></div>
-          </div>
-          <p class="muted">Token amounts remain separate from monetary cost. Evidence:
-          {_text(savings.get('evidence', 'unknown'))}. Exclusions:
-          {_text(savings.get('exclusions', {}))}.</p>
-        </section>
-        """,
-        """
-        <section class="impact">
-          <h2>What the guard saved</h2>
-          <p>These totals are based only on eligible outputs that were recorded
-          as intercepted. They show measured payload reduction, not a dollar
-          estimate or a comparison with an unguarded run.</p>
-          <div class="metrics impact-metrics">
-            <div><strong>__INTERCEPTED__</strong><span>intercepted eligible outputs</span></div>
-            <div><strong>__ELIGIBLE__</strong><span>eligible outputs observed</span></div>
-            <div><strong>__COVERAGE__</strong><span>interception opportunity covered</span></div>
-          </div>
-          <div class="metrics impact-metrics">
-            __IMPACT__
-          </div>
-        </section>
-        """.replace("__INTERCEPTED__", _number(intercepted_outputs))
-        .replace("__ELIGIBLE__", _number(eligible_outputs))
-        .replace("__COVERAGE__", _percent(analysis.get("rates", {}).get("interception", {}).get("rate")))
-        .replace(
-            "__IMPACT__",
-            "\n".join((_impact_metric(impact, key, label) for key, label in (("bytes", "Bytes"), ("lines", "Lines"), ("tokens", "Tokens"))))
-            or '<p class="muted">No avoided-payload measurements are available.</p>',
-        ),
-        f"""
-        <section>
-          <h2>Evidence and coverage</h2>
-          <p>These bars show recorded totals by evidence class. They describe
-          what was measured or estimated at the source boundary, not confidence
-          in an unobserved alternative.</p>
-          <div class="bars">{evidence_html}</div>
-        </section>
-        """,
-        f"""
-        <section>
-          <h2>How complete is the picture?</h2>
-          <p>Coverage shows how much of the observed interception opportunity
-          has a corresponding avoided-payload measurement. Missing measurements
-          remain unknown rather than being treated as zero.</p>
-          <div class="metrics compact">
-            <div><strong>{_number(sum(int(metric.get('available') or 0) for metric in impact.get('avoided', {}).values() if isinstance(metric, dict)))}</strong><span>payload measurements available</span></div>
-            <div><strong>{_number(eligible_outputs)}</strong><span>eligible outputs in scope</span></div>
-            <div><strong>{_number(intercepted_outputs)}</strong><span>intercepted outputs in scope</span></div>
-          </div>
-        </section>
-        """,
-    ]
-    if provider_count or known_cost_count or unknown_cost_count:
-        sections.append(f"""
-        <section>
-          <h2>Provider cost coverage</h2>
-          <div class="metrics compact">
-            <div><strong>{_number(provider_count)}</strong><span>provider usage events</span></div>
-            <div><strong>{_number(known_cost_count)}</strong><span>events with known cost</span></div>
-            <div><strong>{_number(unknown_cost_count)}</strong><span>events with unknown cost</span></div>
-          </div>
-          <p>Known cost is the sum of provider-reported source facts in the
-          aggregate, expressed in micros. It is not a complete spend total and
-          unknown cost has not been estimated.</p>
-        </section>
-        """)
-    period = f"{_text(months[0])} to {_text(months[-1])}" if months else "No period recorded"
-    sections_html = "\n".join(sections)
     return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Delegation efficiency aggregate report</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Delegation cost comparison</title>
 <style>
-:root {{ color-scheme: light; --ink:#172033; --muted:#5e6b82; --line:#dbe3ef;
-  --panel:#fff; --accent:#356ae6; --accent-soft:#dce7ff; --warn:#fff4d6; }}
-* {{ box-sizing:border-box; }} body {{ margin:0; background:#f5f7fb; color:var(--ink);
-  font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-main {{ max-width:980px; margin:0 auto; padding:32px 20px 56px; }}
-.eyebrow {{ color:var(--accent); font-weight:700; letter-spacing:.08em; text-transform:uppercase; }}
-h1 {{ margin:.2rem 0 .5rem; font-size:clamp(2rem,5vw,3.2rem); line-height:1.1; }}
-h2 {{ margin-top:0; font-size:1.25rem; }} p {{ color:var(--muted); }}
-section,.hero {{ background:var(--panel); border:1px solid var(--line); border-radius:16px;
-  box-shadow:0 5px 18px #1720330b; padding:22px; margin-top:18px; }}
-.metrics {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:12px; }}
-.metrics div {{ background:#f7f9fd; border-radius:12px; padding:14px; }}
-.metrics strong {{ display:block; font-size:1.65rem; }} .metrics span {{ color:var(--muted); font-size:.9rem; }}
-  .compact {{ grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); }}
-  .impact {{ border-color:var(--accent); }} .impact-metrics {{ margin-top:14px; }}
-  .evidence {{ display:block; margin-top:5px; font-size:.78rem; font-weight:700; }}
-  .measured {{ color:#16734a; }} .estimated {{ color:#9a6500; }} .unknown {{ color:var(--muted); }}
-.bars {{ display:grid; gap:10px; }} .bar-row {{ display:grid; grid-template-columns:minmax(130px,1fr) 3fr auto;
-  align-items:center; gap:10px; }} .bar-label {{ overflow-wrap:anywhere; }}
-.bar {{ display:block; height:12px; background:var(--accent-soft); border-radius:99px; overflow:hidden; }}
-.bar span {{ display:block; height:100%; background:var(--accent); border-radius:99px; }}
-.muted {{ color:var(--muted); }} .callout {{ background:var(--warn); border-left:5px solid #e4a91b;
-  padding:14px 16px; border-radius:8px; }} footer {{ color:var(--muted); font-size:.9rem; margin-top:22px; }}
-@media (max-width:600px) {{ .bar-row {{ grid-template-columns:1fr auto; }} .bar {{ grid-column:1 / -1; grid-row:2; }} }}
-</style>
-</head>
-<body><main>
-<header class="hero">
-  <div class="eyebrow">Executive summary: guard impact</div>
-  <h1>How much work did the guard avoid?</h1>
-  <p>Period: <strong>{period}</strong>. This summary uses privacy-safe
-  aggregate measurements and clearly labels estimates.</p>
-  <div class="metrics">
-    <div><strong>{_number(intercepted_outputs)}</strong><span>intercepted eligible outputs</span></div>
-    <div><strong>{_percent(analysis.get("rates", {}).get("interception", {}).get("rate"))}</strong><span>interception opportunity covered</span></div>
-    <div><strong>{_number(total)}</strong><span>recorded aggregate events</span></div>
-    <div><strong>{_number(len(months))}</strong><span>months represented</span></div>
-    <div><strong>{_number(known_cost_count)}</strong><span>known cost rows</span></div>
-    <div><strong>{_number(unknown_cost_count)}</strong><span>unknown cost rows</span></div>
-    <div><strong>{_number(known_cost_micros)}</strong><span>known cost micros</span></div>
-  </div>
-</header>
-{sections_html}
-<section class="callout">
-  <h2>How to read this</h2>
-  <p>Measured values come from recorded guard observations. Token totals may be
-  estimated when the source tokenizer was approximate. Do not fill missing
-  values with zero or treat payload reduction as monetary savings. This report
-  does <strong>not prove counterfactual savings</strong>: it does not observe
-  what the same work would have cost without the guard.</p>
-</section>
-<footer>Content-free aggregate report. No source content, paths, hashes, raw
-provider text, or joinable identifiers are included.</footer>
+:root {{ color-scheme:light; --ink:#172033; --muted:#5f6b7d; --surface:#fff; --line:#d8dfeb; --accent:#2056b5; --saving:#16734a; }}
+* {{ box-sizing:border-box; }} body {{ margin:0; background:#f3f6fb; color:var(--ink); font:16px/1.5 system-ui,sans-serif; }}
+main {{ max-width:720px; margin:40px auto; padding:28px; background:var(--surface); border:1px solid var(--line); border-radius:14px; }}
+h1 {{ margin:0 0 6px; font-size:1.65rem; }} p {{ margin:8px 0; }} .muted {{ color:var(--muted); }}
+.cost {{ display:grid; grid-template-columns:1fr auto; gap:12px; align-items:baseline; padding:14px 0; border-bottom:1px solid var(--line); }}
+.cost strong {{ font-size:1.45rem; }} .saving strong {{ color:var(--saving); }}
+.breakdown {{ margin:18px 0; padding:16px; border-radius:10px; background:#f3f6fb; }}
+.breakdown ul {{ margin:8px 0 0; padding-left:22px; }} footer {{ margin-top:22px; color:var(--muted); font-size:.9rem; }}
+</style></head><body><main>
+<h1>Delegation cost comparison</h1>
+<p class="muted">Token cost estimate for complete, explicitly linked guard delegations.</p>
+{comparison_html}
+<footer>Content-free aggregate report.</footer>
 </main></body></html>
 """
 

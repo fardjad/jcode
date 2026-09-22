@@ -13,11 +13,11 @@ MAX_ID_BYTES = 128
 MAX_TIMESTAMP_UNIX_MS = 4_102_444_800_000
 EVENT_KINDS = {"tool_attempt", "tool_result", "provider_usage", "delegation_spawn", "delegation_follow_up", "delegation_summary", "child_session", "observer_health", "communication_observation"}
 ID_FIELDS = {"event_id", "session_id", "tool_invocation_id", "provider_tool_call_id", "guard_event_id", "delegation_id", "parent_session_id", "child_session_id", "request_id", "provider_response_id", "generation_id", "blueprint_id"}
-ALLOWED_FIELDS = {"envelope", "schema_version", "semantics_version", "event", "event_id", "occurred_at_unix_ms", "session_id", "tool_invocation_id", "provider_tool_call_id", "guard_event_id", "delegation_id", "parent_session_id", "child_session_id", "request_id", "provider_response_id", "served_model", "generation_id", "deletion_generation", "attempt", "process_id", "blueprint_id", "blueprint_name", "spawn_mode", "tool_name", "provider", "route", "model", "process_role", "outcome", "guard_outcome", "failure_reason", "retryable", "retry_count", "cache_read_input_tokens", "cache_creation_input_tokens", "cost_micros", "upstream_inference_cost_micros", "upstream_inference_prompt_cost_micros", "upstream_inference_completions_cost_micros", "discount_micros", "cost_currency", "cost_source", "cost_status", "cost_version", "cost_timestamp_unix_ms", "original_bytes", "original_lines", "original_tokens", "final_visible_bytes", "final_visible_lines", "final_visible_tokens", "provider_input_tokens", "provider_output_tokens", "intermediate", "nudge", "final", "context_outcome", "refusal_outcome", "transform_outcome", "threshold_classification", "threshold_count", "transformer_classification", "transformer_count", "lifecycle", "status", "direction", "communication_kind", "bytes", "tokens", "evidence_level", "denominator_name", "denominator_numerator", "denominator_value", "tokenizer_identity", "tokenizer_status", "evidence", "attribution_status", "tool_latency_ms"}
+ALLOWED_FIELDS = {"envelope", "schema_version", "semantics_version", "event", "event_id", "occurred_at_unix_ms", "session_id", "tool_invocation_id", "provider_tool_call_id", "guard_event_id", "delegation_id", "parent_session_id", "child_session_id", "request_id", "provider_response_id", "served_model", "generation_id", "deletion_generation", "attempt", "process_id", "blueprint_id", "blueprint_name", "spawn_mode", "tool_name", "provider", "route", "model", "process_role", "outcome", "guard_outcome", "failure_reason", "retryable", "retry_count", "cache_read_input_tokens", "cache_creation_input_tokens", "cost_micros", "upstream_inference_cost_micros", "upstream_inference_prompt_cost_micros", "upstream_inference_completions_cost_micros", "discount_micros", "cost_currency", "cost_source", "cost_status", "cost_version", "cost_timestamp_unix_ms", "original_bytes", "original_lines", "original_tokens", "final_visible_bytes", "final_visible_lines", "final_visible_tokens", "provider_input_tokens", "provider_output_tokens", "intermediate", "nudge", "final", "context_outcome", "refusal_outcome", "transform_outcome", "threshold_classification", "threshold_count", "transformer_classification", "transformer_count", "lifecycle", "status", "direction", "communication_kind", "bytes", "tokens", "evidence_level", "denominator_name", "denominator_numerator", "denominator_value", "tokenizer_identity", "tokenizer_status", "evidence", "attribution_status", "tool_latency_ms", "price_snapshot_status", "price_input_per_mtok_micros", "price_output_per_mtok_micros", "price_cache_read_per_mtok_micros", "price_snapshot_source", "price_snapshot_confidence", "price_snapshot_version", "price_snapshot_at_unix_ms", "price_currency"}
 SOURCE_FIELDS = frozenset(ALLOWED_FIELDS)
 REQUIRED_FIELDS = {"envelope", "schema_version", "semantics_version", "event", "event_id", "occurred_at_unix_ms", "session_id", "tool_invocation_id", "tool_name", "evidence_level", "tokenizer_identity", "tokenizer_status", "evidence", "attribution_status", "tool_latency_ms"}
 FORBIDDEN_NAMES = {"prompt", "tool_input", "tool_result", "content", "summary", "report", "metadata", "path", "file_path", "command", "query", "task"}
-INTEGER_FIELDS = {"occurred_at_unix_ms", "deletion_generation", "attempt", "process_id", "retry_count", "cache_read_input_tokens", "cache_creation_input_tokens", "cost_micros", "upstream_inference_cost_micros", "upstream_inference_prompt_cost_micros", "upstream_inference_completions_cost_micros", "discount_micros", "cost_timestamp_unix_ms", "original_bytes", "original_lines", "original_tokens", "final_visible_bytes", "final_visible_lines", "final_visible_tokens", "provider_input_tokens", "provider_output_tokens", "threshold_count", "transformer_count", "denominator_numerator", "denominator_value", "bytes", "tokens", "tool_latency_ms"}
+INTEGER_FIELDS = {"occurred_at_unix_ms", "deletion_generation", "attempt", "process_id", "retry_count", "cache_read_input_tokens", "cache_creation_input_tokens", "cost_micros", "upstream_inference_cost_micros", "upstream_inference_prompt_cost_micros", "upstream_inference_completions_cost_micros", "discount_micros", "cost_timestamp_unix_ms", "original_bytes", "original_lines", "original_tokens", "final_visible_bytes", "final_visible_lines", "final_visible_tokens", "provider_input_tokens", "provider_output_tokens", "threshold_count", "transformer_count", "denominator_numerator", "denominator_value", "bytes", "tokens", "tool_latency_ms", "price_input_per_mtok_micros", "price_output_per_mtok_micros", "price_cache_read_per_mtok_micros", "price_snapshot_at_unix_ms"}
 BOOLEAN_FIELDS = {"retryable", "intermediate", "nudge", "final"}
 MAX_GENERATION = 2**63 - 1
 
@@ -35,6 +35,8 @@ ENUM_FIELDS = {
     "guard_outcome": {"applied", "below_threshold", "context_guard_refused", "intercepted", "unknown"},
     "failure_reason": {"aborted", "cancelled", "invalid_request", "network_error", "not_found", "permission_denied", "provider_error", "rate_limited", "timeout", "tool_error", "tool_failed", "unknown"},
     "cost_currency": {"AUD", "CAD", "CHF", "CNY", "EUR", "GBP", "JPY", "USD"},
+    "price_currency": {"AUD", "CAD", "CHF", "CNY", "EUR", "GBP", "JPY", "USD"},
+    "price_snapshot_status": {"available", "captured", "unavailable", "unknown"},
     "cost_source": {"provider_response", "provider_reported", "openrouter_response", "unknown"},
     "cost_status": {"provider_reported", "unknown"},
     "context_outcome": {"allowed", "blocked", "below_threshold", "context_guard_refused", "intercepted", "applied", "unknown"},
@@ -49,11 +51,19 @@ ENUM_FIELDS = {
     "evidence": {"estimated", "estimated_or_null", "measured", "provider_reported", "unknown"},
     "attribution_status": {"eligible", "not_applicable", "unknown_linkage"},
     "direction": {"inbound", "outbound"},
-    "communication_kind": {"clarification", "context_read", "escalation", "follow_up", "retry", "summary"},
+    "communication_kind": {"clarification", "context_read", "escalation", "follow_up", "retry", "spawn", "summary"},
 }
 NAME_FIELDS = {
     "served_model", "blueprint_name", "tool_name", "provider", "route", "model",
     "process_role", "cost_version", "denominator_name", "tokenizer_identity",
+    "price_snapshot_source", "price_snapshot_confidence", "price_snapshot_version",
+}
+
+# Price snapshot fields can contain provider-specific debug-formatted strings
+# (e.g. `some("openrouter-eu"):endpoint`) that are not structural names.
+# Validate length only, not character set.
+PRICE_METADATA_STRING_FIELDS = {
+    "price_snapshot_source", "price_snapshot_confidence", "price_snapshot_version",
 }
 SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,255}\Z")
 HASH_VALUE = re.compile(r"(?:[0-9a-fA-F]{32,}|(?:sha|md5|blake)[0-9a-zA-Z:_-]+)\Z", re.IGNORECASE)
@@ -83,6 +93,8 @@ def _validate_string_value(value: str, field: str) -> None:
             raise EnvelopeError(f"invalid {field}")
     elif field in NAME_FIELDS:
         _structural_name(value, field)
+    elif field in PRICE_METADATA_STRING_FIELDS:
+        _string(value, field, MAX_STRING_BYTES)
     else:
         raise EnvelopeError(f"unclassified string field {field}")
 
