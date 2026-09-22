@@ -20,18 +20,14 @@ integer used by the deletion barrier.
 ## Install and configure
 
 The project uses uv as a reproducible project and script runner. Runtime logic
-uses Python's standard library and has no third-party dependencies. Install the
-complete project, including the `delegation_efficiency` package, into a clean
-standalone plugin directory. Copying only the entrypoint scripts is not
-sufficient because they import that package:
+uses Python's standard library and has no third-party dependencies. The catalog
+root's `plugins/README.md` describes the one-time whole-directory symlink.
+Copying only the entrypoint scripts is not sufficient because they import the
+`delegation_efficiency` package. After creating that symlink, verify this
+project in place:
 
 ```bash
-PLUGIN_SOURCE="plugins/delegation-efficiency"
 PLUGIN_DIR="$HOME/.jcode/plugins/delegation-efficiency"
-mkdir -p "$PLUGIN_DIR"
-install -m 644 "$PLUGIN_SOURCE"/{pyproject.toml,uv.lock} "$PLUGIN_DIR/"
-install -m 755 "$PLUGIN_SOURCE"/{record,report,retention}.py "$PLUGIN_DIR/"
-cp -R "$PLUGIN_SOURCE/delegation_efficiency" "$PLUGIN_DIR/"
 (
   cd "$PLUGIN_DIR"
   uv lock --check
@@ -39,10 +35,9 @@ cp -R "$PLUGIN_SOURCE/delegation_efficiency" "$PLUGIN_DIR/"
 )
 ```
 
-The final two commands verify the retained uv project and that the installed
-package is importable without the source checkout or `PYTHONPATH`. The direct
-scripts also resolve the package relative to their own location, so they work
-from any current directory.
+The commands verify the symlinked uv project and that its package is importable
+without `PYTHONPATH`. The direct scripts also resolve the package relative to
+their own location, so they work from any current directory.
 
 Enable the detached measurement hook once. The plugin creates a private state
 directory automatically, so normal use does not require setup or state flags:

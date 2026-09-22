@@ -1,12 +1,26 @@
 # Custom jcode plugins
 
-This directory versions personal plugins installed locally under
-`~/.jcode/plugins`.
+This directory is the complete, versioned plugin installation. Symlink it once
+instead of copying individual executables or plugin projects:
+
+```bash
+mkdir -p ~/.jcode
+ln -sfn "$(pwd)/plugins" ~/.jcode/plugins
+```
+
+Run the command from the catalog repository root. Every configured plugin path
+below is relative to that symlink.
+
+`just ensure-personal-assets` maintains this symlink together with the worker
+blueprint symlink, checks the delegation-efficiency lockfile and import, and
+verifies every configured plugin executable. The plugins use only Python's
+standard library, so no `uv sync`, virtual environment, or compilation is
+needed.
 
 ## RTK command transformer
 
-`rtk/rtk-transform` is executable source installed at
-`~/.jcode/plugins/rtk-transform`. It is Python adapter, not compiled RTK
+`rtk/rtk-transform` is the executable source at
+`~/.jcode/plugins/rtk/rtk-transform`. It is a Python adapter, not a compiled RTK
 binary. This is behavioral port of RTK's OpenCode
 `hooks/opencode/rtk.ts`: it intercepts jcode's pre-tool-transform event for
 `bash`, uses `rtk rewrite` as source of truth, silently fails open, and
@@ -19,17 +33,11 @@ configured with `pre_tool_transform`. That patch is not part of this plugin's
 catalog patch dependency metadata; plugin source remains external catalog
 content.
 
-Install or refresh local plugin with:
-
-```bash
-install -m 755 plugins/rtk/rtk-transform ~/.jcode/plugins/rtk-transform
-```
-
 Configure transformer in jcode config:
 
 ```toml
 [hooks]
-pre_tool_transform = ["~/.jcode/plugins/rtk-transform"]
+pre_tool_transform = ["~/.jcode/plugins/rtk/rtk-transform"]
 ```
 
 Run isolated contract tests from repository root:
@@ -44,8 +52,8 @@ candidate patch, including `crates/jcode-base/src/hooks.rs` and
 
 ## Delegation guard transformer
 
-`delegation-guard/delegation-guard-transform` is executable source installed
-at `~/.jcode/plugins/delegation-guard-transform`. It intercepts jcode's
+`delegation-guard/delegation-guard-transform` is the executable source at
+`~/.jcode/plugins/delegation-guard/delegation-guard-transform`. It intercepts jcode's
 post-tool-transform event and replaces oversized successful tool results with
 a compact delegation nudge before they enter the coordinator's context. It
 fires only when swarm is enabled and the process role is coordinator. Workers
@@ -58,18 +66,11 @@ to be applied and configured with `post_tool_transform`. Those patches are not
 part of this plugin's catalog patch dependency metadata; plugin source remains
 external catalog content.
 
-Install or refresh local plugin with:
-
-```bash
-install -m 755 plugins/delegation-guard/delegation-guard-transform \
-  ~/.jcode/plugins/delegation-guard-transform
-```
-
 Configure transformer in jcode config:
 
 ```toml
 [hooks]
-post_tool_transform = ["~/.jcode/plugins/delegation-guard-transform"]
+post_tool_transform = ["~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
 post_tool_transform_timeout_ms = 500
 ```
 

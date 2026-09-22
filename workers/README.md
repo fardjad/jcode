@@ -51,17 +51,17 @@ override.
 
 ## Install
 
-Symlink the bundled blueprints into the default blueprint directory:
+`just ensure-personal-assets` symlinks this complete blueprint directory and
+the catalog's `plugins/` directory into their default jcode locations, then
+checks plugin readiness. To create only the blueprint symlink manually:
 
 ```bash
-mkdir -p ~/.jcode/worker-blueprints
-for f in workers/blueprints/*.md; do
-  ln -sf "$(pwd)/$f" "$HOME/.jcode/worker-blueprints/$(basename "$f")"
-done
+mkdir -p ~/.jcode
+ln -sfn "$(pwd)/workers/blueprints" ~/.jcode/worker-blueprints
 ```
 
-This installs `coordinator.md` alongside worker blueprints using the same
-mechanism. No separate prompt-overlay installer is needed.
+This makes `coordinator.md` available alongside worker blueprints without a
+separate prompt-overlay installer.
 
 ## Configure
 

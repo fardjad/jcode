@@ -5,6 +5,47 @@ help:
 
   just --list --justfile "$(git rev-parse --show-toplevel)/justfile"
 
+# Symlink catalog plugins and worker blueprints into their default jcode paths.
+ensure-personal-assets:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  jcode_home="${JCODE_HOME:-$HOME/.jcode}"
+
+  ensure_symlink() {
+    local source=$1
+    local destination=$2
+    mkdir -p "$(dirname "$destination")"
+    if [[ -e "$destination" && ! -L "$destination" ]]; then
+      printf 'refusing to replace non-symlink path: %s\n' "$destination" >&2
+      exit 1
+    fi
+    if [[ -L "$destination" ]]; then
+      rm "$destination"
+    fi
+    ln -s "$source" "$destination"
+    printf 'linked %s -> %s\n' "$destination" "$source"
+  }
+
+  ensure_symlink "$repo_root/plugins" "$jcode_home/plugins"
+  ensure_symlink "$repo_root/workers/blueprints" "$jcode_home/worker-blueprints"
+
+  command -v uv >/dev/null || {
+    printf 'uv is required by the delegation-efficiency hook\n' >&2
+    exit 1
+  }
+  uv lock --check --directory "$repo_root/plugins/delegation-efficiency"
+  PYTHONPATH="$repo_root/plugins/delegation-efficiency" python3 -B -c \
+    'import delegation_efficiency'
+  test -x "$jcode_home/plugins/rtk/rtk-transform"
+  test -x "$jcode_home/plugins/delegation-guard/delegation-guard-transform"
+  test -x "$jcode_home/plugins/delegation-efficiency/record.py"
+  test -f "$jcode_home/worker-blueprints/coordinator.md"
+  test -f "$jcode_home/worker-blueprints/investigator.md"
+  test -f "$jcode_home/worker-blueprints/research.md"
+  printf 'plugins and worker blueprints are ready\n'
+
 # Validate catalog patch metadata and synthetic application.
 validate-patch-files:
   #!/usr/bin/env bash
@@ -115,11 +156,6 @@ install-patched-version:
     cd "$worktree"
     JCODE_INSTALL_DIR="$install_dir" ./scripts/install_release.sh --fast
   )
-  plugin_dir="${JCODE_PLUGIN_DIR:-$HOME/.jcode/plugins/delegation-efficiency}"
-  "$worktree/plugins/delegation-efficiency/install.sh" "$plugin_dir"
-  guard_plugin="${JCODE_DELEGATION_GUARD_PLUGIN:-$HOME/.jcode/plugins/delegation-guard-transform}"
-  mkdir -p "$(dirname "$guard_plugin")"
-  install -m 755 "$worktree/plugins/delegation-guard/delegation-guard-transform" "$guard_plugin"
 
 # Apply one patch in a clean worktree and run its validation/tests.
 test-patch-file patch:
