@@ -69,7 +69,7 @@ scripts/cargo_exec.sh test -p jcode-base eu_dispatch_enforced_by_allowed_provide
  crates/jcode-base/src/provider_activity.rs    |   4 +
  crates/jcode-base/src/provider_catalog.rs     |   3 +
  crates/jcode-base/src/session.rs              |   1 +
- crates/jcode-provider-core/src/lib.rs         |  55 +++-
+ crates/jcode-provider-core/src/lib.rs         |  69 ++++-
  crates/jcode-provider-core/src/models.rs      |   1 +
  crates/jcode-provider-core/src/selection.rs   |  13 +-
  crates/jcode-provider-metadata/Cargo.toml     |   1 +
@@ -97,7 +97,7 @@ scripts/cargo_exec.sh test -p jcode-base eu_dispatch_enforced_by_allowed_provide
  src/cli/provider_init.rs                      |  38 ++-
  src/cli/provider_init_tests.rs                |  25 +-
  tests/provider_matrix.rs                      |   4 +-
- 45 files changed, 1434 insertions(+), 147 deletions(-)
+ 45 files changed, 1443 insertions(+), 152 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
 index 1cb0dfccc..24dfff035 100644
@@ -1241,10 +1241,10 @@ index a8fdd3653..7fba3ef36 100644
                  Ok(p) => Some(p),
                  Err(e) => {
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index 655d60b18..bbae87903 100644
+index e816d2bdf..46343fa30 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
-@@ -1049,6 +1049,34 @@ impl StubExternalRuntime {
+@@ -1053,6 +1053,34 @@ impl StubExternalRuntime {
      }
  }
  
@@ -1279,7 +1279,7 @@ index 655d60b18..bbae87903 100644
  #[test]
  fn official_openrouter_fallback_activation_clears_stale_profile_identity() {
      with_clean_provider_test_env(|| {
-@@ -1091,6 +1119,22 @@ fn official_openrouter_fallback_activation_clears_stale_profile_identity() {
+@@ -1095,6 +1123,22 @@ fn official_openrouter_fallback_activation_clears_stale_profile_identity() {
      });
  }
  
@@ -1302,7 +1302,7 @@ index 655d60b18..bbae87903 100644
  #[test]
  fn openrouter_only_dispatches_official_runtime_not_shared_slot_runtimes() {
      with_clean_provider_test_env(|| {
-@@ -1392,6 +1436,9 @@ fn register_test_external_runtimes() {
+@@ -1396,6 +1440,9 @@ fn register_test_external_runtimes() {
              OpenRouterRuntimeSpec::Official(
                  jcode_provider_core::OpenRouterDeploymentId::Standard,
              ) => Arc::new(OpenRouterProvider::new_openrouter_api_key_runtime()?),
@@ -1312,7 +1312,7 @@ index 655d60b18..bbae87903 100644
              OpenRouterRuntimeSpec::CompatibleProfile(profile) => Arc::new(
                  OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
              ),
-@@ -1734,3 +1781,245 @@ fn policy_blocks_persisted_route_restoration_for_disallowed_family() {
+@@ -1740,3 +1787,245 @@ fn policy_blocks_persisted_route_restoration_for_disallowed_family() {
          });
      });
  }
@@ -1619,7 +1619,7 @@ index c92acbe76..e6ae5bbda 100644
          "gemini" => "gemini",
          "antigravity" => "antigravity",
 diff --git a/crates/jcode-provider-core/src/lib.rs b/crates/jcode-provider-core/src/lib.rs
-index 0dc0c5433..f4b463705 100644
+index 0dc0c5433..464a490f1 100644
 --- a/crates/jcode-provider-core/src/lib.rs
 +++ b/crates/jcode-provider-core/src/lib.rs
 @@ -874,6 +874,7 @@ impl ProviderFamilyPolicy {
@@ -1781,7 +1781,31 @@ index 0dc0c5433..f4b463705 100644
              Self::GrokBuildAcp => "grok build".to_string(),
              Self::ClaudeCli => "claude cli".to_string(),
              Self::ChatGptWeb => "chatgpt web".to_string(),
-@@ -1817,11 +1845,13 @@ mod tests {
+@@ -1798,11 +1826,11 @@ mod tests {
+         );
+         assert_eq!(
+             ModelRouteApiMethod::parse("grok-build-acp"),
+-            ModelRouteApiMethod::GrokBuild
++            ModelRouteApiMethod::GrokBuildAcp
+         );
+         assert_eq!(
+             ModelRouteApiMethod::parse("grok-build"),
+-            ModelRouteApiMethod::GrokBuild
++            ModelRouteApiMethod::GrokBuildAcp
+         );
+     }
+ 
+@@ -1810,20 +1838,25 @@ mod tests {
+     fn provider_family_policy_parses_aliases_reports_unknowns_and_fails_closed() {
+         assert!(!ProviderFamilyPolicy::parse(&[]).is_restricted());
+         assert!(
+-            ProviderFamilyPolicy::parse(&[])
+-                .allows_runtime(&RuntimeKey::Other("future-provider".to_string()))
++            ProviderFamilyPolicy::parse(&[]).allows_runtime(&RuntimeKey::Other {
++                method: "future-provider".to_string()
++            })
+         );
+ 
          let policy = ProviderFamilyPolicy::parse(&[
              "anthropic".to_string(),
              "AWS_BEDROCK".to_string(),
@@ -1793,9 +1817,14 @@ index 0dc0c5433..f4b463705 100644
          assert!(policy.allows_family(ProviderFamily::Bedrock));
 +        assert!(policy.allows_runtime(&RuntimeKey::OpenRouterEu));
          assert!(!policy.allows_runtime(&RuntimeKey::OpenRouter));
-         assert!(!policy.allows_runtime(&RuntimeKey::Other("future-provider".into())));
+-        assert!(!policy.allows_runtime(&RuntimeKey::Other("future-provider".into())));
++        assert!(!policy.allows_runtime(&RuntimeKey::Other {
++            method: "future-provider".into()
++        }));
          assert_eq!(policy.unknown_values(), &["typo-provider"]);
-@@ -1836,6 +1866,7 @@ mod tests {
+     }
+ 
+@@ -1836,6 +1869,7 @@ mod tests {
              ModelRouteApiMethod::OpenAIOAuth,
              ModelRouteApiMethod::OpenAIApiKey,
              ModelRouteApiMethod::OpenRouter,
@@ -1803,7 +1832,7 @@ index 0dc0c5433..f4b463705 100644
              ModelRouteApiMethod::GrokBuildAcp,
              ModelRouteApiMethod::ClaudeCli,
              ModelRouteApiMethod::ChatGptWeb,
-@@ -2105,6 +2136,28 @@ mod tests {
+@@ -2105,6 +2139,29 @@ mod tests {
          );
      }
  
@@ -1822,6 +1851,7 @@ index 0dc0c5433..f4b463705 100644
 +            available: true,
 +            detail: String::new(),
 +            cheapness: None,
++            usage: None,
 +        });
 +        assert_eq!(
 +            selection.routed_model_spec(),

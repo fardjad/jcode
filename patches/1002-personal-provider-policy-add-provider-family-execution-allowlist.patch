@@ -60,14 +60,14 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  crates/jcode-base/src/auth/lifecycle.rs       |   2 +-
  crates/jcode-base/src/config/default_file.rs  |  12 +-
  crates/jcode-base/src/provider/accessors.rs   |  18 +
- .../jcode-base/src/provider/catalog_routes.rs | 254 +++++++--
+ .../jcode-base/src/provider/catalog_routes.rs | 254 ++++++--
  crates/jcode-base/src/provider/dispatch.rs    |  65 +++
  crates/jcode-base/src/provider/external.rs    |   5 +-
  crates/jcode-base/src/provider/jcode.rs       |  62 ++
  crates/jcode-base/src/provider/mod.rs         | 270 ++++++++-
  .../jcode-base/src/provider/multi_provider.rs |   4 +-
  crates/jcode-base/src/provider/selection.rs   |   8 +-
- crates/jcode-base/src/provider/tests.rs       | 535 +++++++++++++++++-
+ crates/jcode-base/src/provider/tests.rs       | 541 +++++++++++++++++-
  .../tests/issue_534_profile_preservation.rs   |   2 +-
  crates/jcode-base/src/sidecar.rs              | 151 ++++-
  crates/jcode-config-types/src/lib.rs          |  12 +-
@@ -96,7 +96,7 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  src/cli/commands.rs                           |   2 +-
  src/cli/commands_tests.rs                     |  10 +-
  src/cli/startup.rs                            |   4 +-
- 46 files changed, 1947 insertions(+), 138 deletions(-)
+ 46 files changed, 1953 insertions(+), 138 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
 index 61648a2e3..7bb37db81 100644
@@ -1558,10 +1558,10 @@ index 58632831c..3c127860c 100644
                      profile_id: Some(profile_id),
                  } => return format!("{profile_id}:{model}"),
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index 2b245d526..655d60b18 100644
+index 2b245d526..e816d2bdf 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
-@@ -1,6 +1,142 @@
+@@ -1,6 +1,146 @@
  use super::*;
  use crate::provider::models::{ensure_model_allowed_for_subscription, filtered_display_models};
  
@@ -1663,6 +1663,7 @@ index 2b245d526..655d60b18 100644
 +            available: true,
 +            detail: String::new(),
 +            cheapness: None,
++            usage: None,
 +        },
 +        ModelRoute {
 +            model: "claude".into(),
@@ -1671,6 +1672,7 @@ index 2b245d526..655d60b18 100644
 +            available: true,
 +            detail: String::new(),
 +            cheapness: None,
++            usage: None,
 +        },
 +    ];
 +    let policy = ProviderFamilyPolicy::parse(&["claude".into()]);
@@ -1685,6 +1687,7 @@ index 2b245d526..655d60b18 100644
 +                available: true,
 +                detail: String::new(),
 +                cheapness: None,
++                usage: None,
 +            },
 +            ModelRoute {
 +                model: "gpt".into(),
@@ -1693,6 +1696,7 @@ index 2b245d526..655d60b18 100644
 +                available: true,
 +                detail: String::new(),
 +                cheapness: None,
++                usage: None,
 +            },
 +        ],
 +        &policy,
@@ -1704,7 +1708,7 @@ index 2b245d526..655d60b18 100644
  fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
      let _guard = crate::storage::lock_test_env();
      // Concrete provider runtimes live downstream (jcode-provider-*-runtime),
-@@ -578,6 +714,56 @@ fn model_routes_memo_serves_repeats_and_invalidates_on_auth_and_model_changes()
+@@ -578,6 +718,56 @@ fn model_routes_memo_serves_repeats_and_invalidates_on_auth_and_model_changes()
      });
  }
  
@@ -1761,7 +1765,7 @@ index 2b245d526..655d60b18 100644
  fn assert_openai_compatible_route_available(provider: &MultiProvider, model: &str) {
      let routes = provider.model_routes();
      assert!(
-@@ -796,9 +982,12 @@ struct StubExternalRuntime {
+@@ -796,9 +986,12 @@ struct StubExternalRuntime {
      name: &'static str,
      provider_label: &'static str,
      api_method: &'static str,
@@ -1774,7 +1778,7 @@ index 2b245d526..655d60b18 100644
  }
  
  impl StubExternalRuntime {
-@@ -812,9 +1001,15 @@ impl StubExternalRuntime {
+@@ -812,9 +1005,15 @@ impl StubExternalRuntime {
              name,
              provider_label,
              api_method,
@@ -1790,7 +1794,7 @@ index 2b245d526..655d60b18 100644
          }
      }
  
-@@ -854,8 +1049,205 @@ impl StubExternalRuntime {
+@@ -854,8 +1053,205 @@ impl StubExternalRuntime {
      }
  }
  
@@ -1996,7 +2000,7 @@ index 2b245d526..655d60b18 100644
      async fn complete(
          &self,
          _messages: &[Message],
-@@ -863,6 +1255,20 @@ impl Provider for StubExternalRuntime {
+@@ -863,6 +1259,20 @@ impl Provider for StubExternalRuntime {
          _system: &str,
          _resume_session_id: Option<&str>,
      ) -> anyhow::Result<EventStream> {
@@ -2017,7 +2021,7 @@ index 2b245d526..655d60b18 100644
          anyhow::bail!("stub {} runtime does not stream", self.name)
      }
      fn name(&self) -> &'static str {
-@@ -983,9 +1389,9 @@ fn register_test_external_runtimes() {
+@@ -983,9 +1393,9 @@ fn register_test_external_runtimes() {
          use jcode_provider_openrouter_runtime::OpenRouterProvider;
          let provider: Arc<dyn Provider> = match spec {
              OpenRouterRuntimeSpec::Default => Arc::new(OpenRouterProvider::new()?),
@@ -2030,7 +2034,7 @@ index 2b245d526..655d60b18 100644
              OpenRouterRuntimeSpec::CompatibleProfile(profile) => Arc::new(
                  OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
              ),
-@@ -1205,3 +1611,126 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
+@@ -1205,3 +1615,128 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
          );
      });
  }
@@ -2068,7 +2072,6 @@ index 2b245d526..655d60b18 100644
 +    });
 +}
 +
-+
 +/// Catalog route filtering must remove all routes whose API method maps to a
 +/// denied provider family. This is a narrowly named regression for the
 +/// `filter_routes_by_policy` boundary.
@@ -2082,6 +2085,7 @@ index 2b245d526..655d60b18 100644
 +            available: true,
 +            detail: String::new(),
 +            cheapness: None,
++            usage: None,
 +        },
 +        ModelRoute {
 +            model: "claude-opus".into(),
@@ -2090,6 +2094,7 @@ index 2b245d526..655d60b18 100644
 +            available: true,
 +            detail: String::new(),
 +            cheapness: None,
++            usage: None,
 +        },
 +    ];
 +    // Only Claude allowed: the OpenAI route must be filtered out.
@@ -2107,6 +2112,7 @@ index 2b245d526..655d60b18 100644
 +            available: true,
 +            detail: String::new(),
 +            cheapness: None,
++            usage: None,
 +        },
 +        ModelRoute {
 +            model: "claude-opus".into(),
@@ -2115,6 +2121,7 @@ index 2b245d526..655d60b18 100644
 +            available: true,
 +            detail: String::new(),
 +            cheapness: None,
++            usage: None,
 +        },
 +    ];
 +    let policy = ProviderFamilyPolicy::parse(&["openai".into()]);
@@ -2122,7 +2129,6 @@ index 2b245d526..655d60b18 100644
 +    assert_eq!(filtered.len(), 1, "only openai routes should survive");
 +    assert_eq!(filtered[0].api_method, "openai-oauth");
 +}
-+
 +
 +/// Persisted route restoration must reject a selection whose runtime key is
 +/// denied by the policy. This is a narrowly named regression for the

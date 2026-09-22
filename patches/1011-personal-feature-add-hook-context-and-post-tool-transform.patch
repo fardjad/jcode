@@ -285,10 +285,10 @@ index 569e1ea41..5df284cb4 100644
              log_swarm_lifecycle(
                  "task_done",
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 58decbb92..df98a3081 100644
+index 3c28f7092..5500df8ab 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -932,6 +932,25 @@ impl Registry {
+@@ -901,6 +901,25 @@ impl Registry {
  
          crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);
          Self::fire_post_tool_hook(resolved_name, &ctx, &result, latency_ms);
@@ -314,7 +314,7 @@ index 58decbb92..df98a3081 100644
  
          let mut output = match result {
              Ok(output) => output,
-@@ -945,6 +964,20 @@ impl Registry {
+@@ -914,6 +933,20 @@ impl Registry {
              }
          };
  
@@ -336,7 +336,7 @@ index 58decbb92..df98a3081 100644
          output = self
              .guard_context_overflow(name, output, accepts_large_output(&input))
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index ab9b4a60a..c8e2b4a30 100644
+index 7ab6ec4c3..0954b0545 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
 @@ -557,6 +557,284 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {

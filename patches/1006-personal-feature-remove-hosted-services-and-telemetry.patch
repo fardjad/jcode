@@ -44,7 +44,7 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  crates/jcode-app-core/src/tool/discover.rs    | 2981 -----------------
  .../src/tool/discover_secrets.rs              |  193 --
  crates/jcode-app-core/src/tool/feedback.rs    |    8 +-
- crates/jcode-app-core/src/tool/mod.rs         |  308 +-
+ crates/jcode-app-core/src/tool/mod.rs         |  306 +-
  crates/jcode-app-core/src/tool/tests.rs       |   24 +-
  crates/jcode-base/src/config.rs               |   35 +-
  crates/jcode-base/src/config/config_file.rs   |   16 +-
@@ -112,7 +112,7 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  src/cli/provider_init_tests.rs                |   51 +-
  src/cli/startup.rs                            |  264 +-
  src/cli/telemetry.rs                          |   78 -
- 73 files changed, 439 insertions(+), 10247 deletions(-)
+ 73 files changed, 450 insertions(+), 10234 deletions(-)
  delete mode 100644 TELEMETRY.md
  delete mode 100644 crates/jcode-app-core/src/tool/discover.rs
  delete mode 100644 crates/jcode-app-core/src/tool/discover_secrets.rs
@@ -3818,10 +3818,10 @@ index b34ebd985..7b234cf33 100644
  
      #[test]
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 34c3dd490..11c5b0933 100644
+index 34c3dd490..2e972dc14 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -6,19 +6,17 @@ mod batch;
+@@ -6,15 +6,15 @@ mod batch;
  mod bg;
  mod browser;
  mod communicate;
@@ -3838,13 +3838,9 @@ index 34c3dd490..11c5b0933 100644
 -mod discover;
 -mod discover_secrets;
  mod edit;
--mod edit_stats;
+ mod edit_stats;
  mod feedback;
--mod file_diff;
- mod gmail;
- mod goal;
- pub mod inflight;
-@@ -29,6 +27,7 @@ pub mod mcp;
+@@ -29,6 +29,7 @@ pub mod mcp;
  mod memory;
  mod multiedit;
  mod open;
@@ -3852,7 +3848,7 @@ index 34c3dd490..11c5b0933 100644
  mod panel;
  mod patch;
  mod read;
-@@ -192,29 +191,14 @@ pub(crate) fn session_mcp_dispatch_is_allowed(
+@@ -192,29 +193,14 @@ pub(crate) fn session_mcp_dispatch_is_allowed(
      session_id: &str,
      dispatched_name: &str,
      fixed_surface: &str,
@@ -3884,7 +3880,7 @@ index 34c3dd490..11c5b0933 100644
  }
  
  /// Whether a tool call opted in to receiving an oversized (truncated) result.
-@@ -243,21 +227,12 @@ fn accepts_large_output(input: &Value) -> bool {
+@@ -243,21 +229,12 @@ fn accepts_large_output(input: &Value) -> bool {
      }
  }
  
@@ -3906,7 +3902,7 @@ index 34c3dd490..11c5b0933 100644
      skills: Arc<RwLock<SkillRegistry>>,
      compaction: Arc<RwLock<CompactionManager>>,
  }
-@@ -268,7 +243,6 @@ pub struct Registry {
+@@ -268,7 +245,6 @@ pub struct Registry {
  /// Arc cycle. Upgrade this handle only for the duration of a tool call.
  pub(super) struct WeakRegistry {
      tools: std::sync::Weak<RwLock<HashMap<String, Arc<dyn Tool>>>>,
@@ -3914,7 +3910,7 @@ index 34c3dd490..11c5b0933 100644
      skills: Arc<RwLock<SkillRegistry>>,
      compaction: Arc<RwLock<CompactionManager>>,
  }
-@@ -277,7 +251,6 @@ impl WeakRegistry {
+@@ -277,7 +253,6 @@ impl WeakRegistry {
      pub(super) fn upgrade(&self) -> Option<Registry> {
          Some(Registry {
              tools: self.tools.upgrade()?,
@@ -3922,7 +3918,7 @@ index 34c3dd490..11c5b0933 100644
              skills: Arc::clone(&self.skills),
              compaction: Arc::clone(&self.compaction),
          })
-@@ -288,7 +261,6 @@ impl Clone for Registry {
+@@ -288,7 +263,6 @@ impl Clone for Registry {
      fn clone(&self) -> Self {
          Self {
              tools: self.tools.clone(),
@@ -3930,7 +3926,7 @@ index 34c3dd490..11c5b0933 100644
              skills: self.skills.clone(),
              // Each clone gets a fresh CompactionManager to prevent parallel
              // subagents from corrupting each other's message history
-@@ -301,7 +273,6 @@ impl Registry {
+@@ -301,7 +275,6 @@ impl Registry {
      fn downgrade(&self) -> WeakRegistry {
          WeakRegistry {
              tools: Arc::downgrade(&self.tools),
@@ -3938,7 +3934,7 @@ index 34c3dd490..11c5b0933 100644
              skills: Arc::clone(&self.skills),
              compaction: Arc::clone(&self.compaction),
          }
-@@ -336,7 +307,6 @@ impl Registry {
+@@ -336,7 +309,6 @@ impl Registry {
      pub fn empty() -> Self {
          Self {
              tools: Arc::new(RwLock::new(HashMap::new())),
@@ -3946,7 +3942,7 @@ index 34c3dd490..11c5b0933 100644
              skills: Arc::new(RwLock::new(SkillRegistry::default())),
              compaction: Arc::new(RwLock::new(CompactionManager::new())),
          }
-@@ -365,7 +335,6 @@ impl Registry {
+@@ -365,7 +337,6 @@ impl Registry {
                  "side_panel",
                  side_panel::SidePanelTool::new,
              );
@@ -3954,7 +3950,7 @@ index 34c3dd490..11c5b0933 100644
              Self::insert_tool_timed(&mut m, &mut timings, "edit", edit::EditTool::new);
              Self::insert_tool_timed(
                  &mut m,
-@@ -382,12 +351,6 @@ impl Registry {
+@@ -382,12 +353,6 @@ impl Registry {
              );
              Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
              Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
@@ -3967,7 +3963,7 @@ index 34c3dd490..11c5b0933 100644
              Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
              Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
              #[cfg(target_os = "macos")]
-@@ -431,17 +394,15 @@ impl Registry {
+@@ -431,17 +396,15 @@ impl Registry {
                  session_search::SessionSearchTool::new,
              );
              Self::insert_tool_timed(&mut m, &mut timings, "memory", memory::MemoryTool::new);
@@ -3990,7 +3986,7 @@ index 34c3dd490..11c5b0933 100644
              let nonzero: Vec<String> = timings
                  .iter()
                  .filter(|(_, ms)| *ms > 0)
-@@ -482,7 +443,6 @@ impl Registry {
+@@ -482,7 +445,6 @@ impl Registry {
          let registry_struct_start = std::time::Instant::now();
          let registry = Self {
              tools: Arc::new(RwLock::new(HashMap::new())),
@@ -3998,7 +3994,7 @@ index 34c3dd490..11c5b0933 100644
              skills: skills.clone(),
              compaction: compaction.clone(),
          };
-@@ -504,16 +464,6 @@ impl Registry {
+@@ -504,16 +466,6 @@ impl Registry {
              "conversation_search",
              conversation_search::ConversationSearchTool::new(compaction),
          );
@@ -4015,7 +4011,7 @@ index 34c3dd490..11c5b0933 100644
          let session_tools_ms = session_tools_start.elapsed().as_millis();
  
          let write_start = std::time::Instant::now();
-@@ -537,13 +487,14 @@ impl Registry {
+@@ -537,13 +489,14 @@ impl Registry {
          &self,
          allowed_tools: Option<&HashSet<String>>,
      ) -> Vec<ToolDefinition> {
@@ -4034,7 +4030,7 @@ index 34c3dd490..11c5b0933 100644
              .map(|(name, tool)| {
                  let mut def = tool.to_definition();
                  // Use registry key as the tool name (important for MCP tools where
-@@ -561,15 +512,6 @@ impl Registry {
+@@ -561,15 +514,6 @@ impl Registry {
          defs
      }
  
@@ -4050,7 +4046,7 @@ index 34c3dd490..11c5b0933 100644
      pub async fn tool_names(&self) -> Vec<String> {
          let tools = self.tools.read().await;
          tools.keys().cloned().collect()
-@@ -824,39 +766,13 @@ impl Registry {
+@@ -824,39 +768,13 @@ impl Registry {
          let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
          let tools = self.tools.read().await;
          let resolved_name = Self::resolve_tool_name(name);
@@ -4092,7 +4088,7 @@ index 34c3dd490..11c5b0933 100644
                  return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
              }
          }
-@@ -1102,154 +1018,7 @@ impl Registry {
+@@ -1102,154 +1020,7 @@ impl Registry {
      /// Register a tool dynamically (for MCP tools, etc.)
      pub async fn register(&self, name: String, tool: Arc<dyn Tool>) {
          let mut tools = self.tools.write().await;
@@ -4247,7 +4243,7 @@ index 34c3dd490..11c5b0933 100644
      }
  
      /// Register MCP tools (MCP management and server tools)
-@@ -1299,14 +1068,12 @@ impl Registry {
+@@ -1299,14 +1070,12 @@ impl Registry {
              .await;
          self.register(
              "mcp_search".to_string(),
@@ -4264,7 +4260,7 @@ index 34c3dd490..11c5b0933 100644
          )
          .await;
  
-@@ -1374,20 +1141,20 @@ impl Registry {
+@@ -1374,20 +1143,20 @@ impl Registry {
                          .collect()
                  };
                  let mut advertised_tool_count = 0usize;
@@ -4294,7 +4290,7 @@ index 34c3dd490..11c5b0933 100644
                  if advertised_tool_count > 0 {
                      crate::logging::info(&format!(
                          "MCP: advertised {} cached tool(s) from {} server(s) at spawn \
-@@ -1441,13 +1208,17 @@ impl Registry {
+@@ -1441,13 +1210,17 @@ impl Registry {
                  let tools = crate::mcp::create_mcp_tools(Arc::clone(&mcp_manager)).await;
                  let mut server_counts: std::collections::BTreeMap<String, usize> =
                      std::collections::BTreeMap::new();
@@ -4316,7 +4312,7 @@ index 34c3dd490..11c5b0933 100644
  
                  // Reconcile the on-disk schema cache with the live schemas so the
                  // next spawn can advertise the up-to-date tools with zero cache
-@@ -1562,9 +1333,7 @@ impl Registry {
+@@ -1562,9 +1335,7 @@ impl Registry {
      /// Unregister a tool
      pub async fn unregister(&self, name: &str) -> Option<Arc<dyn Tool>> {
          let mut tools = self.tools.write().await;
@@ -4327,7 +4323,7 @@ index 34c3dd490..11c5b0933 100644
      }
  
      /// Unregister all tools matching a prefix
-@@ -1578,7 +1347,6 @@ impl Registry {
+@@ -1578,7 +1349,6 @@ impl Registry {
          for name in &to_remove {
              tools.remove(name);
          }
@@ -12313,10 +12309,12 @@ index f044e0194..1b8cf231a 100644
  
  #[test]
 diff --git a/src/cli/startup.rs b/src/cli/startup.rs
-index 23c9f7c91..a1bce5395 100644
+index 23c9f7c91..0902f7c86 100644
 --- a/src/cli/startup.rs
 +++ b/src/cli/startup.rs
-@@ -2,9 +2,7 @@ use anyhow::Result;
+@@ -1,10 +1,9 @@
++use crate::bus::UpdateStatus;
+ use anyhow::Result;
  use clap::Parser;
  use std::process::Command as ProcessCommand;
  
@@ -12327,7 +12325,7 @@ index 23c9f7c91..a1bce5395 100644
  
  use super::{
      args::{Args, Command},
-@@ -129,15 +127,7 @@ pub async fn run() -> Result<()> {
+@@ -129,15 +128,7 @@ pub async fn run() -> Result<()> {
      perf::init_background();
      startup_profile::mark("perf_init");
  
@@ -12344,7 +12342,7 @@ index 23c9f7c91..a1bce5395 100644
  
      let args = parse_and_prepare_args(args)?;
      spawn_background_update_check(&args);
-@@ -150,53 +140,6 @@ pub async fn run() -> Result<()> {
+@@ -150,53 +141,6 @@ pub async fn run() -> Result<()> {
      Ok(())
  }
  
@@ -12398,47 +12396,32 @@ index 23c9f7c91..a1bce5395 100644
  /// Register provider runtimes that live downstream of `jcode-base` with the
  /// base crate's external provider registry. Keep every downstream runtime
  /// registration in this one function so the composition-root wiring stays
-@@ -406,8 +349,9 @@ fn spawn_background_update_check(args: &Args) {
+@@ -345,6 +289,24 @@ fn remote_working_dir_is_absolute(path: &str) -> bool {
+         && bytes[0].is_ascii_alphabetic()
+ }
  
-             let start = std::time::Instant::now();
-             Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::Checking));
--            let status = source_update_check_status(hot_exec::check_for_updates());
--            if matches!(status, UpdateStatus::Available { .. }) {
-+            if let Some(update_available) = hot_exec::check_for_updates()
-+                && update_available
-+            {
-                 // A checkout with local commits can never fast-forward, so the
-                 // pull below would always fail and surface a noisy "Update
-                 // diverged. Press Ctrl+Y..." card in every new session.
-@@ -420,7 +364,10 @@ fn spawn_background_update_check(args: &Args) {
-                     );
-                     Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::UpToDate));
-                 } else {
--                    Bus::global().publish(BusEvent::UpdateStatus(status));
-+                    Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::Available {
-+                        current: jcode_build_meta::version().to_string(),
-+                        latest: "latest source".to_string(),
-+                    }));
-                     if auto_update {
-                         logging::info("Update available - auto-updating...");
-                         Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::Installing {
-@@ -442,14 +389,7 @@ fn spawn_background_update_check(args: &Args) {
-                     }
-                 }
-             } else {
--                match &status {
--                    UpdateStatus::Error(message) => logging::info(message),
--                    UpdateStatus::Skipped { reason } => {
--                        logging::info(&format!("Source update check skipped: {reason}"));
--                    }
--                    _ => {}
--                }
--                Bus::global().publish(BusEvent::UpdateStatus(status));
-+                Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::UpToDate));
-             }
-             logging::info(&format!(
-                 "[TIMING] background_update_check: auto_update={}, total={}ms",
-@@ -460,24 +400,6 @@ fn spawn_background_update_check(args: &Args) {
++fn source_update_check_status(result: anyhow::Result<Option<bool>>) -> crate::bus::UpdateStatus {
++    use crate::bus::UpdateStatus;
++
++    match result {
++        Ok(Some(true)) => UpdateStatus::Available {
++            current: jcode_build_meta::version().to_string(),
++            latest: "latest source".to_string(),
++        },
++        Ok(Some(false)) => UpdateStatus::UpToDate,
++        Ok(None) => UpdateStatus::Skipped {
++            reason:
++                "no upstream configured for the source checkout (local branch or detached HEAD)"
++                    .to_string(),
++        },
++        Err(error) => UpdateStatus::Error(format!("Source update check failed: {error:#}")),
++    }
++}
++
+ fn spawn_background_update_check(args: &Args) {
+     let check_updates = should_spawn_background_update_check(args);
+     let auto_update = should_auto_install_update(args);
+@@ -460,24 +422,6 @@ fn spawn_background_update_check(args: &Args) {
      }
  }
  
@@ -12463,7 +12446,7 @@ index 23c9f7c91..a1bce5395 100644
  fn should_spawn_background_update_check(args: &Args) -> bool {
      should_spawn_background_update_check_with_config(
          args,
-@@ -526,172 +448,6 @@ mod tests {
+@@ -526,172 +470,6 @@ mod tests {
          Args::parse_from(argv)
      }
  

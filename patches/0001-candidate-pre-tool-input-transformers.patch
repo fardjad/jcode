@@ -1,4 +1,4 @@
-From 1b14c9dd62bda2ddf7fab7c23afde0073dacd53c Mon Sep 17 00:00:00 2001
+From 8fd16584d2cc8e561d6d2c41afcd1e4949aed84d Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Tue, 18 Aug 2026 10:20:23 +0200
 Subject: [PATCH] feat: add pre-tool input transformers
@@ -21,7 +21,7 @@ crates/jcode-base/src/hooks.rs owns command execution, timeout, JSON
 replacement, and fail-open behavior; crates/jcode-base/src/config.rs,
 config/default_file.rs, config/env_overrides.rs,
 crates/jcode-config-types/src/lib.rs, and docs/HOOKS.md wire pre_tool_transform
-and its timeout. External RTK plugin catalog content consumes this hook and its
+and its timeout. External RTK plugin catalog integrations can consume this hook and its
 configured plugin path.
 
 Update guidance:

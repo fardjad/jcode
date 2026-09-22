@@ -18,8 +18,8 @@ The session picker defaults were not configurable, forcing users to
 manually re-sort and filter on each use.
 
 Upstream integration points:
-crates/jcode-base/src/config/default_file.rs, crates/jcode-base/src/
-config/config_file.rs, crates/jcode-tui/src/tui/session_picker.rs,
+crates/jcode-base/src/config/default_file.rs,
+crates/jcode-tui/src/tui/session_picker.rs, and
 crates/jcode-config-types/src/lib.rs
 
 Update guidance:
@@ -28,7 +28,13 @@ section of the config. Preserve the default values when options are
 unset.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-tui --lib session_picker
+scripts/cargo_exec.sh test -p jcode-tui session_sort_orders_by_the_configured_field --lib
+scripts/cargo_exec.sh test -p jcode-tui sort_ordering_applies_to_filtered_rows --lib
+scripts/cargo_exec.sh test -p jcode-tui sort_ordering_applies_to_saved_sessions_in_grouped_view --lib
+scripts/cargo_exec.sh test -p jcode-tui sort_ordering_is_consistent_across_loaded_and_cache_reloaded_lists --lib
+scripts/cargo_exec.sh test -p jcode-tui default_filter_current_dir_shows_only_matching_sessions_after_set_current_dir --lib
+scripts/cargo_exec.sh test -p jcode-tui default_filter_all_shows_every_session --lib
+scripts/cargo_exec.sh test -p jcode-tui default_filter_current_dir_applied_on_async_loaded_picker --lib
 ---
  crates/jcode-base/src/config/default_file.rs  |   8 +
  crates/jcode-config-types/src/display.rs      |  43 ++-

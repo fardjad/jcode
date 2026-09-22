@@ -67,7 +67,7 @@ index 24dfff035..0641ec8c6 100644
  
  [[package]]
 diff --git a/README.md b/README.md
-index c310e7625..48f82f1c9 100644
+index f3b3d7e1f..9ca67047d 100644
 --- a/README.md
 +++ b/README.md
 @@ -330,6 +330,20 @@ Jcode is left-aligned by default. You can switch to centered mode with the `Alt+

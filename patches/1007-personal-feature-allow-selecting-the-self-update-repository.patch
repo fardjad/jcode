@@ -33,15 +33,14 @@ scripts/cargo_exec.sh test -p jcode-app-core update_repository --lib
 scripts/cargo_exec.sh test -p jcode-app-core github_comparison_uses_selected_update_repository --lib
 scripts/cargo_exec.sh check -p jcode-app-core
 ---
- README.md                                     |  24 +-
+ README.md                                     |  30 ++-
  crates/jcode-app-core/src/update.rs           | 248 ++++++++++++------
  crates/jcode-app-core/src/update_dev_guard.rs |  35 ++-
  crates/jcode-update-core/src/lib.rs           |   1 +
- src/cli/startup.rs                            |   2 +-
- 5 files changed, 206 insertions(+), 104 deletions(-)
+ 4 files changed, 226 insertions(+), 88 deletions(-)
 
 diff --git a/README.md b/README.md
-index ad6f20b73..c310e7625 100644
+index ad6f20b73..f3b3d7e1f 100644
 --- a/README.md
 +++ b/README.md
 @@ -51,6 +51,13 @@ Run `/update` in the TUI to download the latest stable release in the background
@@ -67,28 +66,34 @@ index ad6f20b73..c310e7625 100644
  The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline. 
  <img width="2877" height="1762" alt="image" src="https://github.com/user-attachments/assets/6c7bec81-ef3f-434d-8a7b-d55f8a54e5cf" />
  
-@@ -345,21 +350,6 @@ Agents are also able to spawn their own swarms autonomously. They have a swarm t
+@@ -345,6 +350,27 @@ Agents are also able to spawn their own swarms autonomously. They have a swarm t
  
  ---
  
--Swarm modes keep root reasoning separate from worker effort. Configure each mode
--in `~/.jcode/config.toml`:
--
--```toml
--[agents]
--swarm_root_effort = "low"        # /effort swarm
--swarm_deep_root_effort = "high"  # /effort swarm-deep
--```
--
--Both default to `max`. Accepted levels are `none`, `minimal`, `low`, `medium`,
--`high`, `xhigh`, and `max`, mapped to the provider's supported range. The effort
--switcher shows the configured root level. These settings do not change worker
--`swarm_effort`. Environment overrides are `JCODE_SWARM_ROOT_EFFORT` and
--`JCODE_SWARM_DEEP_ROOT_EFFORT`.
--
- ## OAuth and Providers
++## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
++
++The `panel` tool opens a new desktop panel from Markdown content or a linked Markdown/PDF file, and supports update, focus, close, and list actions. See [Desktop panels](docs/PANELS.md) for the API, PDF limits, and compatibility details.
++
++The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline. 
++<img width="2877" height="1762" alt="image" src="https://github.com/user-attachments/assets/6c7bec81-ef3f-434d-8a7b-d55f8a54e5cf" />
++
++To make this possible, I created a new mermaid rendering library to render diagrams 1800x faster. It has no browser or Typescript dependency. See https://github.com/1jehuang/mermaid-rs-renderer
++
++To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any. 
++
++Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems. 
++
++The custom scrollback implementation of jcode allows it to do much more than a native scrollback. However, it is a terminal-level limitation that I cannot have smooth, partial line scrolling with a custom scrollback. To fix this, I made my own terminal. Handterm https://github.com/1jehuang/handterm implements a native scroll api, and also happens to be very efficient. This is a work in progress. Scrolling is still well implemented for normal terminals.
++
++Jcode is left-aligned by default. You can switch to centered mode with the `Alt+C` hotkey, with the `/alignment` command, or in the config.
++
++To disable emoji globally in TUI and CLI output, set `emoji = false` under `[display]` in `~/.jcode/config.toml`, or launch with `JCODE_NO_EMOJI=1`. Jcode replaces emoji with compact ASCII markers while preserving other Unicode text.
++
++---
++
+ Swarm modes keep root reasoning separate from worker effort. Configure each mode
+ in `~/.jcode/config.toml`:
  
- jcode works with subscription-backed OAuth flows and many provider integrations, so you can use the models you already pay for and still fall back to direct API providers when needed.
 diff --git a/crates/jcode-app-core/src/update.rs b/crates/jcode-app-core/src/update.rs
 index 31895b639..e78dbfdad 100644
 --- a/crates/jcode-app-core/src/update.rs
@@ -608,16 +613,3 @@ index 5cc735095..a87f94856 100644
          estimate: UpdateEstimate,
      },
  }
-diff --git a/src/cli/startup.rs b/src/cli/startup.rs
-index a1bce5395..22d8496f1 100644
---- a/src/cli/startup.rs
-+++ b/src/cli/startup.rs
-@@ -349,7 +349,7 @@ fn spawn_background_update_check(args: &Args) {
- 
-             let start = std::time::Instant::now();
-             Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::Checking));
--            if let Some(update_available) = hot_exec::check_for_updates()
-+            if let Ok(Some(update_available)) = hot_exec::check_for_updates()
-                 && update_available
-             {
-                 // A checkout with local commits can never fast-forward, so the
