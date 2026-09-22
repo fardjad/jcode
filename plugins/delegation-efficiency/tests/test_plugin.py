@@ -603,9 +603,6 @@ class PluginTests(unittest.TestCase):
             },
         )
         self.assertEqual(row["baseline"]["token_basis"], "estimated_coordinator_input_full_original_tool_output")
-        self.assertEqual(row["baseline"]["cost_status"], "unavailable_no_authoritative_input_price_or_rate")
-        self.assertIsNone(row["net"]["cost_micros"])
-        self.assertEqual(row["net"]["cost_status"], "unavailable_no_authoritative_input_price_or_rate")
 
     def test_counterfactual_does_not_equate_guarded_output_with_provider_output_tokens(self):
         ingest(event("tool_result", "different-token-guard", guard_event_id="different-token-guard",
@@ -636,9 +633,6 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(row["net"]["tokens"], 85)
         self.assertEqual(row["net"]["token_evidence"], "estimated_coordinator_input_counterfactual")
         self.assertNotEqual(row["baseline"]["tokens"], 7)
-        self.assertIsNone(row["net"]["cost_micros"])
-        self.assertEqual(row["baseline"]["cost_status"], "unavailable_no_authoritative_input_price_or_rate")
-        self.assertEqual(row["net"]["cost_status"], "unavailable_no_authoritative_input_price_or_rate")
 
     def test_counterfactual_excludes_unlinked_and_missing_cost_monetary_cases(self):
         ingest(event("tool_result", "exclude-guard", guard_event_id="exclude-guard",
@@ -653,9 +647,6 @@ class PluginTests(unittest.TestCase):
                      process_role="worker"))
         result = counterfactual_net_savings()
         self.assertEqual(result["summary"]["linked_intercepted_delegations"], 1)
-        self.assertEqual(result["summary"]["monetary_rows"], 0)
-        self.assertIsNone(result["rows"][0]["net"]["cost_micros"])
-        self.assertEqual(result["rows"][0]["net"]["cost_status"], "unavailable_no_authoritative_input_price_or_rate")
 
     def test_counterfactual_guard_only_has_no_delegation_population(self):
         ingest(event("tool_result", "guard-only", guard_event_id="guard-only",
@@ -766,8 +757,6 @@ class PluginTests(unittest.TestCase):
         row = counterfactual_net_savings()["rows"][0]
         self.assertEqual(row["actual"]["tokens"], 0)
         self.assertEqual(row["net"]["tokens"], 0)
-        self.assertIsNone(row["net"]["cost_micros"])
-        self.assertEqual(row["net"]["cost_status"], "unavailable_no_authoritative_input_price_or_rate")
 
     def test_counterfactual_excludes_duplicate_and_retry_baseline_attempts(self):
         ingest(event("tool_result", "duplicate-guard", guard_event_id="duplicate-guard",
@@ -800,10 +789,6 @@ class PluginTests(unittest.TestCase):
             ingest(event("communication_observation", event_id, direction=direction,
                          communication_kind=kind, process_role=role, **common))
         row = counterfactual_net_savings()["rows"][0]
-        self.assertIsNone(row["baseline"]["cost_micros"])
-        self.assertEqual(row["baseline"]["cost_status"],
-                         "unavailable_no_authoritative_input_price_or_rate")
-        self.assertIsNone(row["net"]["cost_micros"])
 
     def test_applied_transformer_reduction_overrides_below_threshold_impact(self):
         ingest(event(

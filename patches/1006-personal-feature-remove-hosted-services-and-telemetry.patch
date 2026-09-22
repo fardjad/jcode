@@ -110,9 +110,9 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  src/cli/proctitle.rs                          |    2 -
  src/cli/provider_init.rs                      |   10 +-
  src/cli/provider_init_tests.rs                |   51 +-
- src/cli/startup.rs                            |  264 +-
+ src/cli/startup.rs                            |  263 +-
  src/cli/telemetry.rs                          |   78 -
- 73 files changed, 450 insertions(+), 10234 deletions(-)
+ 73 files changed, 449 insertions(+), 10234 deletions(-)
  delete mode 100644 TELEMETRY.md
  delete mode 100644 crates/jcode-app-core/src/tool/discover.rs
  delete mode 100644 crates/jcode-app-core/src/tool/discover_secrets.rs
@@ -12309,12 +12309,10 @@ index f044e0194..1b8cf231a 100644
  
  #[test]
 diff --git a/src/cli/startup.rs b/src/cli/startup.rs
-index 23c9f7c91..0902f7c86 100644
+index 23c9f7c91..5d3a1e7d5 100644
 --- a/src/cli/startup.rs
 +++ b/src/cli/startup.rs
-@@ -1,10 +1,9 @@
-+use crate::bus::UpdateStatus;
- use anyhow::Result;
+@@ -2,9 +2,7 @@ use anyhow::Result;
  use clap::Parser;
  use std::process::Command as ProcessCommand;
  
@@ -12325,7 +12323,7 @@ index 23c9f7c91..0902f7c86 100644
  
  use super::{
      args::{Args, Command},
-@@ -129,15 +128,7 @@ pub async fn run() -> Result<()> {
+@@ -129,15 +127,7 @@ pub async fn run() -> Result<()> {
      perf::init_background();
      startup_profile::mark("perf_init");
  
@@ -12342,7 +12340,7 @@ index 23c9f7c91..0902f7c86 100644
  
      let args = parse_and_prepare_args(args)?;
      spawn_background_update_check(&args);
-@@ -150,53 +141,6 @@ pub async fn run() -> Result<()> {
+@@ -150,53 +140,6 @@ pub async fn run() -> Result<()> {
      Ok(())
  }
  
@@ -12396,7 +12394,7 @@ index 23c9f7c91..0902f7c86 100644
  /// Register provider runtimes that live downstream of `jcode-base` with the
  /// base crate's external provider registry. Keep every downstream runtime
  /// registration in this one function so the composition-root wiring stays
-@@ -345,6 +289,24 @@ fn remote_working_dir_is_absolute(path: &str) -> bool {
+@@ -345,6 +288,24 @@ fn remote_working_dir_is_absolute(path: &str) -> bool {
          && bytes[0].is_ascii_alphabetic()
  }
  
@@ -12421,7 +12419,7 @@ index 23c9f7c91..0902f7c86 100644
  fn spawn_background_update_check(args: &Args) {
      let check_updates = should_spawn_background_update_check(args);
      let auto_update = should_auto_install_update(args);
-@@ -460,24 +422,6 @@ fn spawn_background_update_check(args: &Args) {
+@@ -460,24 +421,6 @@ fn spawn_background_update_check(args: &Args) {
      }
  }
  
@@ -12446,7 +12444,7 @@ index 23c9f7c91..0902f7c86 100644
  fn should_spawn_background_update_check(args: &Args) -> bool {
      should_spawn_background_update_check_with_config(
          args,
-@@ -526,172 +470,6 @@ mod tests {
+@@ -526,172 +469,6 @@ mod tests {
          Args::parse_from(argv)
      }
  

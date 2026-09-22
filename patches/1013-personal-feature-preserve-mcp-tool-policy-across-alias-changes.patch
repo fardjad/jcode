@@ -27,11 +27,11 @@ session policy, and rebuild the index whenever the MCP tool surface changes.
 Validation:
 scripts/cargo_exec.sh test -p jcode-app-core mcp_collision_refresh_preserves_offline_cache_and_legacy_allowlists --lib
 ---
- crates/jcode-app-core/src/tool/mod.rs | 279 +++++++++++++++++++++-----
- 1 file changed, 231 insertions(+), 48 deletions(-)
+ crates/jcode-app-core/src/tool/mod.rs | 285 +++++++++++++++++++++-----
+ 1 file changed, 233 insertions(+), 52 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 31e625814..322d195c9 100644
+index 7a75d51e1..165f47fec 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -205,14 +205,29 @@ pub(crate) fn session_mcp_dispatch_is_allowed(
@@ -136,7 +136,7 @@ index 31e625814..322d195c9 100644
              skills: skills.clone(),
              compaction: compaction.clone(),
          };
-@@ -480,61 +510,31 @@ impl Registry {
+@@ -480,22 +510,66 @@ impl Registry {
          );
          let session_tools_ms = session_tools_start.elapsed().as_millis();
  
@@ -166,83 +166,103 @@ index 31e625814..322d195c9 100644
          registry
      }
  
--    /// Get all tool definitions for the API
--    pub async fn definitions(
--        &self,
--        allowed_tools: Option<&HashSet<String>>,
--    ) -> Vec<ToolDefinition> {
--        let tools = self.tools.read().await;
--        let mut defs: Vec<ToolDefinition> = tools
--            .iter()
--            .filter(|(name, _)| {
--                allowed_tools
--                    .map(|set| tool_name_is_allowed(set, name))
--                    .unwrap_or(true)
--            })
--            .map(|(name, tool)| {
--        // Register generated `swarm_<id>` tools for every valid effective
--        // blueprint. Blueprint additions, removals, and edits refresh
--        // generated definitions only at session construction (between turns),
--        // never mutating an already locked tool snapshot during a turn.
--        let blueprint_start = std::time::Instant::now();
--        Self::register_blueprint_tools(&mut tools_map);
--        let blueprint_ms = blueprint_start.elapsed().as_millis();
--
--                let mut def = tool.to_definition();
--                // Use registry key as the tool name (important for MCP tools where
--                // the registry key is "mcp__server__tool" but Tool::name() returns
--                // just the raw tool name)
--                if def.name != *name {
--                    def.name = name.clone();
--                }
--                def
--            })
--            .collect();
--
--        // Sort by name for deterministic ordering - critical for prompt cache hits
--        defs.sort_by(|a, b| a.name.cmp(&b.name));
--        defs
--    }
--
--    pub async fn tool_names(&self) -> Vec<String> {
-     /// Register generated `swarm_<id>` tools for every valid effective
-     /// blueprint discovered from the configured blueprints directory. Tools
-     /// are only registered, never overwrite existing tools (collision
-@@ -570,10 +570,46 @@ impl Registry {
-         }
-     }
- 
-+    /// Get all tool definitions for the API
-+    pub async fn definitions(
-+        &self,
-+        allowed_tools: Option<&HashSet<String>>,
-+    ) -> Vec<ToolDefinition> {
-+        let tools = self.tools.read().await;
-+        let mut defs: Vec<ToolDefinition> = tools
-+            .iter()
-+            .filter(|(name, _)| {
-+                allowed_tools
-+                    .map(|set| self.tool_is_allowed(set, name))
-+                    .unwrap_or(true)
-+            })
-+            .map(|(name, tool)| {
-+                let mut def = tool.to_definition();
-+                // Use registry key as the tool name (important for MCP tools where
-+                // the registry key is "mcp__server__tool" but Tool::name() returns
-+                // just the raw tool name)
-+                if def.name != *name {
-+                    def.name = name.clone();
-+                }
-+                def
-+            })
-+            .collect();
++    /// Register generated `swarm_<id>` tools for every valid effective
++    /// blueprint discovered from the configured blueprints directory. Tools
++    /// are only registered, never overwrite existing tools (collision
++    /// safety). The coordinator policy chooses which are visible.
++    fn register_blueprint_tools(tools: &mut HashMap<String, Arc<dyn Tool>>) {
++        let agents_config = &crate::config::config().agents;
++        let report = crate::worker_blueprint::load_worker_blueprints(
++            agents_config.worker_blueprints_dir.as_deref(),
++            &agents_config.worker_blueprints,
++        );
 +
-+        // Sort by name for deterministic ordering - critical for prompt cache hits
-+        defs.sort_by(|a, b| a.name.cmp(&b.name));
-+        defs
++        for (id, bp) in report.registry.iter() {
++            let tool_name = format!("swarm_{id}");
++            // Never overwrite a built-in or MCP tool with a generated one.
++            // Tool-name collisions are logged and the generated tool is skipped.
++            if tools.contains_key(&tool_name) {
++                crate::logging::info(&format!(
++                    "Blueprint tool collision: '{}' already registered, skipping generated tool for blueprint '{}'",
++                    tool_name, id
++                ));
++                continue;
++            }
++            Self::insert_tool(
++                tools,
++                &tool_name,
++                blueprint::BlueprintTool::from_blueprint(bp),
++            );
++        }
++
++        // Log diagnostics for any blueprint loading issues.
++        for diag in &report.diagnostics {
++            crate::logging::info(&format!("Worker blueprint diagnostic: {}", diag));
++        }
 +    }
 +
-+    pub async fn tool_names(&self) -> Vec<String> {
+     /// Get all tool definitions for the API
+     pub async fn definitions(
+         &self,
+@@ -506,18 +580,10 @@ impl Registry {
+             .iter()
+             .filter(|(name, _)| {
+                 allowed_tools
+-                    .map(|set| tool_name_is_allowed(set, name))
++                    .map(|set| self.tool_is_allowed(set, name))
+                     .unwrap_or(true)
+             })
+             .map(|(name, tool)| {
+-                // Register generated `swarm_<id>` tools for every valid effective
+-                // blueprint. Blueprint additions, removals, and edits refresh
+-                // generated definitions only at session construction (between turns),
+-                // never mutating an already locked tool snapshot during a turn.
+-                let blueprint_start = std::time::Instant::now();
+-                Self::register_blueprint_tools(&mut tools_map);
+-                let blueprint_ms = blueprint_start.elapsed().as_millis();
+-
+                 let mut def = tool.to_definition();
+                 // Use registry key as the tool name (important for MCP tools where
+                 // the registry key is "mcp__server__tool" but Tool::name() returns
+@@ -535,45 +601,15 @@ impl Registry {
+     }
+ 
+     pub async fn tool_names(&self) -> Vec<String> {
+-        /// Register generated `swarm_<id>` tools for every valid effective
+-        /// blueprint discovered from the configured blueprints directory. Tools
+-        /// are only registered, never overwrite existing tools (collision
+-        /// safety). The coordinator policy chooses which are visible.
+-        fn register_blueprint_tools(tools: &mut HashMap<String, Arc<dyn Tool>>) {
+-            let agents_config = &crate::config::config().agents;
+-            let report = crate::worker_blueprint::load_worker_blueprints(
+-                agents_config.worker_blueprints_dir.as_deref(),
+-                &agents_config.worker_blueprints,
+-            );
+-
+-            for (id, bp) in report.registry.iter() {
+-                let tool_name = format!("swarm_{id}");
+-                // Never overwrite a built-in or MCP tool with a generated one.
+-                // Tool-name collisions are logged and the generated tool is skipped.
+-                if tools.contains_key(&tool_name) {
+-                    crate::logging::info(&format!(
+-                        "Blueprint tool collision: '{}' already registered, skipping generated tool for blueprint '{}'",
+-                        tool_name, id
+-                    ));
+-                    continue;
+-                }
+-                Self::insert_tool(
+-                    tools,
+-                    &tool_name,
+-                    blueprint::BlueprintTool::from_blueprint(bp),
+-                );
+-            }
+-
+-            // Log diagnostics for any blueprint loading issues.
+-            for diag in &report.diagnostics {
+-                crate::logging::info(&format!("Worker blueprint diagnostic: {}", diag));
+-            }
+-        }
+-
          let tools = self.tools.read().await;
          tools.keys().cloned().collect()
      }
@@ -267,18 +287,7 @@ index 31e625814..322d195c9 100644
      /// prefix/substring containment, then bounded edit distance. Helps the
      /// model recover from hallucinated tool names (#104).
      fn closest_tool_names(name: &str, available: &[&str]) -> Vec<String> {
-@@ -1218,7 +1249,9 @@ impl Registry {
-                 &transform_spawn_request_id,
-             );
-         }
--        if let Some((_spawn_request_id, delegation_id, _delegation_token)) = guard_spawn_request_id.as_ref() {
-+        if let Some((_spawn_request_id, delegation_id, _delegation_token)) =
-+            guard_spawn_request_id.as_ref()
-+        {
-             let notice_bytes = output.output.len() as u64;
-             crate::measurement::emit_communication_observation(
-                 ctx.session_id.clone(),
-@@ -1848,6 +1881,155 @@ impl Registry {
+@@ -1819,6 +1850,155 @@ impl Registry {
          tools.remove(name)
      }
  
@@ -434,7 +443,7 @@ index 31e625814..322d195c9 100644
      /// Unregister all tools matching a prefix
      pub async fn unregister_prefix(&self, prefix: &str) -> Vec<String> {
          let mut tools = self.tools.write().await;
-@@ -1859,6 +2041,7 @@ impl Registry {
+@@ -1830,6 +2010,7 @@ impl Registry {
          for name in &to_remove {
              tools.remove(name);
          }

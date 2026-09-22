@@ -18,16 +18,6 @@ from .schema import DERIVATION_VERSION, connect
 NET_SAVINGS_VERSION = "counterfactual-net-savings-2"
 
 
-def _known_provider_cost(row) -> bool:
-    return (
-        row is not None
-        and row["cost_micros"] is not None
-        and row["cost_currency"] is not None
-        and row["cost_source"] in ("provider_response", "provider_reported", "openrouter_response")
-        and row["cost_status"] == "provider_reported"
-    )
-
-
 def _token_measurement(row, field: str) -> tuple[int | None, str]:
     value = row[field] if row is not None else None
     status = row["tokenizer_status"] if row is not None else None
@@ -75,12 +65,6 @@ def counterfactual_net_savings(db=None, filters: dict[str, Any] | None = None) -
                    ORDER BY event_id""",
                 (delegation["delegation_id"], delegation["guard_event_id"]),
             ).fetchall()
-            linked_usage = db.execute(
-                """SELECT * FROM provider_usage
-                   WHERE delegation_id = ? AND guard_event_id = ?
-                   ORDER BY event_id""",
-                (delegation["delegation_id"], delegation["guard_event_id"]),
-            ).fetchall()
             guard_notice = [item for item in communications if item["direction"] == "inbound" and item["communication_kind"] == "clarification" and item["process_role"] == "coordinator"]
             spawn = [item for item in communications if item["direction"] == "outbound" and item["communication_kind"] in ("follow_up", "spawn", "summary", "escalation") and item["process_role"] == "coordinator"]
             returns = [item for item in communications if item["direction"] == "inbound" and item["communication_kind"] in ("follow_up", "summary", "context_read") and item["process_role"] == "worker"]
@@ -103,23 +87,12 @@ def counterfactual_net_savings(db=None, filters: dict[str, Any] | None = None) -
             token_net = baseline_tokens - delegation_overhead_tokens if baseline_tokens is not None and token_complete else None
             baseline_token_evidence = "estimated" if baseline_tokens is not None else "unknown"
 
-            baseline_cost = None
-            baseline_currency = None
-            baseline_cost_status = "unavailable_no_authoritative_input_price_or_rate"
-            actual_cost_rows = component_rows
-            actual_cost = None
-            actual_currency = None
-            actual_cost_status = "unavailable_no_exact_communication_request_attribution"
-            monetary_net = None
-            monetary_status = baseline_cost_status
-            if not actual_cost_rows:
-                monetary_status = "excluded_no_linked_actual_components"
             result_rows.append({
-                "guard_linkage": "explicit", "baseline": {"tokens": baseline_tokens, "token_evidence": baseline_token_evidence, "token_basis": "estimated_coordinator_input_full_original_tool_output", "cost_micros": baseline_cost, "cost_currency": baseline_currency, "cost_status": baseline_cost_status},
-                "actual": {"tokens": actual_tokens if token_complete else None, "delegation_overhead_tokens": delegation_overhead_tokens if token_complete else None, "token_evidence": token_evidence, "components": {"guard_notice_tokens": notice_tokens if token_complete else None, "delegation_request_tokens": spawn_tokens if token_complete else None, "worker_result_tokens": return_tokens if token_complete else None}, "cost_micros": actual_cost, "cost_currency": actual_currency, "cost_status": actual_cost_status},
-                "net": {"tokens": token_net, "token_evidence": "estimated_coordinator_input_counterfactual" if token_net is not None else "unknown", "cost_micros": monetary_net, "cost_currency": baseline_currency if monetary_net is not None else None, "cost_status": monetary_status},
+                "guard_linkage": "explicit", "baseline": {"tokens": baseline_tokens, "token_evidence": baseline_token_evidence, "token_basis": "estimated_coordinator_input_full_original_tool_output"},
+                "actual": {"tokens": actual_tokens if token_complete else None, "delegation_overhead_tokens": delegation_overhead_tokens if token_complete else None, "token_evidence": token_evidence, "components": {"guard_notice_tokens": notice_tokens if token_complete else None, "delegation_request_tokens": spawn_tokens if token_complete else None, "worker_result_tokens": return_tokens if token_complete else None}},
+                "net": {"tokens": token_net, "token_evidence": "estimated_coordinator_input_counterfactual" if token_net is not None else "unknown"},
                 "component_counts": {"guard_notice": len(guard_notice), "spawn": len(spawn), "worker_returns_or_reads": len(returns)},
-                "completeness": {"token_components_complete": token_complete, "monetary_components_complete": monetary_net is not None},
+                "completeness": {"token_components_complete": token_complete},
             })
         complete_rows = [item for item in result_rows if item["net"]["tokens"] is not None]
         comparison = {
@@ -131,7 +104,7 @@ def counterfactual_net_savings(db=None, filters: dict[str, Any] | None = None) -
             "delegation_overhead_tokens": sum(item["actual"]["delegation_overhead_tokens"] for item in complete_rows),
             "estimated_context_savings_tokens": sum(item["net"]["tokens"] for item in complete_rows),
         }
-        return {"privacy": "content_free", "scope": "counterfactual_net_savings", "derivation_version": NET_SAVINGS_VERSION, "evidence": "estimated_counterfactual", "rows": result_rows, "exclusions": dict(sorted(exclusions.items())), "summary": {"linked_intercepted_delegations": len(result_rows), "token_rows": len(complete_rows), "monetary_rows": sum(item["net"]["cost_micros"] is not None for item in result_rows), "comparison": comparison}}
+        return {"privacy": "content_free", "scope": "counterfactual_net_savings", "derivation_version": NET_SAVINGS_VERSION, "evidence": "estimated_counterfactual", "rows": result_rows, "exclusions": dict(sorted(exclusions.items())), "summary": {"linked_intercepted_delegations": len(result_rows), "token_rows": len(complete_rows), "comparison": comparison}}
     finally:
         if own:
             db.close()
