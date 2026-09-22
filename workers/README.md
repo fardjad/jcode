@@ -8,6 +8,7 @@ This directory versions personal worker blueprints installed locally under
 | Blueprint | Tool name | Purpose |
 | --- | --- | --- |
 | `coordinator.md` | (reserved, no tool) | Coordinator prompt and tool policy. Not a spawnable worker. |
+| `fixer.md` | `swarm_fixer` | One literal mechanical change with a coordinator-defined result contract. |
 | `investigator.md` | `swarm_investigator` | Read-only investigation and shell execution. |
 | `research.md` | `swarm_research` | Web and documentation research without file modification. |
 
@@ -21,6 +22,7 @@ this ownership list.
 
 | Worker | Owned tools |
 | --- | --- |
+| `swarm_fixer` | `edit`, `multiedit`, `apply_patch`, `write`, `patch`, plus bounded local file and command tools for one specified operation |
 | `swarm_investigator` | `agentgrep`, `bash`, `bg`, `conversation_search`, `ls`, `memory`, `read`, `session_search` |
 | `swarm_research` | `jcode_docs`, `read`, `webfetch`, `websearch` |
 
@@ -62,6 +64,15 @@ ln -sfn "$(pwd)/workers/blueprints" ~/.jcode/worker-blueprints
 
 This makes `coordinator.md` available alongside worker blueprints without a
 separate prompt-overlay installer.
+
+### Fixer delegation contract
+
+`swarm_fixer` is intentionally not an implementation or planning specialist.
+The coordinator may delegate only one literal mechanical task at a time and
+must state both its exact operation and the exact output required in return.
+For example: "In `path`, replace this literal string; report only the changed
+path and whether the replacement count was one." Fixer must escalate rather
+than infer missing details, choose an approach, review, or broaden scope.
 
 ## Configure
 

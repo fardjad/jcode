@@ -1,14 +1,15 @@
 ---
-name: ensure-catalog-plugins
-summary: Check and configure global jcode hooks for the catalog's symlinked plugins.
+name: ensure-personal-jcode-setup
+summary: Ensure catalog plugins, worker blueprints, and global jcode hook configuration are ready.
 description: Inspect ~/.jcode/config.toml and, when required, safely update the [hooks] settings for the RTK transformer, delegation guard, and delegation-efficiency observer after verifying the catalog plugin symlink.
 allowed-tools: bash, read, write
 ---
 
-# Ensure catalog plugins are enabled
+# Ensure personal jcode setup is ready
 
 Use this skill when the user asks to enable, repair, check, or synchronize the
-catalog plugins in their global jcode configuration.
+catalog plugin and worker-blueprint assets together with their global jcode
+hook configuration.
 
 ## Scope and authorization
 

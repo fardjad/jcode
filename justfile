@@ -42,6 +42,7 @@ ensure-personal-assets:
   test -x "$jcode_home/plugins/delegation-guard/delegation-guard-transform"
   test -x "$jcode_home/plugins/delegation-efficiency/record.py"
   test -f "$jcode_home/worker-blueprints/coordinator.md"
+  test -f "$jcode_home/worker-blueprints/fixer.md"
   test -f "$jcode_home/worker-blueprints/investigator.md"
   test -f "$jcode_home/worker-blueprints/research.md"
   printf 'plugins and worker blueprints are ready\n'

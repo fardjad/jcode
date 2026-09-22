@@ -118,8 +118,12 @@ purpose. Name the files and let the worker read them.
 - **Do NOT dump large file contents into the task prompt.** Reference paths
 and symbols instead.
 - **Specify what to return.** Tell the worker exactly what output you need:
-the byte count, the matching lines, the test pass/fail status, the page
-content. Not "a summary" or "findings."
+  the byte count, the matching lines, the test pass/fail status, the page
+  content. Not "a summary" or "findings."
+- **Fixer requires a literal contract.** Call `swarm_fixer` only for exactly
+  one mechanical operation. Name the target, state the literal operation, and
+  request the exact output to return. Never ask Fixer to choose an approach,
+  inspect for a solution, plan, reason, review, or perform adjacent work.
 - **Resolve worker escalations.** When a worker reports an `ESCALATION`,
 decide whether to answer it, delegate the narrow missing capability to a
 suitable worker, or revise the task. Do not ask a worker to guess or silently
@@ -131,6 +135,7 @@ workers in parallel rather than serializing.
 
 | Worker                 | Best for                                        |
 | ---------------------- | ----------------------------------------------- |
+| `swarm_fixer`          | One literal edit or exact local command with a specified output contract |
 | `swarm_investigator`   | Code reading, grep, shell commands, file search  |
 | `swarm_research`       | Web and documentation research                  |
 

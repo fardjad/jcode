@@ -23,6 +23,7 @@ test -L "$home/.jcode/worker-blueprints"
 test "$(readlink "$home/.jcode/worker-blueprints")" = "$repo_root/workers/blueprints"
 test -x "$home/.jcode/plugins/delegation-efficiency/record.py"
 test -f "$home/.jcode/worker-blueprints/coordinator.md"
+test -f "$home/.jcode/worker-blueprints/fixer.md"
 
 # A second run confirms the command is idempotent.
 HOME="$home" JCODE_HOME="$home/.jcode" \
