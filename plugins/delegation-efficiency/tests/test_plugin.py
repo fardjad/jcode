@@ -203,7 +203,7 @@ class PluginTests(unittest.TestCase):
         self.assertNotIn("color-scheme:light dark", rendered)
         self.assertIn("Delegation cost comparison", rendered)
         self.assertIn("No cost comparison is available yet.", rendered)
-        self.assertNotIn("Estimated cost without delegation guard", rendered)
+        self.assertNotIn("Tool output without delegation", rendered)
         self.assertNotIn("visual-event-1", rendered)
         self.assertNotIn("visual-session-1", rendered)
         self.assertNotIn("provider-a", rendered)
@@ -227,8 +227,8 @@ class PluginTests(unittest.TestCase):
                         "guard_notice_tokens": 5,
                         "delegation_request_tokens": 10,
                         "worker_result_tokens": 35,
-                        "guarded_total_tokens": 50,
-                        "estimated_savings_tokens": 50,
+                        "delegation_overhead_tokens": 15,
+                        "estimated_context_savings_tokens": 85,
                     }},
                 },
                 "rates": {"interception": {"rate": 0.75}},
@@ -243,13 +243,13 @@ class PluginTests(unittest.TestCase):
                 },
             },
         })
-        self.assertIn("Estimated cost without delegation guard", rendered)
+        self.assertIn("Tool output without delegation", rendered)
         self.assertIn("100 tokens", rendered)
-        self.assertIn("Cost with delegation guard", rendered)
-        self.assertIn("Estimated savings", rendered)
+        self.assertIn("Delegation overhead", rendered)
+        self.assertIn("Estimated context savings", rendered)
         self.assertIn("Guard notice: 5 tokens", rendered)
         self.assertIn("Delegation request: 10 tokens", rendered)
-        self.assertIn("Worker result: 35 tokens", rendered)
+        self.assertIn("Worker result: 35 tokens, task-equivalent and excluded from savings", rendered)
         self.assertNotIn("What the guard saved", rendered)
         self.assertNotIn("interception opportunity", rendered)
         self.assertNotIn("Bytes avoided", rendered)
@@ -263,7 +263,7 @@ class PluginTests(unittest.TestCase):
         }}})
         self.assertIn("No cost comparison is available yet.", rendered)
         self.assertIn("Missing data is unavailable, not zero.", rendered)
-        self.assertNotIn("Estimated cost without delegation guard", rendered)
+        self.assertNotIn("Tool output without delegation", rendered)
         self.assertNotIn("0 tokens", rendered)
         self.assertNotIn("missing_or_unintercepted_guard", rendered)
 
@@ -580,7 +580,8 @@ class PluginTests(unittest.TestCase):
         row = result["rows"][0]
         self.assertEqual(row["baseline"]["tokens"], 100)
         self.assertEqual(row["actual"]["tokens"], 50)
-        self.assertEqual(row["net"]["tokens"], 50)
+        self.assertEqual(row["actual"]["delegation_overhead_tokens"], 15)
+        self.assertEqual(row["net"]["tokens"], 85)
         self.assertEqual(
             row["actual"]["components"],
             {
@@ -597,8 +598,8 @@ class PluginTests(unittest.TestCase):
                 "guard_notice_tokens": 5,
                 "delegation_request_tokens": 10,
                 "worker_result_tokens": 35,
-                "guarded_total_tokens": 50,
-                "estimated_savings_tokens": 50,
+                "delegation_overhead_tokens": 15,
+                "estimated_context_savings_tokens": 85,
             },
         )
         self.assertEqual(row["baseline"]["token_basis"], "estimated_coordinator_input_full_original_tool_output")
@@ -632,7 +633,7 @@ class PluginTests(unittest.TestCase):
         row = counterfactual_net_savings()["rows"][0]
         self.assertEqual(row["baseline"]["tokens"], 100)
         self.assertEqual(row["actual"]["tokens"], 35)
-        self.assertEqual(row["net"]["tokens"], 65)
+        self.assertEqual(row["net"]["tokens"], 85)
         self.assertEqual(row["net"]["token_evidence"], "estimated_coordinator_input_counterfactual")
         self.assertNotEqual(row["baseline"]["tokens"], 7)
         self.assertIsNone(row["net"]["cost_micros"])
@@ -685,7 +686,7 @@ class PluginTests(unittest.TestCase):
         row = result["rows"][0]
         self.assertEqual(row["component_counts"]["worker_returns_or_reads"], 3)
         self.assertEqual(row["actual"]["tokens"], 80)
-        self.assertEqual(row["net"]["tokens"], 20)
+        self.assertEqual(row["net"]["tokens"], 85)
 
     def test_counterfactual_excludes_unrelated_same_delegation_communications(self):
         ingest(event("tool_result", "link-guard", guard_event_id="link-guard",

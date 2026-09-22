@@ -65,15 +65,15 @@ delegation request, and worker result. Missing data is unavailable, not zero.
 It is not a zero-cost result.</p>"""
     else:
         comparison_html = f"""
-<div class="cost"><span>Estimated cost without delegation guard</span><strong>{_number(int(comparison.get('estimated_without_guard_tokens') or 0))} tokens</strong></div>
-<div class="cost"><span>Cost with delegation guard</span><strong>{_number(int(comparison.get('guarded_total_tokens') or 0))} tokens</strong></div>
-<div class="cost saving"><span>Estimated savings</span><strong>{_number(int(comparison.get('estimated_savings_tokens') or 0))} tokens</strong></div>
-<div class="breakdown"><strong>Cost with delegation guard</strong><ul>
+<div class="cost"><span>Tool output without delegation</span><strong>{_number(int(comparison.get('estimated_without_guard_tokens') or 0))} tokens</strong></div>
+<div class="cost"><span>Delegation overhead</span><strong>{_number(int(comparison.get('delegation_overhead_tokens') or 0))} tokens</strong></div>
+<div class="cost saving"><span>Estimated context savings</span><strong>{_number(int(comparison.get('estimated_context_savings_tokens') or 0))} tokens</strong></div>
+<div class="breakdown"><strong>Delegation overhead</strong><ul>
 <li>Guard notice: {_number(int(comparison.get('guard_notice_tokens') or 0))} tokens</li>
 <li>Delegation request: {_number(int(comparison.get('delegation_request_tokens') or 0))} tokens</li>
-<li>Worker result: {_number(int(comparison.get('worker_result_tokens') or 0))} tokens</li>
+<li>Worker result: {_number(int(comparison.get('worker_result_tokens') or 0))} tokens, task-equivalent and excluded from savings</li>
 </ul></div>
-<p class="muted">Based on {_number(complete_delegations)} complete delegations. Missing or unlinked components are excluded, not counted as zero. This is a token-cost estimate, not a monetary estimate.</p>"""
+<p class="muted">Based on {_number(complete_delegations)} complete delegations. Missing or unlinked components are excluded, not counted as zero. This is a coordinator-context estimate, not a monetary estimate.</p>"""
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -89,7 +89,7 @@ h1 {{ margin:0 0 6px; font-size:1.65rem; }} p {{ margin:8px 0; }} .muted {{ colo
 .breakdown ul {{ margin:8px 0 0; padding-left:22px; }} footer {{ margin-top:22px; color:var(--muted); font-size:.9rem; }}
 </style></head><body><main>
 <h1>Delegation cost comparison</h1>
-<p class="muted">Token cost estimate for complete, explicitly linked guard delegations.</p>
+<p class="muted">Estimated coordinator-context reduction for complete, explicitly linked guard delegations.</p>
 {comparison_html}
 <footer>Content-free aggregate report.</footer>
 </main></body></html>
