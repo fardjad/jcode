@@ -125,7 +125,7 @@ event above was recorded (values vary with the recorded events):
 
 ```json
 {
-  "costs": {
+  "provider_metrics": {
     "estimated": "separate_from_source",
     "label": "provider_reported_or_unknown"
   },
@@ -134,10 +134,10 @@ event above was recorded (values vary with the recorded events):
       "event_count": 1,
       "event_kind": "tool_result",
       "evidence_class": "measured",
-      "known_cost_count": 0,
-      "known_cost_micros": 0,
+      "known_metric_count": 0,
+      "known_metric_micros": 0,
       "month": "2026-09",
-      "unknown_cost_count": 1
+      "unknown_metric_count": 1
     }
   ],
   "privacy": "content_free",
@@ -153,13 +153,13 @@ rollup has already processed the current sample event, its output is:
 ```
 
 The aggregate report contains only month, event kind, evidence class, counts,
-and known versus unknown cost coverage. `known_cost_micros` is the sum of
-recorded `cost_micros` values for that row. For an event-time provider-reported
+and known versus unknown cost coverage. `known_metric_micros` is the sum of
+recorded `provider_metric_micros` values for that row. For an event-time provider-reported
 cost, it is a provider-reported source fact when the event says so, not a
 price-catalog calculation or a complete spend total. An unknown cost has no
-numeric value: a null cost contributes to `unknown_cost_count`, it is not
-estimated. The report may show `known_cost_micros` as `0` alongside a positive
-`unknown_cost_count`; that zero is not a claim that unknown costs were zero.
+numeric value: a null cost contributes to `unknown_metric_count`, it is not
+estimated. The report may show `known_metric_micros` as `0` alongside a positive
+`unknown_metric_count`; that zero is not a claim that unknown provider_metrics were zero.
 `evidence_class` likewise describes the recorded
 evidence level, not the confidence of an unrecorded counterfactual.
 
@@ -205,7 +205,7 @@ Use the result as a bounded measurement ledger, not as an efficiency score:
   emitted by the report, so do not compare its rows as cache-adjusted provider
   spend.
 * Missing or unknown evidence remains visible through the evidence class and
-  unknown-cost count. Treat missing dimensions and unknown costs as unknown,
+  unknown-cost count. Treat missing dimensions and unknown provider_metrics as unknown,
   rather than filling them with zero or attributing them to another event.
 
 The report is content-free: no prompts, tool output, summaries, paths, payloads,
@@ -249,7 +249,7 @@ communication and execution observations, latency and follow-up percentiles,
 failure/fallback counts, provider/model dimensions, cache token classes, and
 separate proactive versus guard-triggered populations. Approximate token
 differences are estimates, not provider usage or monetary savings. Provider
-costs remain event-time source facts and are never presented as billing truth.
+provider_metrics remain event-time source facts and are never presented as billing truth.
 
 The counterfactual delegation view models the guarded full tool output as an
 estimated coordinator-input token baseline. It never equates that later input

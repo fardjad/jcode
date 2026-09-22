@@ -33,10 +33,10 @@ CREATE TABLE IF NOT EXISTS events (
   evidence_level TEXT NOT NULL,
   session_id TEXT NOT NULL,
   source_json TEXT NOT NULL,
-  cost_micros INTEGER,
-  cost_currency TEXT,
-  cost_source TEXT,
-  cost_status TEXT,
+  provider_metric_micros INTEGER,
+  provider_metric_currency TEXT,
+  provider_metric_source TEXT,
+  provider_metric_status TEXT,
   UNIQUE(event_id)
 );
 CREATE TRIGGER IF NOT EXISTS events_source_immutable
@@ -67,27 +67,12 @@ CREATE TABLE IF NOT EXISTS delegation_observations (
 CREATE TRIGGER IF NOT EXISTS delegation_observations_source_immutable
   BEFORE UPDATE ON delegation_observations
   BEGIN SELECT RAISE(ABORT, 'immutable source observation'); END;
-CREATE TABLE IF NOT EXISTS provider_usage (
- event_id TEXT PRIMARY KEY REFERENCES events(event_id) ON DELETE CASCADE,
- guard_event_id TEXT, delegation_id TEXT, request_id TEXT, generation_id TEXT,
- attempt INTEGER, process_role TEXT, provider TEXT, route TEXT, model TEXT,
- cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
- provider_input_tokens INTEGER, provider_output_tokens INTEGER,
- retryable INTEGER, retry_count INTEGER, provider_response_id TEXT, served_model TEXT,
-  cost_micros INTEGER, cost_currency TEXT, cost_source TEXT, cost_status TEXT,
-  cost_version TEXT, cost_timestamp_ms INTEGER, attribution_status TEXT,
-  intermediate INTEGER, final INTEGER,
-  evidence_level TEXT
-);
-CREATE TRIGGER IF NOT EXISTS provider_usage_source_immutable
-  BEFORE UPDATE ON provider_usage
-  BEGIN SELECT RAISE(ABORT, 'immutable source observation'); END;
 CREATE TABLE IF NOT EXISTS communication_observations (
  event_id TEXT PRIMARY KEY REFERENCES events(event_id) ON DELETE CASCADE,
  guard_event_id TEXT, delegation_id TEXT, session_id TEXT, process_role TEXT, direction TEXT,
  communication_kind TEXT, bytes INTEGER, tokens INTEGER, tokenizer_status TEXT,
- occurred_at_ms INTEGER NOT NULL, cost_micros INTEGER, cost_currency TEXT,
- cost_source TEXT, cost_status TEXT
+ occurred_at_ms INTEGER NOT NULL, provider_metric_micros INTEGER, provider_metric_currency TEXT,
+ provider_metric_source TEXT, provider_metric_status TEXT
 );
 CREATE TRIGGER IF NOT EXISTS communication_observations_source_immutable
   BEFORE UPDATE ON communication_observations
@@ -95,7 +80,7 @@ CREATE TRIGGER IF NOT EXISTS communication_observations_source_immutable
 CREATE TABLE IF NOT EXISTS monthly_aggregates (
   month TEXT NOT NULL, event_kind TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
   guard_outcome TEXT NOT NULL, evidence_class TEXT NOT NULL, event_count INTEGER NOT NULL,
- known_cost_micros INTEGER, known_cost_count INTEGER NOT NULL, unknown_cost_count INTEGER NOT NULL,
+ known_metric_micros INTEGER, known_metric_count INTEGER NOT NULL, unknown_metric_count INTEGER NOT NULL,
   PRIMARY KEY(month, event_kind, provider, model, guard_outcome, evidence_class)
 );
 CREATE TABLE IF NOT EXISTS aggregate_event_keys (
@@ -131,14 +116,14 @@ CREATE TABLE IF NOT EXISTS event_analysis (
   model TEXT,
   process_role TEXT,
   blueprint_name TEXT,
-  cost_coverage_class TEXT NOT NULL,
-  cost_micros INTEGER,
+  provider_coverage_class TEXT NOT NULL,
+  provider_metric_micros INTEGER,
   provider_input_tokens INTEGER,
   provider_output_tokens INTEGER,
   cache_read_input_tokens INTEGER,
   cache_creation_input_tokens INTEGER,
   retry_count INTEGER
-  ,cost_currency TEXT,
+  ,provider_metric_currency TEXT,
   original_bytes INTEGER,
   original_lines INTEGER,
   original_tokens INTEGER,
@@ -222,27 +207,15 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     }
     for name, definition in (
         ("process_role", "TEXT"),
-        ("cost_micros", "INTEGER"),
-        ("cost_currency", "TEXT"),
-        ("cost_source", "TEXT"),
-        ("cost_status", "TEXT"),
+        ("provider_metric_micros", "INTEGER"),
+        ("provider_metric_currency", "TEXT"),
+        ("provider_metric_source", "TEXT"),
+        ("provider_metric_status", "TEXT"),
     ):
         if name not in communication_columns:
             try:
                 connection.execute(
                     f"ALTER TABLE communication_observations ADD COLUMN {name} {definition}"
-                )
-            except sqlite3.OperationalError as exc:
-                if "duplicate column name" not in str(exc).lower():
-                    raise
-    provider_columns = {
-        row[1] for row in connection.execute("PRAGMA table_info(provider_usage)")
-    }
-    for name, definition in (("intermediate", "INTEGER"), ("final", "INTEGER")):
-        if name not in provider_columns:
-            try:
-                connection.execute(
-                    f"ALTER TABLE provider_usage ADD COLUMN {name} {definition}"
                 )
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():

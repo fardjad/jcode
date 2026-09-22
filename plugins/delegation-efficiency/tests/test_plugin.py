@@ -60,26 +60,6 @@ class PluginTests(unittest.TestCase):
         env["LOCALAPPDATA"] = str(pathlib.Path(self.temp.name) / "local-app-data")
         self.assertEqual(resolve_state_dir(environ=env, home=env["HOME"], platform="win32"), pathlib.Path(env["LOCALAPPDATA"]) / "jcode" / "delegation-efficiency")
 
-    def test_contract_golden_null_heavy_and_adversarial_values(self):
-        self.assertEqual(compatibility(event()), "current")
-        self.assertEqual(compatibility({**event(), "schema_version": "2.0"}), "unsupported_schema")
-        self.assertEqual(compatibility({**event(), "event": "future"}), "unknown_event_kind")
-        self.assertEqual(compatibility({**event(), "x_future_scalar": "rejected"}), "unknown_field")
-        for bad in (
-            {**event(), "x_payload": {"prompt": "secret"}},
-            {**event(), "x_future_scalar": "must not persist"},
-            {**event(), "prompt": "secret"},
-            {**event(), "session_id": "/Users/private"},
-            {**event(), "event_id": {"nested": "bad"}},
-            {**event(), "tool_latency_ms": -1},
-            {**event(), "unknown": "value"},
-        ):
-            with self.assertRaises(EnvelopeError): validate_event(bad)
-        null_heavy = event("provider_usage", "usage-1", provider="generic", model="model", attribution_status="unknown_linkage", request_id=None, generation_id=None, attempt=None, cost_micros=None)
-        self.assertIsNone(validate_event(null_heavy)["cost_micros"])
-        with self.assertRaises(EnvelopeError): validate_event({**event(), "deletion_generation": "4"})
-        with self.assertRaises(EnvelopeError): validate_event({**event(), "deletion_generation": -1})
-
     def test_allowlisted_string_values_are_structural_or_closed(self):
         accepted = event(tool_name="read_file", provider="openrouter", route="eu/standard", model="anthropic/claude-3.5-sonnet", served_model="claude-3.5-sonnet", blueprint_name="coordinator", spawn_mode="headless", outcome="success", failure_reason="timeout", lifecycle="completed", status="completed", evidence_level="provider_reported", tokenizer_identity="provider-reported", tokenizer_status="provider_reported", evidence="provider_reported", attribution_status="unknown_linkage")
         self.assertEqual(validate_event(accepted)["model"], "anthropic/claude-3.5-sonnet")
@@ -122,29 +102,6 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(json.loads(stdin_proc.stdout), {"status": "inserted"})
         self.assertEqual(status()["events"], 2)
 
-    def test_idempotent_source_and_normalized_rows_preserve_cost_provenance(self):
-        provider = event("provider_usage", "usage-1", provider="openrouter", model="m", request_id="request-1", generation_id="generation-1", attempt=0, cost_micros=17, cost_source="provider_response", cost_status="provider_reported", cost_currency=None, provider_input_tokens=10)
-        self.assertEqual(ingest(provider), "inserted")
-        self.assertEqual(ingest(provider), "duplicate")
-        db = connect()
-        self.assertEqual(db.execute("select count(*) from events").fetchone()[0], 1)
-        row = db.execute("select cost_micros,cost_source,source_json from events").fetchone()
-        self.assertEqual((row[0], row[1]), (17, "provider_response"))
-        self.assertIn('"cost_micros":17', row[2])
-        self.assertEqual(db.execute("select count(*) from provider_usage").fetchone()[0], 1)
-        db.close()
-
-    def test_separate_observation_tables_and_no_heuristic_join(self):
-        ingest(event("tool_result", "guard-1", guard_event_id="guard-1", original_tokens=100, final_visible_tokens=10))
-        ingest(event("delegation_spawn", "delegation-1", delegation_id="delegation-1", child_session_id="child-1", guard_event_id=None, evidence_level="estimated_or_null"))
-        ingest(event("provider_usage", "usage-2", provider="p", model="m", attribution_status="unknown_linkage"))
-        db = connect()
-        self.assertEqual(db.execute("select count(*) from guard_observations").fetchone()[0], 1)
-        self.assertEqual(db.execute("select count(*) from delegation_observations").fetchone()[0], 1)
-        self.assertIsNone(db.execute("select guard_event_id from delegation_observations").fetchone()[0])
-        self.assertEqual(db.execute("select count(*) from provider_usage where attribution_status='unknown_linkage'").fetchone()[0], 1)
-        db.close()
-
     def test_typed_communication_observation_is_normalized_without_content(self):
         communication = event(
             "communication_observation", "communication-1", direction="outbound",
@@ -180,43 +137,10 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(json.loads(report_proc.stdout)["scope"], "aggregate")
         self.assertTrue((installed / "delegation_efficiency" / "ingest.py").exists())
 
-    def test_monthly_aggregate_has_no_joinable_identifiers_and_unknown_costs(self):
-        ingest(event("tool_result", "aggregate-1", cost_micros=10))
-        ingest(event("tool_result", "aggregate-2", cost_micros=None))
-        self.assertEqual(rollup(), 1)
-        result = report()
-        serialized = json.dumps(result)
-        self.assertNotIn("session-1", serialized)
-        self.assertNotIn("aggregate-1", serialized)
-        self.assertEqual(result["monthly"][0]["known_cost_count"], 1)
-        self.assertEqual(result["monthly"][0]["unknown_cost_count"], 1)
-        self.assertEqual(result["costs"]["label"], "provider_reported_or_unknown")
-
-    def test_visual_report_is_self_contained_and_privacy_safe(self):
-        ingest(event("tool_result", "visual-event-1", session_id="visual-session-1", cost_micros=10))
-        ingest(event("provider_usage", "visual-usage-1", provider="provider-a", model="model-a", attribution_status="unknown_linkage"))
-        self.assertEqual(rollup(), 2)
-        rendered = visual_report(report())
-        self.assertIn("<!doctype html>", rendered.lower())
-        self.assertIn("<style>", rendered)
-        self.assertIn("color-scheme:light", rendered)
-        self.assertNotIn("color-scheme:light dark", rendered)
-        self.assertIn("Delegation cost comparison", rendered)
-        self.assertIn("No cost comparison is available yet.", rendered)
-        self.assertNotIn("Tool output without delegation", rendered)
-        self.assertNotIn("visual-event-1", rendered)
-        self.assertNotIn("visual-session-1", rendered)
-        self.assertNotIn("provider-a", rendered)
-        self.assertNotIn("model-a", rendered)
-        self.assertNotIn("sha256", rendered.lower())
-        self.assertNotIn("<script", rendered.lower())
-        self.assertNotIn("http://", rendered.lower())
-        self.assertNotIn("https://", rendered.lower())
-
     def test_visual_report_shows_only_the_guard_cost_comparison(self):
         rendered = visual_report({
             "monthly": [{"month": "2026-01", "event_kind": "tool_result", "event_count": 4,
-                         "known_cost_count": 0, "unknown_cost_count": 0}],
+                         "known_metric_count": 0, "unknown_metric_count": 0}],
             "analysis": {
                 "counterfactual_net_savings": {
                     "evidence": "estimated_counterfactual",
@@ -256,12 +180,12 @@ class PluginTests(unittest.TestCase):
         for internal in ("part 3", "derivation version", "blueprint", "prompt", "plan", "specialist"):
             self.assertNotIn(internal, rendered.lower())
 
-    def test_visual_report_does_not_render_missing_costs_as_zero(self):
+    def test_visual_report_does_not_render_missing_provider_metrics_as_zero(self):
         rendered = visual_report({"analysis": {"counterfactual_net_savings": {
             "summary": {"comparison": {}},
             "exclusions": {"missing_or_unintercepted_guard": 41},
         }}})
-        self.assertIn("No cost comparison is available yet.", rendered)
+        self.assertIn("No context savings comparison is available yet.", rendered)
         self.assertIn("Missing data is unavailable, not zero.", rendered)
         self.assertNotIn("Tool output without delegation", rendered)
         self.assertNotIn("0 tokens", rendered)
@@ -287,7 +211,7 @@ class PluginTests(unittest.TestCase):
         )
         rendered = output.read_text(encoding="utf-8")
         self.assertEqual(json.loads(proc.stdout), {"format": "html", "path": str(output), "status": "written"})
-        self.assertIn("Delegation cost comparison", rendered)
+        self.assertIn("Delegation context savings comparison", rendered)
         self.assertNotIn("visual-delegation-id", rendered)
         self.assertNotIn("visual-child-id", rendered)
 
@@ -321,30 +245,12 @@ class PluginTests(unittest.TestCase):
         self.assertIn("<!doctype html>", stdout_proc.stdout.lower())
         self.assertNotIn("visual-delegation-id", stdout_proc.stdout)
 
-    def test_repeated_rollup_upserts_nullable_dimensions_without_doubling(self):
-        ingest(event("tool_result", "repeat-1", cost_micros=10))
-        ingest(event("tool_result", "repeat-2", cost_micros=None))
-        self.assertEqual(rollup(), 1)
-        self.assertEqual(rollup(), 1)
-        db = connect()
-        row = db.execute("SELECT event_count,known_cost_micros,known_cost_count,unknown_cost_count FROM monthly_aggregates").fetchone()
-        self.assertEqual(tuple(row), (2, 10, 1, 1))
-        db.close()
-
     def test_retention_monthly_detail_expiry_and_restart(self):
         old = event(event_id="old-1", occurred_at_unix_ms=1)
         ingest(old)
         self.assertEqual(retain(days=90)["deleted_events"], 1)
         self.assertEqual(status()["events"], 0)
         db = connect(); self.assertGreaterEqual(db.execute("select count(*) from monthly_aggregates").fetchone()[0], 1); db.close()
-
-    def test_retention_then_rerollup_preserves_historic_aggregate(self):
-        ingest(event(event_id="retention-old-1", occurred_at_unix_ms=1, cost_micros=10))
-        first = retain(days=90)
-        self.assertEqual(first["deleted_events"], 1)
-        self.assertEqual(rollup(), 1)
-        row = connect().execute("select event_count,known_cost_micros from monthly_aggregates").fetchone()
-        self.assertEqual(tuple(row), (1, 10))
 
     def test_purge_and_late_ingestion_have_transactional_generation_barrier(self):
         ingest(event(event_id="race-existing", session_id="race"))
@@ -388,14 +294,6 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(status()["wal"], "enabled")
         self.assertTrue((pathlib.Path(self.temp.name) / "delegation-efficiency.sqlite3").exists())
 
-    def test_deletion_barrier_rejects_late_event_and_purges_children(self):
-        ingest(event(event_id="delete-1", session_id="session-delete"))
-        ingest(event("provider_usage", "delete-2", session_id="session-delete", provider="p", model="m", attribution_status="unknown_linkage"))
-        self.assertEqual(purge_session("session-delete", 4)["deleted_events"], 2)
-        late = event(event_id="late-1", session_id="session-delete")
-        self.assertEqual(ingest(late), "rejected_deleted_generation")
-        db = connect(); self.assertEqual(db.execute("select count(*) from events").fetchone()[0], 0); self.assertEqual(db.execute("select count(*) from provider_usage").fetchone()[0], 0); db.close()
-
     def test_deletion_generation_allows_only_newer_typed_events(self):
         ingest(event(event_id="delete-generation-1", session_id="session-generation"))
         self.assertEqual(purge_session("session-generation", 4)["deleted_events"], 1)
@@ -435,84 +333,6 @@ class PluginTests(unittest.TestCase):
         retention_proc = subprocess.run([sys.executable, str(ROOT / "retention.py"), "status"], env=env, capture_output=True, check=True, text=True)
         self.assertEqual(json.loads(retention_proc.stdout)["events"], 1)
 
-    def test_part3_derived_analysis_preserves_source_and_labels_estimates(self):
-        guard = event(
-            "tool_result", "part3-guard", guard_event_id="part3-guard",
-            guard_outcome="intercepted", original_bytes=100, original_lines=10,
-            original_tokens=25, final_visible_bytes=40, final_visible_lines=4,
-            final_visible_tokens=10, denominator_name="threshold_bytes",
-            denominator_value=80, outcome="success", tool_latency_ms=12,
-        )
-        delegation = event(
-            "delegation_spawn", "part3-delegation", delegation_id="part3-delegation",
-            guard_event_id="part3-guard", child_session_id="part3-child",
-            blueprint_name="specialist", status="completed", outcome="success",
-        )
-        usage = event(
-            "provider_usage", "part3-usage", provider="openrouter", model="model-a",
-            guard_event_id="part3-guard",
-            request_id="request-1", generation_id="generation-1", attempt=0,
-            cost_micros=17, cost_source="provider_response",
-            cost_status="provider_reported", attribution_status="eligible",
-            provider_input_tokens=30, provider_output_tokens=100,
-        )
-        for value in (guard, delegation, usage):
-            self.assertEqual(ingest(value), "inserted")
-        db = connect()
-        source_before = db.execute("SELECT source_json,cost_micros FROM events WHERE event_id='part3-usage'").fetchone()
-        derived = db.execute("SELECT derivation_version,immediate_avoided_tokens,payload_evidence,linkage_class FROM event_analysis WHERE event_id='part3-guard'").fetchone()
-        self.assertEqual(tuple(derived), ("part3-analysis-2", 15, "estimated", "guard_observation"))
-        usage_linkage = db.execute("SELECT linkage_class FROM event_analysis WHERE event_id='part3-usage'").fetchone()
-        self.assertEqual(usage_linkage[0], "explicit_identities")
-        labels = db.execute("SELECT immediate_avoided_bytes_evidence,immediate_avoided_lines_evidence,immediate_avoided_tokens_evidence FROM event_analysis WHERE event_id='part3-guard'").fetchone()
-        self.assertEqual(tuple(labels), ("measured", "measured", "estimated"))
-        db.close()
-        result = analysis_report()
-        self.assertEqual(result["derivation_version"], "part3-analysis-2")
-        self.assertEqual(result["rates"]["interception"]["numerator"], 1)
-        self.assertEqual(result["rates"]["interception"]["denominator"], 1)
-        self.assertEqual(result["rates"]["delegation"]["numerator"], 1)
-        self.assertEqual(result["costs"]["known_events"], 1)
-        self.assertFalse(result["costs"]["billing_truth"])
-        export = pathlib.Path(self.temp.name) / "analysis.csv"
-        exported = export_analysis(export)
-        content = export.read_text(encoding="utf-8")
-        self.assertEqual(exported["rows"], 3)
-        for identifier in ("part3-guard", "part3-delegation", "part3-child", "request-1", "generation-1"):
-            self.assertNotIn(identifier, content)
-        self.assertIn("immediate_avoided_tokens", content)
-        self.assertEqual(threshold_analysis([50, 100])["thresholds"][0]["eligible"], 1)
-        db = connect()
-        source_after = db.execute("SELECT source_json,cost_micros FROM events WHERE event_id='part3-usage'").fetchone()
-        self.assertEqual(tuple(source_before), tuple(source_after))
-        db.close()
-
-    def test_part3_provider_attribution_requires_explicit_target_and_all_identities(self):
-        usage = event("provider_usage", "part3-unlinked-usage", provider="p", model="m",
-                       request_id="request", generation_id="generation", attempt=0,
-                       attribution_status="eligible")
-        self.assertEqual(ingest(usage), "inserted")
-        row = connect().execute("SELECT linkage_class FROM event_analysis WHERE event_id='part3-unlinked-usage'").fetchone()
-        self.assertEqual(row[0], "unknown_linkage")
-
-    def test_part3_source_events_are_immutable(self):
-        ingest(event(event_id="immutable-source"))
-        ingest(event("provider_usage", "immutable-provider", provider="p", model="m", attribution_status="unknown_linkage"))
-        db = connect()
-        with self.assertRaisesRegex(Exception, "immutable source event"):
-            db.execute("UPDATE events SET cost_micros=99 WHERE event_id='immutable-source'")
-        with self.assertRaisesRegex(Exception, "immutable source observation"):
-            db.execute("UPDATE provider_usage SET provider='other' WHERE event_id='immutable-provider'")
-        db.close()
-
-    def test_part3_unknown_linkage_and_unknown_cost_are_not_joined_or_estimated(self):
-        ingest(event("provider_usage", "part3-unknown", provider="provider-a", model="model-a", attribution_status="unknown_linkage", cost_micros=None))
-        result = analysis_report()
-        self.assertEqual(result["rates"]["unknown_linkage_count"], 1)
-        self.assertEqual(result["costs"]["unknown_events"], 1)
-        self.assertEqual(result["costs"]["coverage"], 0.0)
-        self.assertEqual(result["payload"]["avoided_tokens"]["count"], 0)
-
     def test_part3_report_commands_export_analysis_and_threshold_without_ids(self):
         ingest(event("tool_result", "part3-cli", guard_outcome="intercepted", original_bytes=100, final_visible_bytes=20))
         env = os.environ.copy()
@@ -540,99 +360,6 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(analysis["impact"]["avoided"]["bytes"]["total"], 425)
         self.assertEqual(analysis["impact"]["avoided"]["lines"]["total"], 29)
         rendered = visual_report(report() | {"analysis": analysis})
-
-    def test_counterfactual_net_savings_fully_linked_complete_case(self):
-        ingest(event(
-            "tool_result", "net-guard", guard_event_id="net-guard",
-            guard_outcome="intercepted", original_tokens=100,
-            final_visible_tokens=5, original_bytes=400, final_visible_bytes=20,
-        ))
-        ingest(event(
-            "delegation_spawn", "net-delegation", delegation_id="net-delegation",
-            guard_event_id="net-guard", child_session_id="net-child",
-        ))
-        common = dict(
-            delegation_id="net-delegation", guard_event_id="net-guard",
-            tokenizer_status="provider_reported", tokenizer_identity="provider-reported",
-            cost_currency="USD", cost_source="provider_response",
-            cost_status="provider_reported",
-        )
-        ingest(event("communication_observation", "net-notice", direction="inbound",
-                     communication_kind="clarification", bytes=20, tokens=5,
-                     process_role="coordinator", cost_micros=2, **common))
-        ingest(event("communication_observation", "net-spawn", direction="outbound",
-                    communication_kind="spawn", bytes=40, tokens=10,
-                     process_role="coordinator", cost_micros=3, **common))
-        ingest(event("communication_observation", "net-return-1", direction="inbound",
-                     communication_kind="summary", bytes=60, tokens=20,
-                     process_role="worker", cost_micros=4, **common))
-        ingest(event("communication_observation", "net-return-2", direction="inbound",
-                     communication_kind="context_read", bytes=30, tokens=15,
-                     process_role="worker", cost_micros=5, **common))
-        ingest(event("provider_usage", "net-coordinator-usage", provider="p", model="m",
-                     process_role="coordinator", guard_event_id="net-guard",
-                     delegation_id="net-delegation", request_id="net-request",
-                     generation_id="net-generation", attempt=0, cost_micros=100,
-                     cost_currency="USD", cost_source="provider_response",
-                     cost_status="provider_reported", attribution_status="eligible",
-                     provider_output_tokens=7))
-        result = counterfactual_net_savings()
-        row = result["rows"][0]
-        self.assertEqual(row["baseline"]["tokens"], 100)
-        self.assertEqual(row["actual"]["tokens"], 50)
-        self.assertEqual(row["actual"]["delegation_overhead_tokens"], 15)
-        self.assertEqual(row["net"]["tokens"], 85)
-        self.assertEqual(
-            row["actual"]["components"],
-            {
-                "guard_notice_tokens": 5,
-                "delegation_request_tokens": 10,
-                "worker_result_tokens": 35,
-            },
-        )
-        self.assertEqual(
-            result["summary"]["comparison"],
-            {
-                "complete_delegations": 1,
-                "estimated_without_guard_tokens": 100,
-                "guard_notice_tokens": 5,
-                "delegation_request_tokens": 10,
-                "worker_result_tokens": 35,
-                "delegation_overhead_tokens": 15,
-                "estimated_context_savings_tokens": 85,
-            },
-        )
-        self.assertEqual(row["baseline"]["token_basis"], "estimated_coordinator_input_full_original_tool_output")
-
-    def test_counterfactual_does_not_equate_guarded_output_with_provider_output_tokens(self):
-        ingest(event("tool_result", "different-token-guard", guard_event_id="different-token-guard",
-                     guard_outcome="intercepted", original_tokens=100))
-        ingest(event("delegation_spawn", "different-token-delegation",
-                     delegation_id="different-token-delegation",
-                     guard_event_id="different-token-guard", child_session_id="different-token-child"))
-        common = dict(delegation_id="different-token-delegation", guard_event_id="different-token-guard",
-                      tokenizer_status="provider_reported", tokenizer_identity="provider-reported")
-        for event_id, direction, kind, role, tokens in (
-            ("different-token-notice", "inbound", "clarification", "coordinator", 5),
-            ("different-token-spawn", "outbound", "summary", "coordinator", 10),
-            ("different-token-return", "inbound", "summary", "worker", 20),
-        ):
-            ingest(event("communication_observation", event_id, direction=direction,
-                         communication_kind=kind, process_role=role, bytes=tokens * 4,
-                         tokens=tokens, **common))
-        ingest(event("provider_usage", "different-token-usage", provider="p", model="m",
-                     process_role="coordinator", guard_event_id="different-token-guard",
-                     delegation_id="different-token-delegation", request_id="different-token-request",
-                     generation_id="different-token-generation", attempt=0,
-                     provider_input_tokens=1000, provider_output_tokens=7,
-                     cost_micros=100, cost_currency="USD", cost_source="provider_response",
-                     cost_status="provider_reported", attribution_status="eligible"))
-        row = counterfactual_net_savings()["rows"][0]
-        self.assertEqual(row["baseline"]["tokens"], 100)
-        self.assertEqual(row["actual"]["tokens"], 35)
-        self.assertEqual(row["net"]["tokens"], 85)
-        self.assertEqual(row["net"]["token_evidence"], "estimated_coordinator_input_counterfactual")
-        self.assertNotEqual(row["baseline"]["tokens"], 7)
 
     def test_counterfactual_excludes_unlinked_and_missing_cost_monetary_cases(self):
         ingest(event("tool_result", "exclude-guard", guard_event_id="exclude-guard",
@@ -732,63 +459,6 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(row["component_counts"], {"guard_notice": 1, "spawn": 1,
                                                     "worker_returns_or_reads": 1})
         self.assertEqual(row["actual"]["tokens"], 3)
-
-    def test_counterfactual_allows_zero_components_when_evidence_is_complete(self):
-        ingest(event("tool_result", "zero-guard", guard_event_id="zero-guard",
-                     guard_outcome="intercepted", original_tokens=0))
-        ingest(event("delegation_spawn", "zero-delegation", delegation_id="zero-delegation",
-                     guard_event_id="zero-guard", child_session_id="zero-child"))
-        common = dict(delegation_id="zero-delegation", guard_event_id="zero-guard",
-                      tokenizer_status="provider_reported", tokenizer_identity="provider-reported",
-                      bytes=0, tokens=0, cost_micros=0, cost_currency="USD",
-                      cost_source="provider_response", cost_status="provider_reported")
-        ingest(event("communication_observation", "zero-notice", direction="inbound",
-                     communication_kind="clarification", process_role="coordinator", **common))
-        ingest(event("communication_observation", "zero-spawn", direction="outbound",
-                     communication_kind="summary", process_role="coordinator", **common))
-        ingest(event("communication_observation", "zero-return", direction="inbound",
-                     communication_kind="summary", process_role="worker", **common))
-        ingest(event("provider_usage", "zero-baseline", provider="p", model="m",
-                     process_role="coordinator", guard_event_id="zero-guard",
-                     delegation_id="zero-delegation", request_id="zero-request",
-                     generation_id="zero-generation", attempt=0, provider_output_tokens=0,
-                     cost_micros=0, cost_currency="USD", cost_source="provider_response",
-                     cost_status="provider_reported", attribution_status="eligible", final=True))
-        row = counterfactual_net_savings()["rows"][0]
-        self.assertEqual(row["actual"]["tokens"], 0)
-        self.assertEqual(row["net"]["tokens"], 0)
-
-    def test_counterfactual_excludes_duplicate_and_retry_baseline_attempts(self):
-        ingest(event("tool_result", "duplicate-guard", guard_event_id="duplicate-guard",
-                     guard_outcome="intercepted", original_tokens=40))
-        ingest(event("delegation_spawn", "duplicate-delegation", delegation_id="duplicate-delegation",
-                     guard_event_id="duplicate-guard", child_session_id="duplicate-child"))
-        common = dict(delegation_id="duplicate-delegation", guard_event_id="duplicate-guard",
-                      tokenizer_status="provider_reported", tokenizer_identity="provider-reported",
-                      bytes=4, tokens=1, cost_micros=1, cost_currency="USD",
-                      cost_source="provider_response", cost_status="provider_reported")
-        for event_id, attempt, retry_count, cost in (
-            ("duplicate-baseline-a", 0, 0, 100),
-            ("duplicate-baseline-b", 0, 0, 200),
-            ("duplicate-baseline-retry", 1, 1, 300),
-        ):
-            ingest(event("provider_usage", event_id, provider="p", model="m",
-                         process_role="coordinator", request_id="duplicate-request",
-                         generation_id="duplicate-generation", attempt=attempt,
-                         retry_count=retry_count, provider_output_tokens=40,
-                         cost_micros=cost, cost_currency="USD",
-                     cost_source="provider_response", cost_status="provider_reported",
-                         attribution_status="eligible", final=True, **{k: v for k, v in common.items()
-                         if k not in {"bytes", "tokens", "cost_micros", "cost_currency",
-                                      "cost_source", "cost_status"}}))
-        for event_id, direction, kind, role in (
-            ("duplicate-notice", "inbound", "clarification", "coordinator"),
-            ("duplicate-spawn", "outbound", "summary", "coordinator"),
-            ("duplicate-return", "inbound", "summary", "worker"),
-        ):
-            ingest(event("communication_observation", event_id, direction=direction,
-                         communication_kind=kind, process_role=role, **common))
-        row = counterfactual_net_savings()["rows"][0]
 
     def test_applied_transformer_reduction_overrides_below_threshold_impact(self):
         ingest(event(

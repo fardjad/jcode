@@ -49,7 +49,7 @@ def counterfactual_net_savings(db=None, filters: dict[str, Any] | None = None) -
         for row in rows:
             # Runtime records the initial worker handoff as `child_session`.
             # `delegation_follow_up` is a later lifecycle observation for the
-            # same delegation, so including it would double-count costs.
+            # same delegation, so including it would double-count provider_metrics.
             if row["event_kind"] not in ("delegation_spawn", "child_session") or row["explicit_delegation_link"] != 1:
                 continue
             delegation = db.execute(
@@ -158,7 +158,7 @@ def _derive_row(db, event_id: str) -> tuple[Any, ...]:
     kind = event["event_kind"]
     guard = db.execute("SELECT * FROM guard_observations WHERE event_id = ?", (event_id,)).fetchone()
     delegation = db.execute("SELECT * FROM delegation_observations WHERE event_id = ?", (event_id,)).fetchone()
-    provider_usage = db.execute("SELECT * FROM provider_usage WHERE event_id = ?", (event_id,)).fetchone()
+    provider_metrics = None
     communication = db.execute("SELECT * FROM communication_observations WHERE event_id = ?", (event_id,)).fetchone()
 
     original_bytes = guard["original_bytes"] if guard else None
@@ -208,24 +208,10 @@ def _derive_row(db, event_id: str) -> tuple[Any, ...]:
             explicit_delegation = True
         else:
             linkage = "unknown_linkage"
-    elif provider_usage:
-        ids_present = all(provider_usage[field] is not None for field in ("request_id", "generation_id", "attempt"))
-        explicit_target = (
-            _explicit_guard(db, provider_usage["guard_event_id"])
-            or _explicit_delegation(db, provider_usage["delegation_id"])
-        )
-        linkage = (
-            "explicit_identities"
-            if ids_present and provider_usage["attribution_status"] == "eligible" and explicit_target
-            else "unknown_linkage"
-        )
     elif guard:
         linkage = "guard_observation"
 
-    if provider_usage:
-        cost_coverage = "known_provider_reported" if provider_usage["cost_micros"] is not None and provider_usage["cost_source"] in ("provider_response", "provider_reported") else "unknown_provider_cost"
-    else:
-        cost_coverage = "not_expected"
+    provider_coverage = "not_expected"
     month = str(event["occurred_at_ms"])
     from datetime import datetime, timezone
     month = datetime.fromtimestamp(event["occurred_at_ms"] / 1000, timezone.utc).strftime("%Y-%m")
@@ -238,16 +224,16 @@ def _derive_row(db, event_id: str) -> tuple[Any, ...]:
         guard["guard_outcome"] if guard else None, source.get("outcome"), source.get("tool_latency_ms"),
         delegation["follow_up_count"] if delegation else None,
         communication["bytes"] if communication else None, communication["tokens"] if communication else None,
-        provider_usage["provider"] if provider_usage else source.get("provider"),
-        provider_usage["model"] if provider_usage else source.get("model"),
-        provider_usage["process_role"] if provider_usage else source.get("process_role"),
-        source.get("blueprint_name"), cost_coverage, event["cost_micros"],
-        provider_usage["provider_input_tokens"] if provider_usage else None,
-        provider_usage["provider_output_tokens"] if provider_usage else None,
-        provider_usage["cache_read_input_tokens"] if provider_usage else None,
-        provider_usage["cache_creation_input_tokens"] if provider_usage else None,
-        provider_usage["retry_count"] if provider_usage else source.get("retry_count"),
-        event["cost_currency"], original_bytes, original_lines, original_tokens,
+        source.get("provider"),
+        source.get("model"),
+        source.get("process_role"),
+        source.get("blueprint_name"), provider_coverage, event["provider_metric_micros"],
+        None,
+        None,
+        None,
+        None,
+        None,
+        event["provider_metric_currency"], original_bytes, original_lines, original_tokens,
         final_bytes, final_lines, final_tokens,
     )
 
@@ -258,8 +244,8 @@ immediate_avoided_bytes,immediate_avoided_lines,immediate_avoided_tokens,
 payload_evidence,immediate_avoided_bytes_evidence,immediate_avoided_lines_evidence,
 immediate_avoided_tokens_evidence,threshold_value,guard_outcome,outcome,latency_ms,follow_up_count,
 communication_bytes,communication_tokens,provider,model,process_role,blueprint_name,
-cost_coverage_class,cost_micros,provider_input_tokens,provider_output_tokens,
-cache_read_input_tokens,cache_creation_input_tokens,retry_count,cost_currency,
+provider_coverage_class,provider_metric_micros,provider_input_tokens,provider_output_tokens,
+cache_read_input_tokens,cache_creation_input_tokens,retry_count,provider_metric_currency,
 original_bytes,original_lines,original_tokens,final_visible_bytes,final_visible_lines,
 final_visible_tokens""".replace("\n", "")
 
@@ -335,25 +321,25 @@ def analysis_report(filters: dict[str, Any] | None = None) -> dict[str, Any]:
                     linked.append(row)
         tasks_known = [row for row in rows if row["outcome"] is not None]
         successes = [row for row in tasks_known if row["outcome"] in ("success", "completed")]
-        provider_rows = [row for row in rows if row["cost_coverage_class"] != "not_expected"]
-        known_cost = [row for row in provider_rows if row["cost_coverage_class"] == "known_provider_reported"]
+        provider_rows = [row for row in rows if row["provider_coverage_class"] != "not_expected"]
+        known_provider_metric = [row for row in provider_rows if row["provider_coverage_class"] == "known_provider_reported"]
         unknown_linkage = sum(row["linkage_class"] == "unknown_linkage" for row in rows)
         failure_rows = [row for row in tasks_known if row["outcome"] in ("failed", "error", "aborted", "cancelled")]
         def values(field): return [row[field] for row in rows if row[field] is not None]
-        grouped = defaultdict(lambda: {"event_count": 0, "known_cost_count": 0, "unknown_cost_count": 0})
+        grouped = defaultdict(lambda: {"event_count": 0, "known_metric_count": 0, "unknown_metric_count": 0})
         for row in rows:
-            key = (row["month"], row["event_kind"], row["provider"] or "unknown", row["model"] or "unknown", row["process_role"] or "unknown", row["blueprint_name"] or "unknown", row["evidence_class"], row["tokenizer_status"] or "unknown", row["cost_coverage_class"])
+            key = (row["month"], row["event_kind"], row["provider"] or "unknown", row["model"] or "unknown", row["process_role"] or "unknown", row["blueprint_name"] or "unknown", row["evidence_class"], row["tokenizer_status"] or "unknown", row["provider_coverage_class"])
             item = grouped[key]; item["event_count"] += 1
-            if row["cost_coverage_class"] == "known_provider_reported": item["known_cost_count"] += 1
-            elif row["cost_coverage_class"] == "unknown_provider_cost": item["unknown_cost_count"] += 1
+            if row["provider_coverage_class"] == "known_provider_reported": item["known_metric_count"] += 1
+            elif row["provider_coverage_class"] == "unknown_provider_cost": item["unknown_metric_count"] += 1
         rollups = []
         for key, item in sorted(grouped.items()):
-            rollups.append(dict(zip(("month", "event_kind", "provider", "model", "process_role", "blueprint", "evidence_class", "tokenizer_status", "cost_coverage_class"), key), **item))
+            rollups.append(dict(zip(("month", "event_kind", "provider", "model", "process_role", "blueprint", "evidence_class", "tokenizer_status", "provider_coverage_class"), key), **item))
         communication = [row for row in rows if row["communication_bytes"] is not None or row["communication_tokens"] is not None]
-        cost_sums = defaultdict(int)
-        for row in known_cost:
-            if row["cost_currency"] is not None and row["cost_micros"] is not None:
-                cost_sums[row["cost_currency"]] += row["cost_micros"]
+        provider_metric_sums = defaultdict(int)
+        for row in known_provider_metric:
+            if row["provider_metric_currency"] is not None and row["provider_metric_micros"] is not None:
+                provider_metric_sums[row["provider_metric_currency"]] += row["provider_metric_micros"]
 
         def impact_measurement(field: str, evidence_field: str) -> dict[str, Any]:
             observed = [row for row in intercepted if row[field] is not None]
@@ -377,8 +363,8 @@ def analysis_report(filters: dict[str, Any] | None = None) -> dict[str, Any]:
 
         return {
             "privacy": "content_free", "scope": "analysis", "derivation_version": DERIVATION_VERSION,
-            "costs": {"source": "provider_reported_event_time", "billing_truth": False, "known_events": len(known_cost), "expected_events": len(provider_rows), "unknown_events": sum(row["cost_coverage_class"] == "unknown_provider_cost" for row in provider_rows), "coverage": (len(known_cost) / len(provider_rows) if provider_rows else None), "known_cost_micros_by_currency": dict(sorted(cost_sums.items())), "currency_policy": "separate_no_fx"},
-            "rates": {"interception": _rate(len(intercepted), len(eligible), len(rows) - len(eligible), 0), "delegation": _rate(len(linked), len(intercepted), 0, sum(row["explicit_delegation_link"] is None or row["linkage_class"] == "unknown_linkage" for row in intercepted)), "success": _rate(len(successes), len(tasks_known), len(rows) - len(tasks_known), 0), "known_cost_coverage": _rate(len(known_cost), len(provider_rows), len(rows) - len(provider_rows), sum(row["cost_coverage_class"] == "unknown_provider_cost" for row in provider_rows)), "unknown_linkage_count": unknown_linkage},
+            "provider_metrics": {"source": "provider_reported_event_time", "billing_truth": False, "known_events": len(known_provider_metric), "expected_events": len(provider_rows), "unknown_events": sum(row["provider_coverage_class"] == "unknown_provider_cost" for row in provider_rows), "coverage": (len(known_provider_metric) / len(provider_rows) if provider_rows else None), "known_metric_micros_by_currency": dict(sorted(provider_metric_sums.items())), "currency_policy": "separate_no_fx"},
+            "rates": {"interception": _rate(len(intercepted), len(eligible), len(rows) - len(eligible), 0), "delegation": _rate(len(linked), len(intercepted), 0, sum(row["explicit_delegation_link"] is None or row["linkage_class"] == "unknown_linkage" for row in intercepted)), "success": _rate(len(successes), len(tasks_known), len(rows) - len(tasks_known), 0), "known_provider_coverage": _rate(len(known_provider_metric), len(provider_rows), len(rows) - len(provider_rows), sum(row["provider_coverage_class"] == "unknown_provider_cost" for row in provider_rows)), "unknown_linkage_count": unknown_linkage},
             "impact": {
                 "eligible_outputs": len(eligible),
                 "intercepted_eligible_outputs": len(intercepted),
@@ -416,7 +402,7 @@ def export_analysis(path: str | Path, filters: dict[str, Any] | None = None) -> 
         target.parent.mkdir(parents=True, exist_ok=True)
         # Exports are event-level but omit every identifier, timestamp, and raw
         # source field. They are safe aggregate-analysis artifacts, not detail.
-        fields = ["month", "event_kind", "evidence_class", "tokenizer_status", "eligible_guard", "intercepted", "explicit_delegation_link", "linkage_class", "immediate_avoided_bytes", "immediate_avoided_bytes_evidence", "immediate_avoided_lines", "immediate_avoided_lines_evidence", "immediate_avoided_tokens", "immediate_avoided_tokens_evidence", "payload_evidence", "guard_outcome", "outcome", "latency_ms", "follow_up_count", "communication_bytes", "communication_tokens", "provider", "model", "process_role", "blueprint_name", "cost_coverage_class", "cost_micros", "provider_input_tokens", "provider_output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "retry_count", "cost_currency", "original_bytes", "final_visible_bytes", "derivation_version"]
+        fields = ["month", "event_kind", "evidence_class", "tokenizer_status", "eligible_guard", "intercepted", "explicit_delegation_link", "linkage_class", "immediate_avoided_bytes", "immediate_avoided_bytes_evidence", "immediate_avoided_lines", "immediate_avoided_lines_evidence", "immediate_avoided_tokens", "immediate_avoided_tokens_evidence", "payload_evidence", "guard_outcome", "outcome", "latency_ms", "follow_up_count", "communication_bytes", "communication_tokens", "provider", "model", "process_role", "blueprint_name", "provider_coverage_class", "provider_metric_micros", "provider_input_tokens", "provider_output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "retry_count", "provider_metric_currency", "original_bytes", "final_visible_bytes", "derivation_version"]
         with target.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
@@ -441,7 +427,7 @@ def threshold_analysis(thresholds: Iterable[int], filters: dict[str, Any] | None
             selected = [row for row in eligible if row["original_bytes"] > threshold]
             observed_intercepted = [row for row in selected if row["intercepted"] == 1]
             unknown = sum(row["intercepted"] is None for row in selected)
-            results.append({"threshold_bytes": threshold, "eligible": len(selected), "intercepted": len(observed_intercepted), "unknown": unknown, "excluded": len(rows) - len(selected), "interception_rate": len(observed_intercepted) / len(selected) if selected else None, "denominator": len(selected), "sample_size": len(selected), "uncertainty": "unknown_not_estimated", "evidence": "measured_observed_classification_exploratory_threshold", "cost_coverage": "see_report_costs", "automatic_tuning": False})
-        return {"privacy": "content_free", "scope": "threshold_analysis", "derivation_version": DERIVATION_VERSION, "thresholds": results, "cost_coverage": analysis_report(filters)["costs"], "note": "Threshold comparison is analysis only; it does not edit configuration or claim billing savings."}
+            results.append({"threshold_bytes": threshold, "eligible": len(selected), "intercepted": len(observed_intercepted), "unknown": unknown, "excluded": len(rows) - len(selected), "interception_rate": len(observed_intercepted) / len(selected) if selected else None, "denominator": len(selected), "sample_size": len(selected), "uncertainty": "unknown_not_estimated", "evidence": "measured_observed_classification_exploratory_threshold", "provider_coverage": "see_report_provider_metrics", "automatic_tuning": False})
+        return {"privacy": "content_free", "scope": "threshold_analysis", "derivation_version": DERIVATION_VERSION, "thresholds": results, "provider_coverage": analysis_report(filters)["provider_metrics"], "note": "Threshold comparison is analysis only; it does not edit configuration or claim billing savings."}
     finally:
         db.close()

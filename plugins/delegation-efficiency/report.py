@@ -48,7 +48,7 @@ def _bar(value: int, maximum: int, label: str) -> str:
 
 
 def visual_report(data: dict) -> str:
-    """Render a minimal, content-free delegation cost comparison as HTML."""
+    """Render a minimal, content-free delegation context savings comparison as HTML."""
     analysis = data.get("analysis", {}) if isinstance(data.get("analysis", {}), dict) else {}
     savings = analysis.get("counterfactual_net_savings", {}) if isinstance(
         analysis.get("counterfactual_net_savings", {}), dict
@@ -58,9 +58,9 @@ def visual_report(data: dict) -> str:
     complete_delegations = int(comparison.get("complete_delegations") or 0)
     if complete_delegations == 0:
         comparison_html = f"""
-<p>No cost comparison is available yet.</p>
+<p>No context savings comparison is available yet.</p>
 <p class="muted">A comparison appears after a guard interception is explicitly
-linked to a delegation and all three measured costs are recorded: guard notice,
+linked to a delegation and all three measured provider_metrics are recorded: guard notice,
 delegation request, and worker result. Missing data is unavailable, not zero.
 It is not a zero-cost result.</p>"""
     else:
@@ -77,7 +77,7 @@ It is not a zero-cost result.</p>"""
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Delegation cost comparison</title>
+<title>Delegation context savings comparison</title>
 <style>
 :root {{ color-scheme:light; --ink:#172033; --muted:#5f6b7d; --surface:#fff; --line:#d8dfeb; --accent:#2056b5; --saving:#16734a; }}
 * {{ box-sizing:border-box; }} body {{ margin:0; background:#f3f6fb; color:var(--ink); font:16px/1.5 system-ui,sans-serif; }}
@@ -88,7 +88,7 @@ h1 {{ margin:0 0 6px; font-size:1.65rem; }} p {{ margin:8px 0; }} .muted {{ colo
 .breakdown {{ margin:18px 0; padding:16px; border-radius:10px; background:#f3f6fb; }}
 .breakdown ul {{ margin:8px 0 0; padding-left:22px; }} footer {{ margin-top:22px; color:var(--muted); font-size:.9rem; }}
 </style></head><body><main>
-<h1>Delegation cost comparison</h1>
+<h1>Delegation context savings comparison</h1>
 <p class="muted">Estimated coordinator-context reduction for complete, explicitly linked guard delegations.</p>
 {comparison_html}
 <footer>Content-free aggregate report.</footer>
