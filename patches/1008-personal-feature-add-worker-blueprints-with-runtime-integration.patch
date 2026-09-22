@@ -14,7 +14,7 @@ role instructions, model, effort, enabled-tools, disabled-tools,
 communication-policy, and timeout. At runtime, every valid blueprint
 generates a coordinator-visible tool named swarm_<id> that spawns a
 blueprint-backed worker, waits for completion, and returns a compact
-summary with paginated follow-up reads. A reserved coordinator.md file
+summary with paginated follow-up reads. Workers submit that completion report as their final assistant response, never through an unavailable swarm report tool. A reserved coordinator.md file
 supplies the coordinator's durable prompt and tool policy
 (enabled-tools/disabled-tools), configured via the shared
 [agents.worker_blueprints.coordinator] override namespace. The old
@@ -67,7 +67,8 @@ Upstream integration points:
 - crates/jcode-app-core/src/agent/turn_execution.rs: set_swarm_enabled
   refreshes the root session policy and loads/clears coordinator_prompt
   when the feature is toggled at runtime.
-- crates/jcode-app-core/src/server/comm_session.rs: fallible blueprint
+- crates/jcode-swarm-core/src/lib.rs: completion prompt instructs workers to use a final assistant response, which the coordinator collects, rather than a nonexistent swarm report tool.
+    - crates/jcode-app-core/src/server/comm_session.rs: fallible blueprint
   resolution, prompt composition, tool policy application,
   communication policy storage in spawn_swarm_agent.
 - crates/jcode-app-core/src/server/client_comm_message.rs:
@@ -100,7 +101,9 @@ fields (model, effort, timeout_minutes) are rejected. Preserve the
 precedence chain for model (per-spawn > blueprint > swarm_model >
 coordinator) and timeout (per-call > blueprint > config > default 20m).
 Generated swarm_<id> descriptions are user-owned and exempt from the
-static built-in description token cap. Blueprint enabled-tools are
+static built-in description token cap. Worker completion prompts must
+request a final assistant response and must not require unavailable swarm
+tools. Blueprint enabled-tools are
 always combined with the global tool policy. Coordinator policy only
 applies to root sessions, never to spawned workers or internal roles.
 The coordinator.md body is injected as a stable static segment in the
@@ -111,6 +114,7 @@ names. All test SwarmMember and WorkerBlueprintOverride constructions
 must include the new fields.
 
 Validation:
+cargo test -p jcode-swarm-core append_swarm_completion_report_instructions_is_idempotent --lib
 cargo test -p jcode-app-core blueprint --lib
 cargo test -p jcode-app-core blank_follow_up_session_selects_spawn_mode --lib
 cargo test -p jcode-app-core generated_blueprint_workers_default_to_headless_spawn --lib
@@ -184,7 +188,8 @@ cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
  crates/jcode-config-types/src/lib.rs          |   59 +
  .../src/protocol_tests/comm_requests.rs       |    1 +
  crates/jcode-protocol/src/wire.rs             |    7 +
- 46 files changed, 4605 insertions(+), 55 deletions(-)
+ crates/jcode-swarm-core/src/lib.rs            |    9 +-
+ 47 files changed, 4611 insertions(+), 58 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
@@ -5750,3 +5755,30 @@ index b1babe027..d9b41ac3b 100644
      },
  
      /// List models/routes available for spawning swarm agents
+diff --git a/crates/jcode-swarm-core/src/lib.rs b/crates/jcode-swarm-core/src/lib.rs
+index 8d7ec02d4..a46073e7b 100644
+--- a/crates/jcode-swarm-core/src/lib.rs
++++ b/crates/jcode-swarm-core/src/lib.rs
+@@ -364,9 +364,9 @@ pub fn append_swarm_completion_report_instructions(message: &str) -> String {
+     out.push_str("<system-reminder>\n");
+     out.push_str(SWARM_COMPLETION_REPORT_MARKER);
+     out.push_str(
+-        "\nBefore finishing, call the swarm tool with action=\"report\" to submit your completion report. \
+-Include a concise message, validation/tests performed, and blockers or follow-ups. \
+-After the report tool succeeds, also write a brief final assistant response. \
++        "\nBefore finishing, write a brief final assistant response that serves as your completion report. \
++Include a concise summary, validation/tests performed, and blockers or follow-ups. \
++Do not call a swarm report tool: your final assistant response is collected by the coordinator. \
+ Do not finish with only tool output, a lifecycle status change, or no final response. \
+ Do not send a separate DM for the final report unless you need interactive coordination before finishing.\n",
+     );
+@@ -690,6 +690,9 @@ mod tests {
+         let prompt = "Do work";
+         let with_instructions = append_swarm_completion_report_instructions(prompt);
+         assert!(with_instructions.contains(SWARM_COMPLETION_REPORT_MARKER));
++        assert!(with_instructions.contains("final assistant response"));
++        assert!(with_instructions.contains("Do not call a swarm report tool"));
++        assert!(!with_instructions.contains("action=\"report\""));
+         assert_eq!(
+             append_swarm_completion_report_instructions(&with_instructions),
+             with_instructions
