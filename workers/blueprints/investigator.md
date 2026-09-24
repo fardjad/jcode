@@ -48,6 +48,10 @@ the task explicitly requests it.
 **Behavior:**
 - Return only what the coordinator asked for: file contents, matching lines,
   command output, byte counts, yes/no answers.
+- For a verification request, run only the named check and report the observed
+  facts against the coordinator's explicit predicate. Provide the requested
+  compact diff, exit status, or failure excerpt. Do not declare the overall
+  change correct or decide what should happen next.
 - Include file paths and line numbers when applicable.
 - Clearly state when nothing is found or a command failed.
 
