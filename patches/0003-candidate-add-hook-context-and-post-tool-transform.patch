@@ -1,11 +1,10 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 3b0a1da98c90929c568291c31428ac1692ebf51f Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Sat, 19 Sep 2026 13:20:13 +0200
+Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add hook context and post-tool transform
 
-X-Jcode-Patch-Intent: Enable per-turn hook context with swarm metadata and
-synchronous post-tool result transformation
-X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Intent: Add generic per-turn hooks and post-tool transforms
+X-Jcode-Patch-Kind: upstream-candidate
 X-Jcode-Patch-Depends-On: 0001-candidate-pre-tool-input-transformers.patch
 
 Patch intent:
@@ -22,17 +21,16 @@ delegation guard only replaces oversized coordinator results, preserving worker
 and internal output). Without explicit propagation, tokio::spawn lost the
 task-local swarm context, causing hooks to fall back to Internal with swarm
 disabled. The post_tool_record hook enables detached observability of tool
-invocations and output sizes. This infrastructure is personal because the
-swarm context carries blueprint metadata from the worker blueprint runtime,
-which is not in upstream jcode.
+invocations and output sizes. The generic context exposes process role,
+worker identity, and swarm state without personal worker blueprints.
 
 Upstream integration points:
 crates/jcode-base/src/hooks.rs (SwarmContext, ProcessRole, with_swarm_context,
 current_swarm_context, transform_tool_result_with_files,
 dispatch_post_tool_record_with_files, hook_configured), crates/jcode-app-core/
 src/tool/mod.rs (Registry::execute transform invocation), crates/jcode-app-core/
-src/agent/turn_execution.rs (run_once, run_once_streaming,
-current_swarm_hook_context), crates/jcode-app-core/src/agent/
+src/agent.rs (per-session swarm state), src/agent/turn_execution.rs
+(run_once, run_once_streaming, current_swarm_hook_context), crates/jcode-app-core/src/agent/
 turn_streaming_mpsc.rs (tokio::spawn tool execution context propagation),
 crates/jcode-app-core/src/server/swarm.rs (run_swarm_task worker context),
 crates/jcode-config-types/src/lib.rs (HooksConfig fields),
@@ -51,31 +49,53 @@ hook is synchronous and must fail open: any error or timeout leaves the
 original result unchanged.
 
 Validation:
-cargo test -p jcode-app-core --lib -- agent_turn_hook_context_tracks_coordinator_swarm_feature
-cargo test -p jcode-app-core --lib -- agent_turn_hook_context_preserves_explicit_worker_scope
-cargo test -p jcode-app-core --lib -- registry_execute_post_tool_transform_replaces_model_visible_result
-cargo test -p jcode-app-core --lib -- registry_execute_post_tool_transform_fails_open_for_all_failure_modes
-cargo test -p jcode-app-core --lib -- registry_execute_post_tool_transform_and_record_share_temp_files
-cargo test -p jcode-base --lib -- swarm_context_propagates_into_spawned_task
-cargo test -p jcode-base --lib -- swarm_context_lost_without_explicit_propagation_in_spawned_task
-cargo test -p jcode-base --lib -- swarm_context_defaults_to_internal
-cargo test -p jcode-base --lib -- swarm_context_is_scoped_to_async_future
+scripts/cargo_exec.sh test -p jcode-app-core --lib -- agent_turn_hook_context_tracks_coordinator_swarm_feature
+scripts/cargo_exec.sh test -p jcode-app-core --lib -- agent_turn_hook_context_preserves_explicit_worker_scope
+scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_replaces_model_visible_result
+scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_fails_open_for_all_failure_modes
+scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_and_record_share_temp_files
+scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_propagates_into_spawned_task
+scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_lost_without_explicit_propagation_in_spawned_task
+scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_defaults_to_internal
+scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_is_scoped_to_async_future
 ---
- .../src/agent/turn_execution.rs               |   38 +-
+ crates/jcode-app-core/src/agent.rs            |    3 +
+ .../src/agent/turn_execution.rs               |   41 +-
  .../src/agent/turn_streaming_mpsc.rs          |   10 +-
- crates/jcode-app-core/src/agent_tests.rs      |   90 ++
- crates/jcode-app-core/src/server/swarm.rs     |   10 +-
+ crates/jcode-app-core/src/agent_tests.rs      |   88 ++
+ crates/jcode-app-core/src/server/swarm.rs     |    8 +-
  crates/jcode-app-core/src/tool/mod.rs         |   33 +
- crates/jcode-app-core/src/tool/tests.rs       |  278 ++++
+ crates/jcode-app-core/src/tool/tests.rs       |  278 +++++
  crates/jcode-base/src/config/default_file.rs  |   22 +-
  crates/jcode-base/src/config/env_overrides.rs |   23 +
- crates/jcode-base/src/hooks.rs                | 1137 +++++++++++++++++
+ crates/jcode-base/src/hooks.rs                | 1101 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   17 +
- docs/HOOKS.md                                 |   79 +-
- 11 files changed, 1722 insertions(+), 15 deletions(-)
+ docs/HOOKS.md                                 |   77 +-
+ 12 files changed, 1686 insertions(+), 15 deletions(-)
 
+diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
+index eff52572b..72a5b6e71 100644
+--- a/crates/jcode-app-core/src/agent.rs
++++ b/crates/jcode-app-core/src/agent.rs
+@@ -246,6 +246,8 @@ pub struct Agent {
+     agents_md_snapshot: (Option<String>, crate::prompt::ContextInfo),
+     /// Whether memory features are enabled for this session
+     memory_enabled: bool,
++    /// Per-session swarm state used by turn hooks and coordinator policy.
++    swarm_enabled: bool,
+     /// One-step undo snapshot captured before the most recent rewind.
+     rewind_undo_snapshot: Option<RewindUndoSnapshot>,
+     /// Channel for tools to request stdin input from the user
+@@ -335,6 +337,7 @@ impl Agent {
+             system_prompt_override: None,
+             agents_md_snapshot,
+             memory_enabled: crate::config::config().features.memory,
++            swarm_enabled: crate::config::config().features.swarm,
+             rewind_undo_snapshot: None,
+             stdin_request_tx: None,
+             provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index 0e5e04848..391866f42 100644
+index 984ac1cfd..e51935bd8 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
 @@ -18,7 +18,8 @@ impl Agent {
@@ -98,7 +118,7 @@ index 0e5e04848..391866f42 100644
      }
  
      /// Run one conversation turn with streaming events via mpsc channel (per-client)
-@@ -100,13 +102,37 @@ impl Agent {
+@@ -100,13 +102,35 @@ impl Agent {
          crate::telemetry::record_turn();
          let turn_started_at = Instant::now();
          let start_message_index = self.message_count();
@@ -132,14 +152,24 @@ index 0e5e04848..391866f42 100644
 +                crate::hooks::ProcessRole::Coordinator
 +            },
 +            worker_id: None,
-+            blueprint_id: None,
-+            blueprint_name: None,
 +        }
 +    }
 +
      /// Append and persist a user message without starting a model turn.
      pub(crate) fn append_user_context_message(
          &mut self,
+@@ -361,6 +385,11 @@ impl Agent {
+         }
+     }
+ 
++    /// Update the per-session hook context when swarm availability changes.
++    pub fn set_swarm_enabled(&mut self, enabled: bool) {
++        self.swarm_enabled = enabled;
++    }
++
+     /// Mark this session as an inline swarm worker. When enabled, the streaming
+     /// loop publishes a throttled output tail to the global bus so a
+     /// coordinator can render a live inline gallery viewport for it.
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 index 743faab1c..70f0dbe80 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
@@ -163,10 +193,10 @@ index 743faab1c..70f0dbe80 100644
  
                  // Reset background signal before waiting
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 7d41250b4..273961465 100644
+index 7fc4eb4b6..d0e6ecc1a 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -211,6 +211,96 @@ fn content_text(content: &[ContentBlock]) -> &str {
+@@ -211,6 +211,94 @@ fn content_text(content: &[ContentBlock]) -> &str {
      }
  }
  
@@ -238,8 +268,6 @@ index 7d41250b4..273961465 100644
 +        mode: Some("inline".to_string()),
 +        role: crate::hooks::ProcessRole::Worker,
 +        worker_id: Some("worker-session".to_string()),
-+        blueprint_id: None,
-+        blueprint_name: Some("builder".to_string()),
 +    };
 +
 +    crate::hooks::with_swarm_context(worker.clone(), async {
@@ -264,10 +292,10 @@ index 7d41250b4..273961465 100644
      content_text(&message.content)
  }
 diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
-index 569e1ea41..5df284cb4 100644
+index fbe513a04..e14faee33 100644
 --- a/crates/jcode-app-core/src/server/swarm.rs
 +++ b/crates/jcode-app-core/src/server/swarm.rs
-@@ -1581,7 +1581,15 @@ pub(super) async fn run_swarm_task(
+@@ -1581,7 +1581,13 @@ pub(super) async fn run_swarm_task(
          .apply_to_allowed_set(&mut allowed);
  
      let mut worker = Agent::new_with_session(provider, registry, session, Some(allowed));
@@ -277,18 +305,16 @@ index 569e1ea41..5df284cb4 100644
 +        mode: None,
 +        role: crate::hooks::ProcessRole::Worker,
 +        worker_id: Some(child_session_id.clone()),
-+        blueprint_id: None,
-+        blueprint_name: Some(subagent_type.to_string()),
 +    };
 +    match crate::hooks::with_swarm_context(worker_context, worker.run_once_capture(prompt)).await {
          Ok(output) => {
              log_swarm_lifecycle(
                  "task_done",
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 3c28f7092..5500df8ab 100644
+index 34c3dd490..1f271cd16 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -901,6 +901,25 @@ impl Registry {
+@@ -925,6 +925,25 @@ impl Registry {
  
          crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);
          Self::fire_post_tool_hook(resolved_name, &ctx, &result, latency_ms);
@@ -314,7 +340,7 @@ index 3c28f7092..5500df8ab 100644
  
          let mut output = match result {
              Ok(output) => output,
-@@ -914,6 +933,20 @@ impl Registry {
+@@ -938,6 +957,20 @@ impl Registry {
              }
          };
  
@@ -336,10 +362,10 @@ index 3c28f7092..5500df8ab 100644
          output = self
              .guard_context_overflow(name, output, accepts_large_output(&input))
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 7ab6ec4c3..0954b0545 100644
+index f19f3eed4..b73da3e0b 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
-@@ -557,6 +557,284 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {
+@@ -573,6 +573,284 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {
      assert!(allowed.is_ok(), "non-matching input should pass the gate");
  }
  
@@ -625,10 +651,10 @@ index 7ab6ec4c3..0954b0545 100644
  async fn test_definitions_keep_batch_schema_generic() {
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 09f64afe4..a8e663dd5 100644
+index eb3acd9cd..3c4384782 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -580,7 +580,8 @@ swarm_max_concurrent_agents = 32
+@@ -558,7 +558,8 @@ swarm_max_concurrent_agents = 32
  # (quotes work) but executed directly, with JCODE_HOOK_* env vars describing
  # the event:
  #   JCODE_HOOK_EVENT       - "turn_start", "turn_end", "session_start",
@@ -638,7 +664,7 @@ index 09f64afe4..a8e663dd5 100644
  #   JCODE_HOOK_SESSION_ID  - the session the event belongs to
  #   JCODE_HOOK_CWD         - session working directory (also the hook's cwd)
  #   JCODE_HOOK_PAYLOAD     - JSON mirror of all fields
-@@ -589,7 +590,11 @@ swarm_max_concurrent_agents = 32
+@@ -567,7 +568,11 @@ swarm_max_concurrent_agents = 32
  # All hooks except pre_tool are observers: detached, fire-and-forget, failures
  # only logged. Env overrides: JCODE_HOOK_TURN_START, JCODE_HOOK_TURN_END,
  # JCODE_HOOK_SESSION_START, JCODE_HOOK_SESSION_END, JCODE_HOOK_PRE_TOOL,
@@ -651,7 +677,7 @@ index 09f64afe4..a8e663dd5 100644
  #
  # Runs when an agent turn begins, before the model starts generating and before
  # the first pre_tool. Lets integrations detect the agent is working during the
-@@ -622,6 +627,19 @@ swarm_max_concurrent_agents = 32
+@@ -600,6 +605,19 @@ swarm_max_concurrent_agents = 32
  # JCODE_HOOK_STATUS, JCODE_HOOK_DURATION_MS, JCODE_HOOK_OUTPUT_BYTES,
  # JCODE_HOOK_ERROR.
  # post_tool = ""
@@ -672,7 +698,7 @@ index 09f64afe4..a8e663dd5 100644
  [ambient]
  # Ambient mode: background agent that maintains your codebase
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 6ac8621a1..2af7af596 100644
+index 51ea31863..ceafaea5a 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
 @@ -513,6 +513,29 @@ impl Config {
@@ -706,7 +732,7 @@ index 6ac8621a1..2af7af596 100644
              if let Ok(parsed) = v.trim().parse::<u64>() {
                  self.hooks.pre_tool_timeout_ms = parsed;
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index c457cafd7..5af0672d8 100644
+index c457cafd7..31c77f051 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -29,12 +29,15 @@ tokio::task_local! {
@@ -725,7 +751,7 @@ index c457cafd7..5af0672d8 100644
  /// Maximum chars of hook stderr used as a block reason.
  const BLOCK_REASON_LIMIT: usize = 2000;
  
-@@ -84,6 +87,96 @@ impl HookEvent {
+@@ -84,6 +87,82 @@ impl HookEvent {
      }
  }
  
@@ -754,8 +780,6 @@ index c457cafd7..5af0672d8 100644
 +    pub mode: Option<String>,
 +    pub role: ProcessRole,
 +    pub worker_id: Option<String>,
-+    pub blueprint_id: Option<String>,
-+    pub blueprint_name: Option<String>,
 +}
 +
 +impl Default for SwarmContext {
@@ -771,8 +795,6 @@ index c457cafd7..5af0672d8 100644
 +            mode: None,
 +            role: ProcessRole::Coordinator,
 +            worker_id: None,
-+            blueprint_id: None,
-+            blueprint_name: None,
 +        }
 +    }
 +
@@ -782,8 +804,6 @@ index c457cafd7..5af0672d8 100644
 +            mode: None,
 +            role: ProcessRole::Internal,
 +            worker_id: None,
-+            blueprint_id: None,
-+            blueprint_name: None,
 +        }
 +    }
 +
@@ -793,8 +813,6 @@ index c457cafd7..5af0672d8 100644
 +            "mode": self.mode,
 +            "role": self.role.as_str(),
 +            "worker_id": self.worker_id,
-+            "blueprint_id": self.blueprint_id,
-+            "blueprint_name": self.blueprint_name,
 +        })
 +    }
 +
@@ -810,19 +828,13 @@ index c457cafd7..5af0672d8 100644
 +        if let Some(id) = &self.worker_id {
 +            cmd.env("JCODE_HOOK_WORKER_ID", id);
 +        }
-+        if let Some(id) = &self.blueprint_id {
-+            cmd.env("JCODE_HOOK_WORKER_BLUEPRINT_ID", id);
-+        }
-+        if let Some(name) = &self.blueprint_name {
-+            cmd.env("JCODE_HOOK_WORKER_BLUEPRINT_NAME", name);
-+        }
 +    }
 +}
 +
  /// Run `future` with the terminal identity of the client that initiated it.
  ///
  /// Shared-server request handlers use this to keep lifecycle hooks scoped to
-@@ -95,6 +188,24 @@ where
+@@ -95,6 +174,24 @@ where
      CLIENT_TERMINAL_ENV.scope(env, future).await
  }
  
@@ -847,7 +859,7 @@ index c457cafd7..5af0672d8 100644
  /// The configured commands for `event`, in declaration order.
  pub fn hook_commands(event: &str) -> Vec<String> {
      if hooks_suppressed() {
-@@ -108,6 +219,8 @@ pub fn hook_commands(event: &str) -> Vec<String> {
+@@ -108,6 +205,8 @@ pub fn hook_commands(event: &str) -> Vec<String> {
          "session_end" => hooks.session_end.as_ref(),
          "pre_tool" => hooks.pre_tool.as_ref(),
          "post_tool" => hooks.post_tool.as_ref(),
@@ -856,7 +868,7 @@ index c457cafd7..5af0672d8 100644
          _ => None,
      };
      raw.into_iter()
-@@ -218,6 +331,174 @@ pub async fn transform_tool_input(
+@@ -218,6 +317,174 @@ pub async fn transform_tool_input(
      current
  }
  
@@ -1031,7 +1043,7 @@ index c457cafd7..5af0672d8 100644
  /// True when running inside a hook process (recursion guard).
  fn hooks_suppressed() -> bool {
      std::env::var_os("JCODE_HOOKS_DISABLED").is_some()
-@@ -243,6 +524,115 @@ fn truncate_bytes(value: &str, limit: usize) -> &str {
+@@ -243,6 +510,115 @@ fn truncate_bytes(value: &str, limit: usize) -> &str {
      &value[..end]
  }
  
@@ -1147,7 +1159,7 @@ index c457cafd7..5af0672d8 100644
  /// JSON payload mirroring the env fields, exported as `JCODE_HOOK_PAYLOAD`.
  fn payload_json(event: &HookEvent) -> String {
      let mut map = serde_json::Map::new();
-@@ -271,6 +661,7 @@ fn payload_json(event: &HookEvent) -> String {
+@@ -271,6 +647,7 @@ fn payload_json(event: &HookEvent) -> String {
  
  fn apply_event_env(cmd: &mut std::process::Command, event: &HookEvent) {
      cmd.env("JCODE_HOOKS_DISABLED", "1");
@@ -1155,7 +1167,7 @@ index c457cafd7..5af0672d8 100644
      cmd.env("JCODE_HOOK_EVENT", event.event);
      if let Some(session_id) = &event.session_id {
          cmd.env("JCODE_HOOK_SESSION_ID", session_id);
-@@ -342,6 +733,110 @@ pub fn dispatch_observer(event: HookEvent) {
+@@ -342,6 +719,110 @@ pub fn dispatch_observer(event: HookEvent) {
      }
  }
  
@@ -1266,7 +1278,7 @@ index c457cafd7..5af0672d8 100644
  /// Run the `pre_tool` gate hook for a tool call, if configured.
  ///
  /// The hook receives `JCODE_HOOK_TOOL_NAME` plus the full tool input JSON on
-@@ -494,6 +989,162 @@ mod tests {
+@@ -494,6 +975,140 @@ mod tests {
          assert_eq!(truncate_bytes("short", 100), "short");
      }
  
@@ -1284,16 +1296,12 @@ index c457cafd7..5af0672d8 100644
 +            mode: Some("background".to_string()),
 +            role: ProcessRole::Worker,
 +            worker_id: Some("worker-1".to_string()),
-+            blueprint_id: Some("bp-1".to_string()),
-+            blueprint_name: Some("planner".to_string()),
 +        };
 +        let json = context.to_json();
 +        assert_eq!(json["enabled"], true);
 +        assert_eq!(json["mode"], "background");
 +        assert_eq!(json["role"], "worker");
 +        assert_eq!(json["worker_id"], "worker-1");
-+        assert_eq!(json["blueprint_id"], "bp-1");
-+        assert_eq!(json["blueprint_name"], "planner");
 +    }
 +
 +    #[test]
@@ -1303,8 +1311,6 @@ index c457cafd7..5af0672d8 100644
 +            mode: Some("foreground".to_string()),
 +            role: ProcessRole::Coordinator,
 +            worker_id: Some("worker-2".to_string()),
-+            blueprint_id: Some("bp-2".to_string()),
-+            blueprint_name: Some("builder".to_string()),
 +        };
 +        let mut command = std::process::Command::new("true");
 +        context.apply_env(&mut command);
@@ -1335,16 +1341,6 @@ index c457cafd7..5af0672d8 100644
 +            env.get("JCODE_HOOK_WORKER_ID").map(String::as_str),
 +            Some("worker-2")
 +        );
-+        assert_eq!(
-+            env.get("JCODE_HOOK_WORKER_BLUEPRINT_ID")
-+                .map(String::as_str),
-+            Some("bp-2")
-+        );
-+        assert_eq!(
-+            env.get("JCODE_HOOK_WORKER_BLUEPRINT_NAME")
-+                .map(String::as_str),
-+            Some("builder")
-+        );
 +        assert!(!env.contains_key("JCODE_HOOK_UNKNOWN"));
 +    }
 +
@@ -1361,8 +1357,6 @@ index c457cafd7..5af0672d8 100644
 +            mode: Some("test".to_string()),
 +            role: ProcessRole::Worker,
 +            worker_id: Some("worker".to_string()),
-+            blueprint_id: None,
-+            blueprint_name: None,
 +        };
 +        with_swarm_context(context.clone(), async move {
 +            assert_eq!(current_swarm_context().role, ProcessRole::Worker);
@@ -1383,8 +1377,6 @@ index c457cafd7..5af0672d8 100644
 +            mode: None,
 +            role: ProcessRole::Coordinator,
 +            worker_id: None,
-+            blueprint_id: None,
-+            blueprint_name: None,
 +        };
 +        let captured = context.clone();
 +        let handle = tokio::spawn(async move {
@@ -1411,8 +1403,6 @@ index c457cafd7..5af0672d8 100644
 +            mode: None,
 +            role: ProcessRole::Coordinator,
 +            worker_id: None,
-+            blueprint_id: None,
-+            blueprint_name: None,
 +        };
 +        with_swarm_context(context, async {
 +            let handle = tokio::spawn(async move {
@@ -1429,7 +1419,7 @@ index c457cafd7..5af0672d8 100644
      #[cfg(unix)]
      fn write_executable_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
          use std::os::unix::fs::PermissionsExt;
-@@ -529,6 +1180,7 @@ mod tests {
+@@ -529,6 +1144,7 @@ mod tests {
          ]);
          crate::env::set_var("JCODE_HOOK_PRE_TOOL", hook);
          crate::env::set_var("JCODE_HOOK_PRE_TOOL_TIMEOUT_MS", timeout_ms.to_string());
@@ -1437,7 +1427,7 @@ index c457cafd7..5af0672d8 100644
          reset
      }
  
-@@ -560,9 +1212,494 @@ mod tests {
+@@ -560,9 +1176,494 @@ mod tests {
              "JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS",
              timeout_ms.to_string(),
          );
@@ -1933,10 +1923,10 @@ index c457cafd7..5af0672d8 100644
      #[tokio::test]
      async fn tool_transformers_compose_json_replacements() {
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 933a451cb..b38941a54 100644
+index 69cb97f9e..c2938ec46 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1033,6 +1033,18 @@ pub struct HooksConfig {
+@@ -950,6 +950,18 @@ pub struct HooksConfig {
      /// Fields: TOOL_NAME, STATUS ("ok"/"error"), DURATION_MS, OUTPUT_BYTES.
      /// Env override: JCODE_HOOK_POST_TOOL.
      pub post_tool: Option<HookCommands>,
@@ -1955,7 +1945,7 @@ index 933a451cb..b38941a54 100644
      /// Max milliseconds to wait for the pre_tool gate before failing open
      /// (default: 5000). Env override: JCODE_HOOK_PRE_TOOL_TIMEOUT_MS.
      pub pre_tool_timeout_ms: u64,
-@@ -1049,6 +1061,11 @@ impl Default for HooksConfig {
+@@ -966,6 +978,11 @@ impl Default for HooksConfig {
              session_end: None,
              pre_tool: None,
              post_tool: None,
@@ -1968,7 +1958,7 @@ index 933a451cb..b38941a54 100644
          }
      }
 diff --git a/docs/HOOKS.md b/docs/HOOKS.md
-index 4f0746822..31a51cd21 100644
+index 4f0746822..0e6804295 100644
 --- a/docs/HOOKS.md
 +++ b/docs/HOOKS.md
 @@ -15,12 +15,21 @@ session_start = ""                            # observer
@@ -1994,7 +1984,7 @@ index 4f0746822..31a51cd21 100644
  
  ## Common contract
  
-@@ -38,9 +47,25 @@ Env overrides (always win; empty value disables a config hook):
+@@ -38,9 +47,23 @@ Env overrides (always win; empty value disables a config hook):
  | `JCODE_HOOK_PAYLOAD` | JSON object mirroring all fields (capped at 16 KB) |
  | `JCODE_HOOKS_DISABLED` | Always `1`; suppresses hooks in nested jcode calls (recursion guard) |
  
@@ -2008,8 +1998,6 @@ index 4f0746822..31a51cd21 100644
 +| `JCODE_HOOK_SWARM_ENABLED` | `1` when swarm execution is enabled, otherwise `0` |
 +| `JCODE_HOOK_SWARM_MODE` | Configured swarm mode, when known |
 +| `JCODE_HOOK_WORKER_ID` | Worker identity, when known |
-+| `JCODE_HOOK_WORKER_BLUEPRINT_ID` | Worker blueprint identity, when known |
-+| `JCODE_HOOK_WORKER_BLUEPRINT_NAME` | Worker blueprint name, when known |
 +
 +Transformer and recorder stdin envelopes include a `swarm` object with the same
 +fields. Unknown optional values are explicit JSON `null`.
@@ -2021,7 +2009,7 @@ index 4f0746822..31a51cd21 100644
  **observers**: spawned detached, fire-and-forget. They can never block or slow
  the agent; failures are only logged.
  
-@@ -66,6 +91,49 @@ Fires after every tool call. Extra fields: `JCODE_HOOK_TOOL_NAME`,
+@@ -66,6 +89,49 @@ Fires after every tool call. Extra fields: `JCODE_HOOK_TOOL_NAME`,
  `JCODE_HOOK_STATUS`, `JCODE_HOOK_DURATION_MS`, `JCODE_HOOK_OUTPUT_BYTES` (on
  success), `JCODE_HOOK_ERROR` (on failure).
  
@@ -2071,7 +2059,7 @@ index 4f0746822..31a51cd21 100644
  ## Gate hook: `pre_tool`
  
  `pre_tool` runs **synchronously before every tool call** and can block it:
-@@ -157,13 +225,18 @@ turn_end      = "~/bin/jcode-event-log"
+@@ -157,13 +223,18 @@ turn_end      = "~/bin/jcode-event-log"
  session_start = "~/bin/jcode-event-log"
  session_end   = "~/bin/jcode-event-log"
  post_tool     = "~/bin/jcode-event-log"

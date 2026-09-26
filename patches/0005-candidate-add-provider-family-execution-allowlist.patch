@@ -1,10 +1,10 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: jcode patch catalog <jcode@localhost>
-Date: Sun, 6 Sep 2026 22:06:15 +0000
+From a1466a8d8d87836e878761d5f4341ee58ec48d86 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Sat, 26 Sep 2026 19:15:49 +0200
 Subject: [PATCH] feat: add provider family execution allowlist
 
 X-Jcode-Patch-Intent: expose and enforce provider-family execution allowlist
-X-Jcode-Patch-Kind: personal-provider-policy
+X-Jcode-Patch-Kind: upstream-candidate
 X-Jcode-Patch-Depends-On: none
 
 Patch intent:
@@ -88,7 +88,7 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  crates/jcode-tui/src/tui/app.rs               |   1 +
  .../src/tui/app/inline_interactive.rs         |  24 +-
  .../src/tui/app/inline_interactive/helpers.rs |   2 +-
- .../inline_interactive_placeholder_routes.rs  |   4 +-
+ .../inline_interactive_placeholder_routes.rs  |   3 +
  .../src/tui/app/remote/server_events.rs       |   4 +-
  .../tests/remote_startup_input_01/part_01.rs  |   5 +
  .../tests/remote_startup_input_01/part_02.rs  |  11 +-
@@ -97,7 +97,7 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  src/cli/commands.rs                           |   2 +-
  src/cli/commands_tests.rs                     |  10 +-
  src/cli/startup.rs                            |   4 +-
- 47 files changed, 1963 insertions(+), 143 deletions(-)
+ 47 files changed, 1963 insertions(+), 142 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
 index 61648a2e3..7bb37db81 100644
@@ -260,7 +260,7 @@ index c0ee77713..aea4ad0d2 100644
          "azure-openai" => {
              // Azure OpenAI reuses the OpenRouter transport (configured via Azure
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index eb3acd9cd..9041ed8d2 100644
+index 3c4384782..a902990b6 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
 @@ -354,6 +354,14 @@ tool_profile = "acp"
@@ -2404,10 +2404,10 @@ index a20de5c5d..d0829d8ff 100644
      fn test_chatgpt_oauth_uses_luna_with_no_reasoning_when_available() {
          let _guard = crate::storage::lock_test_env();
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 69cb97f9e..b31a773cc 100644
+index c2938ec46..5f712c5a4 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1293,6 +1293,9 @@ pub struct ProviderConfig {
+@@ -1310,6 +1310,9 @@ pub struct ProviderConfig {
      pub default_model: Option<String>,
      /// Default provider to use (claude|openai|copilot|openrouter)
      pub default_provider: Option<String>,
@@ -2417,7 +2417,7 @@ index 69cb97f9e..b31a773cc 100644
      /// Reasoning effort for OpenAI Responses API (none|minimal|low|medium|high|xhigh|max)
      pub openai_reasoning_effort: Option<String>,
      /// Reasoning effort for Anthropic Messages API output_config (none|low|medium|high|xhigh; max aliases to strongest supported)
-@@ -1328,10 +1331,12 @@ pub struct ProviderConfig {
+@@ -1345,10 +1348,12 @@ pub struct ProviderConfig {
      /// alias) overrides this value. Config values are never exported to env.
      pub gemini_project: Option<String>,
      /// When set (non-empty), /model only lists routes from these providers.
@@ -2433,7 +2433,7 @@ index 69cb97f9e..b31a773cc 100644
      pub model_picker_providers: Option<Vec<String>>,
      /// Max seconds to wait for streaming data before timing out a request with
      /// no data received. Base budget only: high reasoning efforts scale it up
-@@ -1351,6 +1356,7 @@ impl Default for ProviderConfig {
+@@ -1368,6 +1373,7 @@ impl Default for ProviderConfig {
          Self {
              default_model: None,
              default_provider: None,
@@ -3452,15 +3452,14 @@ index 928065def..880cbc105 100644
          }
          crate::provider::ModelRouteApiMethod::ClaudeOAuth => {
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs b/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs
-index a52690a31..232c5de87 100644
+index a52690a31..d37aeaa60 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs
-@@ -44,7 +44,9 @@ pub(super) fn route_supports_reasoning_effort(api_method: &str) -> bool {
-         // Expanding them here creates one duplicate picker row per effort.
+@@ -45,6 +45,9 @@ pub(super) fn route_supports_reasoning_effort(api_method: &str) -> bool {
          Method::OpenAiCompatible { .. } => false,
          Method::JcodeSubscription
--        | Method::GrokBuild
-+| Method::GrokBuildAcp
+         | Method::GrokBuild
++        | Method::GrokBuildAcp
 +        | Method::ClaudeCli
 +        | Method::ChatGptWeb
          | Method::Copilot

@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: jcode patch catalog <jcode@localhost>
-Date: Sun, 6 Sep 2026 22:07:00 +0000
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Sat, 26 Sep 2026 19:15:53 +0200
 Subject: [PATCH] feat: remove hosted services and telemetry
 
 X-Jcode-Patch-Intent: Strip hosted services, telemetry, promotional
 content, onboarding, and sponsored integrations from jcode
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 1005-personal-provider-add-typed-openrouter-eu-provider.patch
+X-Jcode-Patch-Depends-On: 1001-personal-provider-add-typed-openrouter-eu-provider.patch
 
 Patch intent:
 Remove all hosted/cloud service features: subscription and billing
@@ -29,8 +29,9 @@ src/cli/account.rs, src/cli/provider_init.rs, crates/jcode-base/
 src/lib.rs, TELEMETRY.md, README.md, docs/
 
 Update guidance:
-Keep all hosted service, telemetry, promotional, and onboarding code
-paths removed. The jcode provider choice must use the generic
+Keep hosted service, telemetry, promotional, and onboarding code
+paths removed without deleting independent MCP policy or blueprint
+tools. The jcode provider choice must use the generic
 OpenAI-compatible profile, not the managed subscription wrapper. Do
 not reintroduce subscription runtime activation, managed account
 credentials, telemetry delivery, or sponsored integration discovery.
@@ -44,8 +45,8 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  crates/jcode-app-core/src/tool/discover.rs    | 2981 -----------------
  .../src/tool/discover_secrets.rs              |  193 --
  crates/jcode-app-core/src/tool/feedback.rs    |    8 +-
- crates/jcode-app-core/src/tool/mod.rs         |  306 +-
- crates/jcode-app-core/src/tool/tests.rs       |   24 +-
+ crates/jcode-app-core/src/tool/mod.rs         |  428 ++-
+ crates/jcode-app-core/src/tool/tests.rs       |   27 +-
  crates/jcode-base/src/config.rs               |   35 +-
  crates/jcode-base/src/config/config_file.rs   |   16 +-
  crates/jcode-base/src/config/default_file.rs  |   13 +-
@@ -112,7 +113,7 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  src/cli/provider_init_tests.rs                |   51 +-
  src/cli/startup.rs                            |  263 +-
  src/cli/telemetry.rs                          |   78 -
- 73 files changed, 449 insertions(+), 10234 deletions(-)
+ 73 files changed, 600 insertions(+), 10208 deletions(-)
  delete mode 100644 TELEMETRY.md
  delete mode 100644 crates/jcode-app-core/src/tool/discover.rs
  delete mode 100644 crates/jcode-app-core/src/tool/discover_secrets.rs
@@ -137,10 +138,10 @@ scripts/cargo_exec.sh test -p jcode jcode_choice_uses_the_generic_direct_endpoin
  delete mode 100644 src/cli/telemetry.rs
 
 diff --git a/README.md b/README.md
-index bdd6e6a41..ad6f20b73 100644
+index b6e965ee5..9ca67047d 100644
 --- a/README.md
 +++ b/README.md
-@@ -806,7 +806,6 @@ Notes:
+@@ -846,7 +846,6 @@ Notes:
  - [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
  - [Server Architecture](docs/SERVER_ARCHITECTURE.md)
  - [Safety System](docs/SAFETY_SYSTEM.md)
@@ -3818,10 +3819,10 @@ index b34ebd985..7b234cf33 100644
  
      #[test]
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 34c3dd490..2e972dc14 100644
+index 090336a75..cf25c40fc 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -6,15 +6,15 @@ mod batch;
+@@ -9,15 +9,15 @@ mod batch;
  mod bg;
  mod browser;
  mod communicate;
@@ -3840,7 +3841,7 @@ index 34c3dd490..2e972dc14 100644
  mod edit;
  mod edit_stats;
  mod feedback;
-@@ -29,6 +29,7 @@ pub mod mcp;
+@@ -32,6 +32,7 @@ pub mod mcp;
  mod memory;
  mod multiedit;
  mod open;
@@ -3848,101 +3849,7 @@ index 34c3dd490..2e972dc14 100644
  mod panel;
  mod patch;
  mod read;
-@@ -192,29 +193,14 @@ pub(crate) fn session_mcp_dispatch_is_allowed(
-     session_id: &str,
-     dispatched_name: &str,
-     fixed_surface: &str,
--) -> bool {
--    session_mcp_alias_is_allowed(session_id, dispatched_name, dispatched_name, fixed_surface)
--}
--
--/// Enforce both the actual alias and the legacy normalized identity. A deny on
--/// either spelling wins, including when the caller uses the deferred surface.
--pub(crate) fn session_mcp_alias_is_allowed(
--    session_id: &str,
--    alias: &str,
--    legacy_name: &str,
--    fixed_surface: &str,
- ) -> bool {
-     let Some(policy) = session_tool_policy(session_id) else {
-         return true;
-     };
-     let allowed = policy.allowed_tools.as_ref().is_none_or(|allowed| {
--        tool_name_is_allowed(allowed, alias)
--            || tool_name_is_allowed(allowed, legacy_name)
--            || allowed.contains(fixed_surface)
-+        tool_name_is_allowed(allowed, dispatched_name) || allowed.contains(fixed_surface)
-     });
--    allowed
--        && !tool_name_is_disabled(&policy.disabled_tools, alias)
--        && !tool_name_is_disabled(&policy.disabled_tools, legacy_name)
-+    allowed && !tool_name_is_disabled(&policy.disabled_tools, dispatched_name)
- }
- 
- /// Whether a tool call opted in to receiving an oversized (truncated) result.
-@@ -243,21 +229,12 @@ fn accepts_large_output(input: &Value) -> bool {
-     }
- }
- 
--/// Aliases are surface-dependent, but policy follows original identities for
--/// the lifetime of the registry, including aliases retired after a reconnect.
--#[derive(Default)]
--struct McpPolicyIndex {
--    current: HashMap<String, (String, String)>,
--    history: HashMap<(String, String), HashSet<String>>,
--}
--
- /// Registry of available tools (Arc-wrapped for sharing)
- ///
- /// Clone creates a fresh CompactionManager so each subagent gets independent
- /// message history tracking. Tools and skills are shared via Arc.
- pub struct Registry {
-     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
--    mcp_policy: Arc<StdRwLock<McpPolicyIndex>>,
-     skills: Arc<RwLock<SkillRegistry>>,
-     compaction: Arc<RwLock<CompactionManager>>,
- }
-@@ -268,7 +245,6 @@ pub struct Registry {
- /// Arc cycle. Upgrade this handle only for the duration of a tool call.
- pub(super) struct WeakRegistry {
-     tools: std::sync::Weak<RwLock<HashMap<String, Arc<dyn Tool>>>>,
--    mcp_policy: Arc<StdRwLock<McpPolicyIndex>>,
-     skills: Arc<RwLock<SkillRegistry>>,
-     compaction: Arc<RwLock<CompactionManager>>,
- }
-@@ -277,7 +253,6 @@ impl WeakRegistry {
-     pub(super) fn upgrade(&self) -> Option<Registry> {
-         Some(Registry {
-             tools: self.tools.upgrade()?,
--            mcp_policy: Arc::clone(&self.mcp_policy),
-             skills: Arc::clone(&self.skills),
-             compaction: Arc::clone(&self.compaction),
-         })
-@@ -288,7 +263,6 @@ impl Clone for Registry {
-     fn clone(&self) -> Self {
-         Self {
-             tools: self.tools.clone(),
--            mcp_policy: Arc::clone(&self.mcp_policy),
-             skills: self.skills.clone(),
-             // Each clone gets a fresh CompactionManager to prevent parallel
-             // subagents from corrupting each other's message history
-@@ -301,7 +275,6 @@ impl Registry {
-     fn downgrade(&self) -> WeakRegistry {
-         WeakRegistry {
-             tools: Arc::downgrade(&self.tools),
--            mcp_policy: Arc::clone(&self.mcp_policy),
-             skills: Arc::clone(&self.skills),
-             compaction: Arc::clone(&self.compaction),
-         }
-@@ -336,7 +309,6 @@ impl Registry {
-     pub fn empty() -> Self {
-         Self {
-             tools: Arc::new(RwLock::new(HashMap::new())),
--            mcp_policy: Arc::default(),
-             skills: Arc::new(RwLock::new(SkillRegistry::default())),
-             compaction: Arc::new(RwLock::new(CompactionManager::new())),
-         }
-@@ -365,7 +337,6 @@ impl Registry {
+@@ -372,7 +373,6 @@ impl Registry {
                  "side_panel",
                  side_panel::SidePanelTool::new,
              );
@@ -3950,7 +3857,7 @@ index 34c3dd490..2e972dc14 100644
              Self::insert_tool_timed(&mut m, &mut timings, "edit", edit::EditTool::new);
              Self::insert_tool_timed(
                  &mut m,
-@@ -382,12 +353,6 @@ impl Registry {
+@@ -389,12 +389,6 @@ impl Registry {
              );
              Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
              Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
@@ -3963,7 +3870,7 @@ index 34c3dd490..2e972dc14 100644
              Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
              Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
              #[cfg(target_os = "macos")]
-@@ -431,17 +396,15 @@ impl Registry {
+@@ -438,17 +432,15 @@ impl Registry {
                  session_search::SessionSearchTool::new,
              );
              Self::insert_tool_timed(&mut m, &mut timings, "memory", memory::MemoryTool::new);
@@ -3986,15 +3893,7 @@ index 34c3dd490..2e972dc14 100644
              let nonzero: Vec<String> = timings
                  .iter()
                  .filter(|(_, ms)| *ms > 0)
-@@ -482,7 +445,6 @@ impl Registry {
-         let registry_struct_start = std::time::Instant::now();
-         let registry = Self {
-             tools: Arc::new(RwLock::new(HashMap::new())),
--            mcp_policy: Arc::default(),
-             skills: skills.clone(),
-             compaction: compaction.clone(),
-         };
-@@ -504,16 +466,6 @@ impl Registry {
+@@ -511,16 +503,6 @@ impl Registry {
              "conversation_search",
              conversation_search::ConversationSearchTool::new(compaction),
          );
@@ -4010,30 +3909,41 @@ index 34c3dd490..2e972dc14 100644
 -        }
          let session_tools_ms = session_tools_start.elapsed().as_millis();
  
-         let write_start = std::time::Instant::now();
-@@ -537,13 +489,14 @@ impl Registry {
-         &self,
-         allowed_tools: Option<&HashSet<String>>,
-     ) -> Vec<ToolDefinition> {
+         // Register generated `swarm_<id>` tools for every valid effective
+@@ -548,45 +530,6 @@ impl Registry {
+         registry
+     }
+ 
+-    /// Get all tool definitions for the API
+-    pub async fn definitions(
+-        &self,
+-        allowed_tools: Option<&HashSet<String>>,
+-    ) -> Vec<ToolDefinition> {
 -        if allowed_tools.is_none_or(|allowed| allowed.contains("compile_remote")) {
 -            self.remote_compile_definition().await;
 -        }
-         let tools = self.tools.read().await;
-         let mut defs: Vec<ToolDefinition> = tools
-             .iter()
+-        let tools = self.tools.read().await;
+-        let mut defs: Vec<ToolDefinition> = tools
+-            .iter()
 -            .filter(|(name, _)| allowed_tools.is_none_or(|set| self.tool_is_allowed(set, name)))
-+            .filter(|(name, _)| {
-+                allowed_tools
-+                    .map(|set| tool_name_is_allowed(set, name))
-+                    .unwrap_or(true)
-+            })
-             .map(|(name, tool)| {
-                 let mut def = tool.to_definition();
-                 // Use registry key as the tool name (important for MCP tools where
-@@ -561,15 +514,6 @@ impl Registry {
-         defs
-     }
- 
+-            .map(|(name, tool)| {
+-
+-                let mut def = tool.to_definition();
+-                // Use registry key as the tool name (important for MCP tools where
+-                // the registry key is "mcp__server__tool" but Tool::name() returns
+-                // just the raw tool name)
+-                if def.name != *name {
+-                    def.name = name.clone();
+-                }
+-                def
+-            })
+-            .collect();
+-
+-        // Sort by name for deterministic ordering - critical for prompt cache hits
+-        defs.sort_by(|a, b| a.name.cmp(&b.name));
+-        defs
+-    }
+-
 -    /// Subscription guidance is the one built-in definition that can change
 -    /// after sign-in, sign-out, or entitlement refresh. Do not hold the registry
 -    /// lock during the bounded account request.
@@ -4043,10 +3953,55 @@ index 34c3dd490..2e972dc14 100644
 -        Some(tool.to_definition())
 -    }
 -
+     /// Register generated `swarm_<id>` tools for every valid effective
+     /// blueprint discovered from the configured blueprints directory. Tools
+     /// are only registered, never overwrite existing tools (collision
+@@ -618,13 +561,40 @@ impl Registry {
+ 
+         // Log diagnostics for any blueprint loading issues.
+         for diag in &report.diagnostics {
+-            crate::logging::info(&format!(
+-                "Worker blueprint diagnostic: {}",
+-                diag
+-            ));
++            crate::logging::info(&format!("Worker blueprint diagnostic: {}", diag));
+         }
+     }
+ 
++    /// Get all tool definitions for the API
++    pub async fn definitions(
++        &self,
++        allowed_tools: Option<&HashSet<String>>,
++    ) -> Vec<ToolDefinition> {
++        let tools = self.tools.read().await;
++        let mut defs: Vec<ToolDefinition> = tools
++            .iter()
++            .filter(|(name, _)| {
++                allowed_tools
++                    .map(|set| self.tool_is_allowed(set, name))
++                    .unwrap_or(true)
++            })
++            .map(|(name, tool)| {
++                let mut def = tool.to_definition();
++                // Use registry key as the tool name (important for MCP tools where
++                // the registry key is "mcp__server__tool" but Tool::name() returns
++                // just the raw tool name)
++                if def.name != *name {
++                    def.name = name.clone();
++                }
++                def
++            })
++            .collect();
++
++        // Sort by name for deterministic ordering - critical for prompt cache hits
++        defs.sort_by(|a, b| a.name.cmp(&b.name));
++        defs
++    }
++
      pub async fn tool_names(&self) -> Vec<String> {
          let tools = self.tools.read().await;
          tools.keys().cloned().collect()
-@@ -824,39 +768,13 @@ impl Registry {
+@@ -884,32 +854,6 @@ impl Registry {
          let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
          let tools = self.tools.read().await;
          let resolved_name = Self::resolve_tool_name(name);
@@ -4078,27 +4033,11 @@ index 34c3dd490..2e972dc14 100644
 -        }
          if let Some(policy) = session_tool_policy(&ctx.session_id) {
              if let Some(allowed) = policy.allowed_tools.as_ref()
--                && !self.tool_is_allowed(allowed, resolved_name)
-+                && !tool_name_is_allowed(allowed, resolved_name)
-             {
-                 return Err(anyhow::anyhow!("Tool '{}' is not allowed", resolved_name));
-             }
--            if self.tool_is_disabled(&policy.disabled_tools, resolved_name) {
-+            if tool_name_is_disabled(&policy.disabled_tools, resolved_name) {
-                 return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
-             }
+                 && !self.tool_is_allowed(allowed, resolved_name)
+@@ -1202,149 +1146,6 @@ impl Registry {
          }
-@@ -1102,154 +1020,7 @@ impl Registry {
-     /// Register a tool dynamically (for MCP tools, etc.)
-     pub async fn register(&self, name: String, tool: Arc<dyn Tool>) {
-         let mut tools = self.tools.write().await;
--        let is_mcp = tool.mcp_identity().is_some();
-         tools.insert(name, tool);
--        if is_mcp {
--            self.record_mcp_surface(&tools);
--        }
--    }
--
+     }
+ 
 -    fn record_mcp_surface(&self, tools: &HashMap<String, Arc<dyn Tool>>) {
 -        let mut index = self.mcp_policy.write().unwrap_or_else(|e| e.into_inner());
 -        index.current.clear();
@@ -4240,99 +4179,173 @@ index 34c3dd490..2e972dc14 100644
 -        });
 -        self.record_mcp_surface(&tools);
 -        removed
-     }
- 
+-    }
+-
      /// Register MCP tools (MCP management and server tools)
-@@ -1299,14 +1070,12 @@ impl Registry {
-             .await;
-         self.register(
-             "mcp_search".to_string(),
--            Arc::new(mcp::McpSearchTool::new(Arc::clone(&mcp_manager)).with_registry(self.clone()))
--                as Arc<dyn Tool>,
-+            Arc::new(mcp::McpSearchTool::new(Arc::clone(&mcp_manager))) as Arc<dyn Tool>,
-         )
-         .await;
-         self.register(
-             "mcp_call".to_string(),
--            Arc::new(mcp::McpCallTool::new(Arc::clone(&mcp_manager)).with_registry(self.clone()))
--                as Arc<dyn Tool>,
-+            Arc::new(mcp::McpCallTool::new(Arc::clone(&mcp_manager))) as Arc<dyn Tool>,
-         )
-         .await;
- 
-@@ -1374,20 +1143,20 @@ impl Registry {
-                         .collect()
-                 };
-                 let mut advertised_tool_count = 0usize;
--                let mut cached_tools = Vec::new();
-                 for (server, cfg) in &config_servers {
-                     if let Some(cached) = schema_cache.tools_for(server, cfg) {
--                        advertised_tool_count += cached.len();
--                        cached_tools
--                            .extend(cached.iter().cloned().map(|tool| (server.clone(), tool)));
-+                        let tools = crate::mcp::create_mcp_tools_from_cached(
-+                            server,
-+                            cached,
-+                            Arc::clone(&mcp_manager),
-+                        );
-+                        advertised_tool_count += tools.len();
-+                        for (name, tool) in tools {
-+                            self.register(name, tool).await;
-+                        }
-                         advertised_servers.insert(server.clone());
-                     }
-                 }
--                self.reconcile_mcp_tools(crate::mcp::create_mcp_tools_from_cached_many(
--                    &cached_tools,
--                    Arc::clone(&mcp_manager),
--                ))
--                .await;
-                 if advertised_tool_count > 0 {
-                     crate::logging::info(&format!(
-                         "MCP: advertised {} cached tool(s) from {} server(s) at spawn \
-@@ -1441,13 +1210,17 @@ impl Registry {
-                 let tools = crate::mcp::create_mcp_tools(Arc::clone(&mcp_manager)).await;
-                 let mut server_counts: std::collections::BTreeMap<String, usize> =
-                     std::collections::BTreeMap::new();
--                for (_, tool) in &tools {
--                    if let Some((server, _)) = tool.mcp_identity() {
-+                for (name, tool) in &tools {
-+                    if let Some(rest) = name.strip_prefix("mcp__")
-+                        && let Some((server, _)) = rest.split_once("__")
-+                    {
-                         *server_counts.entry(server.to_string()).or_default() += 1;
-                     }
-+                    // Idempotent: advertise-early may have already registered an
-+                    // identical proxy. Re-registering refreshes it with the live
-+                    // schema, which is correct (handles schema drift).
-+                    registry.register(name.clone(), tool.clone()).await;
-                 }
--                let connected = mcp_manager.read().await.connected_servers().await;
--                registry.refresh_mcp_tools(tools, &connected).await;
- 
-                 // Reconcile the on-disk schema cache with the live schemas so the
-                 // next spawn can advertise the up-to-date tools with zero cache
-@@ -1562,9 +1335,7 @@ impl Registry {
+     /// Connections happen in background to avoid blocking startup.
+     /// If `event_tx` is provided, sends an McpStatus event when connections complete.
+@@ -1655,11 +1456,158 @@ impl Registry {
      /// Unregister a tool
      pub async fn unregister(&self, name: &str) -> Option<Arc<dyn Tool>> {
          let mut tools = self.tools.write().await;
 -        let removed = tools.remove(name);
--        self.record_mcp_surface(&tools);
--        removed
 +        tools.remove(name)
++    }
++
++    fn record_mcp_surface(&self, tools: &HashMap<String, Arc<dyn Tool>>) {
++        let mut index = self.mcp_policy.write().unwrap_or_else(|e| e.into_inner());
++        index.current.clear();
++        for (alias, tool) in tools {
++            if let Some((server, raw)) = tool.mcp_identity() {
++                let identity = (server.to_string(), raw.to_string());
++                index.current.insert(alias.clone(), identity.clone());
++                let names = index.history.entry(identity).or_default();
++                names.insert(alias.clone());
++                names.insert(crate::mcp::dispatch_name(server, raw));
++            }
++        }
++    }
++
++    fn mcp_alias(&self, server: &str, raw: &str) -> Option<String> {
++        self.mcp_policy
++            .read()
++            .unwrap_or_else(|e| e.into_inner())
++            .current
++            .iter()
++            .find(|(_, identity)| identity.0 == server && identity.1 == raw)
++            .map(|(alias, _)| alias.clone())
++    }
++
++    fn mcp_policy_names(&self, server: &str, raw: &str) -> HashSet<String> {
++        let index = self.mcp_policy.read().unwrap_or_else(|e| e.into_inner());
++        let mut names = index
++            .history
++            .get(&(server.into(), raw.into()))
++            .cloned()
++            .unwrap_or_default();
++        names.insert(crate::mcp::dispatch_name(server, raw));
++        names
++    }
++
++    fn policy_names(&self, name: &str) -> HashSet<String> {
++        let index = self.mcp_policy.read().unwrap_or_else(|e| e.into_inner());
++        let mut names = index
++            .current
++            .get(name)
++            .and_then(|identity| index.history.get(identity))
++            .cloned()
++            .unwrap_or_default();
++        names.insert(name.to_string());
++        names
++    }
++
++    pub(crate) fn tool_is_allowed(&self, allowed: &HashSet<String>, name: &str) -> bool {
++        self.policy_names(name)
++            .iter()
++            .any(|name| tool_name_is_allowed(allowed, name))
++    }
++
++    pub(crate) fn tool_is_disabled(&self, disabled: &HashSet<String>, name: &str) -> bool {
++        self.policy_names(name)
++            .iter()
++            .any(|name| tool_name_is_disabled(disabled, name))
++    }
++
++    fn mcp_dispatch_is_allowed(
++        &self,
++        session: &str,
++        server: &str,
++        raw: &str,
++        alias: &str,
++        surface: &str,
++    ) -> bool {
++        let Some(policy) = session_tool_policy(session) else {
++            return true;
++        };
++        let mut names = self.mcp_policy_names(server, raw);
++        names.insert(alias.to_string());
++        policy.allowed_tools.as_ref().is_none_or(|allowed| {
++            allowed.contains(surface)
++                || names.iter().any(|name| tool_name_is_allowed(allowed, name))
++        }) && !names
++            .iter()
++            .any(|name| tool_name_is_disabled(&policy.disabled_tools, name))
++    }
++
++    /// Refresh connected servers, retaining cached proxies for offline servers.
++    /// Recompute aliases over the combined surface, not only the live subset.
++    pub async fn refresh_mcp_tools(
++        &self,
++        fresh: Vec<(String, Arc<dyn Tool>)>,
++        refreshed_servers: &[String],
++    ) {
++        let mut tools = self.tools.write().await;
++        let mut proxies: Vec<Arc<dyn Tool>> = tools
++            .values()
++            .filter(|tool| {
++                tool.mcp_identity()
++                    .is_some_and(|(server, _)| !refreshed_servers.iter().any(|s| s == server))
++            })
++            .cloned()
++            .collect();
++        proxies.extend(fresh.into_iter().map(|(_, tool)| tool));
++        let defs: Vec<_> = proxies
++            .iter()
++            .map(|tool| {
++                let (server, raw) = tool.mcp_identity().expect("MCP proxy");
++                (
++                    server.to_string(),
++                    crate::mcp::McpToolDef {
++                        name: raw.to_string(),
++                        description: None,
++                        input_schema: Value::Null,
++                    },
++                )
++            })
++            .collect();
++        let names = crate::mcp::dispatch_names(&defs);
++        tools.retain(|_, tool| tool.mcp_identity().is_none());
++        tools.extend(names.into_iter().zip(proxies));
++        self.record_mcp_surface(&tools);
++    }
++
++    /// Atomically replace the MCP surface. Aliases depend on the complete set,
++    /// so inserting only new keys leaves obsolete cached aliases callable.
++    pub async fn reconcile_mcp_tools(&self, fresh: Vec<(String, Arc<dyn Tool>)>) {
++        let mut tools = self.tools.write().await;
++        tools.retain(|_, tool| tool.mcp_identity().is_none());
++        tools.extend(fresh);
++        self.record_mcp_surface(&tools);
++    }
++
++    /// Remove exact server membership, never a lossy normalized prefix.
++    pub async fn unregister_mcp_server(&self, server: &str) -> Vec<String> {
++        let mut tools = self.tools.write().await;
++        let mut removed = Vec::new();
++        tools.retain(|name, tool| {
++            let keep = !tool
++                .mcp_identity()
++                .is_some_and(|(owner, _)| owner == server);
++            if !keep {
++                removed.push(name.clone());
++            }
++            keep
++        });
+         self.record_mcp_surface(&tools);
+         removed
      }
  
++    pub(crate) async fn remote_compile_definition(&self) -> Option<ToolDefinition> {
++        let tool = self.tools.read().await.get("compile_remote").cloned()?;
++        compile_remote::refresh_access().await;
++        Some(tool.to_definition())
++    }
++
      /// Unregister all tools matching a prefix
-@@ -1578,7 +1349,6 @@ impl Registry {
-         for name in &to_remove {
-             tools.remove(name);
-         }
--        self.record_mcp_surface(&tools);
-         to_remove
-     }
- 
+     pub async fn unregister_prefix(&self, prefix: &str) -> Vec<String> {
+         let mut tools = self.tools.write().await;
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index f19f3eed4..e03fd2d40 100644
+index a514e9df1..b438a3070 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
 @@ -243,22 +243,6 @@ fn test_resolve_skill_aliases_to_skill_manage() {
@@ -4358,23 +4371,27 @@ index f19f3eed4..e03fd2d40 100644
  #[tokio::test]
  async fn subagent_tool_is_not_registered() {
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
-@@ -627,10 +611,10 @@ async fn print_tool_definition_token_report() {
+@@ -905,13 +889,12 @@ async fn print_tool_definition_token_report() {
  #[tokio::test]
  async fn tool_descriptions_stay_under_token_cap() {
      const DESCRIPTION_TOKEN_CAP: usize = 20;
--    // integration_tools keeps a deliberate second sentence explaining that catalog
--    // entries integrate directly with the agent.
--    // swarm appends the user-tunable swarm-prompt.md by design.
--    const EXEMPT: &[&str] = &["integration_tools", "swarm"];
-+    // batch embeds a concrete multi-call JSON example and jcode_docs explains its
-+    // version-matched documentation behavior. swarm appends the user-tunable
-+    // swarm-prompt.md by design.
-+    const EXEMPT: &[&str] = &["batch", "jcode_docs", "swarm"];
+-    // integration_tools keeps a deliberate discovery explanation; batch carries
+-    // a multi-call example; browser, macos_computer_use, and side_panel have
+-    // external desktop-tool contracts; jcode_docs identifies bundled docs.
+-    // swarm and generated swarm_<id> tools carry user-owned role instructions.
++    // batch carries a multi-call example; browser, macos_computer_use, and
++    // side_panel have external desktop-tool contracts; jcode_docs identifies
++    // bundled docs. swarm and swarm_<id> carry user-owned role instructions.
+     const EXEMPT: &[&str] = &[
+-        "integration_tools", "batch", "browser", "jcode_docs",
+-        "macos_computer_use", "side_panel", "swarm",
++        "batch", "browser", "jcode_docs", "macos_computer_use",
++        "side_panel", "swarm",
+     ];
  
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
-     let registry = Registry::new(provider).await;
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index 8e38da4cd..a8ecfe925 100644
+index ad584c728..c9eab6682 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
 @@ -11,8 +11,8 @@ pub use jcode_config_types::{
@@ -4382,9 +4399,9 @@ index 8e38da4cd..a8ecfe925 100644
      NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
      PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
 -    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
--    WebSearchConfig, WebSearchEngine,
+-    WebSearchConfig, WebSearchEngine, WorkerBlueprintOverride,
 +    SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig,
-+    WebSearchEngine,
++    WebSearchEngine, WorkerBlueprintOverride,
  };
  use serde::{Deserialize, Serialize};
  use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -4408,7 +4425,7 @@ index 8e38da4cd..a8ecfe925 100644
      "JCODE_SWARM_MODEL",
      "JCODE_SWARM_MAX_CONCURRENT_AGENTS",
      "JCODE_SWARM_SPAWN_MODE",
-@@ -548,12 +542,6 @@ pub struct Config {
+@@ -549,12 +543,6 @@ pub struct Config {
      /// Auto-judge configuration
      pub autojudge: AutoJudgeConfig,
  
@@ -4421,7 +4438,7 @@ index 8e38da4cd..a8ecfe925 100644
      /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
      pub launch_hotkeys: LaunchHotkeysConfig,
  }
-@@ -832,22 +820,3 @@ mod tests;
+@@ -833,22 +821,3 @@ mod tests;
  #[cfg(test)]
  #[path = "config_color_tests.rs"]
  mod color_tests;
@@ -4445,10 +4462,10 @@ index 8e38da4cd..a8ecfe925 100644
 -    )
 -}
 diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
-index 42f9bb0f9..010520dd8 100644
+index 8545333da..af5647af6 100644
 --- a/crates/jcode-base/src/config/config_file.rs
 +++ b/crates/jcode-base/src/config/config_file.rs
-@@ -61,8 +61,6 @@ impl Config {
+@@ -62,8 +62,6 @@ impl Config {
              anyhow::anyhow!("Failed to parse config file {}: {}", path.display(), e)
          })?;
          config.display.apply_legacy_compat();
@@ -4457,7 +4474,7 @@ index 42f9bb0f9..010520dd8 100644
          Ok(Some(config))
      }
  
-@@ -86,13 +84,6 @@ impl Config {
+@@ -87,13 +85,6 @@ impl Config {
          super::invalidate_config_cache();
      }
  
@@ -4471,7 +4488,7 @@ index 42f9bb0f9..010520dd8 100644
      /// Update the copilot premium mode in the config file.
      /// Reloads, patches, and saves so it doesn't clobber other fields.
      pub fn set_copilot_premium(mode: Option<&str>) -> anyhow::Result<()> {
-@@ -719,6 +710,13 @@ impl Config {
+@@ -720,6 +711,13 @@ impl Config {
          }
          Ok(())
      }
@@ -4484,12 +4501,12 @@ index 42f9bb0f9..010520dd8 100644
 +    }
  }
  
- #[cfg(test)]
+ fn validate_websearch_env_overrides() -> anyhow::Result<()> {
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index b82ddd433..c5a19ef99 100644
+index ab2a2f9c3..a8e663dd5 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -706,18 +706,7 @@ desktop_notifications = true
+@@ -727,18 +727,7 @@ desktop_notifications = true
  # jade_relay_reply_enabled = false   # Deliver cloud prompts to one configured live session.
  # jade_relay_launch_enabled = false  # Allow cloud device commands to open headed local sessions.
  # jade_relay_launch_working_dir = "" # Optional default cwd for launched sessions.
@@ -4510,7 +4527,7 @@ index b82ddd433..c5a19ef99 100644
          // Substitute platform-specific defaults from the keybinding registry.
          let p = jcode_config_types::KeybindingPlatform::current();
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index 3bfbeb500..481ab7505 100644
+index cde76a0e5..cdc8e4d94 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
 @@ -14,116 +14,6 @@ fn restore_env_var(key: &str, previous: Option<OsString>) {
@@ -4628,9 +4645,9 @@ index 3bfbeb500..481ab7505 100644
 -}
 -
  #[test]
- fn test_openai_reasoning_effort_defaults_to_low() {
-     assert_eq!(
-@@ -1105,33 +995,6 @@ fn test_env_override_native_scrollbars() {
+ fn websearch_environment_list_replaces_complete_policy() {
+     let _guard = crate::storage::lock_test_env();
+@@ -1191,33 +1081,6 @@ fn test_env_override_native_scrollbars() {
      }
  }
  
@@ -4664,7 +4681,7 @@ index 3bfbeb500..481ab7505 100644
  #[test]
  fn test_env_override_diff_mode_full_inline() {
      let _guard = crate::storage::lock_test_env();
-@@ -1500,72 +1363,6 @@ fn migrate_idle_animation_off_noops_without_enabled_value() {
+@@ -1586,72 +1449,6 @@ fn migrate_idle_animation_off_noops_without_enabled_value() {
      restore_env_var("JCODE_HOME", prev_home);
  }
  
@@ -4737,7 +4754,7 @@ index 3bfbeb500..481ab7505 100644
  #[test]
  fn config_reload_generation_increments_on_cache_invalidation() {
      let before = crate::config::config_reload_generation();
-@@ -1576,113 +1373,3 @@ fn config_reload_generation_increments_on_cache_invalidation() {
+@@ -1662,113 +1459,3 @@ fn config_reload_generation_increments_on_cache_invalidation() {
          "invalidate_config_cache must bump the reload generation ({before} -> {after})"
      );
  }
@@ -4852,7 +4869,7 @@ index 3bfbeb500..481ab7505 100644
 -    Config::invalidate_cache();
 -}
 diff --git a/crates/jcode-base/src/lib.rs b/crates/jcode-base/src/lib.rs
-index 3f39e417d..43c109bbc 100644
+index f4ca37769..2981583f0 100644
 --- a/crates/jcode-base/src/lib.rs
 +++ b/crates/jcode-base/src/lib.rs
 @@ -84,7 +84,6 @@ pub mod side_panel;
@@ -5466,10 +5483,10 @@ index 9f0579536..000000000
 -    }
 -}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index d096de3ca..5b1e1c674 100644
+index 0b26ccdb9..b38941a54 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1005,34 +1005,6 @@ pub struct AutoReviewConfig {
+@@ -1081,34 +1081,6 @@ pub struct AutoReviewConfig {
      pub model: Option<String>,
  }
  

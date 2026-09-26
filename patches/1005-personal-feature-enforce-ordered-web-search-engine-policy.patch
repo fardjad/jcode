@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Fardjad Davari <public@fardjad.com>
-Date: Sat, 12 Sep 2026 14:50:24 +0200
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Sat, 26 Sep 2026 19:15:51 +0200
 Subject: [PATCH] feat: enforce ordered web-search engine policy
 
 X-Jcode-Patch-Intent: Make web-search engine selection an ordered,
 configuration-owned allowlist with scalar compatibility.
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 1008-personal-feature-add-worker-blueprints-with-runtime-integration.patch
+X-Jcode-Patch-Depends-On: none
 
 Patch intent:
 Treat [websearch].engine as the complete ordered engine policy. Accept the
@@ -38,9 +38,9 @@ Any new dispatch path must consume the normalized list and must not reintroduce
 request-level engine selection or bypass strict environment validation.
 
 Validation:
-scripts/isolate_config.py -- cargo test -p jcode-config-types websearch_config_tests --lib
-scripts/isolate_config.py -- cargo test -p jcode-app-core tool::websearch::tests --lib
-scripts/isolate_config.py -- cargo test -p jcode-base websearch_ --lib
+scripts/cargo_exec.sh test -p jcode-config-types websearch_config_tests --lib
+scripts/cargo_exec.sh test -p jcode-app-core tool::websearch::tests --lib
+scripts/cargo_exec.sh test -p jcode-base websearch_ --lib
 ---
  Cargo.lock                                    |   1 +
  README.md                                     |  14 ++
@@ -67,7 +67,7 @@ index 24dfff035..0641ec8c6 100644
  
  [[package]]
 diff --git a/README.md b/README.md
-index f3b3d7e1f..9ca67047d 100644
+index 64d87082b..b6e965ee5 100644
 --- a/README.md
 +++ b/README.md
 @@ -330,6 +330,20 @@ Jcode is left-aligned by default. You can switch to centered mode with the `Alt+
@@ -199,10 +199,10 @@ index 0d9dab329..88f29c58a 100644
 +    }
  }
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index 96c50784e..c9eab6682 100644
+index b41f054c2..ad584c728 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
-@@ -184,6 +184,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+@@ -190,6 +190,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
      "JCODE_TYPING_SCROLL_LOCK_TOGGLE_KEY",
      "JCODE_UPDATE_CHANNEL",
      "JCODE_WEBSEARCH_ENGINE",
@@ -211,7 +211,7 @@ index 96c50784e..c9eab6682 100644
      "JCODE_WORKSPACE_DOWN_KEY",
      "JCODE_WORKSPACE_LEFT_KEY",
 diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
-index 010520dd8..af5647af6 100644
+index 42f9bb0f9..8545333da 100644
 --- a/crates/jcode-base/src/config/config_file.rs
 +++ b/crates/jcode-base/src/config/config_file.rs
 @@ -21,6 +21,7 @@ impl Config {
@@ -222,7 +222,7 @@ index 010520dd8..af5647af6 100644
          config.apply_env_overrides();
          Ok(config)
      }
-@@ -719,6 +720,39 @@ impl Config {
+@@ -721,6 +722,39 @@ impl Config {
      }
  }
  
@@ -263,10 +263,10 @@ index 010520dd8..af5647af6 100644
  mod issue_1056_tests {
      use super::Config;
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index c5a19ef99..09f64afe4 100644
+index 5c4e88ee8..b7593f8d1 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -300,10 +300,13 @@ kv_cache_miss_notices = true
+@@ -292,10 +292,13 @@ kv_cache_miss_notices = true
  update_channel = "stable"
  
  [websearch]
@@ -284,7 +284,7 @@ index c5a19ef99..09f64afe4 100644
  # Bring your own Bing Search API key for primary Bing searches. Prefer using an env var.
  # Fallback Bing searches intentionally use keyless HTML search.
  # bing_api_key_env = "JCODE_BING_API_KEY"
-@@ -315,7 +318,7 @@ bing_market = "en-US"
+@@ -307,7 +310,7 @@ bing_market = "en-US"
  # reputation and return an anti-bot page with no results. Pointing at a SearXNG
  # instance (self-hosted or trusted public) with the JSON format enabled avoids
  # this. Configure here or via the JCODE_SEARXNG_URL environment variable, then
@@ -294,10 +294,10 @@ index c5a19ef99..09f64afe4 100644
  
  [tools]
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 51ea31863..6ac8621a1 100644
+index ceafaea5a..2af7af596 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
-@@ -519,20 +519,36 @@ impl Config {
+@@ -542,20 +542,36 @@ impl Config {
              }
          }
  
@@ -345,7 +345,7 @@ index 51ea31863..6ac8621a1 100644
          }
          if let Ok(v) = std::env::var("JCODE_BING_API_KEY")
              && !v.trim().is_empty()
-@@ -878,3 +894,32 @@ fn parse_env_list(raw: &str) -> Vec<String> {
+@@ -901,3 +917,32 @@ fn parse_env_list(raw: &str) -> Vec<String> {
          .map(ToString::to_string)
          .collect()
  }
@@ -379,7 +379,7 @@ index 51ea31863..6ac8621a1 100644
 +    });
 +}
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index 7a4d737f8..cdc8e4d94 100644
+index 9448f419a..cde76a0e5 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
 @@ -1,7 +1,7 @@
@@ -391,8 +391,8 @@ index 7a4d737f8..cdc8e4d94 100644
  };
  use std::ffi::OsString;
  use std::path::Path;
-@@ -14,6 +14,81 @@ fn restore_env_var(key: &str, previous: Option<OsString>) {
-     }
+@@ -124,6 +124,81 @@ fn gemini_environment_overrides_config_without_changing_the_file() {
+     );
  }
  
 +#[test]
@@ -485,7 +485,7 @@ index f71508e30..fac92bca4 100644
 +[dev-dependencies]
 +toml = "0.8"
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 79d48c166..933a451cb 100644
+index 84ad5ef65..c764cc48e 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -1,4 +1,4 @@
@@ -494,7 +494,7 @@ index 79d48c166..933a451cb 100644
  
  mod display;
  pub use display::DisplayConfig;
-@@ -1306,12 +1306,16 @@ impl WebSearchEngine {
+@@ -1327,12 +1327,16 @@ impl WebSearchEngine {
  }
  
  /// Configuration for the websearch tool.
@@ -516,7 +516,7 @@ index 79d48c166..933a451cb 100644
      pub fallback_engines: Vec<WebSearchEngine>,
      /// Optional Bing API key for primary Bing searches. Fallback Bing uses keyless HTML search.
      pub bing_api_key: Option<String>,
-@@ -1327,10 +1331,136 @@ pub struct WebSearchConfig {
+@@ -1348,10 +1352,136 @@ pub struct WebSearchConfig {
      pub searxng_url_env: String,
  }
  
@@ -654,7 +654,7 @@ index 79d48c166..933a451cb 100644
              fallback_engines: vec![WebSearchEngine::Bing],
              bing_api_key: None,
              bing_api_key_env: "JCODE_BING_API_KEY".to_string(),
-@@ -1742,3 +1872,52 @@ mod reasoning_display_defaults_tests {
+@@ -1763,3 +1893,52 @@ mod reasoning_display_defaults_tests {
          assert!(!display.show_thinking);
      }
  }

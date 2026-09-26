@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Sat, 19 Sep 2026 13:57:23 +0200
+Date: Sat, 26 Sep 2026 19:15:51 +0200
 Subject: [PATCH] feat: add worker blueprints with runtime integration
 
 X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 0001-candidate-pre-tool-input-transformers.patch, 1001-personal-release-installer-isolate-release-installer-path-opt-in.patch, 1002-personal-provider-policy-add-provider-family-execution-allowlist.patch, 1003-personal-feature-configure-session-picker-sort-and-filter.patch, 1004-personal-feature-delete-sessions-from-picker-with-ctrl-d.patch, 1005-personal-provider-add-typed-openrouter-eu-provider.patch, 1006-personal-feature-remove-hosted-services-and-telemetry.patch, 1007-personal-feature-allow-selecting-the-self-update-repository.patch
+X-Jcode-Patch-Depends-On: 0003-candidate-add-hook-context-and-post-tool-transform.patch
 
 Patch intent:
 Add a worker blueprint system that lets a jcode user define reusable,
@@ -41,6 +41,8 @@ the config summary. Runtime toggles remove and restore that coordinator
 policy and prompt while preserving global tool limits.
 
 Upstream integration points:
+- crates/jcode-app-core/src/tool/mod.rs: blueprint tool registration.
+- crates/jcode-base/src/hooks.rs: optional blueprint hook identity.
 - crates/jcode-config-types/src/lib.rs: WorkerBlueprintOverride with
   enabled and disabled Option<Vec<String>> fields,
   swarm_timeout_minutes field, worker_blueprints field on AgentsConfig.
@@ -114,38 +116,40 @@ names. All test SwarmMember and WorkerBlueprintOverride constructions
 must include the new fields.
 
 Validation:
-cargo test -p jcode-swarm-core append_swarm_completion_report_instructions_is_idempotent --lib
-cargo test -p jcode-app-core blueprint --lib
-cargo test -p jcode-app-core blank_follow_up_session_selects_spawn_mode --lib
-cargo test -p jcode-app-core generated_blueprint_workers_default_to_headless_spawn --lib
-cargo test -p jcode-app-core generated_blueprint_tool_executes_through_server_without_visible_attachment --lib
-cargo test -p jcode-app-core requested_unknown_blueprint_is_rejected_before_generic_swarm_spawn --lib
-cargo test -p jcode-app-core generated_blueprint_id_resolves_model_or_configured_luna_at_runtime --lib
-cargo test -p jcode-app-core tool_descriptions_stay_under_token_cap --lib
-cargo test -p jcode-base worker_blueprint --lib
-cargo test -p jcode-base discovery_follows_symlinked_markdown_files --lib
-cargo test -p jcode-base discovery_follows_a_symlinked_blueprint_directory --lib
-cargo test -p jcode-base resolve_default_dir_uses_documented_worker_blueprints_path --lib
-cargo test -p jcode-protocol --lib
-cargo test -p jcode-config-types --lib
-cargo check -p jcode-app-core
-cargo test -p jcode-app-core swarm_tools_are_hidden_and_not_executable_when_swarm_is_off --lib
-cargo test -p jcode-app-core swarm_disabled_does_not_apply_coordinator_tool_policy_to_root --lib
-cargo test -p jcode-app-core swarm_disabled_retains_global_disabled_tool_policy --lib
-cargo test -p jcode-app-core toggling_swarm_off_removes_root_coordinator_tool_policy --lib
-cargo test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disabled --lib
-cargo test -p jcode-base coordinator_override_rejects_worker_only_fields --lib
-cargo test -p jcode-base coordinator_override_accepts_enabled_disabled_only --lib
-cargo test -p jcode-base coordinator_md_loaded_from_blueprint_dir --lib
-cargo test -p jcode-base coordinator_md_missing_returns_missing --lib
-cargo test -p jcode-base coordinator_md_malformed_returns_invalid --lib
-cargo test -p jcode-base coordinator_id_rejected_in_ordinary_blueprint --lib
-cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
+scripts/cargo_exec.sh test -p jcode-swarm-core append_swarm_completion_report_instructions_is_idempotent --lib
+scripts/cargo_exec.sh test -p jcode-app-core blueprint --lib
+scripts/cargo_exec.sh test -p jcode-app-core blank_follow_up_session_selects_spawn_mode --lib
+scripts/cargo_exec.sh test -p jcode-app-core generated_blueprint_workers_default_to_headless_spawn --lib
+scripts/cargo_exec.sh test -p jcode-app-core generated_blueprint_tool_executes_through_server_without_visible_attachment --lib
+scripts/cargo_exec.sh test -p jcode-app-core requested_unknown_blueprint_is_rejected_before_generic_swarm_spawn --lib
+scripts/cargo_exec.sh test -p jcode-app-core generated_blueprint_id_resolves_model_or_configured_luna_at_runtime --lib
+scripts/cargo_exec.sh test -p jcode-app-core tool_descriptions_stay_under_token_cap --lib
+scripts/cargo_exec.sh test -p jcode-base worker_blueprint --lib
+scripts/cargo_exec.sh test -p jcode-base discovery_follows_symlinked_markdown_files --lib
+scripts/cargo_exec.sh test -p jcode-base discovery_follows_a_symlinked_blueprint_directory --lib
+scripts/cargo_exec.sh test -p jcode-base resolve_default_dir_uses_documented_worker_blueprints_path --lib
+scripts/cargo_exec.sh test -p jcode-protocol --lib
+scripts/cargo_exec.sh test -p jcode-config-types --lib
+scripts/cargo_exec.sh check -p jcode-app-core
+scripts/cargo_exec.sh test -p jcode-app-core swarm_tools_are_hidden_and_not_executable_when_swarm_is_off --lib
+scripts/cargo_exec.sh test -p jcode-app-core swarm_disabled_does_not_apply_coordinator_tool_policy_to_root --lib
+scripts/cargo_exec.sh test -p jcode-app-core swarm_disabled_retains_global_disabled_tool_policy --lib
+scripts/cargo_exec.sh test -p jcode-app-core toggling_swarm_off_removes_root_coordinator_tool_policy --lib
+scripts/cargo_exec.sh test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disabled --lib
+scripts/cargo_exec.sh test -p jcode-base coordinator_override_rejects_worker_only_fields --lib
+scripts/cargo_exec.sh test -p jcode-base coordinator_override_accepts_enabled_disabled_only --lib
+scripts/cargo_exec.sh test -p jcode-base coordinator_md_loaded_from_blueprint_dir --lib
+scripts/cargo_exec.sh test -p jcode-base coordinator_md_missing_returns_missing --lib
+scripts/cargo_exec.sh test -p jcode-base coordinator_md_malformed_returns_invalid --lib
+scripts/cargo_exec.sh test -p jcode-base coordinator_id_rejected_in_ordinary_blueprint --lib
+scripts/cargo_exec.sh test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
+scripts/cargo_exec.sh test -p jcode-base swarm_context_serializes_all_fields --lib
+scripts/cargo_exec.sh test -p jcode-base swarm_context_applies_only_known_environment_values --lib
 ---
- crates/jcode-app-core/src/agent.rs            |   97 +-
+ crates/jcode-app-core/src/agent.rs            |   96 +-
  crates/jcode-app-core/src/agent/prompting.rs  |   20 +-
- .../src/agent/turn_execution.rs               |   39 +
- crates/jcode-app-core/src/agent_tests.rs      |  199 ++
+ .../src/agent/turn_execution.rs               |   38 +-
+ crates/jcode-app-core/src/agent_tests.rs      |  201 ++
  .../src/protocol_tests/comm_requests.rs       |    1 +
  .../src/server/client_actions.rs              |    4 +
  .../src/server/client_actions_tests.rs        |    5 +
@@ -169,7 +173,7 @@ cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
  crates/jcode-app-core/src/server/headless.rs  |    1 +
  .../jcode-app-core/src/server/reload_tests.rs |    1 +
  crates/jcode-app-core/src/server/state.rs     |    8 +
- crates/jcode-app-core/src/server/swarm.rs     |    1 +
+ crates/jcode-app-core/src/server/swarm.rs     |    3 +
  .../src/server/swarm_persistence_tests.rs     |    8 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
  crates/jcode-app-core/src/tool/blueprint.rs   |  496 ++++
@@ -178,24 +182,26 @@ cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
  .../src/tool/communicate/transport.rs         |    4 +-
  .../src/tool/communicate_tests.rs             |    2 +-
  .../src/tool/communicate_tests/end_to_end.rs  |  121 +
- crates/jcode-app-core/src/tool/mod.rs         |   58 +
- crates/jcode-app-core/src/tool/tests.rs       |   18 +-
+ crates/jcode-app-core/src/tool/mod.rs         |   62 +-
+ crates/jcode-app-core/src/tool/tests.rs       |   14 +-
  crates/jcode-base/src/config.rs               |    2 +-
  .../jcode-base/src/config/display_summary.rs  |   79 +-
  crates/jcode-base/src/config_tests.rs         |   11 +
+ crates/jcode-base/src/hooks.rs                |   28 +
  crates/jcode-base/src/lib.rs                  |    1 +
  crates/jcode-base/src/worker_blueprint.rs     | 2222 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   59 +
  .../src/protocol_tests/comm_requests.rs       |    1 +
  crates/jcode-protocol/src/wire.rs             |    7 +
  crates/jcode-swarm-core/src/lib.rs            |    9 +-
- 47 files changed, 4611 insertions(+), 58 deletions(-)
+ docs/HOOKS.md                                 |    2 +
+ 49 files changed, 4639 insertions(+), 62 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index eff52572b..46afd33bf 100644
+index 72a5b6e71..46afd33bf 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
 @@ -71,6 +71,76 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
@@ -275,13 +281,14 @@ index eff52572b..46afd33bf 100644
  fn stable_hash_str(value: &str) -> u64 {
      let mut hasher = std::collections::hash_map::DefaultHasher::new();
      value.hash(&mut hasher);
-@@ -246,6 +316,13 @@ pub struct Agent {
+@@ -246,8 +316,13 @@ pub struct Agent {
      agents_md_snapshot: (Option<String>, crate::prompt::ContextInfo),
      /// Whether memory features are enabled for this session
      memory_enabled: bool,
+-    /// Per-session swarm state used by turn hooks and coordinator policy.
 +    /// Whether swarm coordination tools and swarm-specific settings are enabled
 +    /// for this session.
-+    swarm_enabled: bool,
+     swarm_enabled: bool,
 +    /// Coordinator prompt body from `coordinator.md`, injected into the root
 +    /// session's system prompt only when swarm is enabled. None when swarm is
 +    /// disabled or the coordinator file is missing.
@@ -289,16 +296,15 @@ index eff52572b..46afd33bf 100644
      /// One-step undo snapshot captured before the most recent rewind.
      rewind_undo_snapshot: Option<RewindUndoSnapshot>,
      /// Channel for tools to request stdin input from the user
-@@ -335,6 +412,8 @@ impl Agent {
-             system_prompt_override: None,
+@@ -338,6 +413,7 @@ impl Agent {
              agents_md_snapshot,
              memory_enabled: crate::config::config().features.memory,
-+            swarm_enabled: crate::config::config().features.swarm,
+             swarm_enabled: crate::config::config().features.swarm,
 +            coordinator_prompt: None,
              rewind_undo_snapshot: None,
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
-@@ -415,6 +494,18 @@ impl Agent {
+@@ -418,6 +494,18 @@ impl Agent {
      ) -> Self {
          let start = Instant::now();
          let tool_selection = crate::config::config().tools.selection();
@@ -317,7 +323,7 @@ index eff52572b..46afd33bf 100644
          let mut session = Session::create(parent_id, None);
          if let Some(working_dir) = working_dir {
              session.working_dir = Some(working_dir.to_string());
-@@ -423,10 +514,14 @@ impl Agent {
+@@ -426,10 +514,14 @@ impl Agent {
              provider,
              registry,
              session,
@@ -374,24 +380,34 @@ index 1952c4626..18767d4e5 100644
          crate::prompt::append_swarm_effort_directive(
              &mut split,
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index 984ac1cfd..0e5e04848 100644
+index e51935bd8..391866f42 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
-@@ -361,6 +361,36 @@ impl Agent {
+@@ -128,6 +128,8 @@ impl Agent {
+                 crate::hooks::ProcessRole::Coordinator
+             },
+             worker_id: None,
++            blueprint_id: None,
++            blueprint_name: None,
          }
      }
  
+@@ -385,9 +387,34 @@ impl Agent {
+         }
+     }
+ 
+-    /// Update the per-session hook context when swarm availability changes.
 +    /// Enable or disable swarm coordination tools for this session.
 +    ///
 +    /// The feature can be toggled while a client is connected, so invalidate
 +    /// the cached provider tool surface when its state changes. This prevents
 +    /// a previously exposed `swarm` or `swarm_<id>` tool from remaining
 +    /// executable after swarm is turned off.
-+    pub fn set_swarm_enabled(&mut self, enabled: bool) {
+     pub fn set_swarm_enabled(&mut self, enabled: bool) {
 +        if self.swarm_enabled == enabled {
 +            return;
 +        }
-+        self.swarm_enabled = enabled;
+         self.swarm_enabled = enabled;
 +        if self.session.parent_id.is_none() {
 +            let global_allowed = crate::config::config().tools.selection().allowed_tools;
 +            self.allowed_tools = super::effective_root_allowed_tools(global_allowed, enabled, true);
@@ -409,12 +425,10 @@ index 984ac1cfd..0e5e04848 100644
 +        }
 +        self.locked_tools = None;
 +        self.cache_tracker.reset();
-+    }
-+
+     }
+ 
      /// Mark this session as an inline swarm worker. When enabled, the streaming
-     /// loop publishes a throttled output tail to the global bus so a
-     /// coordinator can render a live inline gallery viewport for it.
-@@ -513,6 +543,9 @@ impl Agent {
+@@ -542,6 +569,9 @@ impl Agent {
      /// session's `allowed_tools`, `disabled_tools`, and self-dev filters.
      async fn build_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
          let mut tools = self.registry.definitions(self.allowed_tools.as_ref()).await;
@@ -424,7 +438,7 @@ index 984ac1cfd..0e5e04848 100644
          if !self.disabled_tools.is_empty() {
              tools.retain(|tool| {
                  !self
-@@ -713,6 +746,12 @@ impl Agent {
+@@ -742,6 +772,12 @@ impl Agent {
                  "Tool 'jcode_docs' is disabled in self-development mode. Read the working tree documentation instead."
              ));
          }
@@ -438,10 +452,19 @@ index 984ac1cfd..0e5e04848 100644
              && !self.registry.tool_is_allowed(allowed, name)
          {
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 7fc4eb4b6..7d41250b4 100644
+index d0e6ecc1a..273961465 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -1138,6 +1138,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
+@@ -279,6 +279,8 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
+         mode: Some("inline".to_string()),
+         role: crate::hooks::ProcessRole::Worker,
+         worker_id: Some("worker-session".to_string()),
++        blueprint_id: None,
++        blueprint_name: Some("builder".to_string()),
+     };
+ 
+     crate::hooks::with_swarm_context(worker.clone(), async {
+@@ -1226,6 +1228,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
      crate::config::Config::invalidate_cache();
  }
  
@@ -1363,10 +1386,19 @@ index 827acc377..d0c014dd2 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
-index fbe513a04..569e1ea41 100644
+index e14faee33..5df284cb4 100644
 --- a/crates/jcode-app-core/src/server/swarm.rs
 +++ b/crates/jcode-app-core/src/server/swarm.rs
-@@ -1830,6 +1830,7 @@ mod tests {
+@@ -1586,6 +1586,8 @@ pub(super) async fn run_swarm_task(
+         mode: None,
+         role: crate::hooks::ProcessRole::Worker,
+         worker_id: Some(child_session_id.clone()),
++        blueprint_id: None,
++        blueprint_name: Some(subagent_type.to_string()),
+     };
+     match crate::hooks::with_swarm_context(worker_context, worker.run_once_capture(prompt)).await {
+         Ok(output) => {
+@@ -1836,6 +1838,7 @@ mod tests {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -3139,7 +3171,7 @@ index 83a896805..5991e3ba5 100644
  async fn communicate_await_members_background_returns_immediately_and_notifies() {
      let _env_lock = crate::storage::lock_test_env();
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 2e972dc14..3c28f7092 100644
+index 1f271cd16..090336a75 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,4 +1,7 @@
@@ -3150,7 +3182,7 @@ index 2e972dc14..3c28f7092 100644
  pub mod ambient;
  mod apply_patch;
  mod bash;
-@@ -64,6 +67,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
+@@ -63,6 +66,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
      disabled.contains(name) || (disabled.contains("mcp") && is_mcp_tool_name(name))
  }
  
@@ -3161,10 +3193,10 @@ index 2e972dc14..3c28f7092 100644
  fn is_fixed_mcp_tool(name: &str) -> bool {
      matches!(name, "mcp_search" | "mcp_call")
  }
-@@ -498,6 +505,14 @@ impl Registry {
-                     .unwrap_or(true)
-             })
-             .map(|(name, tool)| {
+@@ -516,16 +523,25 @@ impl Registry {
+         }
+         let session_tools_ms = session_tools_start.elapsed().as_millis();
+ 
 +        // Register generated `swarm_<id>` tools for every valid effective
 +        // blueprint. Blueprint additions, removals, and edits refresh
 +        // generated definitions only at session construction (between turns),
@@ -3173,13 +3205,33 @@ index 2e972dc14..3c28f7092 100644
 +        Self::register_blueprint_tools(&mut tools_map);
 +        let blueprint_ms = blueprint_start.elapsed().as_millis();
 +
+         let write_start = std::time::Instant::now();
+         *registry.tools.write().await = tools_map;
+         let write_ms = write_start.elapsed().as_millis();
+         crate::logging::info(&format!(
+-            "[TIMING] registry_new: skills={}ms, compaction={}ms, registry_struct={}ms, base_tools={}ms, session_tools={}ms, write={}ms, total={}ms",
++            "[TIMING] registry_new: skills={}ms, compaction={}ms, registry_struct={}ms, base_tools={}ms, session_tools={}ms, blueprints={}ms, write={}ms, total={}ms",
+             skills_ms,
+             compaction_ms,
+             registry_struct_ms,
+             base_ms,
+             session_tools_ms,
++            blueprint_ms,
+             write_ms,
+             start.elapsed().as_millis()
+         ));
+@@ -545,6 +561,7 @@ impl Registry {
+             .iter()
+             .filter(|(name, _)| allowed_tools.is_none_or(|set| self.tool_is_allowed(set, name)))
+             .map(|(name, tool)| {
++
                  let mut def = tool.to_definition();
                  // Use registry key as the tool name (important for MCP tools where
                  // the registry key is "mcp__server__tool" but Tool::name() returns
-@@ -515,6 +530,44 @@ impl Registry {
+@@ -570,11 +587,54 @@ impl Registry {
+         Some(tool.to_definition())
      }
  
-     pub async fn tool_names(&self) -> Vec<String> {
 +    /// Register generated `swarm_<id>` tools for every valid effective
 +    /// blueprint discovered from the configured blueprints directory. Tools
 +    /// are only registered, never overwrite existing tools (collision
@@ -3218,49 +3270,43 @@ index 2e972dc14..3c28f7092 100644
 +        }
 +    }
 +
+     pub async fn tool_names(&self) -> Vec<String> {
          let tools = self.tools.read().await;
          tools.keys().cloned().collect()
      }
-@@ -550,6 +603,11 @@ impl Registry {
  
-     /// Suggest up to 3 available tool names that look similar to `name`.
-     /// Uses cheap, dependency-free heuristics: case-insensitive equality,
 +    #[cfg(test)]
 +    pub(crate) async fn tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
 +        self.tools.read().await.get(name).cloned()
 +    }
 +
-     /// prefix/substring containment, then bounded edit distance. Helps the
-     /// model recover from hallucinated tool names (#104).
-     fn closest_tool_names(name: &str, available: &[&str]) -> Vec<String> {
+     /// Enable test mode for memory tools (isolated storage)
+     /// Called when session is marked as debug
+     pub async fn enable_memory_test_mode(&self) {
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index e03fd2d40..7ab6ec4c3 100644
+index b73da3e0b..a514e9df1 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
-@@ -612,9 +612,19 @@ async fn print_tool_definition_token_report() {
+@@ -905,10 +905,14 @@ async fn print_tool_definition_token_report() {
+ #[tokio::test]
  async fn tool_descriptions_stay_under_token_cap() {
      const DESCRIPTION_TOKEN_CAP: usize = 20;
-     // batch embeds a concrete multi-call JSON example and jcode_docs explains its
--    // version-matched documentation behavior. swarm appends the user-tunable
--    // swarm-prompt.md by design.
--    const EXEMPT: &[&str] = &["batch", "jcode_docs", "swarm"];
-+    // version-matched documentation behavior. browser, macos_computer_use, and
-+    // side_panel are externally defined desktop-tool contracts. swarm appends
-+    // the user-tunable swarm-prompt.md by design. swarm_<id> tools are generated
-+    // from user-owned worker blueprints, whose descriptions intentionally remain
-+    // user-controlled.
+-    // integration_tools keeps a deliberate second sentence explaining that catalog
+-    // entries integrate directly with the agent.
+-    // swarm appends the user-tunable swarm-prompt.md by design.
+-    const EXEMPT: &[&str] = &["integration_tools", "swarm"];
++    // integration_tools keeps a deliberate discovery explanation; batch carries
++    // a multi-call example; browser, macos_computer_use, and side_panel have
++    // external desktop-tool contracts; jcode_docs identifies bundled docs.
++    // swarm and generated swarm_<id> tools carry user-owned role instructions.
 +    const EXEMPT: &[&str] = &[
-+        "batch",
-+        "browser",
-+        "jcode_docs",
-+        "macos_computer_use",
-+        "side_panel",
-+        "swarm",
++        "integration_tools", "batch", "browser", "jcode_docs",
++        "macos_computer_use", "side_panel", "swarm",
 +    ];
  
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
      let registry = Registry::new(provider).await;
-@@ -622,7 +632,7 @@ async fn tool_descriptions_stay_under_token_cap() {
+@@ -916,7 +920,7 @@ async fn tool_descriptions_stay_under_token_cap() {
          .definitions(None)
          .await
          .into_iter()
@@ -3270,15 +3316,15 @@ index e03fd2d40..7ab6ec4c3 100644
          .map(|def| {
              format!(
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index a8ecfe925..96c50784e 100644
+index 8e38da4cd..b41f054c2 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
 @@ -12,7 +12,7 @@ pub use jcode_config_types::{
      NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
      PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
-     SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig,
--    WebSearchEngine,
-+    WebSearchEngine, WorkerBlueprintOverride,
+     SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
+-    WebSearchConfig, WebSearchEngine,
++    WebSearchConfig, WebSearchEngine, WorkerBlueprintOverride,
  };
  use serde::{Deserialize, Serialize};
  use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -3387,10 +3433,10 @@ index cfa0ba9f2..54f14fa9d 100644
              self.gateway.bind_addr,
              self.gateway.port,
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index 481ab7505..7a4d737f8 100644
+index 3bfbeb500..9448f419a 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
-@@ -50,6 +50,17 @@ fn swarm_max_concurrent_agents_defaults_to_safe_live_worker_budget() {
+@@ -160,6 +160,17 @@ fn swarm_max_concurrent_agents_defaults_to_safe_live_worker_budget() {
      assert_eq!(Config::default().agents.swarm_max_concurrent_agents, 32);
  }
  
@@ -3408,11 +3454,126 @@ index 481ab7505..7a4d737f8 100644
  #[test]
  fn mermaid_feature_defaults_on_and_parses_false() {
      assert!(Config::default().features.mermaid);
+diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
+index 31c77f051..e33b331af 100644
+--- a/crates/jcode-base/src/hooks.rs
++++ b/crates/jcode-base/src/hooks.rs
+@@ -112,6 +112,8 @@ pub struct SwarmContext {
+     pub mode: Option<String>,
+     pub role: ProcessRole,
+     pub worker_id: Option<String>,
++    pub blueprint_id: Option<String>,
++    pub blueprint_name: Option<String>,
+ }
+ 
+ impl Default for SwarmContext {
+@@ -127,6 +129,8 @@ impl SwarmContext {
+             mode: None,
+             role: ProcessRole::Coordinator,
+             worker_id: None,
++            blueprint_id: None,
++            blueprint_name: None,
+         }
+     }
+ 
+@@ -136,6 +140,8 @@ impl SwarmContext {
+             mode: None,
+             role: ProcessRole::Internal,
+             worker_id: None,
++            blueprint_id: None,
++            blueprint_name: None,
+         }
+     }
+ 
+@@ -145,6 +151,8 @@ impl SwarmContext {
+             "mode": self.mode,
+             "role": self.role.as_str(),
+             "worker_id": self.worker_id,
++            "blueprint_id": self.blueprint_id,
++            "blueprint_name": self.blueprint_name,
+         })
+     }
+ 
+@@ -160,6 +168,12 @@ impl SwarmContext {
+         if let Some(id) = &self.worker_id {
+             cmd.env("JCODE_HOOK_WORKER_ID", id);
+         }
++        if let Some(id) = &self.blueprint_id {
++            cmd.env("JCODE_HOOK_WORKER_BLUEPRINT_ID", id);
++        }
++        if let Some(name) = &self.blueprint_name {
++            cmd.env("JCODE_HOOK_WORKER_BLUEPRINT_NAME", name);
++        }
+     }
+ }
+ 
+@@ -989,12 +1003,16 @@ mod tests {
+             mode: Some("background".to_string()),
+             role: ProcessRole::Worker,
+             worker_id: Some("worker-1".to_string()),
++            blueprint_id: Some("bp-1".to_string()),
++            blueprint_name: Some("planner".to_string()),
+         };
+         let json = context.to_json();
+         assert_eq!(json["enabled"], true);
+         assert_eq!(json["mode"], "background");
+         assert_eq!(json["role"], "worker");
+         assert_eq!(json["worker_id"], "worker-1");
++        assert_eq!(json["blueprint_id"], "bp-1");
++        assert_eq!(json["blueprint_name"], "planner");
+     }
+ 
+     #[test]
+@@ -1004,6 +1022,8 @@ mod tests {
+             mode: Some("foreground".to_string()),
+             role: ProcessRole::Coordinator,
+             worker_id: Some("worker-2".to_string()),
++            blueprint_id: Some("bp-2".to_string()),
++            blueprint_name: Some("builder".to_string()),
+         };
+         let mut command = std::process::Command::new("true");
+         context.apply_env(&mut command);
+@@ -1034,6 +1054,8 @@ mod tests {
+             env.get("JCODE_HOOK_WORKER_ID").map(String::as_str),
+             Some("worker-2")
+         );
++        assert_eq!(env.get("JCODE_HOOK_WORKER_BLUEPRINT_ID").map(String::as_str), Some("bp-2"));
++        assert_eq!(env.get("JCODE_HOOK_WORKER_BLUEPRINT_NAME").map(String::as_str), Some("builder"));
+         assert!(!env.contains_key("JCODE_HOOK_UNKNOWN"));
+     }
+ 
+@@ -1050,6 +1072,8 @@ mod tests {
+             mode: Some("test".to_string()),
+             role: ProcessRole::Worker,
+             worker_id: Some("worker".to_string()),
++            blueprint_id: None,
++            blueprint_name: None,
+         };
+         with_swarm_context(context.clone(), async move {
+             assert_eq!(current_swarm_context().role, ProcessRole::Worker);
+@@ -1070,6 +1094,8 @@ mod tests {
+             mode: None,
+             role: ProcessRole::Coordinator,
+             worker_id: None,
++            blueprint_id: None,
++            blueprint_name: None,
+         };
+         let captured = context.clone();
+         let handle = tokio::spawn(async move {
+@@ -1096,6 +1122,8 @@ mod tests {
+             mode: None,
+             role: ProcessRole::Coordinator,
+             worker_id: None,
++            blueprint_id: None,
++            blueprint_name: None,
+         };
+         with_swarm_context(context, async {
+             let handle = tokio::spawn(async move {
 diff --git a/crates/jcode-base/src/lib.rs b/crates/jcode-base/src/lib.rs
-index 43c109bbc..2981583f0 100644
+index 3f39e417d..f4ca37769 100644
 --- a/crates/jcode-base/src/lib.rs
 +++ b/crates/jcode-base/src/lib.rs
-@@ -99,6 +99,7 @@ pub mod usage;
+@@ -100,6 +100,7 @@ pub mod usage;
  pub mod util;
  pub mod voice;
  pub mod voice_intent;
@@ -5649,10 +5810,10 @@ index 000000000..cfb3fd02b
 +    }
 +}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 5b1e1c674..79d48c166 100644
+index 5f712c5a4..84ad5ef65 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -682,6 +682,62 @@ pub struct AgentsConfig {
+@@ -658,6 +658,62 @@ pub struct AgentsConfig {
      /// Env override: `JCODE_SWARM_MAX_CONCURRENT_AGENTS`.
      #[serde(default = "default_swarm_max_concurrent_agents")]
      pub swarm_max_concurrent_agents: usize,
@@ -5715,7 +5876,7 @@ index 5b1e1c674..79d48c166 100644
  }
  
  fn default_swarm_max_concurrent_agents() -> usize {
-@@ -738,6 +794,9 @@ impl Default for AgentsConfig {
+@@ -714,6 +770,9 @@ impl Default for AgentsConfig {
              memory_embedding_base_url: None,
              memory_embedding_dim: None,
              swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
@@ -5782,3 +5943,16 @@ index 8d7ec02d4..a46073e7b 100644
          assert_eq!(
              append_swarm_completion_report_instructions(&with_instructions),
              with_instructions
+diff --git a/docs/HOOKS.md b/docs/HOOKS.md
+index 0e6804295..31a51cd21 100644
+--- a/docs/HOOKS.md
++++ b/docs/HOOKS.md
+@@ -57,6 +57,8 @@ Every hook also receives process role and swarm metadata:
+ | `JCODE_HOOK_SWARM_ENABLED` | `1` when swarm execution is enabled, otherwise `0` |
+ | `JCODE_HOOK_SWARM_MODE` | Configured swarm mode, when known |
+ | `JCODE_HOOK_WORKER_ID` | Worker identity, when known |
++| `JCODE_HOOK_WORKER_BLUEPRINT_ID` | Worker blueprint identity, when known |
++| `JCODE_HOOK_WORKER_BLUEPRINT_NAME` | Worker blueprint name, when known |
+ 
+ Transformer and recorder stdin envelopes include a `swarm` object with the same
+ fields. Unknown optional values are explicit JSON `null`.

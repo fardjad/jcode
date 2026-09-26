@@ -1,6 +1,6 @@
-From 425afe2dcfa3e2df491ed6502db3ba5ffe8b403c Mon Sep 17 00:00:00 2001
+From e321f7b42decd2db5ac349a221cc8cd39859f83c Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Tue, 18 Aug 2026 10:20:23 +0200
+Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add pre-tool input transformers
 
 X-Jcode-Patch-Intent: generic pre-tool transformer hook/config/docs

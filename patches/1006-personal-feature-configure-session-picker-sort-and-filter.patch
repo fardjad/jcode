@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
-Date: Fri, 4 Sep 2026 07:01:31 +0200
+Date: Sat, 26 Sep 2026 19:15:51 +0200
 Subject: [PATCH] feat: configure session picker sort and filter
 
 X-Jcode-Patch-Intent: Allow configuring session picker sort order and
 default filter
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 1002-personal-provider-policy-add-provider-family-execution-allowlist.patch
+X-Jcode-Patch-Depends-On: none
 
 Patch intent:
 Add configurable sorting and default filter for the session picker,
@@ -48,7 +48,7 @@ scripts/cargo_exec.sh test -p jcode-tui default_filter_current_dir_applied_on_as
  9 files changed, 537 insertions(+), 30 deletions(-)
 
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 9041ed8d2..55dca1b65 100644
+index b7593f8d1..ab2a2f9c3 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
 @@ -216,6 +216,14 @@ prompt_entry_animation = true
@@ -142,7 +142,7 @@ index f22db20a2..ba51d2a03 100644
      fn usage_percentage_wording_defaults_to_left_and_accepts_used() {
          assert_eq!(DisplayConfig::default().usage_display, "left");
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index b31a773cc..d096de3ca 100644
+index c764cc48e..0b26ccdb9 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -52,6 +52,30 @@ pub enum SessionPickerResumeAction {
@@ -177,10 +177,10 @@ index b31a773cc..d096de3ca 100644
      pub fn alternate(self) -> Self {
          match self {
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 935046340..2b8adf9ba 100644
+index 7f0c99824..704db558f 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-@@ -2465,6 +2465,7 @@ impl App {
+@@ -2467,6 +2467,7 @@ impl App {
              (SessionPicker::loading(), "Loading sessions...")
          };
          picker.set_current_dir(current_dir);
@@ -188,7 +188,7 @@ index 935046340..2b8adf9ba 100644
          picker.set_current_session_id(Some(super::commands::active_session_id(self)));
          self.session_picker_overlay = Some(RefCell::new(picker));
          self.session_picker_mode = SessionPickerMode::Resume;
-@@ -2589,6 +2590,7 @@ impl App {
+@@ -2591,6 +2592,7 @@ impl App {
              SessionPickerMode::Resume => {
                  let mut picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
                  picker.set_current_dir(self.session.working_dir.clone());
@@ -197,7 +197,7 @@ index 935046340..2b8adf9ba 100644
                  self.session_picker_overlay = Some(RefCell::new(picker));
                  self.set_status_notice("Sessions loaded");
 diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
-index 74deb668f..d1c3da027 100644
+index 8d94e6339..053440a90 100644
 --- a/crates/jcode-tui/src/tui/session_picker.rs
 +++ b/crates/jcode-tui/src/tui/session_picker.rs
 @@ -481,6 +481,18 @@ impl SessionPicker {
@@ -282,7 +282,7 @@ index 91596228f..f3200d915 100644
          if !saved_sessions.is_empty() {
              self.items.push(PickerItem::SavedHeader {
 diff --git a/crates/jcode-tui/src/tui/session_picker/loading.rs b/crates/jcode-tui/src/tui/session_picker/loading.rs
-index 2e6993ce0..2ba5c1672 100644
+index 75cba0b53..a422c8b40 100644
 --- a/crates/jcode-tui/src/tui/session_picker/loading.rs
 +++ b/crates/jcode-tui/src/tui/session_picker/loading.rs
 @@ -23,6 +23,32 @@ use super::{
@@ -344,7 +344,7 @@ index 2e6993ce0..2ba5c1672 100644
      server_groups: Vec<ServerGroup>,
      orphan_sessions: Vec<SessionInfo>,
  }
-@@ -186,12 +215,14 @@ fn session_list_disk_cache_is_usable(
+@@ -189,12 +218,14 @@ fn session_list_disk_cache_is_usable(
      sessions_dir: &Path,
      scan_limit: usize,
      want_external: bool,
@@ -359,7 +359,7 @@ index 2e6993ce0..2ba5c1672 100644
          && chrono::Utc::now()
              .signed_duration_since(cache.generated_at)
              .num_seconds()
-@@ -214,6 +245,7 @@ fn write_grouped_session_list_disk_cache(
+@@ -217,6 +248,7 @@ fn write_grouped_session_list_disk_cache(
          scan_limit,
          include_old_saved_sessions: include_old_saved_sessions_on_initial_load(),
          external_sessions: include_external_sessions(),
@@ -367,7 +367,7 @@ index 2e6993ce0..2ba5c1672 100644
          server_groups: server_groups.to_vec(),
          orphan_sessions: orphan_sessions.to_vec(),
      };
-@@ -236,6 +268,7 @@ pub fn load_cached_sessions_grouped() -> Option<(Vec<ServerGroup>, Vec<SessionIn
+@@ -239,6 +271,7 @@ pub fn load_cached_sessions_grouped() -> Option<(Vec<ServerGroup>, Vec<SessionIn
          &sessions_dir,
          scan_limit,
          include_external_sessions(),
@@ -375,7 +375,7 @@ index 2e6993ce0..2ba5c1672 100644
      ) {
          return None;
      }
-@@ -1772,12 +1805,14 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+@@ -1775,12 +1808,14 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
      let sessions_dir = storage::jcode_dir()?.join("sessions");
      let scan_limit = session_scan_limit();
      let want_external = include_external_sessions();
@@ -390,7 +390,7 @@ index 2e6993ce0..2ba5c1672 100644
          && entry.loaded_at.elapsed() <= SESSION_LIST_CACHE_TTL
      {
          return Ok(entry.sessions.clone());
-@@ -1885,7 +1920,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+@@ -1888,7 +1923,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
      });
      sessions.extend(external_sessions);
  
@@ -399,7 +399,7 @@ index 2e6993ce0..2ba5c1672 100644
  
      if let Ok(mut cache) = session_list_cache().lock() {
          *cache = Some(SessionListCacheEntry {
-@@ -1893,6 +1928,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+@@ -1896,6 +1931,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
              sessions_dir,
              scan_limit,
              external_sessions: want_external,
@@ -589,13 +589,13 @@ index 96b7a9851..91ec15d9e 100644
          );
      }
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index 95fe9db36..b880807d7 100644
+index 2a71ec28e..da878447e 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
-@@ -2599,3 +2599,270 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
-         "no search means no highlight color in preview"
-     );
+@@ -2830,3 +2830,270 @@ fn ctrl_d_deletes_session_from_server_group() {
+     }
  }
+ 
 +
 +/// The sort ordering must apply consistently to filtered rows, not just the
 +/// full unfiltered list. When a non-All filter is active, `rebuild_items`

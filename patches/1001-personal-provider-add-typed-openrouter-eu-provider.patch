@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: jcode patch catalog <jcode@localhost>
-Date: Sun, 6 Sep 2026 22:07:21 +0000
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Sat, 26 Sep 2026 19:15:50 +0200
 Subject: [PATCH] feat: add typed OpenRouter EU provider
 
 X-Jcode-Patch-Intent: typed EU deployment identity, auth, caches, and pricing
 X-Jcode-Patch-Kind: personal-provider
-X-Jcode-Patch-Depends-On: 1002-personal-provider-policy-add-provider-family-execution-allowlist.patch
+X-Jcode-Patch-Depends-On: 0005-candidate-add-provider-family-execution-allowlist.patch
 
 Patch intent:
 Add OpenRouter EU as a first-class typed deployment with an EU endpoint,
@@ -263,10 +263,10 @@ index 6169ae0e8..65101908c 100644
              AuthCredentialSource::None,
              "not configured".to_string(),
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 55dca1b65..b82ddd433 100644
+index a902990b6..5c4e88ee8 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -366,10 +366,11 @@ tool_profile = "acp"
+@@ -358,10 +358,11 @@ tool_profile = "acp"
  # for model switching, persisted routes, dispatch, and failover, not just picker
  # visibility. Empty or unset keeps all providers enabled. A non-empty list with
  # only unknown entries fails closed. Unknown entries are warned about and denied.
@@ -2779,7 +2779,7 @@ index f8bcc8374..1e226053b 100644
      let _env_guard = crate::storage::lock_test_env();
      let temp = tempfile::tempdir().expect("tempdir");
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 2b8adf9ba..704db558f 100644
+index 935046340..7f0c99824 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
 @@ -476,6 +476,7 @@ fn model_picker_provider_hint_from_model_spec(model_spec: &str) -> Option<(&str,
@@ -2815,7 +2815,7 @@ index 880cbc105..868da226f 100644
      }
  }
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs b/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs
-index 232c5de87..d4a89c76b 100644
+index d37aeaa60..d5ffdac86 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive_placeholder_routes.rs
 @@ -39,7 +39,8 @@ pub(super) fn route_supports_reasoning_effort(api_method: &str) -> bool {

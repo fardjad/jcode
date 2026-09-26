@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Fardjad Davari <public@fardjad.com>
-Date: Wed, 9 Sep 2026 01:07:09 +0200
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Sat, 26 Sep 2026 19:15:50 +0200
 Subject: [PATCH] feat: allow selecting the self-update repository
 
 X-Jcode-Patch-Intent: let fork builds check and install updates from a selected GitHub repository
@@ -40,7 +40,7 @@ scripts/cargo_exec.sh check -p jcode-app-core
  4 files changed, 226 insertions(+), 88 deletions(-)
 
 diff --git a/README.md b/README.md
-index ad6f20b73..f3b3d7e1f 100644
+index bdd6e6a41..64d87082b 100644
 --- a/README.md
 +++ b/README.md
 @@ -51,6 +51,13 @@ Run `/update` in the TUI to download the latest stable release in the background

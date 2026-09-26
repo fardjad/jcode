@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Fardjad Davari <public@fardjad.com>
-Date: Thu, 10 Sep 2026 22:01:55 +0200
+From: Fardjad Davari <fardjad.davari2@jumbo.com>
+Date: Sat, 26 Sep 2026 19:15:51 +0200
 Subject: [PATCH] feat: completion quality gates respect review
 
 X-Jcode-Patch-Intent: Skip automatic post-completion todo quality
 continuations when auto-review and auto-judge are both disabled.
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 1008-personal-feature-add-worker-blueprints-with-runtime-integration.patch
+X-Jcode-Patch-Depends-On: 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
 
 Patch intent:
 Make automatic ownership, validation, and final-response todo continuations
@@ -60,7 +60,7 @@ index 3d3f98530..e7c9e6842 100644
              // every todo write during the turn. Every point recorded during the
              // turn is raised, including ones whose score later climbed: work
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
-index df65bb30d..8609b47fd 100644
+index df65bb30d..48dd1324c 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
 @@ -481,6 +481,24 @@ fn dispatch_ownership_followup(app: &mut App) {
@@ -74,7 +74,7 @@ index df65bb30d..8609b47fd 100644
 +        app.auto_poke_incomplete_todos = true;
 +        app.autoreview_enabled = false;
 +        app.autojudge_enabled = false;
-+        save_blocked_ownership_fixture(&app.session.id);
++        save_unfinished_ownership_fixture(&app.session.id);
 +
 +        assert!(!app.schedule_auto_poke_followup_if_needed());
 +        assert!(app.queued_messages.is_empty());
