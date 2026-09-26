@@ -89,21 +89,7 @@ class DelegationGuardTransformTests(unittest.TestCase):
         self.assertIn("16384 bytes", nudge)
         self.assertNotIn("available at:", nudge)
 
-    def test_above_threshold_nudges_with_delegation_token(self):
-        result = self.run_plugin(
-            {
-                "output_bytes": 9000,
-                "tool_result_file": None,
-                "delegation_token": "dt1.token.signature",
-            },
-            **self.coordinator_environment(),
-        )
-
-        self.assertEqual(result.returncode, 0)
-        nudge = json.loads(result.stdout)["tool_result"]
-        self.assertIn("[delegation-token: dt1.token.signature]", nudge)
-
-    def test_above_threshold_nudge_excludes_missing_delegation_token(self):
+    def test_above_threshold_nudge_contains_no_token_marker(self):
         result = self.run_plugin(
             {"output_bytes": 9000, "tool_result_file": None},
             **self.coordinator_environment(),
@@ -111,6 +97,7 @@ class DelegationGuardTransformTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         nudge = json.loads(result.stdout)["tool_result"]
+        self.assertIn("9000 bytes", nudge)
         self.assertNotIn("delegation-token:", nudge)
 
     def test_invalid_threshold_uses_default(self):

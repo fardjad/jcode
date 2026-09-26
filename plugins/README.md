@@ -12,10 +12,9 @@ Run the command from the catalog repository root. Every configured plugin path
 below is relative to that symlink.
 
 `just ensure-personal-assets` maintains this symlink together with the worker
-blueprint symlink, checks the delegation-efficiency lockfile and import, and
-verifies every configured plugin executable. The plugins use only Python's
-standard library, so no `uv sync`, virtual environment, or compilation is
-needed.
+blueprint symlink and verifies the configured plugin executables. The plugins
+use only Python's standard library, so no `uv sync`, virtual environment, or
+compilation is needed.
 
 ## RTK command transformer
 
@@ -59,11 +58,9 @@ a compact delegation nudge before they enter the coordinator's context. It
 fires only when swarm is enabled and the process role is coordinator. Workers
 and non-swarm sessions are unaffected. It fails open on any error.
 
-The delegation guard requires candidate patches
-`1022-upstream-candidate-add-swarm-context-to-hook-invocations.patch` and
-`1023-upstream-candidate-add-post-tool-transform-and-post-tool-record-hooks.patch`
-to be applied and configured with `post_tool_transform`. Those patches are not
-part of this plugin's catalog patch dependency metadata; plugin source remains
+The delegation guard requires the post-tool transform hook from
+`1011-personal-feature-add-hook-context-and-post-tool-transform.patch` to be
+applied and configured with `post_tool_transform`. Plugin source remains
 external catalog content.
 
 Configure transformer in jcode config:

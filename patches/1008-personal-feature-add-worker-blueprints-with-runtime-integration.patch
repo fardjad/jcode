@@ -881,10 +881,10 @@ index 8d96ac69b..f166484aa 100644
                      &sessions,
                      &global_session_id,
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-index 8bb917e1f..af6008150 100644
+index 2c807f309..80b142028 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-@@ -1065,6 +1065,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
+@@ -1066,6 +1066,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),

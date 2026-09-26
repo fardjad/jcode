@@ -116,23 +116,6 @@ additional tokens on automatic checks they explicitly turned off.
 
 ## Related efficiency-enabling changes
 
-### Evidence rather than assumptions
-
-Patch `1012-personal-feature-measure-delegation-efficiency.patch` adds an
-opt-in, content-free measurement boundary. It records bounded facts about tool
-attempts, guard outcomes, original and model-visible result sizes, worker
-lineage, summaries, follow-up reads, retries, and observer health. Where
-available, it also carries nullable response-derived OpenRouter usage and cost
-facts, including served model, route, cost details, discount, and timestamp.
-It does not use static catalog pricing.
-
-The patch is not itself a token-saving mechanism. Collection is off by default,
-and the runtime does not persist, aggregate, report, or score the facts. Its
-value is falsifiability: an external opt-in observer can compare guarded and
-unguarded flows, determine whether work was actually delegated, and distinguish
-visible-context reduction from added worker cost. The boundary intentionally
-excludes prompts, tool-result content, paths, and arbitrary metadata.
-
 ### Input normalization before execution
 
 Candidate patch `0001-candidate-pre-tool-input-transformers.patch` adds a
@@ -174,10 +157,8 @@ failure rate is not automatically an efficiency improvement.
 - `1009-personal-feature-completion-quality-gates-respect-review.patch`
 - `1010-personal-feature-enforce-ordered-web-search-engine-policy.patch`
 - `1011-personal-feature-add-hook-context-and-post-tool-transform.patch`
-- `1012-personal-feature-measure-delegation-efficiency.patch`
 - `0001-candidate-pre-tool-input-transformers.patch`
 - `workers/README.md` and `workers/blueprints/`
 - `plugins/delegation-guard/README.md`
-- `plans/delegation-guard-efficiency-measurement.md`
 - `docs/swarm-delegation-features.md`
 - `docs/completion-search-features.md`

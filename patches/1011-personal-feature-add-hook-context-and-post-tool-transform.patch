@@ -69,10 +69,10 @@ cargo test -p jcode-base --lib -- swarm_context_is_scoped_to_async_future
  crates/jcode-app-core/src/tool/tests.rs       |  278 ++++
  crates/jcode-base/src/config/default_file.rs  |   22 +-
  crates/jcode-base/src/config/env_overrides.rs |   23 +
- crates/jcode-base/src/hooks.rs                | 1206 +++++++++++++++++
+ crates/jcode-base/src/hooks.rs                | 1137 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   17 +
  docs/HOOKS.md                                 |   79 +-
- 11 files changed, 1791 insertions(+), 15 deletions(-)
+ 11 files changed, 1722 insertions(+), 15 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
 index 0e5e04848..391866f42 100644
@@ -706,7 +706,7 @@ index 6ac8621a1..2af7af596 100644
              if let Ok(parsed) = v.trim().parse::<u64>() {
                  self.hooks.pre_tool_timeout_ms = parsed;
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index c457cafd7..0449b0ffb 100644
+index c457cafd7..5af0672d8 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -29,12 +29,15 @@ tokio::task_local! {
@@ -856,7 +856,7 @@ index c457cafd7..0449b0ffb 100644
          _ => None,
      };
      raw.into_iter()
-@@ -218,6 +331,206 @@ pub async fn transform_tool_input(
+@@ -218,6 +331,174 @@ pub async fn transform_tool_input(
      current
  }
  
@@ -939,35 +939,6 @@ index c457cafd7..0449b0ffb 100644
 +    tool_success: bool,
 +    prepared: Option<&PreparedToolContent>,
 +) -> Option<String> {
-+    transform_tool_result_with_files_and_lineage(
-+        session_id,
-+        working_dir,
-+        tool_name,
-+        tool_input,
-+        tool_result,
-+        tool_success,
-+        prepared,
-+        None,
-+        None,
-+        None,
-+    )
-+    .await
-+}
-+
-+/// Like `transform_tool_result_with_files`, while carrying the exact guard
-+/// lineage needed by a coordinator-visible delegation nudge.
-+pub async fn transform_tool_result_with_files_and_lineage(
-+    session_id: &str,
-+    working_dir: Option<&str>,
-+    tool_name: &str,
-+    tool_input: &Value,
-+    tool_result: &str,
-+    tool_success: bool,
-+    prepared: Option<&PreparedToolContent>,
-+    delegation_token: Option<&str>,
-+    guard_event_id: Option<&str>,
-+    delegation_id: Option<&str>,
-+) -> Option<String> {
 +    if hooks_suppressed() || !hook_configured("post_tool_transform") {
 +        return None;
 +    }
@@ -1009,9 +980,6 @@ index c457cafd7..0449b0ffb 100644
 +        "output_bytes": output_bytes,
 +        "output_lines": output_lines,
 +        "tool_success": tool_success,
-+        "delegation_token": delegation_token,
-+        "guard_event_id": guard_event_id,
-+        "delegation_id": delegation_id,
 +        "swarm": current_swarm_context().to_json(),
 +    })
 +    .to_string();
@@ -1063,7 +1031,7 @@ index c457cafd7..0449b0ffb 100644
  /// True when running inside a hook process (recursion guard).
  fn hooks_suppressed() -> bool {
      std::env::var_os("JCODE_HOOKS_DISABLED").is_some()
-@@ -243,6 +556,115 @@ fn truncate_bytes(value: &str, limit: usize) -> &str {
+@@ -243,6 +524,115 @@ fn truncate_bytes(value: &str, limit: usize) -> &str {
      &value[..end]
  }
  
@@ -1179,7 +1147,7 @@ index c457cafd7..0449b0ffb 100644
  /// JSON payload mirroring the env fields, exported as `JCODE_HOOK_PAYLOAD`.
  fn payload_json(event: &HookEvent) -> String {
      let mut map = serde_json::Map::new();
-@@ -271,6 +693,7 @@ fn payload_json(event: &HookEvent) -> String {
+@@ -271,6 +661,7 @@ fn payload_json(event: &HookEvent) -> String {
  
  fn apply_event_env(cmd: &mut std::process::Command, event: &HookEvent) {
      cmd.env("JCODE_HOOKS_DISABLED", "1");
@@ -1187,7 +1155,7 @@ index c457cafd7..0449b0ffb 100644
      cmd.env("JCODE_HOOK_EVENT", event.event);
      if let Some(session_id) = &event.session_id {
          cmd.env("JCODE_HOOK_SESSION_ID", session_id);
-@@ -342,6 +765,110 @@ pub fn dispatch_observer(event: HookEvent) {
+@@ -342,6 +733,110 @@ pub fn dispatch_observer(event: HookEvent) {
      }
  }
  
@@ -1298,7 +1266,7 @@ index c457cafd7..0449b0ffb 100644
  /// Run the `pre_tool` gate hook for a tool call, if configured.
  ///
  /// The hook receives `JCODE_HOOK_TOOL_NAME` plus the full tool input JSON on
-@@ -494,6 +1021,162 @@ mod tests {
+@@ -494,6 +989,162 @@ mod tests {
          assert_eq!(truncate_bytes("short", 100), "short");
      }
  
@@ -1461,7 +1429,7 @@ index c457cafd7..0449b0ffb 100644
      #[cfg(unix)]
      fn write_executable_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
          use std::os::unix::fs::PermissionsExt;
-@@ -529,6 +1212,7 @@ mod tests {
+@@ -529,6 +1180,7 @@ mod tests {
          ]);
          crate::env::set_var("JCODE_HOOK_PRE_TOOL", hook);
          crate::env::set_var("JCODE_HOOK_PRE_TOOL_TIMEOUT_MS", timeout_ms.to_string());
@@ -1469,7 +1437,7 @@ index c457cafd7..0449b0ffb 100644
          reset
      }
  
-@@ -560,9 +1244,531 @@ mod tests {
+@@ -560,9 +1212,494 @@ mod tests {
              "JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS",
              timeout_ms.to_string(),
          );
@@ -1583,43 +1551,6 @@ index c457cafd7..0449b0ffb 100644
 +        assert!(envelope["tool_result_file"].is_null());
 +        assert!(envelope["tool_input_file"].is_null());
 +        assert!(envelope["swarm"].is_object());
-+    }
-+
-+    #[cfg(unix)]
-+    #[tokio::test]
-+    async fn post_tool_transform_includes_delegation_lineage_in_envelope() {
-+        let _guard = crate::storage::lock_test_env();
-+        let temp = tempfile::TempDir::new().expect("temp dir");
-+        let record = temp.path().join("lineage.json");
-+        let script = write_executable_script(
-+            temp.path(),
-+            "transform.sh",
-+            &format!(
-+                "#!/bin/sh\ncat > {}\nprintf '%s' '{{\"tool_result\":\"compact\"}}'\n",
-+                crate::terminal_launch::sh_escape(&record.to_string_lossy())
-+            ),
-+        );
-+        let _env = post_transform_test_config(&script.to_string_lossy(), 500);
-+        let result = transform_tool_result_with_files_and_lineage(
-+            "ses_lineage",
-+            Some("/work"),
-+            "bash",
-+            &serde_json::json!({"command":"x"}),
-+            "large output",
-+            true,
-+            None,
-+            Some("dt1.token.signature"),
-+            Some("guard-123"),
-+            Some("delegation-456"),
-+        )
-+        .await;
-+        assert_eq!(result.as_deref(), Some("compact"));
-+        let envelope: Value =
-+            serde_json::from_str(&std::fs::read_to_string(record).expect("lineage envelope"))
-+                .expect("valid envelope");
-+        assert_eq!(envelope["delegation_token"], "dt1.token.signature");
-+        assert_eq!(envelope["guard_event_id"], "guard-123");
-+        assert_eq!(envelope["delegation_id"], "delegation-456");
 +    }
 +
 +    #[cfg(unix)]

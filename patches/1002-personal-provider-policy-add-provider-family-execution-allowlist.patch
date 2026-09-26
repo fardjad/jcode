@@ -54,7 +54,7 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  crates/jcode-app-core/src/agent/provider.rs   |   1 +
  .../src/server/client_lifecycle.rs            |   2 +
  .../client_lifecycle_catalog_dedup_tests.rs   |   1 +
- .../src/server/client_lifecycle_tests.rs      |  37 ++
+ .../src/server/client_lifecycle_tests.rs      |  38 ++
  .../src/server/provider_control.rs            |   1 +
  .../src/server/provider_control_tests.rs      |   2 +
  crates/jcode-base/src/auth/lifecycle.rs       |   2 +-
@@ -77,7 +77,8 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  crates/jcode-provider-bedrock/src/lib.rs      |   4 +
  .../src/lib.rs                                |   4 +
  .../jcode-provider-copilot-runtime/src/lib.rs |   4 +
- crates/jcode-provider-core/src/lib.rs         | 452 +++++++++++++++
+ .../jcode-provider-core/src/fallback_pick.rs  |   2 +-
+ crates/jcode-provider-core/src/lib.rs         | 464 ++++++++++++++-
  .../jcode-provider-cursor-runtime/src/lib.rs  |   4 +
  .../jcode-provider-gemini-runtime/src/lib.rs  |   4 +
  .../src/lib.rs                                |   4 +
@@ -96,7 +97,7 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  src/cli/commands.rs                           |   2 +-
  src/cli/commands_tests.rs                     |  10 +-
  src/cli/startup.rs                            |   4 +-
- 46 files changed, 1953 insertions(+), 138 deletions(-)
+ 47 files changed, 1963 insertions(+), 143 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
 index 61648a2e3..7bb37db81 100644
@@ -165,10 +166,10 @@ index be8da0e34..cb4ba0f9b 100644
          provider_model: Some("claude-opus-4.6".to_string()),
          available_models: vec!["claude-opus-4.6".to_string()],
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-index 7469df238..8bb917e1f 100644
+index 7469df238..2c807f309 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-@@ -6,6 +6,43 @@ use futures::stream;
+@@ -6,6 +6,44 @@ use futures::stream;
  use std::sync::atomic::{AtomicBool, Ordering};
  use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
  
@@ -188,6 +189,7 @@ index 7469df238..8bb917e1f 100644
 +            available: true,
 +            detail: String::new(),
 +            cheapness: None,
++            usage: None,
 +        }],
 +    };
 +
@@ -1518,7 +1520,7 @@ index 69efa5748..d32add4f5 100644
                          messages,
                          tools,
 diff --git a/crates/jcode-base/src/provider/selection.rs b/crates/jcode-base/src/provider/selection.rs
-index 58632831c..3c127860c 100644
+index 58632831c..9c1c327e5 100644
 --- a/crates/jcode-base/src/provider/selection.rs
 +++ b/crates/jcode-base/src/provider/selection.rs
 @@ -148,7 +148,7 @@ impl MultiProvider {
@@ -1544,7 +1546,7 @@ index 58632831c..3c127860c 100644
              match ModelRouteApiMethod::parse(api_method) {
                  ModelRouteApiMethod::JcodeSubscription => return model.to_string(),
 -                ModelRouteApiMethod::GrokBuild => {
-+                ModelRouteApiMethod::GrokBuildAcp => {
++                ModelRouteApiMethod::GrokBuildAcp | ModelRouteApiMethod::GrokBuild => {
                      return crate::provider::grok_build_model_spec(model);
                  }
                  ModelRouteApiMethod::ClaudeOAuth => return format!("claude-oauth:{model}"),
@@ -2537,8 +2539,21 @@ index 593f4a04c..bba2030db 100644
      async fn complete(
          &self,
          messages: &[ChatMessage],
+diff --git a/crates/jcode-provider-core/src/fallback_pick.rs b/crates/jcode-provider-core/src/fallback_pick.rs
+index 433507198..0b62e6684 100644
+--- a/crates/jcode-provider-core/src/fallback_pick.rs
++++ b/crates/jcode-provider-core/src/fallback_pick.rs
+@@ -20,7 +20,7 @@ fn api_method_is_oauth(api_method: &ModelRouteApiMethod) -> bool {
+         ModelRouteApiMethod::ClaudeOAuth
+             | ModelRouteApiMethod::OpenAIOAuth
+             | ModelRouteApiMethod::CodeAssistOAuth
+-            | ModelRouteApiMethod::GrokBuild
++            | ModelRouteApiMethod::GrokBuildAcp
+     )
+ }
+ 
 diff --git a/crates/jcode-provider-core/src/lib.rs b/crates/jcode-provider-core/src/lib.rs
-index 044c5539c..0dc0c5433 100644
+index 044c5539c..4fd923a1b 100644
 --- a/crates/jcode-provider-core/src/lib.rs
 +++ b/crates/jcode-provider-core/src/lib.rs
 @@ -65,6 +65,8 @@ use jcode_message_types::{
@@ -2550,7 +2565,7 @@ index 044c5539c..0dc0c5433 100644
  use std::pin::Pin;
  use std::sync::Arc;
  use std::time::Duration;
-@@ -125,6 +127,15 @@ pub trait Provider: Send + Sync {
+@@ -125,6 +127,17 @@ pub trait Provider: Send + Sync {
          self.name().to_string()
      }
  
@@ -2560,13 +2575,15 @@ index 044c5539c..0dc0c5433 100644
 +    /// multiplexers use it for routing, session persistence, cache isolation, and
 +    /// billing identity.
 +    fn runtime_key(&self) -> RuntimeKey {
-+        RuntimeKey::Other(self.name().to_ascii_lowercase())
++        RuntimeKey::Other {
++            method: self.name().to_ascii_lowercase(),
++        }
 +    }
 +
      /// Get the model identifier being used.
      fn model(&self) -> String {
          "unknown".to_string()
-@@ -692,6 +703,217 @@ pub struct ModelRoute {
+@@ -692,6 +705,217 @@ pub struct ModelRoute {
      pub usage: Option<jcode_usage_types::ModelUsage>,
  }
  
@@ -2784,7 +2801,7 @@ index 044c5539c..0dc0c5433 100644
  /// Exact runtime identity for a selected model route.
  ///
  /// A runtime key identifies the concrete endpoint/auth/account slot that will
-@@ -708,6 +930,9 @@ pub enum RuntimeKey {
+@@ -708,6 +932,9 @@ pub enum RuntimeKey {
      OpenAIOAuth,
      OpenAIApiKey,
      OpenRouter,
@@ -2794,7 +2811,15 @@ index 044c5539c..0dc0c5433 100644
      OpenAiCompatible {
          #[serde(default, skip_serializing_if = "Option::is_none")]
          profile_id: Option<String>,
-@@ -742,6 +967,9 @@ impl RuntimeKey {
+@@ -720,7 +947,6 @@ pub enum RuntimeKey {
+     CodeAssistOAuth,
+     RemoteCatalog,
+     Current,
+-    GrokBuild,
+     /// Catch-all for unrecognized `api_method` strings.
+     ///
+     /// This must be a struct variant, not `Other(String)`. Serde's internally
+@@ -742,6 +968,9 @@ impl RuntimeKey {
              ModelRouteApiMethod::OpenAIOAuth => Self::OpenAIOAuth,
              ModelRouteApiMethod::OpenAIApiKey => Self::OpenAIApiKey,
              ModelRouteApiMethod::OpenRouter => Self::OpenRouter,
@@ -2804,7 +2829,7 @@ index 044c5539c..0dc0c5433 100644
              ModelRouteApiMethod::OpenAiCompatible { profile_id } => Self::OpenAiCompatible {
                  profile_id: profile_id.clone(),
              },
-@@ -767,6 +995,9 @@ impl RuntimeKey {
+@@ -767,6 +996,9 @@ impl RuntimeKey {
              Self::OpenAIOAuth => "openai-oauth".to_string(),
              Self::OpenAIApiKey => "openai-api-key".to_string(),
              Self::OpenRouter => "openrouter".to_string(),
@@ -2814,7 +2839,11 @@ index 044c5539c..0dc0c5433 100644
              Self::OpenAiCompatible { profile_id } => profile_id
                  .as_deref()
                  .map(|profile_id| format!("openai-compatible:{profile_id}"))
-@@ -783,6 +1014,77 @@ impl RuntimeKey {
+@@ -779,10 +1011,80 @@ impl RuntimeKey {
+             Self::CodeAssistOAuth => "code-assist-oauth".to_string(),
+             Self::RemoteCatalog => "remote-catalog".to_string(),
+             Self::Current => "current".to_string(),
+-            Self::GrokBuild => "grok-build".to_string(),
              Self::Other { method } => method.clone(),
          }
      }
@@ -2840,7 +2869,7 @@ index 044c5539c..0dc0c5433 100644
 +            Self::CodeAssistOAuth | Self::Gemini => ModelRouteApiMethod::CodeAssistOAuth,
 +            Self::RemoteCatalog => ModelRouteApiMethod::RemoteCatalog,
 +            Self::Current => ModelRouteApiMethod::Current,
-+            Self::Other(method) => ModelRouteApiMethod::Other(method.clone()),
++            Self::Other { method } => ModelRouteApiMethod::Other(method.clone()),
 +        }
 +    }
 +
@@ -2886,22 +2915,21 @@ index 044c5539c..0dc0c5433 100644
 +            Self::Antigravity => Some(ProviderFamily::Antigravity),
 +            Self::Cursor => Some(ProviderFamily::Cursor),
 +            Self::Bedrock => Some(ProviderFamily::Bedrock),
-+            Self::RemoteCatalog | Self::Current | Self::Other(_) => None,
++            Self::RemoteCatalog | Self::Current | Self::Other { .. } => None,
 +        }
 +    }
  }
  
  /// Structured model route selection.
-@@ -845,6 +1147,8 @@ impl RouteSelection {
+@@ -845,6 +1147,7 @@ impl RouteSelection {
                      format!("{catalog_id}@{provider}")
                  }
              }
-+            RuntimeKey::GrokBuild => format!("grok-build:{model}"),
 +            RuntimeKey::ClaudeCli | RuntimeKey::ChatGptWeb => model.to_string(),
              RuntimeKey::Copilot => format!("copilot:{model}"),
              RuntimeKey::Cursor => format!("cursor:{model}"),
              RuntimeKey::Bedrock => format!("bedrock:{model}"),
-@@ -893,6 +1197,9 @@ pub enum ModelRouteApiMethod {
+@@ -893,6 +1196,9 @@ pub enum ModelRouteApiMethod {
      OpenAIOAuth,
      OpenAIApiKey,
      OpenRouter,
@@ -2911,9 +2939,12 @@ index 044c5539c..0dc0c5433 100644
      OpenAiCompatible { profile_id: Option<String> },
      Copilot,
      Cursor,
-@@ -930,6 +1237,9 @@ impl ModelRouteApiMethod {
+@@ -928,8 +1234,11 @@ impl ModelRouteApiMethod {
+         }
+         match lower.as_str() {
              "jcode-subscription" => Self::JcodeSubscription,
-             "grok-build" | "grok-build-acp" => Self::GrokBuild,
+-            "grok-build" | "grok-build-acp" => Self::GrokBuild,
++            "grok-build" => Self::GrokBuild,
              "openrouter" => Self::OpenRouter,
 +            "grok-build-acp" => Self::GrokBuildAcp,
 +            "claude-cli" => Self::ClaudeCli,
@@ -2921,7 +2952,7 @@ index 044c5539c..0dc0c5433 100644
              "openai-compatible" => Self::OpenAiCompatible { profile_id: None },
              "copilot" => Self::Copilot,
              "cursor" => Self::Cursor,
-@@ -951,6 +1261,34 @@ impl ModelRouteApiMethod {
+@@ -951,6 +1260,35 @@ impl ModelRouteApiMethod {
          }
      }
  
@@ -2934,6 +2965,7 @@ index 044c5539c..0dc0c5433 100644
 +            Self::OpenAIApiKey => "openai-api-key".to_string(),
 +            Self::OpenRouter => OPENROUTER_STANDARD.route_id.to_string(),
 +            Self::GrokBuildAcp => "grok-build-acp".to_string(),
++            Self::GrokBuild => "grok-build-acp".to_string(),
 +            Self::ClaudeCli => "claude-cli".to_string(),
 +            Self::ChatGptWeb => "chatgpt-web".to_string(),
 +            Self::OpenAiCompatible {
@@ -2971,7 +3003,7 @@ index 044c5539c..0dc0c5433 100644
 +            }
 +            Self::OpenRouter => Some(ProviderFamily::OpenRouter),
 +            Self::OpenAiCompatible { .. } => Some(ProviderFamily::OpenAiCompatible),
-+            Self::GrokBuildAcp => Some(ProviderFamily::GrokBuild),
++            Self::GrokBuildAcp | Self::GrokBuild => Some(ProviderFamily::GrokBuild),
 +            Self::Copilot => Some(ProviderFamily::Copilot),
 +            Self::CodeAssistOAuth => Some(ProviderFamily::Gemini),
 +            Self::AntigravityHttps => Some(ProviderFamily::Antigravity),
@@ -3024,7 +3056,16 @@ index 044c5539c..0dc0c5433 100644
      }
  
      pub fn has_routes(&self) -> bool {
-@@ -1435,6 +1806,75 @@ mod tests {
+@@ -1427,7 +1798,7 @@ mod tests {
+         );
+         assert_eq!(
+             ModelRouteApiMethod::parse("grok-build-acp"),
+-            ModelRouteApiMethod::GrokBuild
++            ModelRouteApiMethod::GrokBuildAcp
+         );
+         assert_eq!(
+             ModelRouteApiMethod::parse("grok-build"),
+@@ -1435,6 +1806,79 @@ mod tests {
          );
      }
  
@@ -3033,7 +3074,9 @@ index 044c5539c..0dc0c5433 100644
 +        assert!(!ProviderFamilyPolicy::parse(&[]).is_restricted());
 +        assert!(
 +            ProviderFamilyPolicy::parse(&[])
-+                .allows_runtime(&RuntimeKey::Other("future-provider".to_string()))
++                .allows_runtime(&RuntimeKey::Other {
++                    method: "future-provider".to_string(),
++                })
 +        );
 +
 +        let policy = ProviderFamilyPolicy::parse(&[
@@ -3045,7 +3088,9 @@ index 044c5539c..0dc0c5433 100644
 +        assert!(policy.allows_family(ProviderFamily::Claude));
 +        assert!(policy.allows_family(ProviderFamily::Bedrock));
 +        assert!(!policy.allows_runtime(&RuntimeKey::OpenRouter));
-+        assert!(!policy.allows_runtime(&RuntimeKey::Other("future-provider".into())));
++        assert!(!policy.allows_runtime(&RuntimeKey::Other {
++            method: "future-provider".into(),
++        }));
 +        assert_eq!(policy.unknown_values(), &["typo-provider"]);
 +    }
 +
@@ -3100,7 +3145,7 @@ index 044c5539c..0dc0c5433 100644
      #[test]
      fn model_route_provider_label_matching_uses_aliases_without_substring_false_positives() {
          assert!(model_route_provider_labels_match("Anthropic", "Claude"));
-@@ -1586,6 +2026,12 @@ mod tests {
+@@ -1586,6 +2030,12 @@ mod tests {
  
      #[async_trait]
      impl Provider for SnapshotTestProvider {
@@ -3113,7 +3158,7 @@ index 044c5539c..0dc0c5433 100644
          async fn complete(
              &self,
              _messages: &[Message],
-@@ -1630,6 +2076,12 @@ mod tests {
+@@ -1630,6 +2080,12 @@ mod tests {
          let snapshot = ModelCatalogSnapshot::from_provider(&SnapshotTestProvider);
  
          assert_eq!(snapshot.provider_name.as_deref(), Some("snapshot-provider"));

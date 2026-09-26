@@ -6,8 +6,8 @@ recipe="$(sed -n '/^ensure-personal-assets:/,/^# Validate catalog patch metadata
 
 test "$(grep -F -c 'ensure_symlink "$repo_root/plugins" "$jcode_home/plugins"' <<<"$recipe")" -eq 1
 test "$(grep -F -c 'ensure_symlink "$repo_root/workers/blueprints" "$jcode_home/worker-blueprints"' <<<"$recipe")" -eq 1
-test "$(grep -F -c 'uv lock --check --directory "$repo_root/plugins/delegation-efficiency"' <<<"$recipe")" -eq 1
-test "$(grep -F -c 'uv sync' <<<"$recipe")" -eq 0
+test "$(grep -F -c 'uv lock --check' <<<"$recipe" || true)" -eq 0
+test "$(grep -F -c 'uv sync' <<<"$recipe" || true)" -eq 0
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -21,7 +21,8 @@ test -L "$home/.jcode/plugins"
 test "$(readlink "$home/.jcode/plugins")" = "$repo_root/plugins"
 test -L "$home/.jcode/worker-blueprints"
 test "$(readlink "$home/.jcode/worker-blueprints")" = "$repo_root/workers/blueprints"
-test -x "$home/.jcode/plugins/delegation-efficiency/record.py"
+test -x "$home/.jcode/plugins/rtk/rtk-transform"
+test -x "$home/.jcode/plugins/delegation-guard/delegation-guard-transform"
 test -f "$home/.jcode/worker-blueprints/coordinator.md"
 test -f "$home/.jcode/worker-blueprints/fixer.md"
 

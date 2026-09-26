@@ -31,16 +31,8 @@ ensure-personal-assets:
   ensure_symlink "$repo_root/plugins" "$jcode_home/plugins"
   ensure_symlink "$repo_root/workers/blueprints" "$jcode_home/worker-blueprints"
 
-  command -v uv >/dev/null || {
-    printf 'uv is required by the delegation-efficiency hook\n' >&2
-    exit 1
-  }
-  uv lock --check --directory "$repo_root/plugins/delegation-efficiency"
-  PYTHONPATH="$repo_root/plugins/delegation-efficiency" python3 -B -c \
-    'import delegation_efficiency'
   test -x "$jcode_home/plugins/rtk/rtk-transform"
   test -x "$jcode_home/plugins/delegation-guard/delegation-guard-transform"
-  test -x "$jcode_home/plugins/delegation-efficiency/record.py"
   test -f "$jcode_home/worker-blueprints/coordinator.md"
   test -f "$jcode_home/worker-blueprints/fixer.md"
   test -f "$jcode_home/worker-blueprints/investigator.md"

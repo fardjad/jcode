@@ -47,10 +47,6 @@ def main() -> None:
     result_file = envelope.get("tool_result_file")
     if isinstance(result_file, str) and result_file:
         nudge += f" Full output is available at: {result_file}"
-    delegation_token = envelope.get("delegation_token")
-    if isinstance(delegation_token, str) and delegation_token:
-        nudge += f" [delegation-token: {delegation_token}]"
-
     json.dump({"tool_result": nudge}, sys.stdout, separators=(",", ":"))
 
 

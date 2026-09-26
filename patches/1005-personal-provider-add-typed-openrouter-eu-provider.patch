@@ -69,7 +69,7 @@ scripts/cargo_exec.sh test -p jcode-base eu_dispatch_enforced_by_allowed_provide
  crates/jcode-base/src/provider_activity.rs    |   4 +
  crates/jcode-base/src/provider_catalog.rs     |   3 +
  crates/jcode-base/src/session.rs              |   1 +
- crates/jcode-provider-core/src/lib.rs         |  69 ++++-
+ crates/jcode-provider-core/src/lib.rs         |  56 +++-
  crates/jcode-provider-core/src/models.rs      |   1 +
  crates/jcode-provider-core/src/selection.rs   |  13 +-
  crates/jcode-provider-metadata/Cargo.toml     |   1 +
@@ -97,7 +97,7 @@ scripts/cargo_exec.sh test -p jcode-base eu_dispatch_enforced_by_allowed_provide
  src/cli/provider_init.rs                      |  38 ++-
  src/cli/provider_init_tests.rs                |  25 +-
  tests/provider_matrix.rs                      |   4 +-
- 45 files changed, 1443 insertions(+), 152 deletions(-)
+ 45 files changed, 1435 insertions(+), 147 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
 index 1cb0dfccc..24dfff035 100644
@@ -1047,7 +1047,7 @@ index a4e22dad8..4a8ea9f19 100644
      fn cheapness_for_openai_route_falls_back_to_subscription_for_unpriced_api_key_models() {
          with_clean_provider_test_env(|| {
 diff --git a/crates/jcode-base/src/provider/selection.rs b/crates/jcode-base/src/provider/selection.rs
-index 3c127860c..2ffa90f40 100644
+index 9c1c327e5..0d56562da 100644
 --- a/crates/jcode-base/src/provider/selection.rs
 +++ b/crates/jcode-base/src/provider/selection.rs
 @@ -5,6 +5,7 @@ pub(super) use jcode_provider_core::{ActiveProvider, ProviderAvailability};
@@ -1619,10 +1619,10 @@ index c92acbe76..e6ae5bbda 100644
          "gemini" => "gemini",
          "antigravity" => "antigravity",
 diff --git a/crates/jcode-provider-core/src/lib.rs b/crates/jcode-provider-core/src/lib.rs
-index 0dc0c5433..464a490f1 100644
+index 4fd923a1b..b25630b2a 100644
 --- a/crates/jcode-provider-core/src/lib.rs
 +++ b/crates/jcode-provider-core/src/lib.rs
-@@ -874,6 +874,7 @@ impl ProviderFamilyPolicy {
+@@ -876,6 +876,7 @@ impl ProviderFamilyPolicy {
  #[serde(rename_all = "kebab-case")]
  pub enum OpenRouterDeploymentId {
      Standard,
@@ -1630,7 +1630,7 @@ index 0dc0c5433..464a490f1 100644
  }
  
  /// Immutable metadata for an official OpenRouter deployment.
-@@ -900,16 +901,29 @@ pub const OPENROUTER_STANDARD: OpenRouterDeploymentSpec = OpenRouterDeploymentSp
+@@ -902,16 +903,29 @@ pub const OPENROUTER_STANDARD: OpenRouterDeploymentSpec = OpenRouterDeploymentSp
      model_spec_prefix: "openrouter",
  };
  
@@ -1660,7 +1660,7 @@ index 0dc0c5433..464a490f1 100644
          }
      }
  }
-@@ -930,6 +944,7 @@ pub enum RuntimeKey {
+@@ -932,6 +946,7 @@ pub enum RuntimeKey {
      OpenAIOAuth,
      OpenAIApiKey,
      OpenRouter,
@@ -1668,7 +1668,7 @@ index 0dc0c5433..464a490f1 100644
      GrokBuild,
      ClaudeCli,
      ChatGptWeb,
-@@ -967,6 +982,7 @@ impl RuntimeKey {
+@@ -968,6 +983,7 @@ impl RuntimeKey {
              ModelRouteApiMethod::OpenAIOAuth => Self::OpenAIOAuth,
              ModelRouteApiMethod::OpenAIApiKey => Self::OpenAIApiKey,
              ModelRouteApiMethod::OpenRouter => Self::OpenRouter,
@@ -1676,7 +1676,7 @@ index 0dc0c5433..464a490f1 100644
              ModelRouteApiMethod::GrokBuildAcp => Self::GrokBuild,
              ModelRouteApiMethod::ClaudeCli => Self::ClaudeCli,
              ModelRouteApiMethod::ChatGptWeb => Self::ChatGptWeb,
-@@ -995,6 +1011,7 @@ impl RuntimeKey {
+@@ -996,6 +1012,7 @@ impl RuntimeKey {
              Self::OpenAIOAuth => "openai-oauth".to_string(),
              Self::OpenAIApiKey => "openai-api-key".to_string(),
              Self::OpenRouter => "openrouter".to_string(),
@@ -1729,10 +1729,10 @@ index 0dc0c5433..464a490f1 100644
                  }
              }
 +            RuntimeKey::OpenRouterEu => format!("openrouter-eu:{model}"),
-             RuntimeKey::GrokBuild => format!("grok-build:{model}"),
              RuntimeKey::ClaudeCli | RuntimeKey::ChatGptWeb => model.to_string(),
              RuntimeKey::Copilot => format!("copilot:{model}"),
-@@ -1197,6 +1220,7 @@ pub enum ModelRouteApiMethod {
+             RuntimeKey::Cursor => format!("cursor:{model}"),
+@@ -1196,6 +1219,7 @@ pub enum ModelRouteApiMethod {
      OpenAIOAuth,
      OpenAIApiKey,
      OpenRouter,
@@ -1740,22 +1740,22 @@ index 0dc0c5433..464a490f1 100644
      GrokBuildAcp,
      ClaudeCli,
      ChatGptWeb,
-@@ -1237,6 +1261,7 @@ impl ModelRouteApiMethod {
+@@ -1236,6 +1260,7 @@ impl ModelRouteApiMethod {
              "jcode-subscription" => Self::JcodeSubscription,
-             "grok-build" | "grok-build-acp" => Self::GrokBuild,
+             "grok-build" => Self::GrokBuild,
              "openrouter" => Self::OpenRouter,
 +            "openrouter-eu" => Self::OpenRouterEu,
              "grok-build-acp" => Self::GrokBuildAcp,
              "claude-cli" => Self::ClaudeCli,
              "chatgpt-web" => Self::ChatGptWeb,
-@@ -1269,6 +1294,7 @@ impl ModelRouteApiMethod {
+@@ -1268,6 +1293,7 @@ impl ModelRouteApiMethod {
              Self::OpenAIOAuth => "openai-oauth".to_string(),
              Self::OpenAIApiKey => "openai-api-key".to_string(),
              Self::OpenRouter => OPENROUTER_STANDARD.route_id.to_string(),
 +            Self::OpenRouterEu => OPENROUTER_EU.route_id.to_string(),
              Self::GrokBuildAcp => "grok-build-acp".to_string(),
+             Self::GrokBuild => "grok-build-acp".to_string(),
              Self::ClaudeCli => "claude-cli".to_string(),
-             Self::ChatGptWeb => "chatgpt-web".to_string(),
 @@ -1303,7 +1329,7 @@ impl ModelRouteApiMethod {
      }
  
@@ -1771,7 +1771,7 @@ index 0dc0c5433..464a490f1 100644
              Self::OpenRouter => Some(ProviderFamily::OpenRouter),
 +            Self::OpenRouterEu => Some(ProviderFamily::OpenRouterEu),
              Self::OpenAiCompatible { .. } => Some(ProviderFamily::OpenAiCompatible),
-             Self::GrokBuildAcp => Some(ProviderFamily::GrokBuild),
+             Self::GrokBuildAcp | Self::GrokBuild => Some(ProviderFamily::GrokBuild),
              Self::Copilot => Some(ProviderFamily::Copilot),
 @@ -1360,6 +1387,7 @@ impl ModelRouteApiMethod {
                  "api key".to_string()
@@ -1781,31 +1781,7 @@ index 0dc0c5433..464a490f1 100644
              Self::GrokBuildAcp => "grok build".to_string(),
              Self::ClaudeCli => "claude cli".to_string(),
              Self::ChatGptWeb => "chatgpt web".to_string(),
-@@ -1798,11 +1826,11 @@ mod tests {
-         );
-         assert_eq!(
-             ModelRouteApiMethod::parse("grok-build-acp"),
--            ModelRouteApiMethod::GrokBuild
-+            ModelRouteApiMethod::GrokBuildAcp
-         );
-         assert_eq!(
-             ModelRouteApiMethod::parse("grok-build"),
--            ModelRouteApiMethod::GrokBuild
-+            ModelRouteApiMethod::GrokBuildAcp
-         );
-     }
- 
-@@ -1810,20 +1838,25 @@ mod tests {
-     fn provider_family_policy_parses_aliases_reports_unknowns_and_fails_closed() {
-         assert!(!ProviderFamilyPolicy::parse(&[]).is_restricted());
-         assert!(
--            ProviderFamilyPolicy::parse(&[])
--                .allows_runtime(&RuntimeKey::Other("future-provider".to_string()))
-+            ProviderFamilyPolicy::parse(&[]).allows_runtime(&RuntimeKey::Other {
-+                method: "future-provider".to_string()
-+            })
-         );
- 
+@@ -1819,11 +1847,13 @@ mod tests {
          let policy = ProviderFamilyPolicy::parse(&[
              "anthropic".to_string(),
              "AWS_BEDROCK".to_string(),
@@ -1817,14 +1793,9 @@ index 0dc0c5433..464a490f1 100644
          assert!(policy.allows_family(ProviderFamily::Bedrock));
 +        assert!(policy.allows_runtime(&RuntimeKey::OpenRouterEu));
          assert!(!policy.allows_runtime(&RuntimeKey::OpenRouter));
--        assert!(!policy.allows_runtime(&RuntimeKey::Other("future-provider".into())));
-+        assert!(!policy.allows_runtime(&RuntimeKey::Other {
-+            method: "future-provider".into()
-+        }));
-         assert_eq!(policy.unknown_values(), &["typo-provider"]);
-     }
- 
-@@ -1836,6 +1869,7 @@ mod tests {
+         assert!(!policy.allows_runtime(&RuntimeKey::Other {
+             method: "future-provider".into(),
+@@ -1840,6 +1870,7 @@ mod tests {
              ModelRouteApiMethod::OpenAIOAuth,
              ModelRouteApiMethod::OpenAIApiKey,
              ModelRouteApiMethod::OpenRouter,
@@ -1832,7 +1803,7 @@ index 0dc0c5433..464a490f1 100644
              ModelRouteApiMethod::GrokBuildAcp,
              ModelRouteApiMethod::ClaudeCli,
              ModelRouteApiMethod::ChatGptWeb,
-@@ -2105,6 +2139,29 @@ mod tests {
+@@ -2109,6 +2140,29 @@ mod tests {
          );
      }
  
