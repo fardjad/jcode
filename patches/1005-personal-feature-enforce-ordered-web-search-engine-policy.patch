@@ -55,10 +55,10 @@ scripts/cargo_exec.sh test -p jcode-base websearch_ --lib
  10 files changed, 431 insertions(+), 35 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 24dfff035..0641ec8c6 100644
+index 214cc0def..c162171e3 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -3437,6 +3437,7 @@ version = "0.1.0"
+@@ -3439,6 +3439,7 @@ version = "0.1.0"
  dependencies = [
   "serde",
   "serde_json",
@@ -199,10 +199,10 @@ index 0d9dab329..88f29c58a 100644
 +    }
  }
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index b41f054c2..ad584c728 100644
+index 580f855d4..1f0c79288 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
-@@ -190,6 +190,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+@@ -191,6 +191,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
      "JCODE_TYPING_SCROLL_LOCK_TOGGLE_KEY",
      "JCODE_UPDATE_CHANNEL",
      "JCODE_WEBSEARCH_ENGINE",
@@ -263,10 +263,10 @@ index 42f9bb0f9..8545333da 100644
  mod issue_1056_tests {
      use super::Config;
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 5c4e88ee8..b7593f8d1 100644
+index 2824a466c..69b6df72e 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -292,10 +292,13 @@ kv_cache_miss_notices = true
+@@ -296,10 +296,13 @@ kv_cache_miss_notices = true
  update_channel = "stable"
  
  [websearch]
@@ -284,7 +284,7 @@ index 5c4e88ee8..b7593f8d1 100644
  # Bring your own Bing Search API key for primary Bing searches. Prefer using an env var.
  # Fallback Bing searches intentionally use keyless HTML search.
  # bing_api_key_env = "JCODE_BING_API_KEY"
-@@ -307,7 +310,7 @@ bing_market = "en-US"
+@@ -311,7 +314,7 @@ bing_market = "en-US"
  # reputation and return an anti-bot page with no results. Pointing at a SearXNG
  # instance (self-hosted or trusted public) with the JSON format enabled avoids
  # this. Configure here or via the JCODE_SEARXNG_URL environment variable, then
@@ -379,7 +379,7 @@ index ceafaea5a..2af7af596 100644
 +    });
 +}
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index 9448f419a..cde76a0e5 100644
+index 0d45f070f..3fd4622f2 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
 @@ -1,7 +1,7 @@
@@ -485,7 +485,7 @@ index f71508e30..fac92bca4 100644
 +[dev-dependencies]
 +toml = "0.8"
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 84ad5ef65..c764cc48e 100644
+index 08bfdfe1a..9e38c1413 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -1,4 +1,4 @@

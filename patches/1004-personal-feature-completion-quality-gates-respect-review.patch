@@ -34,10 +34,10 @@ scripts/cargo_exec.sh test -p jcode-tui completion_quality_gates_are_disabled_on
  2 files changed, 33 insertions(+)
 
 diff --git a/crates/jcode-tui/src/tui/app/input.rs b/crates/jcode-tui/src/tui/app/input.rs
-index 3d3f98530..e7c9e6842 100644
+index aef0940a5..e03cfb7dc 100644
 --- a/crates/jcode-tui/src/tui/app/input.rs
 +++ b/crates/jcode-tui/src/tui/app/input.rs
-@@ -1717,6 +1717,21 @@ impl App {
+@@ -1734,6 +1734,21 @@ impl App {
                  self.last_todo_ownership_fingerprint = None;
                  return false;
              }
@@ -60,7 +60,7 @@ index 3d3f98530..e7c9e6842 100644
              // every todo write during the turn. Every point recorded during the
              // turn is raised, including ones whose score later climbed: work
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
-index df65bb30d..48dd1324c 100644
+index 3bedbeb91..780b78413 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
 @@ -481,6 +481,24 @@ fn dispatch_ownership_followup(app: &mut App) {
