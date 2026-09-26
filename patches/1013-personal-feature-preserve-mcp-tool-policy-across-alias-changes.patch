@@ -31,7 +31,7 @@ scripts/cargo_exec.sh test -p jcode-app-core mcp_collision_refresh_preserves_off
  1 file changed, 233 insertions(+), 52 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 7a75d51e1..165f47fec 100644
+index eca394b2a..5c1b0939f 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -205,14 +205,29 @@ pub(crate) fn session_mcp_dispatch_is_allowed(
@@ -287,7 +287,7 @@ index 7a75d51e1..165f47fec 100644
      /// prefix/substring containment, then bounded edit distance. Helps the
      /// model recover from hallucinated tool names (#104).
      fn closest_tool_names(name: &str, available: &[&str]) -> Vec<String> {
-@@ -1819,6 +1850,155 @@ impl Registry {
+@@ -1789,6 +1820,155 @@ impl Registry {
          tools.remove(name)
      }
  
@@ -443,7 +443,7 @@ index 7a75d51e1..165f47fec 100644
      /// Unregister all tools matching a prefix
      pub async fn unregister_prefix(&self, prefix: &str) -> Vec<String> {
          let mut tools = self.tools.write().await;
-@@ -1830,6 +2010,7 @@ impl Registry {
+@@ -1800,6 +1980,7 @@ impl Registry {
          for name in &to_remove {
              tools.remove(name);
          }

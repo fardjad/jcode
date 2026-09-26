@@ -17,7 +17,9 @@ every linked token measurement exists. Provider usage, pricing, currency, and
 monetary savings are intentionally out of scope.
 
 A signed single-use delegation token in the guard nudge is validated by worker
-spawn for exact, non-heuristic guard-to-delegation correlation.
+spawn for exact, non-heuristic guard-to-delegation correlation. Blank optional
+delegation tokens are absent on follow-up, while nonblank tokens remain
+spawn-only.
 
 Why it exists:
 The runtime emits immutable scalar facts but must not own persistence or
@@ -42,6 +44,7 @@ Validation:
 cd "$JCODE_CATALOG_ROOT/plugins/delegation-efficiency" && python3 -m unittest discover -s tests -p 'test_plugin.py'
 cd "$JCODE_CATALOG_ROOT/plugins/delegation-guard" && python3 test_transform.py
 scripts/cargo_exec.sh check -p jcode-app-core
+scripts/cargo_exec.sh test -p jcode-app-core follow_up_rejects_only_nonblank_delegation_tokens --lib
 ---
  Cargo.lock                                    |    1 +
  crates/jcode-app-core/Cargo.toml              |    1 +
@@ -71,8 +74,8 @@ scripts/cargo_exec.sh check -p jcode-app-core
  .../src/tool/apply_patch_tests.rs             |    2 +
  crates/jcode-app-core/src/tool/bash_tests.rs  |    3 +
  crates/jcode-app-core/src/tool/batch_tests.rs |    1 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  395 ++-
- .../src/tool/blueprint_tests.rs               |  225 +-
+ crates/jcode-app-core/src/tool/blueprint.rs   |  400 ++-
+ .../src/tool/blueprint_tests.rs               |  237 +-
  .../src/tool/browser_fast_live_tests.rs       |    1 +
  .../src/tool/browser_fast_tests.rs            |    1 +
  .../jcode-app-core/src/tool/browser_tests.rs  |    1 +
@@ -127,7 +130,7 @@ scripts/cargo_exec.sh check -p jcode-app-core
  src/bin/harness.rs                            |    2 +
  src/cli/selfdev_tests.rs                      |    1 +
  tests/e2e/provider_behavior.rs                |    1 +
- 84 files changed, 5360 insertions(+), 351 deletions(-)
+ 84 files changed, 5377 insertions(+), 351 deletions(-)
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-golden.json
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-malformed.json
  create mode 100644 crates/jcode-app-core/src/fixtures/delegation-efficiency-null-heavy.json
@@ -3404,7 +3407,7 @@ index e094cfb94..50d9604e5 100644
          stdin_request_tx: None,
          graceful_shutdown_signal: None,
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
-index 6c38aef0f..0f6625419 100644
+index 6c38aef0f..d2bc35ea1 100644
 --- a/crates/jcode-app-core/src/tool/blueprint.rs
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
 @@ -58,6 +58,14 @@ struct BlueprintToolInput {
@@ -3422,7 +3425,7 @@ index 6c38aef0f..0f6625419 100644
  }
  
  /// A generated coordinator-visible tool for worker blueprints.
-@@ -89,18 +97,28 @@ const SUMMARY_MAX_CHARS: usize = 2000;
+@@ -89,18 +97,33 @@ const SUMMARY_MAX_CHARS: usize = 2000;
  /// Default character limit for follow-up reads.
  const FOLLOW_UP_DEFAULT_LIMIT: usize = 2000;
  
@@ -3443,6 +3446,11 @@ index 6c38aef0f..0f6625419 100644
      value.map(str::trim).filter(|value| !value.is_empty())
  }
  
++/// A follow-up may carry an omitted optional token as a blank schema placeholder.
++pub(crate) fn follow_up_has_delegation_token(value: Option<&str>) -> bool {
++    nonblank_optional_string(value).is_some()
++}
++
 +pub(crate) fn has_conflicting_delegation_lineage(
 +    delegation_token: Option<&str>,
 +    spawn_request_id: Option<&str>,
@@ -3454,7 +3462,7 @@ index 6c38aef0f..0f6625419 100644
  /// Generated blueprint tools synchronously return a worker's result, so their
  /// default must be an in-process worker. A headed default creates a separate
  /// client which must attach to the just-created persisted session before the
-@@ -231,6 +249,14 @@ impl Tool for BlueprintTool {
+@@ -231,6 +254,14 @@ impl Tool for BlueprintTool {
                      "minimum": 1,
                      "description": "Maximum characters to return in a follow-up read. Defaults to 2000."
                  },
@@ -3469,12 +3477,12 @@ index 6c38aef0f..0f6625419 100644
                  "working_dir": {
                      "type": "string",
                      "description": "Optional working directory for the spawned worker."
-@@ -254,7 +280,102 @@ impl Tool for BlueprintTool {
+@@ -254,7 +285,102 @@ impl Tool for BlueprintTool {
  
          // ── Follow-up mode: read paginated output from an existing worker ──
          if let Some(session_id) = nonblank_follow_up_session(params.follow_up_session.as_deref()) {
 -            return self.execute_follow_up(session_id, params.offset, params.limit, &ctx).await;
-+            if params.delegation_token.is_some() {
++            if follow_up_has_delegation_token(params.delegation_token.as_deref()) {
 +                return Err(anyhow::anyhow!(
 +                    "delegation_token is only valid when spawning a blueprint worker."
 +                ));
@@ -3573,7 +3581,7 @@ index 6c38aef0f..0f6625419 100644
          }
  
          // ── Spawn mode: spawn, wait, return compact summary ──
-@@ -267,6 +388,41 @@ impl Tool for BlueprintTool {
+@@ -267,6 +393,41 @@ impl Tool for BlueprintTool {
          }
  
          // 1. Spawn the blueprint-backed worker.
@@ -3615,7 +3623,7 @@ index 6c38aef0f..0f6625419 100644
          let spawn_request = Request::CommSpawn {
              id: 1,
              session_id: ctx.session_id.clone(),
-@@ -278,37 +434,147 @@ impl Tool for BlueprintTool {
+@@ -278,37 +439,147 @@ impl Tool for BlueprintTool {
              effort: None,
              label: None,
              blueprint: Some(self.blueprint_id.clone()),
@@ -3773,7 +3781,7 @@ index 6c38aef0f..0f6625419 100644
          let timeout_secs = (timeout_minutes as u64) * 60;
  
          // 2. Wait for the worker to reach a terminal status.
-@@ -359,10 +625,7 @@ impl Tool for BlueprintTool {
+@@ -359,10 +630,7 @@ impl Tool for BlueprintTool {
                  ));
              }
              Err(e) => {
@@ -3785,7 +3793,7 @@ index 6c38aef0f..0f6625419 100644
              }
          }
  
-@@ -371,20 +634,50 @@ impl Tool for BlueprintTool {
+@@ -371,20 +639,50 @@ impl Tool for BlueprintTool {
              id: 3,
              session_id: ctx.session_id.clone(),
              target_session: new_session_id.clone(),
@@ -3845,7 +3853,7 @@ index 6c38aef0f..0f6625419 100644
  
                  match report {
                      Some(text) => {
-@@ -426,8 +719,17 @@ impl BlueprintTool {
+@@ -426,8 +724,17 @@ impl BlueprintTool {
          session_id: &str,
          offset: Option<usize>,
          limit: Option<usize>,
@@ -3863,7 +3871,7 @@ index 6c38aef0f..0f6625419 100644
          let offset = offset.unwrap_or(0);
          let limit = limit.unwrap_or(FOLLOW_UP_DEFAULT_LIMIT).max(1);
  
-@@ -435,12 +737,36 @@ impl BlueprintTool {
+@@ -435,12 +742,36 @@ impl BlueprintTool {
              id: 1,
              session_id: ctx.session_id.clone(),
              target_session: session_id.to_string(),
@@ -3900,7 +3908,7 @@ index 6c38aef0f..0f6625419 100644
                  let full: String = messages
                      .iter()
                      .map(|msg| format!("[{}]\n{}\n\n", msg.role, msg.content))
-@@ -457,11 +783,7 @@ impl BlueprintTool {
+@@ -457,11 +788,7 @@ impl BlueprintTool {
                  }
  
                  let end = (offset + limit).min(total_chars);
@@ -3913,7 +3921,7 @@ index 6c38aef0f..0f6625419 100644
  
                  let more = end < total_chars;
                  let header = format!(
-@@ -481,16 +803,11 @@ impl BlueprintTool {
+@@ -481,16 +808,11 @@ impl BlueprintTool {
  
                  Ok(ToolOutput::new(format!("{header}{chunk}{footer}")))
              }
@@ -3933,21 +3941,24 @@ index 6c38aef0f..0f6625419 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-index ff2c8d6b6..7091d11a3 100644
+index ff2c8d6b6..2f83c91d2 100644
 --- a/crates/jcode-app-core/src/tool/blueprint_tests.rs
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -12,6 +12,10 @@
+@@ -12,6 +12,13 @@
  
  use crate::config::{AgentsConfig, ToolSelection, WorkerBlueprintOverride};
  use crate::protocol::Request;
 +use crate::tool::{
 +    Tool,
-+    blueprint::{BlueprintTool, has_conflicting_delegation_lineage, nonblank_optional_string},
++    blueprint::{
++        BlueprintTool, follow_up_has_delegation_token, has_conflicting_delegation_lineage,
++        nonblank_optional_string,
++    },
 +};
  use crate::worker_blueprint::{
      self, BlueprintEffort, CommunicationPolicy, WorkerBlueprint, WorkerBlueprintRegistry,
      load_worker_blueprints,
-@@ -32,11 +36,7 @@ fn temp_blueprints_dir() -> tempfile::TempDir {
+@@ -32,11 +39,7 @@ fn temp_blueprints_dir() -> tempfile::TempDir {
      tempfile::tempdir().unwrap()
  }
  
@@ -3960,7 +3971,7 @@ index ff2c8d6b6..7091d11a3 100644
      WorkerBlueprint {
          source_path: PathBuf::from(format!("/tmp/{name}.md")),
          name: name.to_string(),
-@@ -82,18 +82,15 @@ fn coordinator_override_no_enabled_means_no_restriction() {
+@@ -82,18 +85,15 @@ fn coordinator_override_no_enabled_means_no_restriction() {
  
  #[test]
  fn coordinator_override_intersects_with_global_allowed() {
@@ -3988,7 +3999,7 @@ index ff2c8d6b6..7091d11a3 100644
      assert!(intersection.contains("read"));
      assert!(intersection.contains("swarm_reviewer"));
      assert!(!intersection.contains("bash"));
-@@ -116,16 +113,17 @@ fn coordinator_override_empty_enabled_clears_restriction() {
+@@ -116,16 +116,17 @@ fn coordinator_override_empty_enabled_clears_restriction() {
  
  #[test]
  fn coordinator_override_disabled_deny_takes_precedence() {
@@ -4016,7 +4027,7 @@ index ff2c8d6b6..7091d11a3 100644
      assert!(effective.contains("read"));
      assert!(effective.contains("write"));
      assert!(!effective.contains("bash"));
-@@ -255,6 +253,10 @@ fn comm_spawn_with_blueprint_roundtrips() {
+@@ -255,6 +256,10 @@ fn comm_spawn_with_blueprint_roundtrips() {
          effort: None,
          label: Some("reviewer".to_string()),
          blueprint: Some("reviewer".to_string()),
@@ -4027,7 +4038,7 @@ index ff2c8d6b6..7091d11a3 100644
      };
      let json = serde_json::to_string(&req).unwrap();
      assert!(json.contains("\"blueprint\":\"reviewer\""));
-@@ -300,11 +302,17 @@ fn generated_tool_does_not_overwrite_existing_tool() {
+@@ -300,11 +305,17 @@ fn generated_tool_does_not_overwrite_existing_tool() {
  
      // A blueprint named "swarm" would generate "swarm_swarm"
      let tool_name = "swarm_swarm";
@@ -4047,7 +4058,7 @@ index ff2c8d6b6..7091d11a3 100644
  
      // If somehow a tool named "swarm_reviewer" already exists, skip it
      tools.insert("swarm_reviewer".to_string());
-@@ -332,10 +340,7 @@ fn blueprint_model_feeds_into_spawn_precedence() {
+@@ -332,10 +343,7 @@ fn blueprint_model_feeds_into_spawn_precedence() {
           You are a reviewer.",
      );
  
@@ -4059,7 +4070,7 @@ index ff2c8d6b6..7091d11a3 100644
      let bp = report.registry.get("reviewer").unwrap();
      assert_eq!(bp.model.as_deref(), Some("openai-api:gpt-5.5"));
  
-@@ -360,10 +365,7 @@ fn per_spawn_model_overrides_blueprint_model() {
+@@ -360,10 +368,7 @@ fn per_spawn_model_overrides_blueprint_model() {
           You are a reviewer.",
      );
  
@@ -4071,7 +4082,7 @@ index ff2c8d6b6..7091d11a3 100644
      let bp = report.registry.get("reviewer").unwrap();
  
      // In the spawn path, requested_model.or(blueprint_model) uses the
-@@ -422,10 +424,7 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
+@@ -422,10 +427,7 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
           You are a worker.",
      );
  
@@ -4083,7 +4094,7 @@ index ff2c8d6b6..7091d11a3 100644
      let bp = report.registry.get("worker").unwrap();
      assert_eq!(bp.effort, Some(BlueprintEffort::High));
  
-@@ -433,9 +432,7 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
+@@ -433,9 +435,7 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
      // effort is given.
      let blueprint_effort = bp.effort.as_ref().map(|e| e.as_str().to_string());
      let requested_effort: Option<String> = None;
@@ -4094,7 +4105,7 @@ index ff2c8d6b6..7091d11a3 100644
      assert_eq!(effective, Some("high"));
  }
  
-@@ -446,10 +443,14 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
+@@ -446,10 +446,14 @@ fn blueprint_effort_feeds_into_spawn_precedence() {
  #[test]
  fn blueprint_enabled_tools_intersected_with_global() {
      // Simulate the tool policy intersection logic from spawn_swarm_agent.
@@ -4113,7 +4124,7 @@ index ff2c8d6b6..7091d11a3 100644
  
      // Intersection: blueprint can only further restrict, never expand.
      let effective: HashSet<String> = blueprint_enabled
-@@ -459,22 +460,30 @@ fn blueprint_enabled_tools_intersected_with_global() {
+@@ -459,22 +463,30 @@ fn blueprint_enabled_tools_intersected_with_global() {
  
      assert!(effective.contains("read"));
      assert!(effective.contains("agentgrep"));
@@ -4148,7 +4159,7 @@ index ff2c8d6b6..7091d11a3 100644
  }
  
  #[test]
-@@ -513,8 +522,9 @@ fn coordinator_policy_only_applies_to_root_sessions() {
+@@ -513,8 +525,9 @@ fn coordinator_policy_only_applies_to_root_sessions() {
          effort: None,
          timeout_minutes: None,
      };
@@ -4160,7 +4171,7 @@ index ff2c8d6b6..7091d11a3 100644
  
      if root_session {
          let global: Option<HashSet<String>> =
-@@ -526,7 +536,10 @@ fn coordinator_policy_only_applies_to_root_sessions() {
+@@ -526,7 +539,10 @@ fn coordinator_policy_only_applies_to_root_sessions() {
          };
          let eff = effective.unwrap();
          assert!(eff.contains("read"));
@@ -4172,7 +4183,7 @@ index ff2c8d6b6..7091d11a3 100644
      }
  
      if !worker_session {
-@@ -535,7 +548,10 @@ fn coordinator_policy_only_applies_to_root_sessions() {
+@@ -535,7 +551,10 @@ fn coordinator_policy_only_applies_to_root_sessions() {
          let effective = global;
          let eff = effective.unwrap();
          assert!(eff.contains("read"));
@@ -4184,7 +4195,7 @@ index ff2c8d6b6..7091d11a3 100644
      }
  }
  
-@@ -565,10 +581,7 @@ fn register_blueprint_tools_loads_from_configured_dir() {
+@@ -565,10 +584,7 @@ fn register_blueprint_tools_loads_from_configured_dir() {
           You run shell commands.",
      );
  
@@ -4196,7 +4207,7 @@ index ff2c8d6b6..7091d11a3 100644
  
      assert_eq!(report.registry.len(), 2);
      assert!(report.registry.get("reviewer").is_some());
-@@ -607,11 +620,7 @@ fn communication_policy_stored_on_member_for_enforcement() {
+@@ -607,11 +623,7 @@ fn communication_policy_stored_on_member_for_enforcement() {
  
  #[test]
  fn generated_tool_description_mentions_waiting_for_output() {
@@ -4209,7 +4220,7 @@ index ff2c8d6b6..7091d11a3 100644
      // The description should mention that the tool waits for output,
      // not just spawns a worker.
      let desc = format!(
-@@ -652,7 +661,44 @@ fn completion_report_is_truncated_for_bounded_result() {
+@@ -652,7 +664,53 @@ fn completion_report_is_truncated_for_bounded_result() {
  fn empty_task_is_rejected() {
      // The BlueprintTool rejects blank tasks before spawning.
      let task = "   ".trim();
@@ -4252,10 +4263,19 @@ index ff2c8d6b6..7091d11a3 100644
 +        Some("dt1.token"),
 +        Some("request")
 +    ));
++}
++
++#[test]
++fn follow_up_rejects_only_nonblank_delegation_tokens() {
++    assert!(!follow_up_has_delegation_token(None));
++    assert!(!follow_up_has_delegation_token(Some("")));
++    assert!(!follow_up_has_delegation_token(Some("  \t\n")));
++    assert!(follow_up_has_delegation_token(Some("dt1.token")));
++    assert!(follow_up_has_delegation_token(Some(" dt1.token ")));
  }
  
  // ---------------------------------------------------------------------------
-@@ -692,7 +738,10 @@ fn timeout_precedence_zero_per_call_ignored() {
+@@ -692,7 +750,10 @@ fn timeout_precedence_zero_per_call_ignored() {
      let blueprint = Some(15u32);
      let config = 20u32;
      let effective = per_call.filter(|&n| n > 0).or(blueprint).unwrap_or(config);
@@ -4267,7 +4287,7 @@ index ff2c8d6b6..7091d11a3 100644
  }
  
  #[test]
-@@ -709,10 +758,7 @@ fn timeout_minutes_parses_from_front_matter() {
+@@ -709,10 +770,7 @@ fn timeout_minutes_parses_from_front_matter() {
           You are a worker.",
      );
  
@@ -4279,7 +4299,7 @@ index ff2c8d6b6..7091d11a3 100644
      let bp = report.registry.get("worker").unwrap();
      assert_eq!(bp.timeout_minutes, Some(45));
  }
-@@ -731,18 +777,16 @@ fn timeout_minutes_zero_is_diagnosed() {
+@@ -731,18 +789,16 @@ fn timeout_minutes_zero_is_diagnosed() {
           You are a worker.",
      );
  
@@ -4303,7 +4323,7 @@ index ff2c8d6b6..7091d11a3 100644
          "expected diagnostic for timeout-minutes 0"
      );
  }
-@@ -791,10 +835,7 @@ fn timeout_minutes_omitted_means_none() {
+@@ -791,10 +847,7 @@ fn timeout_minutes_omitted_means_none() {
           You are a worker.",
      );
  
@@ -4315,7 +4335,7 @@ index ff2c8d6b6..7091d11a3 100644
      let bp = report.registry.get("worker").unwrap();
      assert_eq!(bp.timeout_minutes, None);
  }
-@@ -831,8 +872,14 @@ fn blank_follow_up_session_selects_spawn_mode() {
+@@ -831,8 +884,14 @@ fn blank_follow_up_session_selects_spawn_mode() {
      // Strict tool-schema transports can require every property and represent an
      // omitted optional string as "". This must retain the documented spawn
      // behavior instead of trying to read a worker with an empty session ID.
@@ -4332,7 +4352,7 @@ index ff2c8d6b6..7091d11a3 100644
      assert_eq!(
          crate::tool::blueprint::nonblank_follow_up_session(Some("  \t\n")),
          None
-@@ -877,7 +924,10 @@ fn follow_up_mode_offset_beyond_end_returns_empty() {
+@@ -877,7 +936,10 @@ fn follow_up_mode_offset_beyond_end_returns_empty() {
      let offset = 200usize;
      let total = full.chars().count();
  
@@ -4344,7 +4364,7 @@ index ff2c8d6b6..7091d11a3 100644
  }
  
  #[test]
-@@ -913,7 +963,10 @@ fn spawn_mode_summary_is_truncated_with_session_id() {
+@@ -913,7 +975,10 @@ fn spawn_mode_summary_is_truncated_with_session_id() {
          out
      };
  
