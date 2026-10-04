@@ -1,0 +1,1871 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Sun, 4 Oct 2026 15:57:45 +0200
+Subject: [PATCH] feat: persist effective prompt and tool definition snapshots
+
+X-Jcode-Patch-Intent: persist effective request prompts and tools alongside assistant replies
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: none
+
+Patch intent:
+Capture the exact combined system text and common tool definitions passed
+to blocking and streaming provider requests. Independently deduplicate each
+value per session and reference it from the successful assistant response.
+
+Why it exists:
+Session analysis needs to recover the request context associated with a
+response and its tool calls. Persist only common tool definitions, not
+provider-specific wire forms, credentials, or execution results.
+
+Upstream integration points:
+ToolDefinition in jcode-message-types, Agent::run_turn and
+run_turn_streaming_mpsc, Session::messages and persistence journal.
+
+Update guidance:
+Keep prompt and definition equality collision-safe and independently
+deduplicated. Capture the concatenated static and dynamic prompt plus the
+full effective tool definitions immediately before `complete_split` in both
+blocking and streaming paths. Associate snapshots only after an assistant
+response is recorded; do not persist prewarm-only or failed provider attempts.
+
+Message references are indexes into per-session prompt and tool tables. Keep
+the tables and references aligned through journal replay, checkpoint/save,
+resume, session forks, transcript replacement, and compaction. When transcript
+replacement discards messages, clear or retain the associated tables
+consistently. Preserve references on surviving stored assistant messages.
+Compaction creates a provider-facing summary view: capture the rebuilt request
+for its response, without confusing that view with removal of stored messages.
+
+Store the common tool definition's name, description, and input schema. Do not
+substitute configured tool names or provider-specific wire serialization,
+credentials, MCP authorization headers, or tool outputs.
+
+Storage measurement:
+The request_snapshots_deduplicate_independently_and_survive_persistence test
+serializes a representative 300-line system prompt, 20 tool definitions, and
+100 message references as 19,792 bytes when values are shared. Repeating the
+full prompt and definitions in every message takes 1,748,701 bytes in the same
+JSON-size comparison. This is a fixture measurement, not a universal session
+size prediction: real schema and prompt sizes vary, and the persisted session
+also contains transcript and journal data. Keep independent deduplication and
+the representative regression bound when evolving snapshot persistence.
+
+Validation:
+scripts/cargo_exec.sh check -p jcode-session-types -p jcode-base -p jcode-app-core -p jcode-tui
+scripts/cargo_exec.sh test -p jcode-session-types request_snapshot --lib
+scripts/cargo_exec.sh test -p jcode-base request_snapshot --lib
+scripts/cargo_exec.sh test -p jcode-app-core tool_streaming --lib
+scripts/cargo_exec.sh test -p jcode-app-core provider_request --lib
+---
+ Cargo.lock                                    |   1 +
+ crates/jcode-app-core/src/agent.rs            |   1 +
+ crates/jcode-app-core/src/agent/turn_loops.rs |   4 +
+ .../src/agent/turn_streaming_mpsc.rs          |   4 +
+ crates/jcode-app-core/src/agent_tests.rs      |   1 +
+ .../src/agent_tests/tool_streaming.rs         | 485 +++++++++++++++++-
+ crates/jcode-app-core/src/ambient/runner.rs   |   2 +
+ crates/jcode-app-core/src/overnight.rs        |   2 +
+ .../src/server/client_actions.rs              |   2 +
+ .../src/server/client_session_tests/reload.rs |  10 +
+ .../resume/busy_existing_attach.rs            |   1 +
+ .../src/server/client_state_tests.rs          |   1 +
+ .../jcode-app-core/src/tool/selfdev/launch.rs |   2 +
+ crates/jcode-base/src/import.rs               |   3 +
+ crates/jcode-base/src/import_tests.rs         |   5 +
+ crates/jcode-base/src/session.rs              | 113 +++-
+ crates/jcode-base/src/session/journal.rs      |  10 +-
+ crates/jcode-base/src/session/persistence.rs  |  25 +
+ .../src/session/render/response_stats.rs      |   1 +
+ crates/jcode-base/src/session_tests/cases.rs  | 328 +++++++++++-
+ crates/jcode-message-types/src/lib.rs         |   2 +-
+ crates/jcode-session-types/Cargo.toml         |   1 +
+ crates/jcode-session-types/src/lib.rs         |  63 +++
+ .../jcode-tui/src/tui/app/commands_review.rs  |   7 +
+ .../src/tui/app/conversation_state.rs         |   1 +
+ .../tests/remote_startup_input_01/part_01.rs  |   2 +
+ src/cli/auth_test/choice.rs                   |   1 +
+ 27 files changed, 1062 insertions(+), 16 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index c162171e3..73ed98789 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4036,6 +4036,7 @@ dependencies = [
+  "jcode-message-types",
+  "memchr",
+  "serde",
++ "serde_json",
+ ]
+ 
+ [[package]]
+diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
+index ee1ce8f66..dbaf4e82b 100644
+--- a/crates/jcode-app-core/src/agent.rs
++++ b/crates/jcode-app-core/src/agent.rs
+@@ -1022,6 +1022,7 @@ impl Agent {
+                     timestamp: Some(chrono::Utc::now()),
+                     tool_duration_ms: None,
+                     token_usage: None,
++                    request_snapshot: None,
+                 };
+                 self.session
+                     .insert_message(index + 1 + inserted + offset, stored_message);
+diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
+index 678a23190..523af5d4a 100644
+--- a/crates/jcode-app-core/src/agent/turn_loops.rs
++++ b/crates/jcode-app-core/src/agent/turn_loops.rs
+@@ -167,6 +167,8 @@ impl Agent {
+                 .message_timestamps
+                 .then(|| Message::with_timestamps(&messages_with_memory));
+             let send_messages = stamped.as_deref().unwrap_or(&messages_with_memory);
++            let request_prompt =
++                format!("{}{}", split_prompt.static_part, split_prompt.dynamic_part);
+             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
+             self.last_status_detail = None;
+             let mut stream = match self
+@@ -859,6 +861,8 @@ impl Agent {
+                 });
+                 let message_id =
+                     self.add_message_ext(Role::Assistant, content_blocks, None, token_usage);
++                self.session
++                    .associate_request_snapshots(&message_id, &request_prompt, &tools);
+                 self.push_embedding_snapshot_if_semantic(&text_content);
+                 self.session.save()?;
+                 self.record_model_turn_usage(&usage_turn_id);
+diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
+index 2b7651e5b..909b022cf 100644
+--- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
++++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
+@@ -244,6 +244,8 @@ impl Agent {
+                 .message_timestamps
+                 .then(|| Message::with_timestamps(&messages_with_memory));
+             let send_messages = stamped.as_deref().unwrap_or(&messages_with_memory);
++            let request_prompt =
++                format!("{}{}", split_prompt.static_part, split_prompt.dynamic_part);
+             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
+             let provider = Arc::clone(&self.provider);
+             // Capture the model id the request was issued with. A provider may
+@@ -1199,6 +1201,8 @@ impl Agent {
+                 });
+                 let message_id =
+                     self.add_message_ext(Role::Assistant, content_blocks, None, token_usage);
++                self.session
++                    .associate_request_snapshots(&message_id, &request_prompt, &tools);
+                 self.push_embedding_snapshot_if_semantic(&text_content);
+                 self.session.save()?;
+                 self.record_model_turn_usage(&usage_turn_id);
+diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
+index 33c1b1d45..d5808857c 100644
+--- a/crates/jcode-app-core/src/agent_tests.rs
++++ b/crates/jcode-app-core/src/agent_tests.rs
+@@ -1832,6 +1832,7 @@ async fn env_snapshot_detail_is_minimal_for_empty_sessions_and_full_after_histor
+             timestamp: None,
+             tool_duration_ms: None,
+             token_usage: None,
++            request_snapshot: None,
+         });
+ 
+     assert_eq!(agent.env_snapshot_detail(), EnvSnapshotDetail::Full);
+diff --git a/crates/jcode-app-core/src/agent_tests/tool_streaming.rs b/crates/jcode-app-core/src/agent_tests/tool_streaming.rs
+index 6ed0fe2ea..90c4e5823 100644
+--- a/crates/jcode-app-core/src/agent_tests/tool_streaming.rs
++++ b/crates/jcode-app-core/src/agent_tests/tool_streaming.rs
+@@ -4,11 +4,46 @@ use std::sync::Mutex;
+ 
+ type InputLog = Arc<Mutex<Vec<Value>>>;
+ 
++#[derive(Clone, Default)]
++struct CapturedRequest {
++    messages: Vec<Message>,
++    tools: Vec<ToolDefinition>,
++    system: String,
++}
++
+ #[derive(Clone)]
+-struct ChannelProvider(Arc<Mutex<Option<tokio_mpsc::Receiver<Result<StreamEvent>>>>>);
++struct ChannelProvider {
++    events: Arc<Mutex<Option<tokio_mpsc::Receiver<Result<StreamEvent>>>>>,
++    requests: Arc<Mutex<Vec<CapturedRequest>>>,
++    prewarms: Arc<Mutex<usize>>,
++    native_auto_compaction: bool,
++    provider_name: &'static str,
++    fail: bool,
++}
+ 
+ #[async_trait]
+ impl Provider for ChannelProvider {
++    async fn complete_split(
++        &self,
++        messages: &[Message],
++        tools: &[ToolDefinition],
++        system_static: &str,
++        system_dynamic: &str,
++        resume_session_id: Option<&str>,
++    ) -> Result<EventStream> {
++        let system = format!("{system_static}{system_dynamic}");
++        self.requests.lock().unwrap().push(CapturedRequest {
++            messages: messages.to_vec(),
++            tools: tools.to_vec(),
++            system: system.clone(),
++        });
++        if self.fail {
++            anyhow::bail!("test provider request failure");
++        }
++        self.complete(messages, tools, &system, resume_session_id)
++            .await
++    }
++
+     async fn complete(
+         &self,
+         _: &[Message],
+@@ -16,7 +51,7 @@ impl Provider for ChannelProvider {
+         _: &str,
+         _: Option<&str>,
+     ) -> Result<EventStream> {
+-        if let Some(rx) = self.0.lock().unwrap().take() {
++        if let Some(rx) = self.events.lock().unwrap().take() {
+             Ok(Box::pin(ReceiverStream::new(rx)))
+         } else {
+             Ok(Box::pin(futures::stream::iter([
+@@ -28,10 +63,22 @@ impl Provider for ChannelProvider {
+         }
+     }
+     fn name(&self) -> &str {
+-        "keyed-stream-test"
++        self.provider_name
++    }
++    async fn prewarm(&self, _tools: &[ToolDefinition], _system_static: &str) {
++        *self.prewarms.lock().unwrap() += 1;
+     }
+     fn supports_compaction(&self) -> bool {
+-        false
++        true
++    }
++    fn uses_jcode_compaction(&self) -> bool {
++        !self.native_auto_compaction
++    }
++    async fn complete_simple(&self, _prompt: &str, _system: &str) -> Result<String> {
++        Ok("test compaction summary".into())
++    }
++    fn context_window(&self) -> usize {
++        1_000
+     }
+     fn fork(&self) -> Arc<dyn Provider> {
+         Arc::new(self.clone())
+@@ -56,9 +103,24 @@ impl crate::tool::Tool for CaptureTool {
+     }
+ }
+ 
+-async fn setup() -> (Agent, tokio_mpsc::Sender<Result<StreamEvent>>, InputLog) {
++async fn setup() -> (
++    Agent,
++    tokio_mpsc::Sender<Result<StreamEvent>>,
++    InputLog,
++    Arc<Mutex<Vec<CapturedRequest>>>,
++    Arc<Mutex<usize>>,
++) {
+     let (tx, rx) = tokio_mpsc::channel(32);
+-    let provider = Arc::new(ChannelProvider(Arc::new(Mutex::new(Some(rx)))));
++    let requests = Arc::new(Mutex::new(Vec::new()));
++    let prewarms = Arc::new(Mutex::new(0));
++    let provider = Arc::new(ChannelProvider {
++        events: Arc::new(Mutex::new(Some(rx))),
++        requests: requests.clone(),
++        prewarms: prewarms.clone(),
++        native_auto_compaction: false,
++        provider_name: "keyed-stream-test",
++        fail: false,
++    });
+     let log = Arc::new(Mutex::new(Vec::new()));
+     let registry = Registry::empty();
+     registry
+@@ -72,7 +134,7 @@ async fn setup() -> (Agent, tokio_mpsc::Sender<Result<StreamEvent>>, InputLog) {
+             cache_control: None,
+         }],
+     );
+-    (agent, tx, log)
++    (agent, tx, log, requests, prewarms)
+ }
+ 
+ fn start(id: &str) -> StreamEvent {
+@@ -117,7 +179,7 @@ async fn next_tool_event(rx: &mut tokio_mpsc::UnboundedReceiver<ServerEvent>) ->
+ #[tokio::test]
+ async fn keyed_tool_streaming_emits_each_name_before_args_and_executes_once() {
+     let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
+-    let (mut agent, provider_tx, log) = setup().await;
++    let (mut agent, provider_tx, log, requests, _) = setup().await;
+     let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+     let task = tokio::spawn(async move {
+         agent.run_turn_streaming_mpsc(tx).await.unwrap();
+@@ -131,6 +193,9 @@ async fn keyed_tool_streaming_emits_each_name_before_args_and_executes_once() {
+         );
+         assert!(log.lock().unwrap().is_empty());
+     }
++    let request_system = requests.lock().unwrap()[0].system.clone();
++    let request_tools = requests.lock().unwrap()[0].tools.clone();
++    assert!(request_tools.iter().any(|tool| tool.name == "capture"));
+     // Neither incomplete JSON nor another call's start may delay a fragment.
+     for (id, fragment) in [
+         ("b", "{\"value\":"),
+@@ -177,6 +242,32 @@ async fn keyed_tool_streaming_emits_each_name_before_args_and_executes_once() {
+         }
+     }
+     assert_eq!(executions, ["a", "b"]);
++    let response = agent
++        .session
++        .messages
++        .iter()
++        .find(|message| message.role == Role::Assistant)
++        .expect("assistant response persisted");
++    let refs = response
++        .request_snapshot
++        .as_ref()
++        .expect("effective request snapshots attached");
++    assert_eq!(
++        agent.session.request_prompt_snapshots[refs.prompt.unwrap()],
++        request_system
++    );
++    assert_eq!(
++        agent.session.request_tool_snapshots[refs.tools.unwrap()]
++            .iter()
++            .find(|tool| tool.name == "capture")
++            .unwrap()
++            .description,
++        request_tools
++            .iter()
++            .find(|tool| tool.name == "capture")
++            .unwrap()
++            .description
++    );
+     for id in ["a", "b"] {
+         assert!(agent.session.messages.iter().flat_map(|m| &m.content).any(
+             |block| matches!(block,
+@@ -189,7 +280,7 @@ async fn keyed_tool_streaming_emits_each_name_before_args_and_executes_once() {
+ #[tokio::test]
+ async fn keyed_tool_streaming_blocking_loop_isolates_inputs_and_legacy_fallback() {
+     let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
+-    let (mut agent, tx, log) = setup().await;
++    let (mut agent, tx, log, requests, _) = setup().await;
+     for event in [
+         start("a"),
+         start("b"),
+@@ -207,19 +298,45 @@ async fn keyed_tool_streaming_blocking_loop_isolates_inputs_and_legacy_fallback(
+     }
+     drop(tx);
+     agent.run_turn(false).await.unwrap();
++    let request = requests.lock().unwrap()[0].clone();
+     let mut inputs = log.lock().unwrap().clone();
+     inputs.sort_by_key(Value::to_string);
+     assert_eq!(
+         inputs,
+         vec![json!({"value":1}), json!({"value":2}), json!({"value":3})]
+     );
++    let response = agent
++        .session
++        .messages
++        .iter()
++        .find(|message| message.role == Role::Assistant)
++        .expect("assistant response persisted");
++    let refs = response
++        .request_snapshot
++        .as_ref()
++        .expect("effective request snapshots attached");
++    assert_eq!(
++        agent.session.request_prompt_snapshots[refs.prompt.unwrap()],
++        request.system
++    );
++    assert_eq!(
++        agent.session.request_tool_snapshots[refs.tools.unwrap()]
++            .iter()
++            .map(|tool| tool.name.as_str())
++            .collect::<Vec<_>>(),
++        request
++            .tools
++            .iter()
++            .map(|tool| tool.name.as_str())
++            .collect::<Vec<_>>()
++    );
+ }
+ 
+ #[tokio::test]
+ async fn keyed_tool_streaming_rollback_discards_all_partial_calls() {
+     let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
+     for streaming in [false, true] {
+-        let (mut agent, tx, log) = setup().await;
++        let (mut agent, tx, log, _, _) = setup().await;
+         for event in [
+             start("a"),
+             start("b"),
+@@ -244,3 +361,351 @@ async fn keyed_tool_streaming_rollback_discards_all_partial_calls() {
+         assert_eq!(*log.lock().unwrap(), vec![json!({"fresh":true})]);
+     }
+ }
++
++#[tokio::test]
++async fn failed_provider_request_does_not_persist_speculative_request_snapshots() {
++    let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
++    let (mut agent, tx, _, requests, _) = setup().await;
++    agent.provider = Arc::new(ChannelProvider {
++        events: Arc::new(Mutex::new(None)),
++        requests: requests.clone(),
++        prewarms: Arc::new(Mutex::new(0)),
++        native_auto_compaction: false,
++        provider_name: "keyed-stream-test",
++        fail: true,
++    });
++    drop(tx);
++    agent.run_turn(false).await.unwrap_err();
++    assert!(!requests.lock().unwrap().is_empty());
++    assert!(agent.session.request_prompt_snapshots.is_empty());
++    assert!(agent.session.request_tool_snapshots.is_empty());
++    assert!(
++        agent
++            .session
++            .messages
++            .iter()
++            .all(|message| message.request_snapshot.is_none())
++    );
++}
++
++#[tokio::test]
++async fn prompt_snapshot_contains_active_skill_and_turn_varying_reminders() {
++    let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
++    let tempdir = tempfile::tempdir().unwrap();
++    let skill_dir = tempdir.path().join(".jcode/skills/snapshot-skill");
++    std::fs::create_dir_all(&skill_dir).unwrap();
++    std::fs::write(
++        skill_dir.join("SKILL.md"),
++        "---\nname: snapshot-skill\ndescription: Skill for snapshot testing\n---\nskill body for snapshot test\n",
++    )
++    .unwrap();
++
++    let (mut agent, tx, _, requests, _) = setup().await;
++    agent.session.working_dir = Some(tempdir.path().to_string_lossy().into_owned());
++    agent.active_skill = Some("snapshot-skill".into());
++    let first_reminder = "first turn snapshot reminder";
++    let second_reminder = "second turn snapshot reminder";
++    agent.current_turn_system_reminder = Some(first_reminder.into());
++    for event in [
++        StreamEvent::TextDelta("first response".into()),
++        StreamEvent::MessageEnd {
++            stop_reason: Some("end_turn".into()),
++        },
++        StreamEvent::TextDelta("second response".into()),
++        StreamEvent::MessageEnd {
++            stop_reason: Some("end_turn".into()),
++        },
++    ] {
++        tx.send(Ok(event)).await.unwrap();
++    }
++    drop(tx);
++    agent.run_turn(false).await.unwrap();
++
++    agent.current_turn_system_reminder = Some(second_reminder.into());
++    agent.add_message(
++        Role::User,
++        vec![ContentBlock::Text {
++            text: "second snapshot turn".into(),
++            cache_control: None,
++        }],
++    );
++    agent.run_turn(false).await.unwrap();
++
++    let requests = requests.lock().unwrap().clone();
++    assert_eq!(requests.len(), 2);
++    for request in &requests {
++        assert!(request.system.contains("skill body for snapshot test"));
++    }
++    assert!(requests[0].system.contains(first_reminder));
++    assert!(!requests[0].system.contains(second_reminder));
++    assert!(requests[1].system.contains(second_reminder));
++    assert!(!requests[1].system.contains(first_reminder));
++
++    let responses = agent
++        .session
++        .messages
++        .iter()
++        .filter(|message| message.role == Role::Assistant)
++        .collect::<Vec<_>>();
++    assert_eq!(responses.len(), 2);
++    for (index, response) in responses.iter().enumerate() {
++        let prompt_index = response
++            .request_snapshot
++            .as_ref()
++            .expect("assistant response has request snapshot")
++            .prompt
++            .expect("assistant response has prompt snapshot index");
++        assert_eq!(
++            agent.session.request_prompt_snapshots[prompt_index],
++            requests[index].system
++        );
++    }
++}
++
++#[tokio::test]
++async fn prewarm_does_not_persist_request_snapshots() {
++    let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
++    let (agent, _tx, _, requests, prewarms) = setup().await;
++
++    agent.prewarm_provider_idle().await;
++
++    assert_eq!(*prewarms.lock().unwrap(), 1);
++    assert!(requests.lock().unwrap().is_empty());
++    assert!(agent.session.request_prompt_snapshots.is_empty());
++    assert!(agent.session.request_tool_snapshots.is_empty());
++    assert!(
++        agent
++            .session
++            .messages
++            .iter()
++            .all(|message| message.request_snapshot.is_none())
++    );
++}
++
++struct FailingTool;
++
++#[async_trait]
++impl crate::tool::Tool for FailingTool {
++    fn name(&self) -> &str {
++        "fail_capture"
++    }
++    fn description(&self) -> &str {
++        "Fail after recording the assistant request"
++    }
++    fn parameters_schema(&self) -> Value {
++        json!({"type":"object"})
++    }
++    async fn execute(&self, _input: Value, _: crate::tool::ToolContext) -> Result<ToolOutput> {
++        anyhow::bail!("expected test tool failure")
++    }
++}
++
++#[tokio::test]
++async fn tool_execution_failure_keeps_assistant_request_snapshots() {
++    let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
++    let (tx, rx) = tokio_mpsc::channel(32);
++    let requests = Arc::new(Mutex::new(Vec::new()));
++    let provider = Arc::new(ChannelProvider {
++        events: Arc::new(Mutex::new(Some(rx))),
++        requests: requests.clone(),
++        prewarms: Arc::new(Mutex::new(0)),
++        native_auto_compaction: false,
++        provider_name: "keyed-stream-test",
++        fail: false,
++    });
++    let registry = Registry::empty();
++    registry
++        .register("fail_capture".into(), Arc::new(FailingTool))
++        .await;
++    let mut agent = Agent::new(provider, registry);
++    agent.add_message(
++        Role::User,
++        vec![ContentBlock::Text {
++            text: "run failing tool".into(),
++            cache_control: None,
++        }],
++    );
++    for event in [
++        StreamEvent::ToolUseStart {
++            id: "failed-call".into(),
++            name: "fail_capture".into(),
++        },
++        StreamEvent::ToolInputDelta("{}".into()),
++        StreamEvent::ToolUseEnd,
++        finish(),
++    ] {
++        tx.send(Ok(event)).await.unwrap();
++    }
++    drop(tx);
++
++    agent.run_turn(false).await.unwrap();
++
++    let request = requests.lock().unwrap()[0].clone();
++    let response = agent
++        .session
++        .messages
++        .iter()
++        .find(|message| message.role == Role::Assistant)
++        .expect("assistant tool-call response persisted");
++    let refs = response
++        .request_snapshot
++        .as_ref()
++        .expect("request snapshots remain associated after tool failure");
++    assert_eq!(
++        agent.session.request_prompt_snapshots[refs.prompt.unwrap()],
++        request.system
++    );
++    assert!(
++        agent.session.request_tool_snapshots[refs.tools.unwrap()]
++            .iter()
++            .any(|tool| tool.name == "fail_capture")
++    );
++    assert!(agent.session.messages.iter().flat_map(|message| &message.content).any(
++        |block| matches!(block, ContentBlock::ToolResult { tool_use_id, is_error: Some(true), .. }
++            if tool_use_id == "failed-call")
++    ));
++}
++
++#[tokio::test]
++async fn compacted_request_uses_rebuilt_messages_and_persists_its_snapshot() {
++    let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
++    let (tx, rx) = tokio_mpsc::channel(32);
++    let requests = Arc::new(Mutex::new(Vec::new()));
++    let provider = Arc::new(ChannelProvider {
++        events: Arc::new(Mutex::new(Some(rx))),
++        requests: requests.clone(),
++        prewarms: Arc::new(Mutex::new(0)),
++        native_auto_compaction: true,
++        provider_name: "openai",
++        fail: false,
++    });
++    let registry = Registry::new(provider.clone()).await;
++    let mut agent = Agent::new(provider, registry);
++    agent.add_message(
++        Role::User,
++        vec![ContentBlock::Text {
++            text: "compact this conversation".into(),
++            cache_control: None,
++        }],
++    );
++    let retained_message_id = agent.add_message(
++        Role::Assistant,
++        vec![ContentBlock::Text {
++            text: "assistant response retained across compaction".into(),
++            cache_control: None,
++        }],
++    );
++    let retained_prompt = "pre-compaction prompt snapshot";
++    let retained_tool = ToolDefinition {
++        name: "retained_tool".into(),
++        description: "Tool snapshot retained across compaction".into(),
++        input_schema: json!({"type":"object","properties":{"value":{"type":"string"}}}),
++    };
++    assert!(agent.session.associate_request_snapshots(
++        &retained_message_id,
++        retained_prompt,
++        std::slice::from_ref(&retained_tool),
++    ));
++    let retained_refs = agent
++        .session
++        .messages
++        .iter()
++        .find(|message| message.id == retained_message_id)
++        .and_then(|message| message.request_snapshot.clone())
++        .expect("pre-compaction response snapshot attached");
++    for index in 0..30 {
++        agent.add_message(
++            Role::User,
++            vec![ContentBlock::Text {
++                text: format!("turn {index} {}", "x".repeat(120)),
++                cache_control: None,
++            }],
++        );
++    }
++    let _ = agent.provider_messages();
++    let (_, started) = agent.request_manual_compaction();
++    assert!(started, "manual compaction should start");
++    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
++    let mut compacted_messages = None;
++    while tokio::time::Instant::now() < deadline {
++        let (messages, event) = agent.messages_for_provider();
++        if event.is_some() {
++            compacted_messages = Some(messages);
++            break;
++        }
++        tokio::time::sleep(Duration::from_millis(10)).await;
++    }
++    let compacted_messages = compacted_messages.expect("compaction should complete");
++    let retained_message = agent
++        .session
++        .messages
++        .iter()
++        .find(|message| message.id == retained_message_id)
++        .expect("stored assistant response survives provider compaction");
++    assert_eq!(
++        retained_message.request_snapshot.as_ref(),
++        Some(&retained_refs)
++    );
++    assert_eq!(
++        agent.session.request_prompt_snapshots[retained_refs.prompt.unwrap()],
++        retained_prompt
++    );
++    assert_eq!(
++        agent.session.request_tool_snapshots[retained_refs.tools.unwrap()][0],
++        (&retained_tool).into()
++    );
++    assert!(compacted_messages.iter().any(|message| {
++        message.content.iter().any(|block| {
++            matches!(block, ContentBlock::Text { text, .. }
++                if text.contains("test compaction summary"))
++        })
++    }));
++
++    for event in [
++        StreamEvent::TextDelta("after compaction".into()),
++        StreamEvent::MessageEnd {
++            stop_reason: Some("end_turn".into()),
++        },
++    ] {
++        tx.send(Ok(event)).await.unwrap();
++    }
++    drop(tx);
++    agent.run_turn(false).await.unwrap();
++
++    let request = requests.lock().unwrap()[0].clone();
++    assert!(
++        request.messages.iter().any(|message| message
++            .content
++            .iter()
++            .any(|block| matches!(block, ContentBlock::Text { text, .. }
++                if text.contains("test compaction summary")))),
++        "provider receives rebuilt compacted context"
++    );
++    assert!(request.messages.len() < 32);
++    let response = agent
++        .session
++        .messages
++        .iter()
++        .rev()
++        .find(|message| message.role == Role::Assistant)
++        .expect("assistant response persisted");
++    let refs = response
++        .request_snapshot
++        .as_ref()
++        .expect("snapshot associated");
++    assert_eq!(
++        agent.session.request_prompt_snapshots[refs.prompt.unwrap()],
++        request.system
++    );
++    assert_eq!(
++        agent.session.request_tool_snapshots[refs.tools.unwrap()]
++            .iter()
++            .map(|tool| tool.name.as_str())
++            .collect::<Vec<_>>(),
++        request
++            .tools
++            .iter()
++            .map(|tool| tool.name.as_str())
++            .collect::<Vec<_>>()
++    );
++}
+diff --git a/crates/jcode-app-core/src/ambient/runner.rs b/crates/jcode-app-core/src/ambient/runner.rs
+index 0367be4a4..7610d2c24 100644
+--- a/crates/jcode-app-core/src/ambient/runner.rs
++++ b/crates/jcode-app-core/src/ambient/runner.rs
+@@ -429,6 +429,8 @@ impl AmbientRunnerHandle {
+                     ),
+                 );
+                 child.replace_messages(parent.messages.clone());
++                child.request_prompt_snapshots = parent.request_prompt_snapshots.clone();
++                child.request_tool_snapshots = parent.request_tool_snapshots.clone();
+                 child.compaction = parent.compaction.clone();
+                 child.provider_key = parent.provider_key.clone();
+                 child.route_api_method = parent.route_api_method.clone();
+diff --git a/crates/jcode-app-core/src/overnight.rs b/crates/jcode-app-core/src/overnight.rs
+index 15bdf8016..6b3346c64 100644
+--- a/crates/jcode-app-core/src/overnight.rs
++++ b/crates/jcode-app-core/src/overnight.rs
+@@ -174,6 +174,8 @@ fn create_coordinator_session(parent: &Session, mission: &Option<String>) -> Res
+     });
+     let mut child = Session::create(Some(parent.id.clone()), title);
+     child.replace_messages(parent.messages.clone());
++    child.request_prompt_snapshots = parent.request_prompt_snapshots.clone();
++    child.request_tool_snapshots = parent.request_tool_snapshots.clone();
+     child.compaction = parent.compaction.clone();
+     child.provider_key = parent.provider_key.clone();
+     child.route_api_method = parent.route_api_method.clone();
+diff --git a/crates/jcode-app-core/src/server/client_actions.rs b/crates/jcode-app-core/src/server/client_actions.rs
+index 5b7f58a42..117b93eb7 100644
+--- a/crates/jcode-app-core/src/server/client_actions.rs
++++ b/crates/jcode-app-core/src/server/client_actions.rs
+@@ -680,6 +680,8 @@ fn clone_split_session(
+ 
+     let mut child = Session::create(Some(parent_session_id.to_string()), None);
+     child.replace_messages(parent.messages.clone());
++    child.request_prompt_snapshots = parent.request_prompt_snapshots.clone();
++    child.request_tool_snapshots = parent.request_tool_snapshots.clone();
+     child.compaction = parent.compaction.clone();
+     child.system_prompt = parent.system_prompt.clone();
+     child.working_dir = parent.working_dir.clone();
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/reload.rs b/crates/jcode-app-core/src/server/client_session_tests/reload.rs
+index 770558e2b..5ab929cb0 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/reload.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/reload.rs
+@@ -14,6 +14,7 @@ fn detects_reload_interrupted_generation_text() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     assert!(session_was_interrupted_by_reload(&agent));
+@@ -33,6 +34,7 @@ fn detects_reload_interrupted_tool_result() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     assert!(session_was_interrupted_by_reload(&agent));
+@@ -52,6 +54,7 @@ fn detects_reload_skipped_tool_result() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     assert!(session_was_interrupted_by_reload(&agent));
+@@ -71,6 +74,7 @@ fn detects_selfdev_reload_tool_result_even_when_not_marked_error() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     assert!(session_was_interrupted_by_reload(&agent));
+@@ -90,6 +94,7 @@ fn ignores_normal_tool_errors() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     assert!(!session_was_interrupted_by_reload(&agent));
+@@ -108,6 +113,7 @@ fn restored_closed_session_with_reload_marker_still_counts_as_interrupted() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     assert!(restored_session_was_interrupted(
+@@ -142,6 +148,7 @@ fn restored_closed_session_with_pending_user_message_during_reload_should_count_
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     let interrupted = restored_session_was_interrupted(
+@@ -189,6 +196,7 @@ fn restored_closed_session_with_pending_user_message_during_socket_ready_handoff
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     let interrupted = restored_session_was_interrupted(
+@@ -230,6 +238,7 @@ fn restored_closed_session_with_pending_user_message_without_reload_marker_is_no
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     let interrupted = restored_session_was_interrupted(
+@@ -260,6 +269,7 @@ fn restored_closed_session_without_reload_marker_is_not_interrupted() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }]);
+ 
+     assert!(!restored_session_was_interrupted(
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
+index a922bf896..8af1401fb 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
+@@ -17,6 +17,7 @@ async fn handle_resume_session_allows_live_attach_when_existing_agent_is_busy()
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     };
+ 
+     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+diff --git a/crates/jcode-app-core/src/server/client_state_tests.rs b/crates/jcode-app-core/src/server/client_state_tests.rs
+index 91ad28d25..ec2a6029b 100644
+--- a/crates/jcode-app-core/src/server/client_state_tests.rs
++++ b/crates/jcode-app-core/src/server/client_state_tests.rs
+@@ -309,6 +309,7 @@ async fn assert_history_service_tier_and_pdf_capability(
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     session.save().expect("save session");
+ 
+diff --git a/crates/jcode-app-core/src/tool/selfdev/launch.rs b/crates/jcode-app-core/src/tool/selfdev/launch.rs
+index 17194ebd1..5e7b9d317 100644
+--- a/crates/jcode-app-core/src/tool/selfdev/launch.rs
++++ b/crates/jcode-app-core/src/tool/selfdev/launch.rs
+@@ -17,6 +17,8 @@ pub fn enter_selfdev_session(
+                     Some("Self-development session".to_string()),
+                 );
+                 child.replace_messages(parent.messages.clone());
++                child.request_prompt_snapshots = parent.request_prompt_snapshots.clone();
++                child.request_tool_snapshots = parent.request_tool_snapshots.clone();
+                 child.compaction = parent.compaction.clone();
+                 child.model = parent.model.clone();
+                 child.provider_key = parent.provider_key.clone();
+diff --git a/crates/jcode-base/src/import.rs b/crates/jcode-base/src/import.rs
+index 5514270b2..69b5611eb 100644
+--- a/crates/jcode-base/src/import.rs
++++ b/crates/jcode-base/src/import.rs
+@@ -573,6 +573,7 @@ fn normalize_imported_history(session: &mut Session, apply_limits: bool) -> bool
+                     timestamp: None,
+                     tool_duration_ms: None,
+                     token_usage: None,
++                    request_snapshot: None,
+                 },
+             );
+         }
+@@ -842,6 +843,7 @@ fn import_session_from_file_with_target(
+                 timestamp: None,
+                 tool_duration_ms: None,
+                 token_usage: None,
++                request_snapshot: None,
+             });
+         }
+     }
+@@ -995,6 +997,7 @@ fn append_text_message(
+         timestamp,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+ }
+ 
+diff --git a/crates/jcode-base/src/import_tests.rs b/crates/jcode-base/src/import_tests.rs
+index 4b5ee2d1a..968187a0b 100644
+--- a/crates/jcode-base/src/import_tests.rs
++++ b/crates/jcode-base/src/import_tests.rs
+@@ -143,6 +143,7 @@ fn imported_history_is_bounded_for_fast_initial_render() {
+             timestamp: None,
+             tool_duration_ms: None,
+             token_usage: None,
++            request_snapshot: None,
+         });
+     }
+ 
+@@ -478,6 +479,7 @@ fn cached_imported_session_preserves_existing_history_verbatim() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     legacy.append_stored_message(StoredMessage {
+         id: "user-result".to_string(),
+@@ -491,6 +493,7 @@ fn cached_imported_session_preserves_existing_history_verbatim() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     legacy.append_stored_message(StoredMessage {
+         id: "jcode-continuation".to_string(),
+@@ -503,6 +506,7 @@ fn cached_imported_session_preserves_existing_history_verbatim() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     legacy.save().unwrap();
+ 
+@@ -1047,6 +1051,7 @@ fn test_reimporting_claude_session_preserves_jcode_continuation() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     session.save().unwrap();
+     assert_eq!(Session::load(&imported_id).unwrap().messages.len(), 3);
+diff --git a/crates/jcode-base/src/session.rs b/crates/jcode-base/src/session.rs
+index e7211f99b..6f9ea8c3a 100644
+--- a/crates/jcode-base/src/session.rs
++++ b/crates/jcode-base/src/session.rs
+@@ -47,8 +47,9 @@ pub use crash::{
+     find_session_by_name_or_id, recover_crashed_sessions, recover_crashed_sessions_by_ids,
+ };
+ pub use jcode_session_types::{
+-    EnvSnapshot, GitState, SessionImproveMode, SessionStatus, StoredCompactionState,
+-    StoredDisplayRole, StoredMemoryInjection, StoredMessage, StoredTokenUsage,
++    EnvSnapshot, GitState, RequestSnapshotRefs, SessionImproveMode, SessionStatus,
++    StoredCompactionState, StoredDisplayRole, StoredMemoryInjection, StoredMessage,
++    StoredTokenUsage, StoredToolDefinition,
+ };
+ use journal::{PersistVectorMode, SessionJournalMeta, SessionPersistState};
+ pub use maintenance::prune_old_session_backups;
+@@ -111,6 +112,12 @@ pub struct Session {
+     pub created_at: DateTime<Utc>,
+     pub updated_at: DateTime<Utc>,
+     pub messages: Vec<StoredMessage>,
++    /// Unique effective system prompts sent through the provider abstraction.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub request_prompt_snapshots: Vec<String>,
++    /// Unique effective common tool-definition lists sent through providers.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub request_tool_snapshots: Vec<Vec<StoredToolDefinition>>,
+     /// Full assembled system prompt replacement, including an intentionally empty prompt.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub system_prompt: Option<String>,
+@@ -370,6 +377,8 @@ impl Session {
+         session.created_at = snapshot.created_at;
+         session.updated_at = snapshot.updated_at;
+         session.messages = snapshot.messages;
++        session.request_prompt_snapshots = snapshot.request_prompt_snapshots;
++        session.request_tool_snapshots = snapshot.request_tool_snapshots;
+         session.compaction = snapshot.compaction;
+         session.provider_session_id = snapshot.provider_session_id;
+         session.provider_key = snapshot.provider_key;
+@@ -420,6 +429,16 @@ impl Session {
+             self.memory_injections.iter().map(estimate_json_bytes).sum();
+         let replay_events_json_bytes: usize =
+             self.replay_events.iter().map(estimate_json_bytes).sum();
++        let request_prompt_snapshots_json_bytes: usize = self
++            .request_prompt_snapshots
++            .iter()
++            .map(estimate_json_bytes)
++            .sum();
++        let request_tool_snapshots_json_bytes: usize = self
++            .request_tool_snapshots
++            .iter()
++            .map(estimate_json_bytes)
++            .sum();
+         let compaction_json_bytes = self
+             .compaction
+             .as_ref()
+@@ -477,6 +496,12 @@ impl Session {
+                 "count": self.replay_events.len(),
+                 "json_bytes": replay_events_json_bytes,
+             },
++            "request_snapshots": {
++                "prompts": self.request_prompt_snapshots.len(),
++                "prompt_json_bytes": request_prompt_snapshots_json_bytes,
++                "tool_lists": self.request_tool_snapshots.len(),
++                "tool_json_bytes": request_tool_snapshots_json_bytes,
++            },
+             "provider_messages_cache": {
+                 "count": self.provider_messages_cache.len(),
+                 "source_len": self.provider_messages_cache_len,
+@@ -491,6 +516,8 @@ impl Session {
+                     + env_snapshots_json_bytes
+                     + memory_injections_json_bytes
+                     + replay_events_json_bytes
++                    + request_prompt_snapshots_json_bytes
++                    + request_tool_snapshots_json_bytes
+                     + compaction_json_bytes,
+                 "canonical_transcript_json_bytes": session_message_json_bytes,
+                 "provider_cache_json_bytes": provider_messages_cache_json_bytes,
+@@ -536,10 +563,14 @@ impl Session {
+         self.persist_state = SessionPersistState {
+             snapshot_exists,
+             messages_len: self.messages.len(),
++            request_prompt_snapshots_len: self.request_prompt_snapshots.len(),
++            request_tool_snapshots_len: self.request_tool_snapshots.len(),
+             env_snapshots_len: self.env_snapshots.len(),
+             memory_injections_len: self.memory_injections.len(),
+             replay_events_len: self.replay_events.len(),
+             messages_mode: PersistVectorMode::Clean,
++            request_prompt_snapshots_mode: PersistVectorMode::Clean,
++            request_tool_snapshots_mode: PersistVectorMode::Clean,
+             env_snapshots_mode: PersistVectorMode::Clean,
+             memory_injections_mode: PersistVectorMode::Clean,
+             replay_events_mode: PersistVectorMode::Clean,
+@@ -679,6 +710,18 @@ impl Session {
+         }
+     }
+ 
++    fn mark_request_prompt_snapshot_append_dirty(&mut self) {
++        if self.persist_state.request_prompt_snapshots_mode != PersistVectorMode::Full {
++            self.persist_state.request_prompt_snapshots_mode = PersistVectorMode::Append;
++        }
++    }
++
++    fn mark_request_tool_snapshot_append_dirty(&mut self) {
++        if self.persist_state.request_tool_snapshots_mode != PersistVectorMode::Full {
++            self.persist_state.request_tool_snapshots_mode = PersistVectorMode::Append;
++        }
++    }
++
+     fn mark_messages_full_dirty(&mut self) {
+         self.persist_state.messages_mode = PersistVectorMode::Full;
+         self.provider_messages_cache_mode = PersistVectorMode::Full;
+@@ -752,6 +795,8 @@ impl Session {
+             created_at: now,
+             updated_at: now,
+             messages: Vec::new(),
++            request_prompt_snapshots: Vec::new(),
++            request_tool_snapshots: Vec::new(),
+             system_prompt: None,
+             model_usage_turn_id: None,
+             compaction: None,
+@@ -808,6 +853,8 @@ impl Session {
+             created_at: now,
+             updated_at: now,
+             messages: Vec::new(),
++            request_prompt_snapshots: Vec::new(),
++            request_tool_snapshots: Vec::new(),
+             system_prompt: None,
+             model_usage_turn_id: None,
+             compaction: None,
+@@ -1262,6 +1309,61 @@ request in this new forked session, using the inherited conversation only as con
+         self.add_message_ext_with_display_role(role, content, tool_duration_ms, token_usage, None)
+     }
+ 
++    /// Associate a successfully recorded assistant response with the effective
++    /// provider request snapshots that produced it.
++    pub fn associate_request_snapshots(
++        &mut self,
++        message_id: &str,
++        prompt: &str,
++        tools: &[jcode_message_types::ToolDefinition],
++    ) -> bool {
++        if !self
++            .messages
++            .iter()
++            .any(|message| message.id == message_id && message.role == Role::Assistant)
++        {
++            return false;
++        }
++
++        let prompt_index = self
++            .request_prompt_snapshots
++            .iter()
++            .position(|existing| existing == &prompt)
++            .unwrap_or_else(|| {
++                let index = self.request_prompt_snapshots.len();
++                self.request_prompt_snapshots.push(prompt.to_string());
++                self.mark_request_prompt_snapshot_append_dirty();
++                index
++            });
++
++        let definitions: Vec<StoredToolDefinition> = tools.iter().map(Into::into).collect();
++        let tool_index = self
++            .request_tool_snapshots
++            .iter()
++            .position(|existing| existing == &definitions)
++            .unwrap_or_else(|| {
++                let index = self.request_tool_snapshots.len();
++                self.request_tool_snapshots.push(definitions);
++                self.mark_request_tool_snapshot_append_dirty();
++                index
++            });
++
++        let message_index = self
++            .messages
++            .iter()
++            .position(|message| message.id == message_id)
++            .expect("assistant response checked before registering snapshots");
++        let appended_message = message_index >= self.persist_state.messages_len;
++        self.messages[message_index].request_snapshot = Some(RequestSnapshotRefs {
++            prompt: Some(prompt_index),
++            tools: Some(tool_index),
++        });
++        if !appended_message {
++            self.mark_messages_full_dirty();
++        }
++        true
++    }
++
+     pub fn add_message_ext_with_display_role(
+         &mut self,
+         role: Role,
+@@ -1279,6 +1381,7 @@ request in this new forked session, using the inherited conversation only as con
+             timestamp: Some(Utc::now()),
+             tool_duration_ms,
+             token_usage,
++            request_snapshot: None,
+         });
+         id
+     }
+@@ -1557,6 +1660,8 @@ request in this new forked session, using the inherited conversation only as con
+     /// in the client only inflates memory during idle remote sessions.
+     pub fn strip_transcript_for_remote_client(&mut self) {
+         self.messages.clear();
++        self.request_prompt_snapshots.clear();
++        self.request_tool_snapshots.clear();
+         self.compaction = None;
+         self.env_snapshots.clear();
+         self.memory_injections.clear();
+@@ -1636,6 +1741,10 @@ struct RemoteStartupSessionSnapshot {
+     #[serde(default)]
+     messages: Vec<StoredMessage>,
+     #[serde(default)]
++    request_prompt_snapshots: Vec<String>,
++    #[serde(default)]
++    request_tool_snapshots: Vec<Vec<StoredToolDefinition>>,
++    #[serde(default)]
+     compaction: Option<StoredCompactionState>,
+     #[serde(default)]
+     provider_session_id: Option<String>,
+diff --git a/crates/jcode-base/src/session/journal.rs b/crates/jcode-base/src/session/journal.rs
+index e8a506654..570ebd43f 100644
+--- a/crates/jcode-base/src/session/journal.rs
++++ b/crates/jcode-base/src/session/journal.rs
+@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
+ 
+ use super::{
+     EnvSnapshot, SessionImproveMode, SessionStatus, StoredCompactionState, StoredMemoryInjection,
+-    StoredMessage, StoredReplayEvent,
++    StoredMessage, StoredReplayEvent, StoredToolDefinition,
+ };
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+@@ -45,6 +45,10 @@ pub(super) struct SessionJournalEntry {
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub(super) append_messages: Vec<StoredMessage>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub(super) append_request_prompt_snapshots: Vec<String>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub(super) append_request_tool_snapshots: Vec<Vec<StoredToolDefinition>>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub(super) append_env_snapshots: Vec<EnvSnapshot>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub(super) append_memory_injections: Vec<StoredMemoryInjection>,
+@@ -64,10 +68,14 @@ pub(super) enum PersistVectorMode {
+ pub(super) struct SessionPersistState {
+     pub(super) snapshot_exists: bool,
+     pub(super) messages_len: usize,
++    pub(super) request_prompt_snapshots_len: usize,
++    pub(super) request_tool_snapshots_len: usize,
+     pub(super) env_snapshots_len: usize,
+     pub(super) memory_injections_len: usize,
+     pub(super) replay_events_len: usize,
+     pub(super) messages_mode: PersistVectorMode,
++    pub(super) request_prompt_snapshots_mode: PersistVectorMode,
++    pub(super) request_tool_snapshots_mode: PersistVectorMode,
+     pub(super) env_snapshots_mode: PersistVectorMode,
+     pub(super) memory_injections_mode: PersistVectorMode,
+     pub(super) replay_events_mode: PersistVectorMode,
+diff --git a/crates/jcode-base/src/session/persistence.rs b/crates/jcode-base/src/session/persistence.rs
+index f166a1a2f..781101743 100644
+--- a/crates/jcode-base/src/session/persistence.rs
++++ b/crates/jcode-base/src/session/persistence.rs
+@@ -178,6 +178,10 @@ impl Session {
+     fn apply_journal_entry(&mut self, entry: SessionJournalEntry) {
+         self.apply_journal_meta(entry.meta);
+         self.messages.extend(entry.append_messages);
++        self.request_prompt_snapshots
++            .extend(entry.append_request_prompt_snapshots);
++        self.request_tool_snapshots
++            .extend(entry.append_request_tool_snapshots);
+         self.env_snapshots.extend(entry.append_env_snapshots);
+         self.memory_injections
+             .extend(entry.append_memory_injections);
+@@ -331,6 +335,16 @@ impl Session {
+             journal_entries += 1;
+             session.apply_journal_meta(entry.meta);
+             session.messages.extend(entry.append_messages);
++            session
++                .request_prompt_snapshots
++                .extend(entry.append_request_prompt_snapshots);
++            session
++                .request_tool_snapshots
++                .extend(entry.append_request_tool_snapshots);
++            session.env_snapshots.extend(entry.append_env_snapshots);
++            session
++                .memory_injections
++                .extend(entry.append_memory_injections);
+             session.replay_events.extend(entry.append_replay_events);
+         })?;
+         let journal_ms = journal_start.elapsed().as_millis();
+@@ -431,10 +445,15 @@ impl Session {
+             .is_some_and(|prev| metadata_requires_snapshot(prev, &current_meta));
+         let vectors_need_snapshot = !self.persist_state.snapshot_exists
+             || self.persist_state.messages_mode == PersistVectorMode::Full
++            || self.persist_state.request_prompt_snapshots_mode == PersistVectorMode::Full
++            || self.persist_state.request_tool_snapshots_mode == PersistVectorMode::Full
+             || self.persist_state.env_snapshots_mode == PersistVectorMode::Full
+             || self.persist_state.memory_injections_mode == PersistVectorMode::Full
+             || self.persist_state.replay_events_mode == PersistVectorMode::Full
+             || self.messages.len() < self.persist_state.messages_len
++            || self.request_prompt_snapshots.len()
++                < self.persist_state.request_prompt_snapshots_len
++            || self.request_tool_snapshots.len() < self.persist_state.request_tool_snapshots_len
+             || self.env_snapshots.len() < self.persist_state.env_snapshots_len
+             || self.memory_injections.len() < self.persist_state.memory_injections_len
+             || self.replay_events.len() < self.persist_state.replay_events_len;
+@@ -482,6 +501,12 @@ impl Session {
+             let entry = SessionJournalEntry {
+                 meta: current_meta.clone(),
+                 append_messages: self.messages[self.persist_state.messages_len..].to_vec(),
++                append_request_prompt_snapshots: self.request_prompt_snapshots
++                    [self.persist_state.request_prompt_snapshots_len..]
++                    .to_vec(),
++                append_request_tool_snapshots: self.request_tool_snapshots
++                    [self.persist_state.request_tool_snapshots_len..]
++                    .to_vec(),
+                 append_env_snapshots: self.env_snapshots[self.persist_state.env_snapshots_len..]
+                     .to_vec(),
+                 append_memory_injections: self.memory_injections
+diff --git a/crates/jcode-base/src/session/render/response_stats.rs b/crates/jcode-base/src/session/render/response_stats.rs
+index ac900b5b7..cc4f38545 100644
+--- a/crates/jcode-base/src/session/render/response_stats.rs
++++ b/crates/jcode-base/src/session/render/response_stats.rs
+@@ -101,6 +101,7 @@ mod tests {
+             timestamp: None,
+             tool_duration_ms: None,
+             token_usage: usage,
++            request_snapshot: None,
+         }
+     }
+     fn usage(input: u64) -> Option<StoredTokenUsage> {
+diff --git a/crates/jcode-base/src/session_tests/cases.rs b/crates/jcode-base/src/session_tests/cases.rs
+index 95b5c1b6b..0a439ebd5 100644
+--- a/crates/jcode-base/src/session_tests/cases.rs
++++ b/crates/jcode-base/src/session_tests/cases.rs
+@@ -149,14 +149,41 @@ fn test_debug_memory_profile_reports_messages_and_provider_cache() {
+     });
+ 
+     let _ = session.provider_messages();
++    let tool = jcode_message_types::ToolDefinition {
++        name: "search".to_string(),
++        description: "Search documents".to_string(),
++        input_schema: serde_json::json!({"type": "object"}),
++    };
++    let assistant_id = session.add_message(
++        Role::Assistant,
++        vec![ContentBlock::Text {
++            text: "answer".to_string(),
++            cache_control: None,
++        }],
++    );
++    assert!(session.associate_request_snapshots(&assistant_id, "effective prompt", &[tool]));
+     let profile = session.debug_memory_profile();
+ 
+-    assert_eq!(profile["messages"]["count"], 2);
+-    assert_eq!(profile["messages"]["memory"]["text_blocks"], 1);
++    assert_eq!(profile["messages"]["count"], 3);
++    assert_eq!(profile["messages"]["memory"]["text_blocks"], 2);
+     assert_eq!(profile["messages"]["memory"]["tool_use_blocks"], 1);
+     assert_eq!(profile["messages"]["memory"]["tool_result_blocks"], 1);
+     assert!(profile["messages"]["json_bytes"].as_u64().unwrap_or(0) > 0);
+     assert_eq!(profile["provider_messages_cache"]["count"], 2);
++    assert_eq!(profile["request_snapshots"]["prompts"], 1);
++    assert_eq!(profile["request_snapshots"]["tool_lists"], 1);
++    assert!(
++        profile["request_snapshots"]["prompt_json_bytes"]
++            .as_u64()
++            .unwrap()
++            > 0
++    );
++    assert!(
++        profile["request_snapshots"]["tool_json_bytes"]
++            .as_u64()
++            .unwrap()
++            > 0
++    );
+     assert_eq!(profile["compaction"]["present"], true);
+     assert_eq!(profile["compaction"]["covers_up_to_turn"], 7);
+     assert_eq!(profile["compaction"]["original_turn_count"], 9);
+@@ -484,6 +511,7 @@ fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() -> Result<()>
+         timestamp: Some(Utc::now()),
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     session.record_env_snapshot(EnvSnapshot {
+         captured_at: Utc::now(),
+@@ -558,6 +586,7 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
+         timestamp: Some(Utc::now()),
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     session.record_env_snapshot(EnvSnapshot {
+         captured_at: Utc::now(),
+@@ -594,12 +623,306 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
+     assert_eq!(loaded.model.as_deref(), Some("gpt-5.4"));
+     assert_eq!(loaded.reasoning_effort.as_deref(), Some("medium"));
+     assert_eq!(loaded.messages.len(), 1);
++    assert!(loaded.request_prompt_snapshots.is_empty());
++    assert!(loaded.request_tool_snapshots.is_empty());
+     assert!(loaded.replay_events.is_empty());
+     assert!(loaded.env_snapshots.is_empty());
+     assert!(loaded.memory_injections.is_empty());
+     Ok(())
+ }
+ 
++#[test]
++fn remote_startup_replays_request_snapshot_journal_entries() -> Result<()> {
++    let _env_lock = lock_env();
++    let temp_home = tempfile::Builder::new()
++        .prefix("jcode-remote-request-snapshot-test-")
++        .tempdir()?;
++    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
++    let session_id = "session_remote_request_snapshot";
++    let mut session = Session::create_with_id(session_id.to_string(), None, None);
++    session.add_message(
++        Role::User,
++        vec![ContentBlock::Text {
++            text: "start".to_string(),
++            cache_control: None,
++        }],
++    );
++    session.save()?;
++    let tool = jcode_message_types::ToolDefinition {
++        name: "ping".to_string(),
++        description: "Ping".to_string(),
++        input_schema: serde_json::json!({"type": "object"}),
++    };
++    let response_id = session.add_message(
++        Role::Assistant,
++        vec![ContentBlock::Text {
++            text: "pong".to_string(),
++            cache_control: None,
++        }],
++    );
++    assert!(session.associate_request_snapshots(&response_id, "static dynamic", &[tool]));
++    session.save()?;
++
++    let remote = Session::load_for_remote_startup(session_id)?;
++    assert_eq!(remote.request_prompt_snapshots, ["static dynamic"]);
++    assert_eq!(remote.request_tool_snapshots.len(), 1);
++    assert_eq!(
++        remote.messages[1].request_snapshot.as_ref().unwrap().prompt,
++        Some(0)
++    );
++    assert_eq!(
++        remote.messages[1].request_snapshot.as_ref().unwrap().tools,
++        Some(0)
++    );
++    Ok(())
++}
++
++#[test]
++fn legacy_session_json_without_request_snapshot_fields_loads() -> Result<()> {
++    let now = Utc::now();
++    let legacy = serde_json::json!({
++        "id": "session_legacy_request_snapshot",
++        "parent_id": null,
++        "title": null,
++        "created_at": now,
++        "updated_at": now,
++        "messages": [{
++            "id": "legacy-assistant",
++            "role": "assistant",
++            "content": [{"type": "text", "text": "before snapshots"}],
++            "display_role": null,
++            "timestamp": null,
++            "tool_duration_ms": null,
++            "token_usage": null
++        }]
++    });
++    let session: Session = serde_json::from_value(legacy)?;
++    assert!(session.request_prompt_snapshots.is_empty());
++    assert!(session.request_tool_snapshots.is_empty());
++    assert!(session.messages[0].request_snapshot.is_none());
++    Ok(())
++}
++
++#[test]
++fn request_snapshots_deduplicate_independently_and_survive_persistence() -> Result<()> {
++    let _env_lock = lock_env();
++    let temp_home = tempfile::Builder::new()
++        .prefix("jcode-request-snapshots-test-")
++        .tempdir()?;
++    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
++    let session_id = "session_request_snapshot_roundtrip";
++    let mut session = Session::create_with_id(session_id.to_string(), None, None);
++    session.add_message(
++        Role::User,
++        vec![ContentBlock::Text {
++            text: "start".to_string(),
++            cache_control: None,
++        }],
++    );
++    session.save()?;
++
++    let original_tool = jcode_message_types::ToolDefinition {
++        name: "search".to_string(),
++        description: "Search documents".to_string(),
++        input_schema: serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}}),
++    };
++    let mut changed_tool = original_tool.clone();
++    changed_tool.description = "Search indexed documents".to_string();
++    let mut changed_schema_tool = original_tool.clone();
++    changed_schema_tool.input_schema = serde_json::json!({
++        "type": "object",
++        "properties": {"q": {"type": "string"}, "limit": {"type": "integer"}}
++    });
++
++    let requests = [
++        ("prompt A", original_tool.clone(), 0usize),
++        ("prompt A", original_tool.clone(), 1usize),
++        ("prompt B", original_tool.clone(), 2usize),
++        ("prompt B", changed_tool, 1usize),
++        ("prompt B", changed_schema_tool, 0usize),
++    ];
++    for (index, (prompt, tool, call_count)) in requests.iter().enumerate() {
++        let mut content = vec![ContentBlock::Text {
++            text: format!("response {index}"),
++            cache_control: None,
++        }];
++        content.extend((0..*call_count).map(|call| ContentBlock::ToolUse {
++            id: format!("call_{index}_{call}"),
++            name: "search".to_string(),
++            input: serde_json::json!({"q": "query"}),
++            thought_signature: None,
++        }));
++        let message_id = session.add_message(Role::Assistant, content);
++        assert!(session.associate_request_snapshots(
++            &message_id,
++            prompt,
++            std::slice::from_ref(tool)
++        ));
++        session.save()?;
++    }
++
++    assert_eq!(session.request_prompt_snapshots, ["prompt A", "prompt B"]);
++    assert_eq!(session.request_tool_snapshots.len(), 3);
++    assert_eq!(
++        session
++            .messages
++            .iter()
++            .filter_map(|message| message.request_snapshot.as_ref())
++            .count(),
++        requests.len()
++    );
++    assert!(session.messages[0].request_snapshot.is_none());
++    assert!(session.messages[0].role == Role::User);
++    assert_eq!(session.messages[1].content.len(), 1);
++    assert_eq!(session.messages[2].content.len(), 2);
++    assert_eq!(session.messages[3].content.len(), 3);
++
++    let journal_path = session_journal_path(session_id)?;
++    assert!(
++        journal_path.exists(),
++        "snapshot table additions should journal-append"
++    );
++    let mut restored = Session::load(session_id)?;
++    assert_eq!(
++        restored.request_prompt_snapshots,
++        session.request_prompt_snapshots
++    );
++    assert_eq!(
++        restored.request_tool_snapshots,
++        session.request_tool_snapshots
++    );
++    assert_eq!(
++        restored.messages[1..]
++            .iter()
++            .map(|message| message.request_snapshot.clone())
++            .collect::<Vec<_>>(),
++        session.messages[1..]
++            .iter()
++            .map(|message| message.request_snapshot.clone())
++            .collect::<Vec<_>>()
++    );
++
++    restored.truncate_messages(3);
++    assert_eq!(restored.request_prompt_snapshots.len(), 2);
++    assert_eq!(restored.request_tool_snapshots.len(), 3);
++    assert_eq!(
++        restored.messages[2]
++            .request_snapshot
++            .as_ref()
++            .unwrap()
++            .tools,
++        Some(0)
++    );
++
++    restored.mark_messages_full_dirty();
++    restored.save()?;
++    assert!(
++        !journal_path.exists(),
++        "full checkpoint should fold journal tables into snapshot"
++    );
++    let checkpointed = Session::load(session_id)?;
++    assert_eq!(
++        checkpointed.request_prompt_snapshots,
++        session.request_prompt_snapshots
++    );
++    assert_eq!(
++        checkpointed.request_tool_snapshots,
++        session.request_tool_snapshots
++    );
++
++    let mut legacy_json = serde_json::to_value(&checkpointed)?;
++    let object = legacy_json.as_object_mut().unwrap();
++    object.remove("request_prompt_snapshots");
++    object.remove("request_tool_snapshots");
++    for message in object["messages"].as_array_mut().unwrap() {
++        message.as_object_mut().unwrap().remove("request_snapshot");
++    }
++    let legacy: Session = serde_json::from_value(legacy_json)?;
++    assert!(legacy.request_prompt_snapshots.is_empty());
++    assert!(legacy.request_tool_snapshots.is_empty());
++    assert!(
++        legacy
++            .messages
++            .iter()
++            .all(|message| message.request_snapshot.is_none())
++    );
++
++    let prompt_bytes = serde_json::to_vec(&session.request_prompt_snapshots)?.len();
++    let repeated_prompt_bytes = serde_json::to_vec(&vec!["prompt A"; requests.len()])?.len();
++    assert!(prompt_bytes < repeated_prompt_bytes);
++    let snapshot_tables_bytes = serde_json::to_vec(&(
++        &session.request_prompt_snapshots,
++        &session.request_tool_snapshots,
++    ))?
++    .len();
++    let repeated_snapshot_values_bytes = serde_json::to_vec(&(
++        vec!["prompt A"; requests.len()],
++        vec![original_tool; requests.len()],
++    ))?
++    .len();
++    let representative_prompt = "Effective system prompt section.\n".repeat(300);
++    let representative_tools = (0..20)
++        .map(|index| jcode_session_types::StoredToolDefinition {
++            name: format!("tool_{index}"),
++            description: format!(
++                "Tool {index} performs a representative operation with validated inputs and returns structured results."
++            ),
++            input_schema: serde_json::json!({
++                "type": "object",
++                "properties": {
++                    "query": {"type": "string", "description": "Input query for the operation"},
++                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
++                    "include_metadata": {"type": "boolean"}
++                },
++                "required": ["query"]
++            }),
++        })
++        .collect::<Vec<_>>();
++    let representative_refs = vec![
++        jcode_session_types::RequestSnapshotRefs {
++            prompt: Some(0),
++            tools: Some(0),
++        };
++        100
++    ];
++    let representative_deduplicated_bytes = serde_json::to_vec(&(
++        vec![representative_prompt.clone()],
++        vec![representative_tools.clone()],
++        representative_refs,
++    ))?
++    .len();
++    let representative_repeated_bytes =
++        serde_json::to_vec(&vec![(representative_prompt, representative_tools); 100])?.len();
++    // A prompt plus twenty definitions shared by one hundred messages should
++    // remain far below repeating the complete request values per message.
++    assert!(representative_deduplicated_bytes * 100 < representative_repeated_bytes * 2);
++    assert!(snapshot_tables_bytes < repeated_snapshot_values_bytes);
++    Ok(())
++}
++
++#[test]
++fn request_snapshot_association_requires_an_existing_assistant_message() {
++    let mut session =
++        Session::create_with_id("session_request_snapshot_guard".to_string(), None, None);
++    let user_id = session.add_message(
++        Role::User,
++        vec![ContentBlock::Text {
++            text: "not a response".to_string(),
++            cache_control: None,
++        }],
++    );
++    let tool = jcode_message_types::ToolDefinition {
++        name: "search".to_string(),
++        description: "Search documents".to_string(),
++        input_schema: serde_json::json!({"type": "object"}),
++    };
++
++    assert!(!session.associate_request_snapshots(&user_id, "prompt", &[tool]));
++    assert!(session.request_prompt_snapshots.is_empty());
++    assert!(session.request_tool_snapshots.is_empty());
++    assert!(session.messages[0].request_snapshot.is_none());
++}
++
+ #[test]
+ fn test_create_marks_debug_when_test_session_env_enabled() {
+     let _env_lock = lock_env();
+@@ -2131,6 +2454,7 @@ fn reasoning_trace_survives_session_save_and_load() -> Result<()> {
+         timestamp: Some(Utc::now()),
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     session.save()?;
+ 
+diff --git a/crates/jcode-message-types/src/lib.rs b/crates/jcode-message-types/src/lib.rs
+index fff6fb644..30bd3cb71 100644
+--- a/crates/jcode-message-types/src/lib.rs
++++ b/crates/jcode-message-types/src/lib.rs
+@@ -15,7 +15,7 @@ pub struct ToolCall {
+ }
+ 
+ /// Tool definition advertised to model providers.
+-#[derive(Debug, Clone, serde::Serialize)]
++#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+ pub struct ToolDefinition {
+     pub name: String,
+     /// Prompt-visible text sent to the model by provider adapters.
+diff --git a/crates/jcode-session-types/Cargo.toml b/crates/jcode-session-types/Cargo.toml
+index b63916a95..60d49d9ef 100644
+--- a/crates/jcode-session-types/Cargo.toml
++++ b/crates/jcode-session-types/Cargo.toml
+@@ -9,3 +9,4 @@ chrono = { version = "0.4", features = ["serde"] }
+ jcode-message-types = { path = "../jcode-message-types" }
+ memchr = "2"
+ serde = { version = "1", features = ["derive"] }
++serde_json = "1"
+diff --git a/crates/jcode-session-types/src/lib.rs b/crates/jcode-session-types/src/lib.rs
+index 6d847f29e..f5abc88ac 100644
+--- a/crates/jcode-session-types/src/lib.rs
++++ b/crates/jcode-session-types/src/lib.rs
+@@ -257,6 +257,67 @@ pub struct StoredMemoryInjection {
+     pub timestamp: DateTime<Utc>,
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct StoredToolDefinition {
++    pub name: String,
++    pub description: String,
++    pub input_schema: serde_json::Value,
++}
++
++impl From<&jcode_message_types::ToolDefinition> for StoredToolDefinition {
++    fn from(definition: &jcode_message_types::ToolDefinition) -> Self {
++        Self {
++            name: definition.name.clone(),
++            description: definition.description.clone(),
++            input_schema: definition.input_schema.clone(),
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct RequestSnapshotRefs {
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub prompt: Option<usize>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub tools: Option<usize>,
++}
++
++#[cfg(test)]
++mod request_snapshot_tests {
++    use super::{RequestSnapshotRefs, StoredToolDefinition};
++
++    #[test]
++    fn stored_tool_definition_roundtrips_name_description_and_schema() {
++        let tool = StoredToolDefinition {
++            name: "search".to_string(),
++            description: "Find matching documents".to_string(),
++            input_schema: serde_json::json!({
++                "type": "object",
++                "properties": {"query": {"type": "string"}},
++                "required": ["query"]
++            }),
++        };
++        let encoded = serde_json::to_vec(&tool).unwrap();
++        let decoded: StoredToolDefinition = serde_json::from_slice(&encoded).unwrap();
++        assert_eq!(decoded, tool);
++
++        let refs = RequestSnapshotRefs {
++            prompt: Some(1),
++            tools: Some(2),
++        };
++        assert_eq!(
++            serde_json::from_str::<RequestSnapshotRefs>("{}").unwrap(),
++            RequestSnapshotRefs {
++                prompt: None,
++                tools: None,
++            }
++        );
++        let decoded_refs: RequestSnapshotRefs =
++            serde_json::from_value(serde_json::to_value(refs).unwrap()).unwrap();
++        assert_eq!(decoded_refs.prompt, Some(1));
++    }
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct StoredMessage {
+     pub id: String,
+@@ -270,6 +331,8 @@ pub struct StoredMessage {
+     pub tool_duration_ms: Option<u64>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub token_usage: Option<StoredTokenUsage>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub request_snapshot: Option<RequestSnapshotRefs>,
+ }
+ 
+ #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+diff --git a/crates/jcode-tui/src/tui/app/commands_review.rs b/crates/jcode-tui/src/tui/app/commands_review.rs
+index bf096749c..5bf4f1ac7 100644
+--- a/crates/jcode-tui/src/tui/app/commands_review.rs
++++ b/crates/jcode-tui/src/tui/app/commands_review.rs
+@@ -73,6 +73,7 @@ fn judge_transcript_text_message(role: Role, text: String) -> StoredMessage {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     }
+ }
+ 
+@@ -281,6 +282,8 @@ fn apply_judge_visible_context_if_needed(session: &mut Session, title_override:
+ 
+     let transcript = build_judge_visible_transcript_messages(&parent_session);
+     session.replace_messages(transcript);
++    session.request_prompt_snapshots.clear();
++    session.request_tool_snapshots.clear();
+     session.compaction = None;
+     session.provider_session_id = None;
+ }
+@@ -659,6 +662,8 @@ fn clone_session_for_review(
+     let parent_session_id = current_feedback_target_session_id(app);
+     let mut child = Session::create(Some(parent_session_id), Some(session_title.to_string()));
+     child.replace_messages(app.session.messages.clone());
++    child.request_prompt_snapshots = app.session.request_prompt_snapshots.clone();
++    child.request_tool_snapshots = app.session.request_tool_snapshots.clone();
+     child.compaction = app.session.compaction.clone();
+     child.working_dir = app.session.working_dir.clone();
+     child.model = Some(initial_model);
+@@ -675,6 +680,8 @@ fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
+     let parent_session_id = active_session_id(app);
+     let mut child = Session::create(Some(parent_session_id.clone()), None);
+     child.replace_messages(app.session.messages.clone());
++    child.request_prompt_snapshots = app.session.request_prompt_snapshots.clone();
++    child.request_tool_snapshots = app.session.request_tool_snapshots.clone();
+     child.compaction = app.session.compaction.clone();
+     child.system_prompt = app.session.system_prompt.clone();
+     child.working_dir = app.session.working_dir.clone();
+diff --git a/crates/jcode-tui/src/tui/app/conversation_state.rs b/crates/jcode-tui/src/tui/app/conversation_state.rs
+index 051ac72e1..caf13bca9 100644
+--- a/crates/jcode-tui/src/tui/app/conversation_state.rs
++++ b/crates/jcode-tui/src/tui/app/conversation_state.rs
+@@ -783,6 +783,7 @@ impl App {
+                     timestamp: Some(chrono::Utc::now()),
+                     tool_duration_ms: None,
+                     token_usage: None,
++                    request_snapshot: None,
+                 };
+                 if self.is_remote || !self.messages.is_empty() {
+                     self.messages
+diff --git a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
+index 90faf4108..03658feb3 100644
+--- a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
++++ b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
+@@ -241,6 +241,8 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
+                 Some(title.to_string()),
+             );
+             child.replace_messages(parent.messages.clone());
++            child.request_prompt_snapshots = parent.request_prompt_snapshots.clone();
++            child.request_tool_snapshots = parent.request_tool_snapshots.clone();
+             child.compaction = Some(crate::session::StoredCompactionState {
+                 summary_text: "stale compaction".to_string(),
+                 openai_encrypted_content: None,
+diff --git a/src/cli/auth_test/choice.rs b/src/cli/auth_test/choice.rs
+index 45929402c..4d1d327dc 100644
+--- a/src/cli/auth_test/choice.rs
++++ b/src/cli/auth_test/choice.rs
+@@ -605,6 +605,7 @@ mod auth_tool_smoke_tests {
+             timestamp: None,
+             tool_duration_ms: None,
+             token_usage: None,
++            request_snapshot: None,
+         }
+     }
+ 

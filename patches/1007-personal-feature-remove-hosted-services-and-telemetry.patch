@@ -4826,10 +4826,6 @@ index 4bdbb8670..caf10b9c8 100644
 -        Some(TelemetryOptOutSource::Environment) => {
 -            logging::debug("telemetry disabled by environment");
 -            false
--        }
--        Some(TelemetryOptOutSource::MarkerFile) => {
--            logging::debug("telemetry disabled by no_telemetry marker");
--            false
 +    #[cfg(test)]
 +    {
 +        // Internal telemetry tests need to verify event emission logic. The
@@ -4838,6 +4834,10 @@ index 4bdbb8670..caf10b9c8 100644
 +        if TEST_OVERRIDE_ENABLED.load(Ordering::Relaxed) {
 +            return opt_out_source().is_none();
          }
+-        Some(TelemetryOptOutSource::MarkerFile) => {
+-            logging::debug("telemetry disabled by no_telemetry marker");
+-            false
+-        }
 -        None => true,
      }
 +    false
@@ -11545,10 +11545,13 @@ index 7bad8a2dc..1b8cf231a 100644
 -        .expect("init jcode provider");
 -
 -    // Display name is Jcode Subscription since b7b5977f8 (subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME).
--    assert_eq!(
++fn jcode_choice_uses_the_generic_direct_endpoint_profile() {
+     assert_eq!(
 -        provider.name(),
 -        crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
--    );
++        profile_for_choice(&ProviderChoice::Jcode),
++        Some(crate::provider_catalog::OPENAI_COMPAT_PROFILE)
+     );
 -    assert!(crate::subscription_catalog::is_runtime_mode_enabled());
 -    assert_eq!(
 -        std::env::var("JCODE_OPENROUTER_MODEL").ok().as_deref(),
@@ -11562,15 +11565,12 @@ index 7bad8a2dc..1b8cf231a 100644
 -        std::env::var("JCODE_RUNTIME_PROVIDER").ok().as_deref(),
 -        Some("jcode")
 -    );
-+fn jcode_choice_uses_the_generic_direct_endpoint_profile() {
-     assert_eq!(
+-    assert_eq!(
 -        std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT")
 -            .ok()
 -            .as_deref(),
 -        Some("1")
-+        profile_for_choice(&ProviderChoice::Jcode),
-+        Some(crate::provider_catalog::OPENAI_COMPAT_PROFILE)
-     );
+-    );
 -
 -    crate::subscription_catalog::clear_runtime_env();
 -    crate::env::remove_var("JCODE_OPENROUTER_MODEL");

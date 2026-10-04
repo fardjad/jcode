@@ -48,11 +48,11 @@ scripts/cargo_exec.sh test -p jcode-base websearch_ --lib
  crates/jcode-base/src/config.rs               |   1 +
  crates/jcode-base/src/config/config_file.rs   |  34 +++
  crates/jcode-base/src/config/default_file.rs  |  13 +-
- crates/jcode-base/src/config/env_overrides.rs |  67 +++++-
+ crates/jcode-base/src/config/env_overrides.rs |  65 +++++-
  crates/jcode-base/src/config_tests.rs         |  77 ++++++-
  crates/jcode-config-types/Cargo.toml          |   3 +
  crates/jcode-config-types/src/lib.rs          | 193 +++++++++++++++++-
- 10 files changed, 431 insertions(+), 35 deletions(-)
+ 10 files changed, 430 insertions(+), 34 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
 index 214cc0def..c162171e3 100644
@@ -303,14 +303,22 @@ index ceafaea5a..2af7af596 100644
  
 -        // Web search
 -        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_ENGINE")
--            && let Some(engine) = WebSearchEngine::parse(&v)
 +        // Web search. The list override owns the complete policy. The scalar
 +        // override only replaces the primary engine and retains the configured
 +        // legacy tail for compatibility.
 +        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_ENGINES")
 +            && let Ok(engines) = parse_websearch_engines_env(&v)
++        {
++            self.websearch.engine = engines;
++        }
++        if std::env::var_os("JCODE_WEBSEARCH_ENGINES").is_none()
++            && let Ok(v) = std::env::var("JCODE_WEBSEARCH_ENGINE")
+             && let Some(engine) = WebSearchEngine::parse(&v)
          {
 -            self.websearch.engine = engine;
++            let mut engines = vec![engine];
++            engines.extend(self.websearch.engine.iter().copied().skip(1));
++            dedup_websearch_engines(&mut engines);
 +            self.websearch.engine = engines;
          }
 -        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_FALLBACK_ENGINES") {
@@ -320,15 +328,6 @@ index ceafaea5a..2af7af596 100644
 -                .collect::<Vec<_>>();
 -            if !engines.is_empty() {
 -                self.websearch.fallback_engines = engines;
-+        if std::env::var_os("JCODE_WEBSEARCH_ENGINES").is_none()
-+            && let Ok(v) = std::env::var("JCODE_WEBSEARCH_ENGINE")
-+            && let Some(engine) = WebSearchEngine::parse(&v)
-+        {
-+            let mut engines = vec![engine];
-+            engines.extend(self.websearch.engine.iter().copied().skip(1));
-+            dedup_websearch_engines(&mut engines);
-+            self.websearch.engine = engines;
-+        }
 +        // Deprecated alias retained for old launch scripts. It replaces the
 +        // configured tail, while the primary engine remains authoritative.
 +        if std::env::var_os("JCODE_WEBSEARCH_ENGINES").is_none()

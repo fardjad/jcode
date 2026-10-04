@@ -1,4 +1,4 @@
-From 77415a8330f56d4709c90e0b4e1de27ff1f4d6b0 Mon Sep 17 00:00:00 2001
+From 3ae84eed33fad52fc930157d279cf5eddfadbb2a Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:49 +0200
 Subject: [PATCH] feat: add provider family execution allowlist
@@ -1211,7 +1211,7 @@ index 7224f5bc3..80cbbf2f4 100644
 +                            system,
 +                            resume_session_id,
 +                        )
-+                        .await
+                         .await
 +                    } else {
 +                        self.complete_on_provider(
 +                            &policy,
@@ -1221,7 +1221,7 @@ index 7224f5bc3..80cbbf2f4 100644
 +                            system,
 +                            resume_session_id,
 +                        )
-                         .await
++                        .await
 +                    }
                  }
                  CompletionMode::Split {
