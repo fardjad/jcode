@@ -212,9 +212,16 @@ When a change fixes behavior owned by an existing catalog patch, make the fix in
 `just snapshot-patches` to regenerate the patch. Never leave source-only fixes
 in `.patched-jcode` while its catalog patch is stale.
 
-Do not commit, amend, push, or create a PR unless the user explicitly asks.
-Leave updated catalog files and generated worktree changes uncommitted for user
-review. Do not create temporary commits merely to regenerate a patch.
+Commits and amends inside `.patched-jcode` are authorized as part of the
+commit-first patch workflow: create or amend the source commit, then regenerate
+and validate the catalog patch. No separate user confirmation is needed for
+those `.patched-jcode` commits when they are required to keep the source and
+patch catalog in sync.
+
+Do not commit or amend in the catalog git repository (`personalized`), push, or
+create a PR unless the user explicitly asks. Leave updated catalog files and
+generated worktree changes uncommitted for user review. Do not create temporary
+commits merely to regenerate a patch.
 
 ## Plugins
 
