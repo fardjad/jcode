@@ -22,13 +22,14 @@ not preserve `JCODE_HOME` or any XDG path from the caller. This safeguard does
 not authorize access to any personal path.
 
 `personalized` is an orphan catalog branch. It contains only catalog files:
-`README.md`, `AGENTS.md`, `justfile`, `nextest.toml`, `.gitignore`, `patches/`,
-`scripts/`, and `plugins/`. Upstream source lives on local `master`; ordered
-mail patches describe changes without requiring original source commits.
+`README.md`, `AGENTS.md`, `VERSION.txt`, `justfile`, `nextest.toml`, `.gitignore`,
+`patches/`, `scripts/`, and `plugins/`. `VERSION.txt` pins a stable upstream
+release; ordered mail patches describe changes without requiring original source
+commits.
 
 Validator discovers every `patches/*.patch`, checks intent, kind, dependency,
 and body-section metadata, then applies all patches in lexicographic order with
-`git am` to a disposable worktree based on `master`.
+`git am` to a disposable worktree based on the release pinned by `VERSION.txt`.
 
 Commands:
 
@@ -43,18 +44,18 @@ just migrate-commit-metadata     # one-time: copy patch metadata into commits
 just install-patched-version
 just test-patch-file <patch-file>
 just create-upstream-candidate-branch-from <patch-file>
-just sync                    # selected upstream master
+just sync                    # latest canonical stable release
 just sync vX.Y.Z             # selected upstream release tag
 ```
 
 `just create-patched-copy` creates or resets persistent `.patched-jcode` from
-local `master`. If local `master` does not exist, it initializes it from
-configured `upstream/master`; later runs retain that base. Use `just sync` to
-refresh it and run clean-upstream compatibility learning. It then applies every
+the stable release pinned in `VERSION.txt`, fetching its tag from canonical
+jcode when needed. Patch validation, patch tests, and candidate workflows use
+the same pinned release. Sync validates a new stable release and complete patch
+stack before updating `VERSION.txt` and local `master`. It then applies every
 patch, each as its own commit. Use `just test-patch-file <patch-file>` for
-declared validation commands and compatibility tests. Test and candidate
-workflows start clean worktrees from `master`. Failures retain worktrees and
-print cleanup commands.
+declared validation commands and compatibility tests. Failures retain worktrees
+and print cleanup commands.
 
 Compatibility failures are learned only from clean upstream worktrees. Ignored
 state lives at `.tools/nextest/exclusions/<base-commit>.json`, keyed by base
@@ -67,10 +68,11 @@ JUnit reports live at `target/nextest/compat/junit.xml` inside each materialized
 worktree. Learned exclusions are sorted exact `test(=...)` filters and apply
 only when base commit and nextest pin match.
 
-`just sync` fetches selected upstream `master` or tag, safely updates local
-`master`, tests clean upstream, then applies catalog patches. It never rebases
-or requires an ancestor relationship with orphan `personalized`, and never
-pushes. Run high-level workflows from clean `personalized`.
+`just sync` fetches only stable release tags from the canonical jcode repository,
+tests the clean release and full patched workspace, then updates `VERSION.txt`
+and local `master`. It does not sync to the moving `master` branch, rebase, or
+require an ancestor relationship with orphan `personalized`, and never pushes.
+Run high-level workflows from clean `personalized`.
 
 Patch application order is lexicographic. Dependencies must be declared with
 `X-Jcode-Patch-Depends-On` as `none` or comma-separated earlier patch names.
@@ -93,14 +95,16 @@ The ideal workflow for any change:
 3. Commit or amend the relevant commit there (see below for which commit).
 4. Review intent vs code vs tests (see "Patch review" below).
 5. `just snapshot-patches` — regenerates every `.patch` file from the commits
-   above `master` and normalizes every personal patch's `From` hash to zeros.
+   above the release pinned by `VERSION.txt` and normalizes every personal
+   patch's `From` hash to zeros.
    Run `just validate-patch-files` to confirm.
 6. `just test-patch-file patches/<name>.patch` to run the patch's validation.
 
 ### Mapping commits to patches
 
-Commits above `master` in `.patched-jcode` map to patch files by lexicographic
-order: the oldest commit is the first patch, the next is the second, and so on.
+Commits above the pinned release in `.patched-jcode` map to patch files by
+lexicographic order: the oldest commit is the first patch, the next is the
+second, and so on.
 Run `just list-patches` to see the mapping. To change an existing patch, amend
 the corresponding commit. To add a new patch, add a new commit on top and run
 `just snapshot-patches`; it assigns the next available numeric prefix and

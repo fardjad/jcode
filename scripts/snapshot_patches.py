@@ -1,7 +1,7 @@
 """Regenerate catalog patch files from commits in the patched worktree.
 
 Patches are persistence artifacts derived from commits. This script reads the
-ordered commits above ``master`` in the patched worktree, matches each to its
+ordered commits above the release pinned in ``VERSION.txt``, matches each to its
 catalog patch file by lexicographic order, and regenerates every ``.patch`` file
 from the corresponding commit via ``git format-patch``. The commit message is
 the single source of truth for both the diff and the catalog metadata headers
@@ -155,10 +155,12 @@ def snapshot(root: Path) -> list[str]:
         raise CatalogError(
             f"patched worktree not found at {worktree}; run 'just create-patched-copy' first"
         )
-    base = git("rev-parse", "master^{commit}", cwd=root)
+    from version_base import resolve_base
+
+    base = resolve_base(root)
     commit_hashes = commits_above_base(worktree, base)
     if not commit_hashes:
-        raise CatalogError("no commits above master in patched worktree")
+        raise CatalogError("no commits above pinned release in patched worktree")
     catalog = patches(root)
     existing_names = set(catalog)
     ordered_patches = [catalog[name] for name in sorted(catalog)]
@@ -208,12 +210,14 @@ def list_mapping(root: Path) -> None:
         raise CatalogError(
             f"patched worktree not found at {worktree}; run 'just create-patched-copy' first"
         )
-    base = git("rev-parse", "master^{commit}", cwd=root)
+    from version_base import resolve_base
+
+    base = resolve_base(root)
     commit_hashes = commits_above_base(worktree, base)
     catalog = patches(root)
     ordered_patches = [catalog[name] for name in sorted(catalog)]
     if not commit_hashes:
-        raise CatalogError("no commits above master in patched worktree")
+        raise CatalogError("no commits above pinned release in patched worktree")
     print(f"{'COMMIT':<12} {'PATCH':<55} SUBJECT")
     for index, commit in enumerate(commit_hashes):
         short = commit[:8]

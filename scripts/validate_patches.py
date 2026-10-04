@@ -17,6 +17,7 @@ from patch_catalog import (
     patches,
     repository_root,
 )
+from version_base import resolve_base
 
 
 SECTIONS = ("Patch intent:", "Why it exists:", "Upstream integration points:", "Update guidance:", "Validation:")
@@ -56,17 +57,16 @@ def validate_file(root: Path, patch: Patch) -> None:
 
 
 def main() -> None:
-    """Run discovered catalog validation and apply every patch to master."""
-    argparse.ArgumentParser().parse_args()
+    """Run discovered catalog validation and apply every patch to its pinned release."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base", help="explicit release commit for a sync preflight")
+    args = parser.parse_args()
     root = repository_root()
     temporary: Path | None = None
     applied: Path | None = None
     try:
         require(git("branch", "--show-current", cwd=root) == "personalized", "current branch must be personalized")
-        try:
-            git("show-ref", "--verify", "refs/heads/master", cwd=root, quiet=True)
-        except CatalogError as error:
-            raise CatalogError("local master required") from error
+        base = args.base or resolve_base(root)
         catalog = patches(root)
         ordered = [catalog[name] for name in sorted(catalog)]
         for patch in ordered:
@@ -76,7 +76,7 @@ def main() -> None:
         require(tracked == expected_files, f"unexpected patch files: {' '.join(sorted(tracked - expected_files))}")
         temporary = Path(tempfile.mkdtemp(prefix="jcode-patch-validation."))
         applied = temporary / "applied"
-        git("worktree", "add", "--detach", str(applied), "master")
+        git("worktree", "add", "--detach", str(applied), base)
         for patch in ordered:
             git("am", str(patch.path), cwd=applied, quiet=True)
         applied_tree = git("rev-parse", "HEAD^{tree}", cwd=applied)

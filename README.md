@@ -83,21 +83,20 @@ Sync to the newest stable upstream release tag:
 just sync
 ```
 
-To follow unreleased upstream changes instead, sync to `master` explicitly:
-
-```bash
-just sync master
-```
-
 Or choose a specific upstream release tag:
 
 ```bash
 just sync vX.Y.Z
 ```
 
-This refreshes the local upstream base and rebuilds `.patched-jcode/` with your
-patches. If upstream changes conflict with a patch, resolve the conflict in
+`VERSION.txt` records the stable upstream release targeted by the catalog. Patch
+validation and application always use that release, independent of local branch
+names or remote-tracking refs. Sync fetches from the canonical jcode repository,
+tests the selected release with the complete patch stack, then updates the
+version pin. If upstream changes conflict with a patch, resolve the conflict in
 `.patched-jcode/`, amend the affected commit, then run `just snapshot-patches`.
+Sync uses the canonical jcode URL regardless of configured `upstream` or
+`origin` remote URLs.
 
 When you are happy with the synchronized catalog, push both the catalog and
 selected upstream base:
@@ -126,8 +125,9 @@ patch so recreated backing commits do not create irrelevant diffs. Use `just
 normalize-patch` to apply that cleanup independently. Upstream-candidate patch
 hashes are preserved as provenance.
 
-Each commit above `master` in `.patched-jcode/` is one patch. The commit message
-must include the `X-Jcode-Patch-*` headers and the body sections (`Patch intent:`,
+Each commit above the release pinned by `VERSION.txt` in `.patched-jcode/` is
+one patch. The commit message must include the `X-Jcode-Patch-*` headers and the
+body sections (`Patch intent:`,
 `Why it exists:`, `Upstream integration points:`, `Update guidance:`,
 `Validation:`). See `AGENTS.md` for the full format.
 

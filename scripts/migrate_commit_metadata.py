@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 from patch_catalog import PATCH_ENCODING, CatalogError, fail, git, patches, repository_root
+from version_base import resolve_base
 
 
 def patched_worktree_path(root: Path) -> Path:
@@ -62,10 +63,10 @@ def migrate(root: Path) -> None:
         raise CatalogError(
             f"patched worktree not found at {worktree}; run 'just create-patched-copy' first"
         )
-    base = git("rev-parse", "master^{commit}", cwd=root)
+    base = resolve_base(root)
     commit_hashes = commits_above_base(worktree, base)
     if not commit_hashes:
-        raise CatalogError("no commits above master in patched worktree")
+        raise CatalogError("no commits above pinned release in patched worktree")
     catalog = patches(root)
     ordered_patches = [catalog[name] for name in sorted(catalog)]
     if len(commit_hashes) != len(ordered_patches):

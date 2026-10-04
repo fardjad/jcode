@@ -40,13 +40,18 @@ ensure-personal-assets:
   printf 'plugins and worker blueprints are ready\n'
 
 # Validate catalog patch metadata and synthetic application.
-validate-patch-files:
+validate-patch-files base="":
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  python3 "$repo_root/scripts/isolate_config.py" -- \
-    python3 "$repo_root/scripts/validate_patches.py"
+  if [[ -n "{{base}}" ]]; then
+    python3 "$repo_root/scripts/isolate_config.py" -- \
+      python3 "$repo_root/scripts/validate_patches.py" --base "{{base}}"
+  else
+    python3 "$repo_root/scripts/isolate_config.py" -- \
+      python3 "$repo_root/scripts/validate_patches.py"
+  fi
 
 _bootstrap-nextest:
   #!/usr/bin/env bash
@@ -56,26 +61,20 @@ _bootstrap-nextest:
   python3 "$repo_root/scripts/isolate_config.py" -- \
     python3 "$repo_root/scripts/bootstrap_nextest.py"
 
-# Create/reset persistent patched copy from local master.
-create-patched-copy:
+# Create/reset persistent patched copy from VERSION.txt's upstream release.
+create-patched-copy base="":
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  if ! git show-ref --verify --quiet refs/heads/master; then
-    git remote get-url upstream >/dev/null 2>&1 || {
-      printf 'local master missing and upstream remote is not configured\n' >&2
-      exit 1
-    }
-    printf 'initializing local master from upstream/master\n'
-    git fetch upstream master
-    git branch master FETCH_HEAD
+  base="{{base}}"
+  if [[ -z "$base" ]]; then
+    base=$(python3 "$repo_root/scripts/version_base.py" resolve)
   fi
-  base=$(git rev-parse --verify master^{commit})
   worktree="$repo_root/.patched-jcode"
 
   python3 "$repo_root/scripts/isolate_config.py" -- \
-    python3 "$repo_root/scripts/validate_patches.py"
+    python3 "$repo_root/scripts/validate_patches.py" --base "$base"
   worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create patched-jcode "$base" --path "$worktree")
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
@@ -87,19 +86,22 @@ create-patched-copy:
 # Apply every patch, compile the complete patched workspace, and run its
 # compatibility suite. Use this after upstream changes and before publishing
 # catalog updates, because patch application alone cannot detect Rust errors.
-validate-patched-copy:
+validate-patched-copy base="":
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
   worktree="$repo_root/.patched-jcode"
 
-  just --justfile "$repo_root/justfile" create-patched-copy
+  just --justfile "$repo_root/justfile" create-patched-copy "{{base}}"
   (
     cd "$worktree"
     python3 "$repo_root/scripts/isolate_config.py" -- cargo check --workspace
   )
-  base=$(git rev-parse master^{commit})
+  base="{{base}}"
+  if [[ -z "$base" ]]; then
+    base=$(python3 "$repo_root/scripts/version_base.py" resolve)
+  fi
   just --justfile "$repo_root/justfile" _fast-test "$worktree" "$base"
   printf 'patched workspace validated: %s\n' "$worktree"
 
@@ -159,14 +161,14 @@ test-patch-file patch:
   patch_name=$(basename "{{patch}}")
   name="test-${patch_name%.patch}"
 
+  base=$(python3 "$repo_root/scripts/version_base.py" resolve)
   python3 "$repo_root/scripts/isolate_config.py" -- \
-    python3 "$repo_root/scripts/validate_patches.py"
-  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create "$name" master)
+    python3 "$repo_root/scripts/validate_patches.py" --base "$base"
+  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create "$name" "$base")
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
   python3 "$repo_root/scripts/apply_patches.py" "$worktree" "$patch_name"
   python3 "$repo_root/scripts/validate_patch_commands.py" "$worktree" "$patch_name"
-  base=$(git rev-parse master^{commit})
   just --justfile "$repo_root/justfile" _fast-test "$worktree" "$base"
 
   trap - ERR
@@ -185,9 +187,10 @@ create-upstream-candidate-branch-from patch:
   name="candidate-${patch_name%.patch}"
   branch="upstream-candidate/$slug"
 
+  base=$(python3 "$repo_root/scripts/version_base.py" resolve)
   python3 "$repo_root/scripts/isolate_config.py" -- \
-    python3 "$repo_root/scripts/validate_patches.py"
-  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create "$name" master)
+    python3 "$repo_root/scripts/validate_patches.py" --base "$base"
+  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create "$name" "$base")
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
   python3 "$repo_root/scripts/apply_patches.py" "$worktree" "$patch_name" --require-kind upstream-candidate
@@ -198,16 +201,19 @@ create-upstream-candidate-branch-from patch:
   trap - ERR
   printf 'candidate ready: %s\n' "$branch"
 
-# Learn compatibility exclusions from a clean worktree at the current master.
+# Learn compatibility exclusions from a clean worktree at the pinned release.
 # This is intentionally separate from patched validation so patch failures
 # cannot be learned or hidden.
-learn-upstream-exclusions:
+learn-upstream-exclusions base="":
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  base=$(git rev-parse --verify master^{commit})
-  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create sync-upstream master)
+  base="{{base}}"
+  if [[ -z "$base" ]]; then
+    base=$(python3 "$repo_root/scripts/version_base.py" resolve)
+  fi
+  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create sync-upstream "$base")
   trap 'printf "clean-upstream learning failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
   just --justfile "$repo_root/justfile" _learn-tests "$worktree" "$base"
@@ -215,9 +221,8 @@ learn-upstream-exclusions:
   trap - ERR
   printf 'learned clean-upstream exclusions for: %s\n' "$base"
 
-# Sync local master from the newest upstream release tag by default, learn
-# exclusions, and create patched copy. Pass `master` or a specific vX.Y.Z tag
-# to select a non-default upstream ref.
+# Sync to the newest canonical jcode stable release by default, or select a
+# specific stable vX.Y.Z tag. VERSION.txt changes only after validation passes.
 sync release="":
   #!/usr/bin/env bash
   set -euo pipefail
@@ -235,46 +240,44 @@ sync release="":
     exit 1
   fi
   if git worktree list --porcelain | grep -Fxq 'branch refs/heads/master'; then
-    printf 'refusing to reset master: it is checked out in another worktree\n' >&2
+    printf 'refusing to update master: it is checked out in another worktree\n' >&2
     exit 1
   fi
-
   if [[ -z "$requested_release" ]]; then
-    release=$(git ls-remote --tags --refs upstream \
-      | awk -F/ '$3 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ { print $3 }' \
-      | sort -V \
-      | tail -n 1)
-    [[ -n "$release" ]] || {
-      printf 'upstream has no stable vX.Y.Z release tags\n' >&2
-      exit 1
-    }
-    printf 'selected latest upstream release tag: %s\n' "$release"
+    release=$(python3 "$repo_root/scripts/version_base.py" latest)
+    printf 'selected latest canonical jcode release tag: %s\n' "$release"
   else
     release="$requested_release"
   fi
 
-  if [[ "$release" == master ]]; then
-    git fetch upstream master
-    selected_ref=upstream/master
-  else
-    git check-ref-format --allow-onelevel "refs/tags/$release" >/dev/null || {
-      printf 'invalid upstream tag name: %s\n' "$release" >&2
-      exit 1
-    }
-    # Fetch into FETCH_HEAD rather than refs/tags/$release: local tags can
-    # legitimately name catalog commits and must not block or be overwritten.
-    git fetch upstream "refs/tags/$release"
-    selected_ref=FETCH_HEAD
-  fi
+  [[ "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    printf 'sync requires a stable vX.Y.Z release tag\n' >&2
+    exit 1
+  }
+  selected_base=$(python3 "$repo_root/scripts/version_base.py" resolve "$release" --fetch)
+  printf 'selected canonical release: %s\nselected base: %s\n' "$release" "$selected_base"
 
-  selected_base=$(git rev-parse "$selected_ref^{commit}")
-  printf 'selected ref: %s\nselected base: %s\n' "$selected_ref" "$selected_base"
+  original_version=$(python3 "$repo_root/scripts/version_base.py" pinned)
+  original_master=$(git show-ref --verify --hash refs/heads/master 2>/dev/null || true)
+  rollback_sync() {
+    python3 "$repo_root/scripts/version_base.py" write "$original_version" || true
+    if [[ -n "$original_master" ]]; then
+      git branch -f master "$original_master" || true
+    else
+      git branch -D master >/dev/null 2>&1 || true
+    fi
+  }
+  trap rollback_sync ERR
+
+  just --justfile "$repo_root/justfile" validate-patch-files "$selected_base"
+  just --justfile "$repo_root/justfile" learn-upstream-exclusions "$selected_base"
+  just --justfile "$repo_root/justfile" validate-patched-copy "$selected_base"
+
   git branch -f master "$selected_base"
+  python3 "$repo_root/scripts/version_base.py" write "$release"
+  trap - ERR
 
-  just --justfile "$repo_root/justfile" learn-upstream-exclusions
-  just --justfile "$repo_root/justfile" validate-patched-copy
-
-# Push catalog, synchronized upstream base, and candidate branches to origin.
+# Push catalog, pinned local release base, and candidate branches to origin.
 push:
   #!/usr/bin/env bash
   set -euo pipefail
