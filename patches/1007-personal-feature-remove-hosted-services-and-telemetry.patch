@@ -167,7 +167,7 @@ scripts/cargo_exec.sh test -p jcode-tui --lib -- test_subscription_command_is_no
  delete mode 100644 src/cli/telemetry.rs
 
 diff --git a/README.md b/README.md
-index da33b2265..07d5ef687 100644
+index 00f042a6f..8572a5773 100644
 --- a/README.md
 +++ b/README.md
 @@ -858,7 +858,6 @@ Notes:

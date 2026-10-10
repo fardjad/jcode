@@ -44,8 +44,8 @@ scripts/cargo_exec.sh test -p jcode-tui default_filter_current_dir_applied_on_as
  .../src/tui/session_picker/filter.rs          |  40 ++-
  .../src/tui/session_picker/loading.rs         |  40 ++-
  .../src/tui/session_picker/loading_tests.rs   | 131 ++++++++-
- .../jcode-tui/src/tui/session_picker_tests.rs | 267 ++++++++++++++++++
- 9 files changed, 536 insertions(+), 30 deletions(-)
+ .../jcode-tui/src/tui/session_picker_tests.rs | 268 ++++++++++++++++++
+ 9 files changed, 537 insertions(+), 30 deletions(-)
 
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
 index 1da9fa855..056f394ef 100644
@@ -589,13 +589,14 @@ index 9049e06f7..b8505da31 100644
          );
      }
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index c098df52c..16237cd2c 100644
+index bf635faf9..16237cd2c 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
-@@ -2832,3 +2832,270 @@ fn ctrl_d_deletes_session_from_server_group() {
+@@ -2831,3 +2831,271 @@ fn ctrl_d_deletes_session_from_server_group() {
+         crate::env::remove_var("JCODE_HOME");
      }
  }
- 
++
 +
 +/// The sort ordering must apply consistently to filtered rows, not just the
 +/// full unfiltered list. When a non-All filter is active, `rebuild_items`
