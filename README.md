@@ -153,7 +153,7 @@ just validate-patch-files
 Test one patch and its declared validation command:
 
 ```bash
-just test-patch-file patches/1001-personal-release-installer-isolate-release-installer-path-opt-in.patch
+just test-patch-file patches/0001-candidate-isolate-release-installer-path-opt-in.patch
 ```
 
 Use this after snapshotting a change, and before relying on it after an
@@ -164,7 +164,7 @@ upstream sync.
 Create a branch from a candidate patch:
 
 ```bash
-just create-upstream-candidate-branch-from patches/0001-candidate-pre-tool-input-transformers.patch
+just create-upstream-candidate-branch-from patches/0002-candidate-add-hook-context-and-post-tool-transform.patch
 ```
 
 Review the created branch, then use it to open an upstream contribution. Keep

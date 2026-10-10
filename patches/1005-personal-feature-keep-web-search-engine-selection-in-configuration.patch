@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Sat, 10 Oct 2026 03:39:18 +0200
+Subject: [PATCH] feat: keep web-search engine selection in configuration
+
+X-Jcode-Patch-Intent: websearch tool runs only configured engines
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: none
+
+Patch intent:
+Remove the request-level engine parameter from the local websearch tool so
+it always dispatches upstream's configured [websearch].engine followed by
+fallback_engines. A legacy engine field in tool input is ignored.
+
+Why it exists:
+The model could select any local engine per call, so DuckDuckGo or Bing ran
+even when SearXNG was configured. Upstream config semantics lead: engine,
+fallback_engines, prefer_native, and their environment overrides are left
+exactly as upstream defines them. Users who want one engine set
+fallback_engines = [] and, to avoid hosted search, prefer_native = false.
+Non-goal: changing provider-native search or config shape.
+
+Upstream integration points:
+crates/jcode-app-core/src/tool/websearch.rs WebSearchInput,
+parameters_schema, execute, and local_engine_order. The tool description
+must stay LOCAL_WEBSEARCH_DESCRIPTION because provider runtimes match it to
+swap in native search.
+
+Update guidance:
+Keep engine selection out of the schema and out of dispatch. Any new
+dispatch path must derive engines only from [websearch] configuration.
+
+Validation:
+scripts/cargo_exec.sh test -p jcode-app-core tool::websearch::tests --lib
+---
+ crates/jcode-app-core/src/tool/websearch.rs | 37 +++++++++++++++------
+ 1 file changed, 26 insertions(+), 11 deletions(-)
+
+diff --git a/crates/jcode-app-core/src/tool/websearch.rs b/crates/jcode-app-core/src/tool/websearch.rs
+index 5b112694b..3cdd4a493 100644
+--- a/crates/jcode-app-core/src/tool/websearch.rs
++++ b/crates/jcode-app-core/src/tool/websearch.rs
+@@ -24,8 +24,6 @@ struct WebSearchInput {
+     #[serde(default)]
+     num_results: Option<usize>,
+     #[serde(default)]
+-    engine: Option<WebSearchEngine>,
+-    #[serde(default)]
+     bing_market: Option<String>,
+ }
+ 
+@@ -67,11 +65,6 @@ impl Tool for WebSearchTool {
+                     "type": "integer",
+                     "description": "Max results."
+                 },
+-                "engine": {
+-                    "type": "string",
+-                    "enum": ["duckduckgo", "bing", "searxng"],
+-                    "description": "Engine. Defaults to duckduckgo; searxng uses JCODE_SEARXNG_URL."
+-                },
+                 "bing_market": {
+                     "type": "string",
+                     "description": "Optional Bing market, e.g. en-US or zh-CN. Defaults to JCODE_BING_MARKET or en-US."
+@@ -85,10 +78,10 @@ impl Tool for WebSearchTool {
+         let num_results = params.num_results.unwrap_or(8).min(20);
+ 
+         let config = crate::config::config();
+-        let engines = local_engine_order(
+-            params.engine.unwrap_or(config.websearch.engine),
+-            &config.websearch.fallback_engines,
+-        );
++        // Engine choice is configuration-owned. A request-level `engine`
++        // field (from older callers) is ignored so the model can never pick an
++        // engine outside [websearch].engine and fallback_engines.
++        let engines = local_engine_order(config.websearch.engine, &config.websearch.fallback_engines);
+ 
+         let market = params
+             .bing_market
+@@ -688,6 +681,28 @@ mod tests {
+ 
+     use super::*;
+ 
++    #[test]
++    fn schema_does_not_expose_engine_selection() {
++        let schema = WebSearchTool::new().parameters_schema();
++        assert!(schema["properties"].get("engine").is_none());
++    }
++
++    #[test]
++    fn request_engine_field_is_ignored() {
++        let params: WebSearchInput =
++            serde_json::from_value(json!({"query": "q", "engine": "duckduckgo"}))
++                .expect("legacy engine field must not fail decoding");
++        assert_eq!(params.query, "q");
++    }
++
++    #[test]
++    fn searxng_without_fallbacks_runs_only_searxng() {
++        assert_eq!(
++            local_engine_order(WebSearchEngine::Searxng, &[]),
++            vec![WebSearchEngine::Searxng]
++        );
++    }
++
+     #[test]
+     fn parses_bing_html_results() {
+         let html = r#"

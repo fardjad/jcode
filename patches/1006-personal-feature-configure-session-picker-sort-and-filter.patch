@@ -37,7 +37,7 @@ scripts/cargo_exec.sh test -p jcode-tui default_filter_all_shows_every_session -
 scripts/cargo_exec.sh test -p jcode-tui default_filter_current_dir_applied_on_async_loaded_picker --lib
 ---
  crates/jcode-base/src/config/default_file.rs  |   8 +
- crates/jcode-config-types/src/display.rs      |  43 ++-
+ crates/jcode-config-types/src/display.rs      |  42 ++-
  crates/jcode-config-types/src/lib.rs          |  24 ++
  .../src/tui/app/inline_interactive.rs         |   2 +
  crates/jcode-tui/src/tui/session_picker.rs    |  12 +
@@ -45,13 +45,13 @@ scripts/cargo_exec.sh test -p jcode-tui default_filter_current_dir_applied_on_as
  .../src/tui/session_picker/loading.rs         |  40 ++-
  .../src/tui/session_picker/loading_tests.rs   | 131 ++++++++-
  .../jcode-tui/src/tui/session_picker_tests.rs | 267 ++++++++++++++++++
- 9 files changed, 537 insertions(+), 30 deletions(-)
+ 9 files changed, 536 insertions(+), 30 deletions(-)
 
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 69b6df72e..37a4a9ac8 100644
+index 1da9fa855..056f394ef 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -220,6 +220,14 @@ prompt_entry_animation = true
+@@ -236,6 +236,14 @@ prompt_entry_animation = true
  # (default: true). Set false to list only jcode's own sessions.
  # external_sessions = true
  
@@ -63,25 +63,24 @@ index 69b6df72e..37a4a9ac8 100644
 +# default), "created" (newest first), or "name" (alphabetical).
 +# session_picker_sort = "recent"
 +
- # Overscroll status line (model/provider/context info below the input):
- #   "on"         - always visible (default)
- #   "overscroll" - elastic reveal when scrolling past the bottom
+ # Disable specific animation variants by name.
+ # Examples: ["donut"] or ["donut", "orbit_rings"]
+ # Legacy aliases such as "three_rings" and "gyroscope" are still accepted.
 diff --git a/crates/jcode-config-types/src/display.rs b/crates/jcode-config-types/src/display.rs
-index 57942f410..c1c8786a1 100644
+index 3cb835981..a7a633d48 100644
 --- a/crates/jcode-config-types/src/display.rs
 +++ b/crates/jcode-config-types/src/display.rs
-@@ -2,7 +2,9 @@
+@@ -2,7 +2,8 @@
  
  use crate::{
      DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
--    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, default_true,
-+    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, SessionPickerDefaultFilter,
-+    SessionPickerSort,
+-    NativeScrollbarConfig, ReasoningDisplayMode, default_true,
++    NativeScrollbarConfig, ReasoningDisplayMode, SessionPickerDefaultFilter, SessionPickerSort,
 +    default_true,
  };
  use serde::{Deserialize, Serialize};
  
-@@ -117,6 +119,11 @@ pub struct DisplayConfig {
+@@ -117,6 +118,11 @@ pub struct DisplayConfig {
      /// sessions (issue #674).
      #[serde(default = "default_true")]
      pub external_sessions: bool,
@@ -92,17 +91,17 @@ index 57942f410..c1c8786a1 100644
 +    pub session_picker_sort: SessionPickerSort,
      /// Usage percentage wording: "left" (default) or "used".
      pub usage_display: String,
-     /// When to show the overscroll status line below the input
-@@ -161,6 +168,8 @@ impl Default for DisplayConfig {
+ }
+@@ -156,6 +162,8 @@ impl Default for DisplayConfig {
              colors: std::collections::BTreeMap::new(),
              active_sessions_manager: false,
              external_sessions: true,
 +            session_picker_default_filter: SessionPickerDefaultFilter::All,
 +            session_picker_sort: SessionPickerSort::Recent,
              usage_display: "left".to_string(),
-             overscroll_status: OverscrollStatusMode::default(),
          }
-@@ -241,6 +250,38 @@ mod tests {
+     }
+@@ -235,6 +243,38 @@ mod tests {
          assert!(!disabled.pin_todos);
      }
  
@@ -142,7 +141,7 @@ index 57942f410..c1c8786a1 100644
      fn usage_percentage_wording_defaults_to_left_and_accepts_used() {
          assert_eq!(DisplayConfig::default().usage_display, "left");
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 9e38c1413..e1abeceb6 100644
+index 2a58947d1..3e2ba7390 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -52,6 +52,30 @@ pub enum SessionPickerResumeAction {
@@ -177,10 +176,10 @@ index 9e38c1413..e1abeceb6 100644
      pub fn alternate(self) -> Self {
          match self {
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 7f0c99824..704db558f 100644
+index 32535d090..96e95d0f0 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-@@ -2467,6 +2467,7 @@ impl App {
+@@ -2470,6 +2470,7 @@ impl App {
              (SessionPicker::loading(), "Loading sessions...")
          };
          picker.set_current_dir(current_dir);
@@ -188,7 +187,7 @@ index 7f0c99824..704db558f 100644
          picker.set_current_session_id(Some(super::commands::active_session_id(self)));
          self.session_picker_overlay = Some(RefCell::new(picker));
          self.session_picker_mode = SessionPickerMode::Resume;
-@@ -2591,6 +2592,7 @@ impl App {
+@@ -2594,6 +2595,7 @@ impl App {
              SessionPickerMode::Resume => {
                  let mut picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
                  picker.set_current_dir(self.session.working_dir.clone());
@@ -282,7 +281,7 @@ index 91596228f..f3200d915 100644
          if !saved_sessions.is_empty() {
              self.items.push(PickerItem::SavedHeader {
 diff --git a/crates/jcode-tui/src/tui/session_picker/loading.rs b/crates/jcode-tui/src/tui/session_picker/loading.rs
-index 75cba0b53..a422c8b40 100644
+index b2dc7731b..a148450b0 100644
 --- a/crates/jcode-tui/src/tui/session_picker/loading.rs
 +++ b/crates/jcode-tui/src/tui/session_picker/loading.rs
 @@ -23,6 +23,32 @@ use super::{
@@ -335,7 +334,7 @@ index 75cba0b53..a422c8b40 100644
      sessions: Vec<SessionInfo>,
  }
  
-@@ -158,6 +185,8 @@ struct GroupedSessionListDiskCache {
+@@ -164,6 +191,8 @@ struct GroupedSessionListDiskCache {
      /// file stays readable (it was written with externals on).
      #[serde(default = "crate::tui::session_picker::loading::default_true")]
      external_sessions: bool,
@@ -344,7 +343,7 @@ index 75cba0b53..a422c8b40 100644
      server_groups: Vec<ServerGroup>,
      orphan_sessions: Vec<SessionInfo>,
  }
-@@ -189,12 +218,14 @@ fn session_list_disk_cache_is_usable(
+@@ -221,12 +250,14 @@ fn session_list_disk_cache_is_usable(
      sessions_dir: &Path,
      scan_limit: usize,
      want_external: bool,
@@ -359,7 +358,7 @@ index 75cba0b53..a422c8b40 100644
          && chrono::Utc::now()
              .signed_duration_since(cache.generated_at)
              .num_seconds()
-@@ -217,6 +248,7 @@ fn write_grouped_session_list_disk_cache(
+@@ -249,6 +280,7 @@ fn write_grouped_session_list_disk_cache(
          scan_limit,
          include_old_saved_sessions: include_old_saved_sessions_on_initial_load(),
          external_sessions: include_external_sessions(),
@@ -367,7 +366,7 @@ index 75cba0b53..a422c8b40 100644
          server_groups: server_groups.to_vec(),
          orphan_sessions: orphan_sessions.to_vec(),
      };
-@@ -239,6 +271,7 @@ pub fn load_cached_sessions_grouped() -> Option<(Vec<ServerGroup>, Vec<SessionIn
+@@ -271,6 +303,7 @@ pub fn load_cached_sessions_grouped() -> Option<(Vec<ServerGroup>, Vec<SessionIn
          &sessions_dir,
          scan_limit,
          include_external_sessions(),
@@ -375,31 +374,32 @@ index 75cba0b53..a422c8b40 100644
      ) {
          return None;
      }
-@@ -1775,12 +1808,14 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+@@ -1811,6 +1844,7 @@ fn load_sessions_inner(bypass_cache: bool) -> Result<Vec<SessionInfo>> {
      let sessions_dir = storage::jcode_dir()?.join("sessions");
      let scan_limit = session_scan_limit();
      let want_external = include_external_sessions();
 +    let sort = crate::config::config().display.session_picker_sort;
  
-     if let Ok(cache) = session_list_cache().lock()
-         && let Some(entry) = cache.as_ref()
-         && entry.sessions_dir == sessions_dir
-         && entry.scan_limit == scan_limit
-         && entry.external_sessions == want_external
-+        && entry.session_picker_sort == sort
-         && entry.loaded_at.elapsed() <= SESSION_LIST_CACHE_TTL
-     {
-         return Ok(entry.sessions.clone());
-@@ -1888,7 +1923,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+     let cache_generation = if let Ok(state) = session_list_cache().lock() {
+         if !bypass_cache
+@@ -1818,6 +1852,7 @@ fn load_sessions_inner(bypass_cache: bool) -> Result<Vec<SessionInfo>> {
+             && entry.sessions_dir == sessions_dir
+             && entry.scan_limit == scan_limit
+             && entry.external_sessions == want_external
++            && entry.session_picker_sort == sort
+             && entry.loaded_at.elapsed() <= SESSION_LIST_CACHE_TTL
+         {
+             return Ok(entry.sessions.clone());
+@@ -1929,7 +1964,7 @@ fn load_sessions_inner(bypass_cache: bool) -> Result<Vec<SessionInfo>> {
      });
      sessions.extend(external_sessions);
  
 -    sessions.sort_by(|a, b| b.last_message_time.cmp(&a.last_message_time));
 +    sessions.sort_by(|a, b| compare_sessions_by(a, b, sort));
  
-     if let Ok(mut cache) = session_list_cache().lock() {
-         *cache = Some(SessionListCacheEntry {
-@@ -1896,6 +1931,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
+     #[cfg(test)]
+     run_before_session_list_cache_publish_hook();
+@@ -1942,6 +1977,7 @@ fn load_sessions_inner(bypass_cache: bool) -> Result<Vec<SessionInfo>> {
              sessions_dir,
              scan_limit,
              external_sessions: want_external,
@@ -408,10 +408,10 @@ index 75cba0b53..a422c8b40 100644
          });
      }
 diff --git a/crates/jcode-tui/src/tui/session_picker/loading_tests.rs b/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
-index 96b7a9851..91ec15d9e 100644
+index 9049e06f7..b8505da31 100644
 --- a/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
-@@ -88,6 +88,120 @@ fn trivial_hidden_only_snapshot_detector_keeps_system_plus_visible_message() {
+@@ -93,6 +93,120 @@ fn trivial_hidden_only_snapshot_detector_keeps_system_plus_visible_message() {
      assert!(!snapshot_bytes_look_trivial_hidden_only(bytes));
  }
  
@@ -532,7 +532,7 @@ index 96b7a9851..91ec15d9e 100644
  #[test]
  fn cached_grouped_sessions_round_trip_from_disk() {
      let _env_lock = crate::storage::lock_test_env();
-@@ -139,6 +253,7 @@ fn cached_grouped_sessions_round_trip_from_disk() {
+@@ -144,6 +258,7 @@ fn cached_grouped_sessions_round_trip_from_disk() {
          scan_limit: session_scan_limit(),
          include_old_saved_sessions: include_old_saved_sessions_on_initial_load(),
          external_sessions: include_external_sessions(),
@@ -540,7 +540,7 @@ index 96b7a9851..91ec15d9e 100644
          server_groups: Vec::new(),
          orphan_sessions: vec![session],
      };
-@@ -1394,6 +1509,7 @@ fn session_matches_picker_query_requires_all_tokens_order_independent() {
+@@ -1496,6 +1611,7 @@ fn session_matches_picker_query_requires_all_tokens_order_independent() {
  /// jcode's own sessions, and toggling that must not be masked by either cache.
  mod external_session_opt_out {
      use super::super::{GroupedSessionListDiskCache, session_list_disk_cache_is_usable};
@@ -548,7 +548,7 @@ index 96b7a9851..91ec15d9e 100644
      use std::path::{Path, PathBuf};
  
      fn disk_cache(dir: &Path, external_sessions: bool) -> GroupedSessionListDiskCache {
-@@ -1404,6 +1520,7 @@ mod external_session_opt_out {
+@@ -1506,6 +1622,7 @@ mod external_session_opt_out {
              scan_limit: 50,
              include_old_saved_sessions: super::super::include_old_saved_sessions_on_initial_load(),
              external_sessions,
@@ -556,7 +556,7 @@ index 96b7a9851..91ec15d9e 100644
              server_groups: Vec::new(),
              orphan_sessions: Vec::new(),
          }
-@@ -1415,11 +1532,11 @@ mod external_session_opt_out {
+@@ -1517,11 +1634,11 @@ mod external_session_opt_out {
          let cache = disk_cache(&dir, true);
  
          assert!(
@@ -570,7 +570,7 @@ index 96b7a9851..91ec15d9e 100644
              "opting out must not be served a cache that still contains other CLIs' sessions"
          );
      }
-@@ -1429,9 +1546,15 @@ mod external_session_opt_out {
+@@ -1531,9 +1648,15 @@ mod external_session_opt_out {
          let dir = PathBuf::from("/tmp/jcode-test-sessions");
          let cache = disk_cache(&dir, false);
  

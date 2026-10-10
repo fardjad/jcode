@@ -1,4 +1,4 @@
-From 71a4462287c365384b828af0b062632b011d7365 Mon Sep 17 00:00:00 2001
+From 37542e75005a1b0ea54aae66ad37cd89664148ff Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: delete sessions from picker with Ctrl+D
@@ -110,19 +110,19 @@ index 74deb668f..8d94e6339 100644
                  self.toggle_test_sessions();
              }
 diff --git a/crates/jcode-tui/src/tui/session_picker/loading.rs b/crates/jcode-tui/src/tui/session_picker/loading.rs
-index 2e6993ce0..75cba0b53 100644
+index d6d1c18d5..b2dc7731b 100644
 --- a/crates/jcode-tui/src/tui/session_picker/loading.rs
 +++ b/crates/jcode-tui/src/tui/session_picker/loading.rs
-@@ -175,6 +175,9 @@ pub fn invalidate_session_list_cache() {
-     if let Ok(mut cache) = session_list_cache().lock() {
-         *cache = None;
+@@ -182,6 +182,9 @@ pub fn invalidate_session_list_cache() {
+         state.generation = state.generation.wrapping_add(1);
+         state.entry = None;
      }
 +    if let Ok(path) = session_list_disk_cache_path() {
 +        let _ = std::fs::remove_file(path);
 +    }
  }
  
- fn session_list_disk_cache_path() -> Result<PathBuf> {
+ #[cfg(test)]
 diff --git a/crates/jcode-tui/src/tui/session_picker/render.rs b/crates/jcode-tui/src/tui/session_picker/render.rs
 index 04fa4c557..b3603adf8 100644
 --- a/crates/jcode-tui/src/tui/session_picker/render.rs

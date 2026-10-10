@@ -26,11 +26,10 @@ binary. This is behavioral port of RTK's OpenCode
 replaces command only when RTK returns non-empty different value. jcode has no
 separate `shell` tool, so `bash` is equivalent integration boundary.
 
-RTK requires candidate patch
-`0001-candidate-pre-tool-input-transformers.patch` to be applied and
-configured with `pre_tool_transform`. That patch is not part of this plugin's
-catalog patch dependency metadata; plugin source remains external catalog
-content.
+RTK requires the `pre_tool_transform` hook, which upstream jcode ships
+since v0.89 (merged from the former candidate patch
+`0001-candidate-pre-tool-input-transformers.patch`). Plugin source remains
+external catalog content.
 
 Configure transformer in jcode config:
 
@@ -59,7 +58,7 @@ fires only when swarm is enabled and the process role is coordinator. Workers
 and non-swarm sessions are unaffected. It fails open on any error.
 
 The delegation guard requires the post-tool transform hook from
-`1011-personal-feature-add-hook-context-and-post-tool-transform.patch` to be
+`0002-candidate-add-hook-context-and-post-tool-transform.patch` to be
 applied and configured with `post_tool_transform`. Plugin source remains
 external catalog content.
 

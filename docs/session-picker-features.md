@@ -1,9 +1,9 @@
 # Session picker features
 
 These settings require catalog patches
-`1003-personal-feature-configure-session-picker-sort-and-filter.patch`
+`1006-personal-feature-configure-session-picker-sort-and-filter.patch`
 and
-`1004-personal-feature-delete-sessions-from-picker-with-ctrl-d.patch`
+`0003-candidate-delete-sessions-from-picker-with-ctrl-d.patch`
 to be applied.
 
 jcode reads user configuration from `~/.jcode/config.toml`.

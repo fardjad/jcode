@@ -33,14 +33,15 @@ scripts/cargo_exec.sh test -p jcode-app-core update_repository --lib
 scripts/cargo_exec.sh test -p jcode-app-core github_comparison_uses_selected_update_repository --lib
 scripts/cargo_exec.sh check -p jcode-app-core
 ---
- README.md                                     |  30 ++-
- crates/jcode-app-core/src/update.rs           | 248 ++++++++++++------
- crates/jcode-app-core/src/update_dev_guard.rs |  35 ++-
+ README.md                                     |  30 +++-
+ crates/jcode-app-core/src/update.rs           | 159 +++++++++++++-----
+ crates/jcode-app-core/src/update_dev_guard.rs |  35 +++-
+ crates/jcode-app-core/src/update_tests.rs     |  51 ++++++
  crates/jcode-update-core/src/lib.rs           |   1 +
- 4 files changed, 226 insertions(+), 88 deletions(-)
+ 5 files changed, 228 insertions(+), 48 deletions(-)
 
 diff --git a/README.md b/README.md
-index bdd6e6a41..64d87082b 100644
+index f160b7974..da33b2265 100644
 --- a/README.md
 +++ b/README.md
 @@ -51,6 +51,13 @@ Run `/update` in the TUI to download the latest stable release in the background
@@ -57,7 +58,7 @@ index bdd6e6a41..64d87082b 100644
  Older or equal release versions are skipped. For a development build, Jcode also
  compares the running binary's Git commit with the release tag. Builds ahead of,
  identical to, or diverged from the release are preserved. If ancestry cannot be
-@@ -308,8 +315,6 @@ Memories are automatically consolidated every so often via the ambient mode. Thi
+@@ -333,8 +340,6 @@ Memories are automatically consolidated every so often via the ambient mode. Thi
  
  ## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
  
@@ -66,7 +67,7 @@ index bdd6e6a41..64d87082b 100644
  The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline. 
  <img width="2877" height="1762" alt="image" src="https://github.com/user-attachments/assets/6c7bec81-ef3f-434d-8a7b-d55f8a54e5cf" />
  
-@@ -345,6 +350,27 @@ Agents are also able to spawn their own swarms autonomously. They have a swarm t
+@@ -370,6 +375,27 @@ Agents are also able to spawn their own swarms autonomously. They have a swarm t
  
  ---
  
@@ -95,7 +96,7 @@ index bdd6e6a41..64d87082b 100644
  in `~/.jcode/config.toml`:
  
 diff --git a/crates/jcode-app-core/src/update.rs b/crates/jcode-app-core/src/update.rs
-index 31895b639..e78dbfdad 100644
+index 740145b40..1bb26f1b6 100644
 --- a/crates/jcode-app-core/src/update.rs
 +++ b/crates/jcode-app-core/src/update.rs
 @@ -1,6 +1,8 @@
@@ -208,24 +209,29 @@ index 31895b639..e78dbfdad 100644
      )
  }
  
-@@ -190,10 +258,12 @@ fn is_inside_git_repo(path: &std::path::Path) -> bool {
+@@ -236,13 +304,15 @@ fn release_url_override_with(value: Option<String>, sandboxed_home: bool) -> Opt
  }
  
  pub fn fetch_latest_release_blocking() -> Result<GitHubRelease> {
--    let url = format!(
--        "https://api.github.com/repos/{}/releases/latest",
--        GITHUB_REPO
--    );
 +    let repository = update_repository()?;
 +    fetch_latest_release_blocking_for(&repository)
 +}
 +
 +fn fetch_latest_release_blocking_for(repository: &UpdateRepository) -> Result<GitHubRelease> {
-+    let url = repository.github_api_url("releases/latest");
+     let override_url = release_url_override();
+-    let url = override_url.clone().unwrap_or_else(|| {
+-        format!(
+-            "https://api.github.com/repos/{}/releases/latest",
+-            GITHUB_REPO
+-        )
+-    });
++    let url = override_url
++        .clone()
++        .unwrap_or_else(|| repository.github_api_url("releases/latest"));
  
      let client = reqwest::blocking::Client::builder()
          .timeout(UPDATE_CHECK_TIMEOUT)
-@@ -241,8 +311,8 @@ fn github_api_request(
+@@ -294,8 +364,8 @@ fn github_api_request(
      }
  }
  
@@ -236,7 +242,7 @@ index 31895b639..e78dbfdad 100644
      let client = reqwest::blocking::Client::builder()
          .timeout(UPDATE_CHECK_TIMEOUT)
          .user_agent("jcode-updater")
-@@ -307,19 +377,22 @@ fn verify_asset_checksum_if_available(
+@@ -360,19 +430,22 @@ fn verify_asset_checksum_if_available(
      Ok(())
  }
  
@@ -263,7 +269,7 @@ index 31895b639..e78dbfdad 100644
      crate::logging::info(&format!(
          "Main channel: built successfully at {}",
          path.display()
-@@ -350,11 +423,11 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
+@@ -403,11 +476,11 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
      Ok(path)
  }
  
@@ -278,7 +284,7 @@ index 31895b639..e78dbfdad 100644
          return Ok(PreparedUpdate::None {
              current: current_version.to_string(),
          });
-@@ -387,7 +460,7 @@ fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
+@@ -440,7 +513,7 @@ fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
      })
  }
  
@@ -287,7 +293,7 @@ index 31895b639..e78dbfdad 100644
      let current_hash = jcode_build_meta::git_hash();
      if current_hash.is_empty() || current_hash == "unknown" {
          crate::logging::info("Main channel: no git hash in binary, skipping update check");
-@@ -396,7 +469,7 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+@@ -449,7 +522,7 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
          });
      }
  
@@ -296,7 +302,7 @@ index 31895b639..e78dbfdad 100644
      if latest_sha.is_empty() {
          return Ok(PreparedUpdate::None {
              current: current_hash.to_string(),
-@@ -449,19 +522,21 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+@@ -502,19 +575,21 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
          );
          return Ok(PreparedUpdate::MainSource {
              latest_sha,
@@ -321,7 +327,7 @@ index 31895b639..e78dbfdad 100644
      }
  }
  
-@@ -531,6 +606,7 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -584,6 +659,7 @@ pub fn spawn_background_session_update(session_id: String) {
              }
              Ok(PreparedUpdate::MainSource {
                  latest_sha,
@@ -329,7 +335,7 @@ index 31895b639..e78dbfdad 100644
                  estimate,
              }) => {
                  publish(SessionUpdateStatus::Status {
-@@ -547,7 +623,9 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -600,7 +676,9 @@ pub fn spawn_background_session_update(session_id: String) {
                          format_duration_estimate(estimate.duration)
                      ),
                  });
@@ -340,7 +346,7 @@ index 31895b639..e78dbfdad 100644
                      Ok(_) => publish(SessionUpdateStatus::ReadyToReload {
                          session_id,
                          action,
-@@ -570,17 +648,20 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -623,17 +701,20 @@ pub fn spawn_background_session_update(session_id: String) {
  }
  
  pub fn check_for_update_blocking() -> Result<Option<GitHubRelease>> {
@@ -366,7 +372,7 @@ index 31895b639..e78dbfdad 100644
          let asset_name = get_asset_name();
          let has_asset = release
              .assets
-@@ -600,14 +681,14 @@ fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -653,14 +734,14 @@ fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
  /// If a new commit is found:
  ///   - Tries to build from source if cargo is available
  ///   - Falls back to latest GitHub Release if not
@@ -383,7 +389,7 @@ index 31895b639..e78dbfdad 100644
  
      if latest_sha.is_empty() {
          return Ok(None);
-@@ -633,9 +714,9 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -686,9 +767,9 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
      // Try to build from source
      if has_cargo() {
          crate::logging::info("Main channel: cargo found, attempting build from source");
@@ -395,7 +401,7 @@ index 31895b639..e78dbfdad 100644
              }
              Err(e) => {
                  crate::logging::error(&format!("Main channel: build failed: {}", e));
-@@ -647,14 +728,14 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -700,13 +781,13 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
      }
  
      // Fallback: use latest stable release if available
@@ -406,13 +412,12 @@ index 31895b639..e78dbfdad 100644
              .assets
              .iter()
              .any(|a| a.name.starts_with(asset_name));
-         if has_asset {
--            if release_is_update(&release)? {
-+            if release_is_update(&release, repository)? {
-                 return Ok(Some(release));
-             }
+-        if has_asset && release_is_update(&release)? {
++        if has_asset && release_is_update(&release, repository)? {
+             return Ok(Some(release));
          }
-@@ -673,7 +754,7 @@ fn has_cargo() -> bool {
+     }
+@@ -724,7 +805,7 @@ fn has_cargo() -> bool {
  }
  
  /// Build jcode from source by cloning/pulling the repo and running cargo build
@@ -421,7 +426,7 @@ index 31895b639..e78dbfdad 100644
      let started = Instant::now();
      let build_dir = source_build_root()?;
      fs::create_dir_all(&build_dir)?;
-@@ -719,7 +800,7 @@ fn build_from_source() -> Result<PathBuf> {
+@@ -770,7 +851,7 @@ fn build_from_source() -> Result<PathBuf> {
      } else {
          // Clone
          crate::logging::info("Main channel: cloning repository...");
@@ -430,113 +435,6 @@ index 31895b639..e78dbfdad 100644
          let output = std::process::Command::new("git")
              .args([
                  "clone", "--depth", "1", "--branch", "main", &clone_url, "jcode",
-@@ -1215,6 +1296,57 @@ mod tests {
-     use jcode_update_core::parse_sha256sums;
-     use sha2::{Digest, Sha256};
- 
-+    #[test]
-+    fn update_repository_defaults_to_fork() {
-+        assert_eq!(
-+            resolve_update_repository(None).unwrap().slug(),
-+            "fardjad/jcode"
-+        );
-+    }
-+
-+    #[test]
-+    fn update_repository_accepts_github_slug_characters() {
-+        let repository = resolve_update_repository(Some("Owner_Name/repo.name-2")).unwrap();
-+        assert_eq!(repository.slug(), "Owner_Name/repo.name-2");
-+        assert_eq!(
-+            repository.github_api_url("releases/latest"),
-+            "https://api.github.com/repos/Owner_Name/repo.name-2/releases/latest"
-+        );
-+        assert_eq!(
-+            repository.github_web_url("commit/abc1234"),
-+            "https://github.com/Owner_Name/repo.name-2/commit/abc1234"
-+        );
-+        assert_eq!(
-+            repository.clone_url(),
-+            "https://github.com/Owner_Name/repo.name-2.git"
-+        );
-+    }
-+
-+    #[test]
-+    fn update_repository_rejects_malformed_slugs() {
-+        for slug in [
-+            "",
-+            "owner",
-+            "/repo",
-+            "owner/",
-+            "owner/repo/extra",
-+            "https://github.com/owner/repo",
-+            "owner repo",
-+            "owner\trepo",
-+            "owner@repo/repo",
-+            "owner:repo/repo",
-+            "../repo",
-+            "owner/..",
-+            "owner/repo?query",
-+            "owner/repo#fragment",
-+        ] {
-+            assert!(
-+                resolve_update_repository(Some(slug)).is_err(),
-+                "accepted {slug:?}"
-+            );
-+        }
-+    }
-+
-     #[test]
-     fn test_version_is_newer() {
-         assert!(version_is_newer("0.1.3", "0.1.2"));
-@@ -1308,48 +1440,6 @@ mod tests {
-         assert!(err.contains("invalid SHA256 digest"));
-     }
- 
--    #[test]
--    fn release_update_rejects_equal_or_older_versions_without_ancestry_probe() {
--        for release_build in [true, false] {
--            for release in ["v0.82.9", "v0.83.0"] {
--                assert!(
--                    !release_is_update_with(release, "0.83.0", release_build, || {
--                        panic!("older releases must not need a GitHub ancestry check")
--                    })
--                    .unwrap()
--                );
--            }
--        }
--    }
--
--    #[test]
--    fn release_update_allows_newer_release_build_without_ancestry_probe() {
--        assert!(
--            release_is_update_with("v0.83.1", "0.83.0", true, || {
--                panic!("release builds must not need a GitHub ancestry check")
--            })
--            .unwrap()
--        );
--    }
--
--    #[test]
--    fn release_update_preserves_dev_commits_even_when_release_number_is_newer() {
--        assert!(!release_is_update_with("v0.84.0", "0.83.0", false, || Ok(false)).unwrap());
--    }
--
--    #[test]
--    fn release_update_allows_dev_build_behind_release() {
--        assert!(release_is_update_with("v0.83.1", "0.83.0", false, || Ok(true)).unwrap());
--    }
--
--    #[test]
--    fn release_update_fails_closed_when_dev_ancestry_cannot_be_verified() {
--        let result = release_is_update_with("v0.84.0", "0.83.0", false, || {
--            anyhow::bail!("Cannot verify development build ancestry")
--        });
--        assert!(result.unwrap_err().to_string().contains("Cannot verify"));
--    }
--
-     #[test]
-     fn test_is_release_build() {
-         assert!(!is_release_build());
 diff --git a/crates/jcode-app-core/src/update_dev_guard.rs b/crates/jcode-app-core/src/update_dev_guard.rs
 index c83a52661..b0b7b2e13 100644
 --- a/crates/jcode-app-core/src/update_dev_guard.rs
@@ -601,6 +499,68 @@ index c83a52661..b0b7b2e13 100644
      #[test]
      fn local_ahead_retains_dev_build() {
          let repo = Repo::new();
+diff --git a/crates/jcode-app-core/src/update_tests.rs b/crates/jcode-app-core/src/update_tests.rs
+index bc281ed44..f4991e4d1 100644
+--- a/crates/jcode-app-core/src/update_tests.rs
++++ b/crates/jcode-app-core/src/update_tests.rs
+@@ -2,6 +2,57 @@ use super::*;
+ use jcode_update_core::parse_sha256sums;
+ use sha2::{Digest, Sha256};
+ 
++#[test]
++fn update_repository_defaults_to_fork() {
++    assert_eq!(
++        resolve_update_repository(None).unwrap().slug(),
++        "fardjad/jcode"
++    );
++}
++
++#[test]
++fn update_repository_accepts_github_slug_characters() {
++    let repository = resolve_update_repository(Some("Owner_Name/repo.name-2")).unwrap();
++    assert_eq!(repository.slug(), "Owner_Name/repo.name-2");
++    assert_eq!(
++        repository.github_api_url("releases/latest"),
++        "https://api.github.com/repos/Owner_Name/repo.name-2/releases/latest"
++    );
++    assert_eq!(
++        repository.github_web_url("commit/abc1234"),
++        "https://github.com/Owner_Name/repo.name-2/commit/abc1234"
++    );
++    assert_eq!(
++        repository.clone_url(),
++        "https://github.com/Owner_Name/repo.name-2.git"
++    );
++}
++
++#[test]
++fn update_repository_rejects_malformed_slugs() {
++    for slug in [
++        "",
++        "owner",
++        "/repo",
++        "owner/",
++        "owner/repo/extra",
++        "https://github.com/owner/repo",
++        "owner repo",
++        "owner\trepo",
++        "owner@repo/repo",
++        "owner:repo/repo",
++        "../repo",
++        "owner/..",
++        "owner/repo?query",
++        "owner/repo#fragment",
++    ] {
++        assert!(
++            resolve_update_repository(Some(slug)).is_err(),
++            "accepted {slug:?}"
++        );
++    }
++}
++
+ #[test]
+ fn test_version_is_newer() {
+     assert!(version_is_newer("0.1.3", "0.1.2"));
 diff --git a/crates/jcode-update-core/src/lib.rs b/crates/jcode-update-core/src/lib.rs
 index 5cc735095..a87f94856 100644
 --- a/crates/jcode-update-core/src/lib.rs

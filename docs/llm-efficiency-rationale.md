@@ -25,7 +25,7 @@ to measure the resulting trade-offs.
 ## Worker blueprints and delegated roles
 
 Patch
-`1008-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
+`1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
 adds reusable Markdown blueprints and the reserved `coordinator.md` blueprint.
 A regular blueprint has durable role instructions and can declare its model,
 reasoning effort, enabled and disabled tools, communication policy, and
@@ -69,7 +69,7 @@ specific additional portion required for a decision.
 
 ## Hook infrastructure and the delegation guard
 
-Patch `1011-personal-feature-add-hook-context-and-post-tool-transform.patch`
+Patch `0002-candidate-add-hook-context-and-post-tool-transform.patch`
 adds context-aware hook integration. Hooks receive whether swarm is enabled and
 the process role (`coordinator`, `worker`, or `internal`). It also adds:
 
@@ -101,7 +101,7 @@ and hook failures retain their normal behavior.
 
 ## Review preferences and completion quality gates
 
-Patch `1009-personal-feature-completion-quality-gates-respect-review.patch`
+Patch `1004-personal-feature-completion-quality-gates-respect-review.patch`
 prevents automatic post-completion todo quality continuations when both
 automatic review and automatic judging are disabled. The skipped continuations
 include ownership, validation, and synthetic final-response checks. Incomplete
@@ -118,17 +118,18 @@ additional tokens on automatic checks they explicitly turned off.
 
 ### Input normalization before execution
 
-Candidate patch `0001-candidate-pre-tool-input-transformers.patch` adds a
+Upstream jcode (since v0.89, merged from the former candidate patch
+`0001-candidate-pre-tool-input-transformers.patch`) provides a
 fail-open `pre_tool_transform` hook that rewrites tool JSON before pre-tool
 policy evaluation. The catalog's RTK adapter uses this generic hook to rewrite
 Bash commands through RTK. This is an enabling mechanism for command-output
 reduction or normalization, not proof of a saving by itself: its effect depends
-on the configured adapter and command. The patch preserves the policy gate and
+on the configured adapter and command. The hook preserves the policy gate and
 uses the original input if transformation fails or times out.
 
 ### Avoiding unrequested search fallback
 
-Patch `1010-personal-feature-enforce-ordered-web-search-engine-policy.patch`
+Patch `1005-personal-feature-keep-web-search-engine-selection-in-configuration.patch`
 limits web search to configured engines in their specified order. This is
 primarily a policy and predictability change. It can avoid wasted fallback
 attempts and their associated tool context, but it is not a general token
@@ -153,11 +154,12 @@ failure rate is not automatically an efficiency improvement.
 
 ## Source map
 
-- `1008-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
-- `1009-personal-feature-completion-quality-gates-respect-review.patch`
-- `1010-personal-feature-enforce-ordered-web-search-engine-policy.patch`
-- `1011-personal-feature-add-hook-context-and-post-tool-transform.patch`
-- `0001-candidate-pre-tool-input-transformers.patch`
+- `1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
+- `1004-personal-feature-completion-quality-gates-respect-review.patch`
+- `1005-personal-feature-keep-web-search-engine-selection-in-configuration.patch`
+- `0002-candidate-add-hook-context-and-post-tool-transform.patch`
+- upstream `pre_tool_transform` hook (formerly
+  `0001-candidate-pre-tool-input-transformers.patch`)
 - `workers/README.md` and `workers/blueprints/`
 - `plugins/delegation-guard/README.md`
 - `docs/swarm-delegation-features.md`

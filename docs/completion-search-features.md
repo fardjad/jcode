@@ -5,20 +5,23 @@ selection.
 
 ## Completion quality gates
 
-Patch `1009-personal-feature-completion-quality-gates-respect-review.patch`
+Patch `1004-personal-feature-completion-quality-gates-respect-review.patch`
 makes automatic post-completion todo quality checks respect the review
 settings. When review is disabled, the quality gates do not run automatically.
 
-## Ordered web search engine policy
+## Configuration-owned web search engines
 
-Patch `1010-personal-feature-enforce-ordered-web-search-engine-policy.patch`
-makes web search engine selection an ordered policy. Configure the search
-engine order in `~/.jcode/config.toml`:
+Patch `1005-personal-feature-keep-web-search-engine-selection-in-configuration.patch`
+removes the per-call `engine` parameter from the local `websearch` tool, so the
+model can no longer pick an engine. The tool always runs upstream's configured
+`[websearch].engine` followed by `fallback_engines`. Upstream config semantics
+are otherwise unchanged, including provider-native search (`prefer_native`,
+default on). To use only SearXNG:
 
 ```toml
 [websearch]
-engine = "google"
+engine = "searxng"
+searxng_url = "https://searx.example.org"
+prefer_native = false   # never use the provider's hosted search
+fallback_engines = []   # upstream defaults to ["bing"]
 ```
-
-The policy enforces that only configured engines are used, in the specified
-order, preventing fallback to unconfigured or default engines.

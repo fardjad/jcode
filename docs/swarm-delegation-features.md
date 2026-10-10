@@ -7,7 +7,7 @@ delegate token-heavy work to cheaper worker models.
 
 ## Worker blueprints
 
-Patch `1008-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
+Patch `1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
 enables reusable worker blueprints with coordinator delegation. Each blueprint
 declares its enabled tools, effort level, and communication policy. Workers run
 on a cheaper model and return compact summaries instead of raw tool output.
@@ -31,7 +31,7 @@ swarm_model = "openrouter-eu:gpt-4.1"
 
 ## Swarm context, post-tool transform, and record hooks
 
-Patch `1011-personal-feature-add-hook-context-and-post-tool-transform.patch`
+Patch `0002-candidate-add-hook-context-and-post-tool-transform.patch`
 exposes swarm state and process role to all hooks via environment variables and
 structured JSON, and adds synchronous post-tool transform and detached
 post-tool record hooks. The transform hook lets plugins replace oversized
@@ -56,7 +56,8 @@ keeping the coordinator's context small.
 
 ## Pre-tool input transformers
 
-Patch `0001-candidate-pre-tool-input-transformers.patch` adds a generic
+Upstream jcode (since v0.89, merged from the former candidate patch
+`0001-candidate-pre-tool-input-transformers.patch`) provides a generic
 pre-tool transformer hook that lets plugins modify tool inputs before
 execution. The `rtk-transform` plugin (see `plugins/rtk/`) uses this to
 rewrite bash commands through RTK.

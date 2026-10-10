@@ -1,6 +1,6 @@
 # Privacy and cleanup features
 
-Patch `1006-personal-feature-remove-hosted-services-and-telemetry.patch`
+Patch `1007-personal-feature-remove-hosted-services-and-telemetry.patch`
 removes hosted subscription, telemetry, promotional, sponsored-discovery,
 and onboarding functionality from jcode. It is a personal patch that strips
 cloud-dependent and promotional surfaces so jcode runs as a local-only tool.

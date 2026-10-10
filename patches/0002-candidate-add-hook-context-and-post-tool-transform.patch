@@ -1,11 +1,11 @@
-From 714020f5a22b766fc917f3d636a5963aa13a07d9 Mon Sep 17 00:00:00 2001
+From 533503df8661bfd2a1c6ca3f4e72bce8375191ba Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add hook context and post-tool transform
 
 X-Jcode-Patch-Intent: Add generic per-turn hooks and post-tool transforms
 X-Jcode-Patch-Kind: upstream-candidate
-X-Jcode-Patch-Depends-On: 0001-candidate-pre-tool-input-transformers.patch
+X-Jcode-Patch-Depends-On: none
 
 Patch intent:
 Add a swarm context system that scopes hook invocations to the correct
@@ -14,6 +14,8 @@ Add synchronous post_tool_transform and detached post_tool_record hooks that
 receive tool input and result JSON on stdin, with large payloads spilled to
 temp files. Propagate the swarm context into spawned tool-execution tasks so
 transformer hooks always see the correct coordinator or worker identity.
+The transform runs before upstream's post_tool_feedback hook, so feedback is
+appended to the transformed result rather than discarded by a replacement.
 
 Why it exists:
 Post-tool transformers need swarm metadata to decide whether to act (e.g., the
@@ -33,7 +35,8 @@ src/agent.rs (per-session swarm state), src/agent/turn_execution.rs
 (run_once, run_once_streaming, current_swarm_hook_context), crates/jcode-app-core/src/agent/
 turn_streaming_mpsc.rs (tokio::spawn tool execution context propagation),
 crates/jcode-app-core/src/server/swarm.rs (run_swarm_task worker context),
-crates/jcode-config-types/src/lib.rs (HooksConfig fields),
+crates/jcode-config-types/src/lib.rs (HooksConfig fields, alongside upstream
+post_tool_feedback and its timeout),
 crates/jcode-base/src/config/default_file.rs, crates/jcode-base/src/config/
 env_overrides.rs, docs/HOOKS.md.
 
@@ -46,7 +49,8 @@ must install its explicit worker context before calling the agent, and
 coordinator fallback must derive role from the session and feature state.
 Preserve task isolation when changing hook dispatch. The post_tool_transform
 hook is synchronous and must fail open: any error or timeout leaves the
-original result unchanged.
+original result unchanged. Keep transform-then-feedback ordering in
+Registry::execute and reuse upstream's fire_post_tool_hook(input) signature.
 
 Validation:
 scripts/cargo_exec.sh test -p jcode-app-core --lib -- agent_turn_hook_context_tracks_coordinator_swarm_feature
@@ -54,6 +58,7 @@ scripts/cargo_exec.sh test -p jcode-app-core --lib -- agent_turn_hook_context_pr
 scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_replaces_model_visible_result
 scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_fails_open_for_all_failure_modes
 scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_and_record_share_temp_files
+scripts/cargo_exec.sh test -p jcode-app-core --lib -- post_tool_feedback_appends_after_post_tool_transform
 scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_propagates_into_spawned_task
 scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_lost_without_explicit_propagation_in_spawned_task
 scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_defaults_to_internal
@@ -65,20 +70,20 @@ scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_is_scoped_to_asy
  crates/jcode-app-core/src/agent_tests.rs      |   88 ++
  crates/jcode-app-core/src/server/swarm.rs     |    8 +-
  crates/jcode-app-core/src/tool/mod.rs         |   33 +
- crates/jcode-app-core/src/tool/tests.rs       |  278 +++++
+ crates/jcode-app-core/src/tool/tests.rs       |  334 +++++
  crates/jcode-base/src/config/default_file.rs  |   22 +-
  crates/jcode-base/src/config/env_overrides.rs |   23 +
  crates/jcode-base/src/hooks.rs                | 1101 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   17 +
- docs/HOOKS.md                                 |   77 +-
- 12 files changed, 1686 insertions(+), 15 deletions(-)
+ docs/HOOKS.md                                 |   79 +-
+ 12 files changed, 1743 insertions(+), 16 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 9ff13926a..20b027978 100644
+index f0683a9e0..4e264c956 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -244,6 +244,8 @@ pub struct Agent {
-     agents_md_snapshot: (Option<String>, crate::prompt::ContextInfo),
+@@ -346,6 +346,8 @@ pub struct Agent {
+     announced_skills_scan_index: usize,
      /// Whether memory features are enabled for this session
      memory_enabled: bool,
 +    /// Per-session swarm state used by turn hooks and coordinator policy.
@@ -86,19 +91,19 @@ index 9ff13926a..20b027978 100644
      /// One-step undo snapshot captured before the most recent rewind.
      rewind_undo_snapshot: Option<RewindUndoSnapshot>,
      /// Channel for tools to request stdin input from the user
-@@ -332,6 +334,7 @@ impl Agent {
-             mcp_late_register_resolved: false,
-             agents_md_snapshot,
+@@ -464,6 +466,7 @@ impl Agent {
+             announced_skills: HashSet::new(),
+             announced_skills_scan_index: 0,
              memory_enabled: crate::config::config().features.memory,
 +            swarm_enabled: crate::config::config().features.swarm,
              rewind_undo_snapshot: None,
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index 3939a2b6a..224c4a3ac 100644
+index aea2172b6..3d8c16dcd 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
-@@ -18,7 +18,8 @@ impl Agent {
+@@ -37,7 +37,8 @@ impl Agent {
          if trace_enabled() {
              eprintln!("[trace] session_id {}", self.session.id);
          }
@@ -108,7 +113,7 @@ index 3939a2b6a..224c4a3ac 100644
          Ok(())
      }
  
-@@ -47,7 +48,8 @@ impl Agent {
+@@ -68,7 +69,8 @@ impl Agent {
          if trace_enabled() {
              eprintln!("[trace] session_id {}", self.session.id);
          }
@@ -118,7 +123,7 @@ index 3939a2b6a..224c4a3ac 100644
      }
  
      /// Run one conversation turn with streaming events via mpsc channel (per-client)
-@@ -100,13 +102,35 @@ impl Agent {
+@@ -123,13 +125,35 @@ impl Agent {
          crate::telemetry::record_turn();
          let turn_started_at = Instant::now();
          let start_message_index = self.message_count();
@@ -158,7 +163,7 @@ index 3939a2b6a..224c4a3ac 100644
      /// Append and persist a user message without starting a model turn.
      pub(crate) fn append_user_context_message(
          &mut self,
-@@ -361,6 +385,11 @@ impl Agent {
+@@ -392,6 +416,11 @@ impl Agent {
          }
      }
  
@@ -171,10 +176,10 @@ index 3939a2b6a..224c4a3ac 100644
      /// loop publishes a throttled output tail to the global bus so a
      /// coordinator can render a live inline gallery viewport for it.
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index 211898234..2b7651e5b 100644
+index 168f56d4c..d7c4df988 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-@@ -1493,10 +1493,14 @@ impl Agent {
+@@ -1676,10 +1676,14 @@ impl Agent {
                  let registry_clone = self.registry.clone();
                  let tool_name_for_spawn = tc.name.clone();
                  let tool_input_for_spawn = tc.input.clone();
@@ -193,7 +198,7 @@ index 211898234..2b7651e5b 100644
  
                  // Reset background signal before waiting
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 219fb00c9..1d3db9d68 100644
+index 22e0a904a..48a32f7f3 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
 @@ -214,6 +214,94 @@ fn content_text(content: &[ContentBlock]) -> &str {
@@ -292,10 +297,10 @@ index 219fb00c9..1d3db9d68 100644
      content_text(&message.content)
  }
 diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
-index fbe513a04..e14faee33 100644
+index 0a04ba956..819e29237 100644
 --- a/crates/jcode-app-core/src/server/swarm.rs
 +++ b/crates/jcode-app-core/src/server/swarm.rs
-@@ -1581,7 +1581,13 @@ pub(super) async fn run_swarm_task(
+@@ -1659,7 +1659,13 @@ pub(super) async fn run_swarm_task(
          .apply_to_allowed_set(&mut allowed);
  
      let mut worker = Agent::new_with_session(provider, registry, session, Some(allowed));
@@ -311,13 +316,13 @@ index fbe513a04..e14faee33 100644
              log_swarm_lifecycle(
                  "task_done",
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index d64103738..c77e6203c 100644
+index 45263baf5..511cdb980 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -965,6 +965,25 @@ impl Registry {
+@@ -1111,6 +1111,25 @@ impl Registry {
  
          crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);
-         Self::fire_post_tool_hook(resolved_name, &ctx, &result, latency_ms);
+         Self::fire_post_tool_hook(resolved_name, &input, &ctx, &result, latency_ms);
 +        let record_result = match &result {
 +            Ok(output) => output.output.clone(),
 +            Err(error) => crate::util::format_error_chain(error),
@@ -340,7 +345,7 @@ index d64103738..c77e6203c 100644
  
          let mut output = match result {
              Ok(output) => output,
-@@ -978,6 +997,20 @@ impl Registry {
+@@ -1124,6 +1143,20 @@ impl Registry {
              }
          };
  
@@ -358,14 +363,14 @@ index d64103738..c77e6203c 100644
 +            output.output = replacement;
 +        }
 +
+         Self::apply_post_tool_feedback(resolved_name, &input, &ctx, latency_ms, &mut output).await;
+ 
          // Context overflow guard: check if this output would push us over the limit
-         output = self
-             .guard_context_overflow(name, output, accepts_large_output(&input))
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 1f76a35f9..555f3436d 100644
+index 226c9bac6..3b01304bc 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
-@@ -573,6 +573,284 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {
+@@ -621,6 +621,284 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {
      assert!(allowed.is_ok(), "non-matching input should pass the gate");
  }
  
@@ -650,11 +655,71 @@ index 1f76a35f9..555f3436d 100644
  #[tokio::test]
  async fn test_definitions_keep_batch_schema_generic() {
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+@@ -1939,3 +2217,59 @@ async fn post_tool_feedback_hook_appends_stdout_to_tool_result() {
+     );
+     assert!(output.contains("stdin-ok"), "{output}");
+ }
++
++/// post_tool_transform replaces the raw tool output first, then
++/// post_tool_feedback appends to the transformed result, so linter feedback
++/// survives a transformer (e.g. the delegation guard) replacing the output.
++#[cfg(unix)]
++#[tokio::test]
++async fn post_tool_feedback_appends_after_post_tool_transform() {
++    use std::os::unix::fs::PermissionsExt;
++    let _env_lock = crate::storage::lock_test_env();
++    let dir = tempfile::tempdir().expect("temp dir");
++    std::fs::write(dir.path().join("prose.md"), "hello\n").expect("write target");
++    let transform = dir.path().join("transform.sh");
++    std::fs::write(
++        &transform,
++        "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"tool_result\":\"transformed\"}'\n",
++    )
++    .expect("write transformer");
++    let feedback = dir.path().join("feedback.sh");
++    std::fs::write(&feedback, "#!/bin/sh\ncat >/dev/null\necho lint-finding\n")
++        .expect("write feedback");
++    for script in [&transform, &feedback] {
++        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
++    }
++    let previous_transform = std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM");
++    let previous_feedback = std::env::var_os("JCODE_HOOK_POST_TOOL_FEEDBACK");
++    crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM", &transform);
++    crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", &feedback);
++    crate::config::invalidate_config_cache();
++
++    let registry = Registry::new(Arc::new(MockProvider) as Arc<dyn Provider>).await;
++    let result = registry
++        .execute(
++            "read",
++            serde_json::json!({"file_path": "prose.md"}),
++            mcp_test_context(dir.path()),
++        )
++        .await;
++
++    for (key, previous) in [
++        ("JCODE_HOOK_POST_TOOL_TRANSFORM", previous_transform),
++        ("JCODE_HOOK_POST_TOOL_FEEDBACK", previous_feedback),
++    ] {
++        match previous {
++            Some(value) => crate::env::set_var(key, value),
++            None => crate::env::remove_var(key),
++        }
++    }
++    crate::config::invalidate_config_cache();
++    let output = result.expect("read should succeed").output;
++    assert!(output.starts_with("transformed"), "{output}");
++    assert!(!output.contains("hello"), "{output}");
++    assert!(
++        output.ends_with("[post_tool_feedback]\nlint-finding"),
++        "{output}"
++    );
++}
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 32bdb10b4..16e5d8121 100644
+index 8a6be036f..dc58ede4a 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -563,7 +563,8 @@ swarm_max_concurrent_agents = 32
+@@ -602,7 +602,8 @@ swarm_max_concurrent_agents = 32
  # (quotes work) but executed directly, with JCODE_HOOK_* env vars describing
  # the event:
  #   JCODE_HOOK_EVENT       - "turn_start", "turn_end", "session_start",
@@ -664,7 +729,7 @@ index 32bdb10b4..16e5d8121 100644
  #   JCODE_HOOK_SESSION_ID  - the session the event belongs to
  #   JCODE_HOOK_CWD         - session working directory (also the hook's cwd)
  #   JCODE_HOOK_PAYLOAD     - JSON mirror of all fields
-@@ -572,7 +573,11 @@ swarm_max_concurrent_agents = 32
+@@ -611,7 +612,11 @@ swarm_max_concurrent_agents = 32
  # All hooks except pre_tool are observers: detached, fire-and-forget, failures
  # only logged. Env overrides: JCODE_HOOK_TURN_START, JCODE_HOOK_TURN_END,
  # JCODE_HOOK_SESSION_START, JCODE_HOOK_SESSION_END, JCODE_HOOK_PRE_TOOL,
@@ -677,10 +742,10 @@ index 32bdb10b4..16e5d8121 100644
  #
  # Runs when an agent turn begins, before the model starts generating and before
  # the first pre_tool. Lets integrations detect the agent is working during the
-@@ -605,6 +610,19 @@ swarm_max_concurrent_agents = 32
- # JCODE_HOOK_STATUS, JCODE_HOOK_DURATION_MS, JCODE_HOOK_OUTPUT_BYTES,
- # JCODE_HOOK_ERROR.
- # post_tool = ""
+@@ -652,6 +657,19 @@ swarm_max_concurrent_agents = 32
+ # the tool result the model sees, so linters can report findings inline.
+ # post_tool_feedback = "~/bin/jcode-vale"
+ # post_tool_feedback_timeout_ms = 10000
 +# Synchronous post-tool transformer. Receives a JSON envelope on stdin and may
 +# print {"tool_result":"replacement"} on stdout. Failures leave output intact.
 +# post_tool_transform = ""
@@ -698,13 +763,13 @@ index 32bdb10b4..16e5d8121 100644
  [ambient]
  # Ambient mode: background agent that maintains your codebase
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 51ea31863..ceafaea5a 100644
+index 18c6841df..0849672c4 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
-@@ -513,6 +513,29 @@ impl Config {
-             self.hooks.pre_tool_transform_timeout_ms = parsed;
+@@ -542,6 +542,29 @@ impl Config {
+         {
+             self.hooks.post_tool_feedback_timeout_ms = parsed;
          }
-         hook_env_override(&mut self.hooks.post_tool, "JCODE_HOOK_POST_TOOL");
 +        hook_env_override(
 +            &mut self.hooks.post_tool_transform,
 +            "JCODE_HOOK_POST_TOOL_TRANSFORM",
@@ -732,10 +797,10 @@ index 51ea31863..ceafaea5a 100644
              if let Ok(parsed) = v.trim().parse::<u64>() {
                  self.hooks.pre_tool_timeout_ms = parsed;
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index c457cafd7..31c77f051 100644
+index 318fac845..fcd3bcb39 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
-@@ -29,12 +29,15 @@ tokio::task_local! {
+@@ -33,12 +33,15 @@ tokio::task_local! {
      /// Task-local storage keeps concurrent clients isolated without mutating
      /// the daemon's process-wide environment.
      static CLIENT_TERMINAL_ENV: Vec<(String, String)>;
@@ -750,8 +815,8 @@ index c457cafd7..31c77f051 100644
 +const TOOL_RESULT_STDIN_LIMIT: usize = 256 * 1024;
  /// Maximum chars of hook stderr used as a block reason.
  const BLOCK_REASON_LIMIT: usize = 2000;
- 
-@@ -84,6 +87,82 @@ impl HookEvent {
+ /// Maximum bytes of `post_tool_feedback` stdout appended to a tool result,
+@@ -91,6 +94,82 @@ impl HookEvent {
      }
  }
  
@@ -834,7 +899,7 @@ index c457cafd7..31c77f051 100644
  /// Run `future` with the terminal identity of the client that initiated it.
  ///
  /// Shared-server request handlers use this to keep lifecycle hooks scoped to
-@@ -95,6 +174,24 @@ where
+@@ -102,6 +181,24 @@ where
      CLIENT_TERMINAL_ENV.scope(env, future).await
  }
  
@@ -859,16 +924,16 @@ index c457cafd7..31c77f051 100644
  /// The configured commands for `event`, in declaration order.
  pub fn hook_commands(event: &str) -> Vec<String> {
      if hooks_suppressed() {
-@@ -108,6 +205,8 @@ pub fn hook_commands(event: &str) -> Vec<String> {
-         "session_end" => hooks.session_end.as_ref(),
+@@ -116,6 +213,8 @@ pub fn hook_commands(event: &str) -> Vec<String> {
          "pre_tool" => hooks.pre_tool.as_ref(),
          "post_tool" => hooks.post_tool.as_ref(),
+         "post_tool_feedback" => hooks.post_tool_feedback.as_ref(),
 +        "post_tool_transform" => hooks.post_tool_transform.as_ref(),
 +        "post_tool_record" => hooks.post_tool_record.as_ref(),
          _ => None,
      };
      raw.into_iter()
-@@ -218,6 +317,174 @@ pub async fn transform_tool_input(
+@@ -233,6 +332,174 @@ pub async fn transform_tool_input(
      current
  }
  
@@ -1043,8 +1108,8 @@ index c457cafd7..31c77f051 100644
  /// True when running inside a hook process (recursion guard).
  fn hooks_suppressed() -> bool {
      std::env::var_os("JCODE_HOOKS_DISABLED").is_some()
-@@ -243,6 +510,115 @@ fn truncate_bytes(value: &str, limit: usize) -> &str {
-     &value[..end]
+@@ -263,6 +530,115 @@ pub fn truncate_tool_input(tool_input_json: &str) -> &str {
+     truncate_bytes(tool_input_json, TOOL_INPUT_ENV_LIMIT)
  }
  
 +/// Prepare tool content for the hook envelope. When the content exceeds the
@@ -1159,7 +1224,7 @@ index c457cafd7..31c77f051 100644
  /// JSON payload mirroring the env fields, exported as `JCODE_HOOK_PAYLOAD`.
  fn payload_json(event: &HookEvent) -> String {
      let mut map = serde_json::Map::new();
-@@ -271,6 +647,7 @@ fn payload_json(event: &HookEvent) -> String {
+@@ -291,6 +667,7 @@ fn payload_json(event: &HookEvent) -> String {
  
  fn apply_event_env(cmd: &mut std::process::Command, event: &HookEvent) {
      cmd.env("JCODE_HOOKS_DISABLED", "1");
@@ -1167,7 +1232,7 @@ index c457cafd7..31c77f051 100644
      cmd.env("JCODE_HOOK_EVENT", event.event);
      if let Some(session_id) = &event.session_id {
          cmd.env("JCODE_HOOK_SESSION_ID", session_id);
-@@ -342,6 +719,110 @@ pub fn dispatch_observer(event: HookEvent) {
+@@ -375,6 +752,110 @@ pub fn dispatch_observer(event: HookEvent) {
      }
  }
  
@@ -1278,7 +1343,7 @@ index c457cafd7..31c77f051 100644
  /// Run the `pre_tool` gate hook for a tool call, if configured.
  ///
  /// The hook receives `JCODE_HOOK_TOOL_NAME` plus the full tool input JSON on
-@@ -494,6 +975,140 @@ mod tests {
+@@ -625,6 +1106,140 @@ mod tests {
          assert_eq!(truncate_bytes("short", 100), "short");
      }
  
@@ -1419,7 +1484,7 @@ index c457cafd7..31c77f051 100644
      #[cfg(unix)]
      fn write_executable_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
          use std::os::unix::fs::PermissionsExt;
-@@ -529,6 +1144,7 @@ mod tests {
+@@ -660,6 +1275,7 @@ mod tests {
          ]);
          crate::env::set_var("JCODE_HOOK_PRE_TOOL", hook);
          crate::env::set_var("JCODE_HOOK_PRE_TOOL_TIMEOUT_MS", timeout_ms.to_string());
@@ -1427,14 +1492,14 @@ index c457cafd7..31c77f051 100644
          reset
      }
  
-@@ -560,9 +1176,494 @@ mod tests {
+@@ -691,9 +1307,494 @@ mod tests {
              "JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS",
              timeout_ms.to_string(),
          );
 +        crate::config::invalidate_config_cache();
-         reset
-     }
- 
++        reset
++    }
++
 +    #[cfg(unix)]
 +    fn post_transform_test_config(hook: &str, timeout_ms: u64) -> impl Drop + use<> {
 +        struct EnvReset(Vec<(&'static str, Option<std::ffi::OsString>)>);
@@ -1473,9 +1538,9 @@ index c457cafd7..31c77f051 100644
 +            timeout_ms.to_string(),
 +        );
 +        crate::config::invalidate_config_cache();
-+        reset
-+    }
-+
+         reset
+     }
+ 
 +    #[cfg(unix)]
 +    fn post_record_test_config(hook: &str) -> impl Drop + use<> {
 +        struct EnvReset(Vec<(&'static str, Option<std::ffi::OsString>)>);
@@ -1923,13 +1988,13 @@ index c457cafd7..31c77f051 100644
      #[tokio::test]
      async fn tool_transformers_compose_json_replacements() {
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 10f6fa568..68b5f5690 100644
+index 6f7264e72..6ff70c071 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -950,6 +950,18 @@ pub struct HooksConfig {
-     /// Fields: TOOL_NAME, STATUS ("ok"/"error"), DURATION_MS, OUTPUT_BYTES.
-     /// Env override: JCODE_HOOK_POST_TOOL.
-     pub post_tool: Option<HookCommands>,
+@@ -935,6 +935,18 @@ pub struct HooksConfig {
+     /// Max milliseconds to wait for each post_tool_feedback hook (default:
+     /// 10000). Env override: JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS.
+     pub post_tool_feedback_timeout_ms: u64,
 +    pub post_tool_transform: Option<HookCommands>,
 +    pub post_tool_transform_timeout_ms: u64,
 +    pub post_tool_record: Option<HookCommands>,
@@ -1945,10 +2010,10 @@ index 10f6fa568..68b5f5690 100644
      /// Max milliseconds to wait for the pre_tool gate before failing open
      /// (default: 5000). Env override: JCODE_HOOK_PRE_TOOL_TIMEOUT_MS.
      pub pre_tool_timeout_ms: u64,
-@@ -966,6 +978,11 @@ impl Default for HooksConfig {
-             session_end: None,
-             pre_tool: None,
+@@ -953,6 +965,11 @@ impl Default for HooksConfig {
              post_tool: None,
+             post_tool_feedback: None,
+             post_tool_feedback_timeout_ms: 10_000,
 +            post_tool_transform: None,
 +            post_tool_transform_timeout_ms: 500,
 +            post_tool_record: None,
@@ -1958,16 +2023,17 @@ index 10f6fa568..68b5f5690 100644
          }
      }
 diff --git a/docs/HOOKS.md b/docs/HOOKS.md
-index 4f0746822..0e6804295 100644
+index edeb27dca..b6cb363c4 100644
 --- a/docs/HOOKS.md
 +++ b/docs/HOOKS.md
-@@ -15,12 +15,21 @@ session_start = ""                            # observer
- session_end   = ""                            # observer
+@@ -16,14 +16,23 @@ session_end   = ""                            # observer
  pre_tool      = "~/bin/jcode-tool-policy"     # gate
  post_tool     = ""                            # observer
+ post_tool_feedback = "~/bin/jcode-vale"       # feeds output back to the model
 +post_tool_transform = ""                     # synchronous transformer
 +post_tool_record = ""                        # detached recorder
  pre_tool_timeout_ms = 5000
+ post_tool_feedback_timeout_ms = 10000
 +post_tool_transform_timeout_ms = 500
 +post_tool_transform_file_threshold = 4096    # bytes before temp file
 +tool_output_ttl_secs = 3600                  # temp file cleanup TTL
@@ -1975,8 +2041,10 @@ index 4f0746822..0e6804295 100644
  
  Env overrides (always win; empty value disables a config hook):
  `JCODE_HOOK_TURN_END`, `JCODE_HOOK_SESSION_START`, `JCODE_HOOK_SESSION_END`,
--`JCODE_HOOK_PRE_TOOL`, `JCODE_HOOK_POST_TOOL`, `JCODE_HOOK_PRE_TOOL_TIMEOUT_MS`.
+-`JCODE_HOOK_PRE_TOOL`, `JCODE_HOOK_POST_TOOL`, `JCODE_HOOK_PRE_TOOL_TIMEOUT_MS`,
+-`JCODE_HOOK_POST_TOOL_FEEDBACK`, `JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS`.
 +`JCODE_HOOK_PRE_TOOL`, `JCODE_HOOK_POST_TOOL`,
++`JCODE_HOOK_POST_TOOL_FEEDBACK`, `JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS`,
 +`JCODE_HOOK_POST_TOOL_TRANSFORM`, `JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS`,
 +`JCODE_HOOK_POST_TOOL_TRANSFORM_FILE_THRESHOLD`,
 +`JCODE_HOOK_POST_TOOL_RECORD`, `JCODE_HOOK_PRE_TOOL_TIMEOUT_MS`,
@@ -1984,7 +2052,7 @@ index 4f0746822..0e6804295 100644
  
  ## Common contract
  
-@@ -38,9 +47,23 @@ Env overrides (always win; empty value disables a config hook):
+@@ -41,9 +50,23 @@ Env overrides (always win; empty value disables a config hook):
  | `JCODE_HOOK_PAYLOAD` | JSON object mirroring all fields (capped at 16 KB) |
  | `JCODE_HOOKS_DISABLED` | Always `1`; suppresses hooks in nested jcode calls (recursion guard) |
  
@@ -2009,9 +2077,9 @@ index 4f0746822..0e6804295 100644
  **observers**: spawned detached, fire-and-forget. They can never block or slow
  the agent; failures are only logged.
  
-@@ -66,6 +89,49 @@ Fires after every tool call. Extra fields: `JCODE_HOOK_TOOL_NAME`,
- `JCODE_HOOK_STATUS`, `JCODE_HOOK_DURATION_MS`, `JCODE_HOOK_OUTPUT_BYTES` (on
- success), `JCODE_HOOK_ERROR` (on failure).
+@@ -114,6 +137,49 @@ done <<<"$JCODE_HOOK_TOUCHED_PATHS"
+ exit 0
+ ```
  
 +### `post_tool_record`
 +
@@ -2059,7 +2127,7 @@ index 4f0746822..0e6804295 100644
  ## Gate hook: `pre_tool`
  
  `pre_tool` runs **synchronously before every tool call** and can block it:
-@@ -157,13 +223,18 @@ turn_end      = "~/bin/jcode-event-log"
+@@ -205,13 +271,18 @@ turn_end      = "~/bin/jcode-event-log"
  session_start = "~/bin/jcode-event-log"
  session_end   = "~/bin/jcode-event-log"
  post_tool     = "~/bin/jcode-event-log"
