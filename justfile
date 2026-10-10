@@ -39,6 +39,29 @@ ensure-personal-assets:
   test -f "$jcode_home/worker-blueprints/research.md"
   printf 'plugins and worker blueprints are ready\n'
 
+  # The plugins only run when [hooks] points at them.
+  config="$jcode_home/config.toml"
+  hooks=""
+  if [[ -f "$config" ]]; then
+    hooks=$(awk '/^[[:space:]]*\[/{f=($0 ~ /^[[:space:]]*\[hooks\][[:space:]]*(#.*)?$/);next} f' "$config")
+  fi
+  missing=0
+  check_hook() {
+    local key=$1
+    local target=$2
+    if ! grep -E "^[[:space:]]*${key}[[:space:]]*=" <<<"$hooks" | grep -F -q "$target"; then
+      printf 'missing [hooks] %s entry for %s in %s\n' "$key" "$target" "$config" >&2
+      missing=1
+    fi
+  }
+  check_hook pre_tool_transform "plugins/rtk/rtk-transform"
+  check_hook post_tool_transform "plugins/delegation-guard/delegation-guard-transform"
+  if [[ "$missing" -ne 0 ]]; then
+    printf 'hooks are not configured; run the /ensure-personal-jcode-setup skill\n' >&2
+    exit 1
+  fi
+  printf 'rtk and delegation-guard hooks are configured\n'
+
 # Validate catalog patch metadata and synthetic application.
 validate-patch-files base="":
   #!/usr/bin/env bash

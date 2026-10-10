@@ -26,9 +26,14 @@ Worker blueprints let a user specialize subagents without code changes.
 A blueprint can pin a cheap model for routine work, restrict its tool
 access, control its communication, and cap its runtime. The generated
 tool returns a bounded summary (2000 chars) so the coordinator does not
-burn tokens reading the worker's full output. A deterministic follow-up
-read (no LLM) lets the coordinator page through more output in 2000-char
-chunks when needed. The coordinator.md file lets a user define the
+burn tokens reading the worker's full output. A report over the limit is
+shown as head and tail around an elision marker that names the omitted
+char range and the follow-up offset for it, so conclusions at the end stay
+visible. A deterministic follow-up read (no LLM) pages the same final
+report by default, so the marker's offsets index exactly the omitted text
+and never the worker prompt. scope "transcript" instead pages the whole
+worker conversation newest-first (offset 0 is the end), and every page
+states its scope and direction. The coordinator.md file lets a user define the
 coordinator's own prompt and tool policy without installing content into
 a global prompt overlay. The reserved coordinator ID uses the same
 [agents.worker_blueprints.<id>] override namespace as ordinary workers,
@@ -79,7 +84,9 @@ Upstream integration points:
   on SwarmMember.
 - crates/jcode-app-core/src/tool/blueprint.rs: BlueprintTool
   implementing the Tool trait. Generated tools default to headless
-  workers. Spawn mode and follow-up mode. Timeout resolved per-call >
+  workers. Spawn mode and follow-up mode. final_report,
+  summarize_report, transcript_newest_first, and render_follow_up_page
+  are pure helpers shared by both modes. Timeout resolved per-call >
   blueprint > config > default (20m). Uses enabled-tools in description.
 - crates/jcode-app-core/src/tool/tests.rs: excludes user-owned generated
   swarm_<id> descriptions from the static built-in tool-description
@@ -113,7 +120,9 @@ root system prompt only when swarm is enabled. Communication-policy none
 blocks ordinary messages but not tool results. Generated tools default
 to headless execution. Generated tools never overwrite existing tool
 names. All test SwarmMember and WorkerBlueprintOverride constructions
-must include the new fields.
+must include the new fields. Spawn summaries and report-scope follow-ups
+must use the same final_report text so summary offsets stay valid.
+Transcript scope must stay newest-first and label its direction.
 
 Validation:
 scripts/cargo_exec.sh test -p jcode-swarm-core append_swarm_completion_report_instructions_is_idempotent --lib
@@ -145,6 +154,10 @@ scripts/cargo_exec.sh test -p jcode-base coordinator_id_rejected_in_ordinary_blu
 scripts/cargo_exec.sh test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
 scripts/cargo_exec.sh test -p jcode-base swarm_context_serializes_all_fields --lib
 scripts/cargo_exec.sh test -p jcode-base swarm_context_applies_only_known_environment_values --lib
+scripts/cargo_exec.sh test -p jcode-app-core long_report_summary_shows_head_and_tail_and_follow_up_returns_omitted_middle --lib
+scripts/cargo_exec.sh test -p jcode-app-core transcript_scope_offset_zero_returns_end_of_conversation --lib
+scripts/cargo_exec.sh test -p jcode-app-core follow_up_mode_offset_beyond_end_returns_empty --lib
+scripts/cargo_exec.sh test -p jcode-app-core follow_up_scope_parses_report_default_and_transcript --lib
 ---
  crates/jcode-app-core/src/agent.rs            |   96 +-
  crates/jcode-app-core/src/agent/prompting.rs  |   19 +-
@@ -177,8 +190,8 @@ scripts/cargo_exec.sh test -p jcode-base swarm_context_applies_only_known_enviro
  .../src/server/swarm_cascade_tests.rs         |    1 +
  .../src/server/swarm_persistence_tests.rs     |    8 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  489 ++++
- .../src/tool/blueprint_tests.rs               |  961 +++++++
+ crates/jcode-app-core/src/tool/blueprint.rs   |  565 +++++
+ .../src/tool/blueprint_tests.rs               | 1027 ++++++++
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
  .../src/tool/communicate_tests.rs             |    2 +-
@@ -196,7 +209,7 @@ scripts/cargo_exec.sh test -p jcode-base swarm_context_applies_only_known_enviro
  crates/jcode-protocol/src/wire.rs             |    7 +
  crates/jcode-swarm-core/src/lib.rs            |    9 +-
  docs/HOOKS.md                                 |    2 +
- 50 files changed, 4631 insertions(+), 58 deletions(-)
+ 50 files changed, 4773 insertions(+), 58 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
@@ -1516,10 +1529,10 @@ index dd5dcf233..fc317fc51 100644
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
 new file mode 100644
-index 000000000..22a3fa30d
+index 000000000..1e212cfc8
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
-@@ -0,0 +1,489 @@
+@@ -0,0 +1,565 @@
 +//! Generated coordinator-visible tools for worker blueprints.
 +//!
 +//! Every valid effective blueprint generates a tool named `swarm_<id>`. The
@@ -1528,21 +1541,24 @@ index 000000000..22a3fa30d
 +//! **Spawn mode** (default): accepts a nonblank `task`, spawns a
 +//! blueprint-backed worker via `CommSpawn`, waits for it to reach a terminal
 +//! status, and returns a compact summary (the worker's latest assistant
-+//! message, capped at `summary_chars`) plus the worker's session ID for
-+//! follow-up reads.
++//! message, its final report). A report longer than `SUMMARY_MAX_CHARS` is
++//! shown as its head and tail around an elision marker that names the omitted
++//! char range and the follow-up offset that reads it. The worker's session ID
++//! is appended for follow-up reads.
 +//!
 +//! **Follow-up mode**: accepts `follow_up_session` (the session ID returned
-+//! from a prior spawn), `offset`, and `limit`. Reads the worker's stored
-+//! conversation history and returns the requested character range
-+//! deterministically (no LLM, no spawn). This lets the coordinator page
-+//! through the worker's full output without loading it all into context.
++//! from a prior spawn), `offset`, `limit`, and `scope`. The default scope,
++//! `report`, pages the same final report spawn mode summarized, so offsets
++//! from the spawn summary index that report exactly. `scope: "transcript"`
++//! pages the whole worker conversation newest-first: offset 0 is the end of
++//! the conversation. Reads are deterministic (no LLM, no spawn).
 +//!
 +//! Generated tools are registered per-session during registry construction
 +//! so the coordinator sees them alongside built-in tools. The coordinator
 +//! policy chooses which generated tools are visible and executable.
 +
 +use super::{Tool, ToolContext, ToolOutput};
-+use crate::protocol::{Request, ServerEvent};
++use crate::protocol::{HistoryMessage, Request, ServerEvent};
 +use crate::tool::communicate::transport::{send_request, send_request_with_timeout};
 +use anyhow::Result;
 +use async_trait::async_trait;
@@ -1580,6 +1596,9 @@ index 000000000..22a3fa30d
 +    /// Maximum characters to return in a follow-up read. Defaults to 2000.
 +    #[serde(default)]
 +    limit: Option<usize>,
++    /// Follow-up scope: `report` (default) or `transcript`.
++    #[serde(default)]
++    scope: Option<String>,
 +}
 +
 +/// A generated coordinator-visible tool for worker blueprints.
@@ -1606,6 +1625,98 @@ index 000000000..22a3fa30d
 +
 +/// Default character limit for follow-up reads.
 +const FOLLOW_UP_DEFAULT_LIMIT: usize = 2000;
++
++/// Characters of the report tail kept in a head-and-tail spawn summary.
++const SUMMARY_TAIL_CHARS: usize = 400;
++
++/// What a follow-up read pages through.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum FollowUpScope {
++    /// The worker's final report (latest non-empty assistant message).
++    Report,
++    /// The whole worker conversation, newest-first.
++    Transcript,
++}
++
++impl FollowUpScope {
++    pub(crate) fn parse(value: Option<&str>) -> Result<Self> {
++        match value.map(str::trim).filter(|v| !v.is_empty()) {
++            None | Some("report") => Ok(Self::Report),
++            Some("transcript") => Ok(Self::Transcript),
++            Some(other) => Err(anyhow::anyhow!(
++                "unknown follow-up scope '{other}'; use 'report' or 'transcript'"
++            )),
++        }
++    }
++}
++
++/// The worker's final report: the latest non-empty assistant message,
++/// trimmed. Spawn summaries and report-scope follow-ups share this text so
++/// their offsets agree.
++pub(crate) fn final_report(messages: &[HistoryMessage]) -> Option<String> {
++    messages.iter().rev().find_map(|msg| {
++        if msg.role != "assistant" {
++            return None;
++        }
++        let content = msg.content.trim();
++        (!content.is_empty()).then(|| content.to_string())
++    })
++}
++
++/// The whole conversation, newest message first, as `[role]\ncontent`
++/// blocks. Offset 0 of this string is the start of the latest message.
++pub(crate) fn transcript_newest_first(messages: &[HistoryMessage]) -> String {
++    let blocks: Vec<String> = messages
++        .iter()
++        .rev()
++        .map(|msg| format!("[{}]\n{}", msg.role, msg.content.trim()))
++        .collect();
++    blocks.join("\n\n")
++}
++
++/// Render one page of `text` for a follow-up read. Offsets and limits count
++/// characters. The header states scope and direction so offsets are
++/// unambiguous.
++pub(crate) fn render_follow_up_page(
++    session_id: &str,
++    scope: FollowUpScope,
++    text: &str,
++    offset: usize,
++    limit: usize,
++) -> String {
++    let limit = limit.max(1);
++    let total_chars = text.chars().count();
++    let scope_label = match scope {
++        FollowUpScope::Report => "scope: report (the worker's final report, read in order)",
++        FollowUpScope::Transcript => {
++            "scope: transcript (whole conversation, newest message first; \
++             offset 0 is the end of the conversation)"
++        }
++    };
++    if offset >= total_chars {
++        return format!(
++            "No more output. Total: {total_chars} chars, offset: {offset}, {scope_label}.\n\
++             (You have read all available output from session {session_id}.)"
++        );
++    }
++    let end = (offset + limit).min(total_chars);
++    let chunk: String = text.chars().skip(offset).take(limit).collect();
++    let more = end < total_chars;
++    let header = format!(
++        "Output from session {session_id}, {scope_label} \
++         (chars {offset}-{end} of {total_chars}{}):\n\n",
++        if more { "" } else { ", end" }
++    );
++    let footer = if more {
++        format!(
++            "\n\n[... {remaining} more chars. Pass offset={end} to continue reading.]",
++            remaining = total_chars - end
++        )
++    } else {
++        "\n\n[End of output.]".to_string()
++    };
++    format!("{header}{chunk}{footer}")
++}
 +
 +/// Return a follow-up session ID only when a caller supplied a meaningful one.
 +///
@@ -1668,9 +1779,10 @@ index 000000000..22a3fa30d
 +             1. Spawn: pass `task` to spawn a worker, wait for completion, \
 +             and get a compact summary plus the worker's session ID.\n\
 +             2. Follow-up: pass `follow_up_session` (the session ID from a \
-+             prior call) with `offset` and `limit` to read a paginated chunk \
-+             of the worker's full output deterministically (no LLM, no \
-+             spawn). Default limit: 2000 chars.\n\
++             prior call) with `offset` and `limit` to page the worker's final \
++             report deterministically (no LLM, no spawn); offsets match the \
++             spawn summary's omitted range. `scope: \"transcript\"` pages the \
++             whole conversation newest-first. Default limit: 2000 chars.\n\
 +             Pass `timeout_minutes` to override the blueprint's default.",
 +        );
 +        Self {
@@ -1695,23 +1807,33 @@ index 000000000..22a3fa30d
 +    }
 +}
 +
-+/// Truncate the summary to `max_chars`, appending a truncation notice that
-+/// includes the total length so the coordinator knows how much remains.
-+fn truncate_summary(text: &str, max_chars: usize) -> String {
++/// Summarize a report in at most about `max_chars` characters. Short reports
++/// pass through. Longer ones keep the head and the last
++/// `SUMMARY_TAIL_CHARS` characters, separated by an elision marker naming
++/// the omitted char range and the follow-up offset that starts it. Offsets
++/// index the trimmed report, which is what report-scope follow-ups page.
++pub(crate) fn summarize_report(text: &str, max_chars: usize) -> String {
 +    let text = text.trim();
-+    if text.chars().count() <= max_chars {
++    let total = text.chars().count();
++    if total <= max_chars {
 +        return text.to_string();
 +    }
-+    let total = text.chars().count();
-+    let suffix = format!(
-+        "\n\n[... truncated: showing {} of {} chars. \
-+         Use follow_up_session with offset/limit to read more.]",
-+        max_chars, total
-+    );
-+    let keep = max_chars.saturating_sub(suffix.chars().count());
-+    let mut out: String = text.chars().take(keep).collect();
-+    out.push_str(&suffix);
-+    out
++    let tail_len = SUMMARY_TAIL_CHARS.min(max_chars / 4);
++    // The marker length depends on the numbers in it; reserve generously.
++    let marker_reserve = 200;
++    let head_len = max_chars
++        .saturating_sub(tail_len)
++        .saturating_sub(marker_reserve)
++        .max(1);
++    let tail_start = total - tail_len;
++    let head: String = text.chars().take(head_len).collect();
++    let tail: String = text.chars().skip(tail_start).collect();
++    format!(
++        "{head}\n\n[... omitted report chars {head_len}-{tail_start} of {total}. \
++         Read them with follow_up_session, offset={head_len}, limit={omitted} \
++         (scope: report). The report's final {tail_len} chars follow.]\n\n{tail}",
++        omitted = tail_start - head_len
++    )
 +}
 +
 +#[async_trait]
@@ -1746,6 +1868,11 @@ index 000000000..22a3fa30d
 +                    "minimum": 1,
 +                    "description": "Maximum characters to return in a follow-up read. Defaults to 2000."
 +                },
++                "scope": {
++                    "type": "string",
++                    "enum": ["report", "transcript"],
++                    "description": "Follow-up scope. 'report' (default) pages the worker's final report; 'transcript' pages the whole conversation newest-first (offset 0 is the end)."
++                },
 +                "working_dir": {
 +                    "type": "string",
 +                    "description": "Optional working directory for the spawned worker."
@@ -1769,7 +1896,10 @@ index 000000000..22a3fa30d
 +
 +        // ── Follow-up mode: read paginated output from an existing worker ──
 +        if let Some(session_id) = nonblank_follow_up_session(params.follow_up_session.as_deref()) {
-+            return self.execute_follow_up(session_id, params.offset, params.limit, &ctx).await;
++            let scope = FollowUpScope::parse(params.scope.as_deref())?;
++            return self
++                .execute_follow_up(session_id, scope, params.offset, params.limit, &ctx)
++                .await;
 +        }
 +
 +        // ── Spawn mode: spawn, wait, return compact summary ──
@@ -1890,26 +2020,17 @@ index 000000000..22a3fa30d
 +
 +        match send_request(read_context_request).await {
 +            Ok(ServerEvent::CommContextHistory { messages, .. }) => {
-+                let report = messages
-+                    .iter()
-+                    .rev()
-+                    .find_map(|msg| {
-+                        if msg.role != "assistant" {
-+                            return None;
-+                        }
-+                        let content = msg.content.trim();
-+                        (!content.is_empty()).then(|| content.to_string())
-+                    });
-+
-+                match report {
++                match final_report(&messages) {
 +                    Some(text) => {
-+                        let summary = truncate_summary(&text, SUMMARY_MAX_CHARS);
++                        let summary = summarize_report(&text, SUMMARY_MAX_CHARS);
 +                        // Append the session ID so the coordinator can follow up.
 +                        let output = format!(
 +                            "{summary}\n\n---\n\n\
 +                             Worker session: {new_session_id}\n\
 +                             (Pass `follow_up_session: \"{new_session_id}\"` \
-+                             with `offset`/`limit` to read more output.)"
++                             with `offset`/`limit` to page this report, or \
++                             `scope: \"transcript\"` for the whole conversation, \
++                             newest first.)"
 +                        );
 +                        Ok(ToolOutput::new(output))
 +                    }
@@ -1935,10 +2056,12 @@ index 000000000..22a3fa30d
 +
 +impl BlueprintTool {
 +    /// Execute a follow-up read: fetch the worker's conversation history and
-+    /// return a paginated character slice. Deterministic, no LLM, no spawn.
++    /// return a paginated character slice of the final report (default) or
++    /// the newest-first transcript. Deterministic, no LLM, no spawn.
 +    async fn execute_follow_up(
 +        &self,
 +        session_id: &str,
++        scope: FollowUpScope,
 +        offset: Option<usize>,
 +        limit: Option<usize>,
 +        ctx: &ToolContext,
@@ -1954,47 +2077,13 @@ index 000000000..22a3fa30d
 +
 +        match send_request(read_request).await {
 +            Ok(ServerEvent::CommContextHistory { messages, .. }) => {
-+                // Concatenate all messages (role + content) so the
-+                // coordinator can page through the full conversation.
-+                let full: String = messages
-+                    .iter()
-+                    .map(|msg| format!("[{}]\n{}\n\n", msg.role, msg.content))
-+                    .collect();
-+
-+                let full = full.trim();
-+                let total_chars = full.chars().count();
-+
-+                if offset >= total_chars {
-+                    return Ok(ToolOutput::new(format!(
-+                        "No more output. Total: {total_chars} chars, offset: {offset}.\n\
-+                         (You have read all available output from session {session_id}.)"
-+                    )));
-+                }
-+
-+                let end = (offset + limit).min(total_chars);
-+                let chunk: String = full
-+                    .chars()
-+                    .skip(offset)
-+                    .take(limit)
-+                    .collect();
-+
-+                let more = end < total_chars;
-+                let header = format!(
-+                    "Output from session {session_id} (chars {offset}-{end} of {total_chars}{}):\n\n",
-+                    if more { "" } else { ", end" }
-+                );
-+
-+                let footer = if more {
-+                    format!(
-+                        "\n\n[... {remaining} more chars. \
-+                         Pass offset={end} to continue reading.]",
-+                        remaining = total_chars - end
-+                    )
-+                } else {
-+                    "\n\n[End of output.]".to_string()
++                let text = match scope {
++                    FollowUpScope::Report => final_report(&messages).unwrap_or_default(),
++                    FollowUpScope::Transcript => transcript_newest_first(&messages),
 +                };
-+
-+                Ok(ToolOutput::new(format!("{header}{chunk}{footer}")))
++                Ok(ToolOutput::new(render_follow_up_page(
++                    session_id, scope, &text, offset, limit,
++                )))
 +            }
 +            Ok(ServerEvent::Error { message, .. }) => {
 +                Err(anyhow::anyhow!("{}", message))
@@ -2011,10 +2100,10 @@ index 000000000..22a3fa30d
 +}
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
 new file mode 100644
-index 000000000..07f2d41c4
+index 000000000..edb520a7d
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -0,0 +1,961 @@
+@@ -0,0 +1,1027 @@
 +//! Phase two integration tests for worker blueprints.
 +//!
 +//! These tests verify the runtime integration of worker blueprints:
@@ -2824,21 +2913,128 @@ index 000000000..07f2d41c4
 +// Follow-up paginated read mode
 +// ---------------------------------------------------------------------------
 +
++fn history(role: &str, content: &str) -> crate::protocol::HistoryMessage {
++    crate::protocol::HistoryMessage {
++        response_stats: None,
++        role: role.to_string(),
++        content: content.to_string(),
++        tool_calls: None,
++        tool_data: None,
++    }
++}
++
++const WORKER_PROMPT: &str = "ROLE-PROMPT: you are an investigator. TASK: read files.";
++
++/// A worker conversation whose final report is `report`.
++fn worker_conversation(report: &str) -> Vec<crate::protocol::HistoryMessage> {
++    vec![
++        history("system", WORKER_PROMPT),
++        history("user", "TASK: read files and report."),
++        history("assistant", "Reading files now."),
++        history("tool", "TOOL-RESULT: file contents"),
++        history("assistant", report),
++        history("assistant", "   "),
++    ]
++}
++
++/// A long report with distinct, position-identifiable segments.
++fn long_report() -> String {
++    let mut report = String::from("HEAD-START ");
++    let mut i = 0;
++    while report.chars().count() < 6000 {
++        report.push_str(&format!("middle-{i:04} "));
++        i += 1;
++    }
++    report.push_str("FINAL-CONCLUSION");
++    report
++}
++
++fn parse_marker_offsets(summary: &str) -> (usize, usize) {
++    let start = summary.find("offset=").expect("marker names an offset") + "offset=".len();
++    let offset: usize = summary[start..]
++        .chars()
++        .take_while(|c| c.is_ascii_digit())
++        .collect::<String>()
++        .parse()
++        .unwrap();
++    let start = summary.find("limit=").expect("marker names a limit") + "limit=".len();
++    let limit: usize = summary[start..]
++        .chars()
++        .take_while(|c| c.is_ascii_digit())
++        .collect::<String>()
++        .parse()
++        .unwrap();
++    (offset, limit)
++}
++
 +#[test]
 +fn follow_up_mode_returns_paginated_output() {
-+    // Simulate the follow-up read logic: the full output is 100 chars,
-+    // the coordinator requests offset=0, limit=50.
++    use crate::tool::blueprint::{FollowUpScope, render_follow_up_page};
 +    let full = "a".repeat(100);
-+    let offset = 0usize;
-+    let limit = 50usize;
-+    let total = full.chars().count();
-+    let end = (offset + limit).min(total);
-+    let chunk: String = full.chars().skip(offset).take(limit).collect();
-+    let more = end < total;
++    let page = render_follow_up_page("s1", FollowUpScope::Report, &full, 0, 50);
++    assert!(page.contains("chars 0-50 of 100"), "{page}");
++    assert!(page.contains("scope: report"), "{page}");
++    assert!(page.contains("Pass offset=50 to continue reading"), "{page}");
++    assert!(page.contains(&"a".repeat(50)), "{page}");
++    assert!(!page.contains(&"a".repeat(51)), "page holds at most limit chars");
++}
 +
-+    assert_eq!(chunk.chars().count(), 50);
-+    assert!(more, "there should be more output");
-+    assert_eq!(end, 50);
++#[test]
++fn long_report_summary_shows_head_and_tail_and_follow_up_returns_omitted_middle() {
++    use crate::tool::blueprint::{
++        FollowUpScope, final_report, render_follow_up_page, summarize_report,
++    };
++    let report = long_report();
++    let messages = worker_conversation(&report);
++    let extracted = final_report(&messages).expect("final report found");
++    assert_eq!(extracted, report, "final report is the latest non-empty assistant message");
++
++    let summary = summarize_report(&extracted, 2000);
++    assert!(summary.chars().count() <= 2000, "summary stays within the limit");
++    assert!(summary.starts_with("HEAD-START"), "summary keeps the head");
++    assert!(summary.ends_with("FINAL-CONCLUSION"), "summary keeps the tail");
++    assert!(summary.contains("omitted report chars"), "{summary}");
++
++    let (offset, limit) = parse_marker_offsets(&summary);
++    let page = render_follow_up_page("s1", FollowUpScope::Report, &extracted, offset, limit);
++    let expected_middle: String = report.chars().skip(offset).take(limit).collect();
++    assert!(page.contains(&expected_middle), "follow-up returns exactly the omitted middle");
++    assert!(!page.contains("ROLE-PROMPT"), "follow-up never returns the worker prompt");
++    assert!(!page.contains("TASK:"), "follow-up never returns the worker task");
++
++    // Head + omitted middle + tail reconstruct the full report.
++    let head_end = summary.find("\n\n[... omitted").unwrap();
++    let head = &summary[..head_end];
++    let tail_start = summary.rfind("]\n\n").unwrap() + 3;
++    let tail = &summary[tail_start..];
++    assert_eq!(format!("{head}{expected_middle}{tail}"), report);
++}
++
++#[test]
++fn transcript_scope_offset_zero_returns_end_of_conversation() {
++    use crate::tool::blueprint::{FollowUpScope, render_follow_up_page, transcript_newest_first};
++    let messages = worker_conversation("FINAL-REPORT-TEXT");
++    let transcript = transcript_newest_first(&messages);
++    let page = render_follow_up_page("s1", FollowUpScope::Transcript, &transcript, 0, 60);
++    assert!(page.contains("newest message first"), "{page}");
++    assert!(page.contains("offset 0 is the end of the conversation"), "{page}");
++    assert!(page.contains("FINAL-REPORT-TEXT"), "offset 0 shows the latest report: {page}");
++    assert!(!page.contains("ROLE-PROMPT"), "offset 0 does not start at the prompt");
++    // The prompt is the last thing in the newest-first transcript.
++    assert!(transcript.ends_with(WORKER_PROMPT));
++}
++
++#[test]
++fn follow_up_scope_parses_report_default_and_transcript() {
++    use crate::tool::blueprint::FollowUpScope;
++    assert_eq!(FollowUpScope::parse(None).unwrap(), FollowUpScope::Report);
++    assert_eq!(FollowUpScope::parse(Some("")).unwrap(), FollowUpScope::Report);
++    assert_eq!(FollowUpScope::parse(Some("report")).unwrap(), FollowUpScope::Report);
++    assert_eq!(
++        FollowUpScope::parse(Some("transcript")).unwrap(),
++        FollowUpScope::Transcript
++    );
++    assert!(FollowUpScope::parse(Some("everything")).is_err());
 +}
 +
 +#[test]
@@ -2888,93 +3084,52 @@ index 000000000..07f2d41c4
 +
 +#[test]
 +fn follow_up_mode_offset_beyond_end_returns_empty() {
++    use crate::tool::blueprint::{FollowUpScope, render_follow_up_page, transcript_newest_first};
 +    let full = "a".repeat(100);
-+    let offset = 200usize;
-+    let total = full.chars().count();
-+
-+    assert!(offset >= total, "offset beyond total should report no more output");
++    for offset in [100usize, 200] {
++        let page = render_follow_up_page("s1", FollowUpScope::Report, &full, offset, 50);
++        assert!(page.starts_with("No more output."), "{page}");
++    }
++    let transcript = transcript_newest_first(&worker_conversation("done"));
++    let total = transcript.chars().count();
++    let page = render_follow_up_page("s1", FollowUpScope::Transcript, &transcript, total, 50);
++    assert!(page.starts_with("No more output."), "{page}");
++    let page = render_follow_up_page("s1", FollowUpScope::Report, "", 0, 50);
++    assert!(page.starts_with("No more output."), "empty report: {page}");
 +}
 +
 +#[test]
 +fn follow_up_mode_last_page_reports_end() {
++    use crate::tool::blueprint::{FollowUpScope, render_follow_up_page};
 +    let full = "a".repeat(100);
-+    let offset = 80usize;
-+    let limit = 50usize;
-+    let total = full.chars().count();
-+    let end = (offset + limit).min(total);
-+    let more = end < total;
-+
-+    assert_eq!(end, 100);
-+    assert!(!more, "last page should report no more output");
-+}
-+
-+#[test]
-+fn spawn_mode_summary_is_truncated_with_session_id() {
-+    // Simulate the truncate_summary logic.
-+    let text = "x".repeat(5000);
-+    let max = 2000;
-+    let total = text.chars().count();
-+    let summary = if total <= max {
-+        text.clone()
-+    } else {
-+        let suffix = format!(
-+            "\n\n[... truncated: showing {} of {} chars. \
-+             Use follow_up_session with offset/limit to read more.]",
-+            max, total
-+        );
-+        let keep = max.saturating_sub(suffix.chars().count());
-+        let mut out: String = text.chars().take(keep).collect();
-+        out.push_str(&suffix);
-+        out
-+    };
-+
-+    assert!(summary.chars().count() <= max + 100, "summary should be approximately max chars");
-+    assert!(summary.contains("truncated"));
-+    assert!(summary.contains("Use follow_up_session"));
++    let page = render_follow_up_page("s1", FollowUpScope::Report, &full, 80, 50);
++    assert!(page.contains("chars 80-100 of 100, end"), "{page}");
++    assert!(page.ends_with("[End of output.]"), "{page}");
 +}
 +
 +#[test]
 +fn spawn_mode_summary_short_text_passes_through() {
++    use crate::tool::blueprint::summarize_report;
 +    let text = "All tests passed.";
-+    let max = 2000;
-+    let total = text.chars().count();
-+    let summary = if total <= max {
-+        text.to_string()
-+    } else {
-+        text.to_string() // won't reach here
-+    };
-+
-+    assert_eq!(summary, text, "short text should not be truncated");
-+}
-+
-+#[test]
-+fn follow_up_default_limit_is_2000() {
-+    // The default limit constant used by the follow-up mode.
-+    const FOLLOW_UP_DEFAULT_LIMIT: usize = 2000;
-+    let limit = None.unwrap_or(FOLLOW_UP_DEFAULT_LIMIT);
-+    assert_eq!(limit, 2000);
++    assert_eq!(summarize_report(text, 2000), text, "short text is not truncated");
++    let exact = "y".repeat(2000);
++    assert_eq!(summarize_report(&exact, 2000), exact, "text at the limit passes through");
 +}
 +
 +#[test]
 +fn tool_description_describes_both_modes() {
 +    let bp = make_blueprint("reviewer", "Reviews code.", "You are a reviewer.");
-+    // The description should mention both spawn and follow-up modes.
-+    let desc = &bp.description;
-+    assert!(!desc.is_empty());
-+    // The actual description is built by BlueprintTool::new, which we
-+    // can't call in a pure unit test, but we can verify the constant
-+    // description suffix mentions both modes.
-+    let two_modes_text = "Two modes:\n\
-+         1. Spawn: pass `task` to spawn a worker, wait for completion, \
-+         and get a compact summary plus the worker's session ID.\n\
-+         2. Follow-up: pass `follow_up_session` (the session ID from a \
-+         prior call) with `offset` and `limit` to read a paginated chunk \
-+         of the worker's full output deterministically (no LLM, no \
-+         spawn). Default limit: 2000 chars.";
-+    assert!(two_modes_text.contains("follow_up_session"));
-+    assert!(two_modes_text.contains("offset"));
-+    assert!(two_modes_text.contains("limit"));
-+    assert!(two_modes_text.contains("no LLM"));
++    let tool = crate::tool::blueprint::BlueprintTool::from_blueprint(&bp);
++    let desc = crate::tool::Tool::description(&tool);
++    assert!(desc.contains("follow_up_session"), "{desc}");
++    assert!(desc.contains("final report"), "{desc}");
++    assert!(desc.contains("transcript"), "{desc}");
++    assert!(desc.contains("no LLM"), "{desc}");
++    let schema = crate::tool::Tool::parameters_schema(&tool);
++    assert_eq!(
++        schema["properties"]["scope"]["enum"],
++        serde_json::json!(["report", "transcript"])
++    );
 +}
 diff --git a/crates/jcode-app-core/src/tool/communicate.rs b/crates/jcode-app-core/src/tool/communicate.rs
 index f8683e2bf..927c85239 100644

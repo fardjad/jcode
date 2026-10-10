@@ -14,6 +14,41 @@ trap 'rm -rf "$tmp"' EXIT
 home="$tmp/home"
 mkdir -p "$home"
 
+# Without hook configuration the recipe links assets but fails the hook check.
+if HOME="$home" JCODE_HOME="$home/.jcode" \
+  just --justfile "$repo_root/justfile" ensure-personal-assets 2>"$tmp/err"; then
+  echo "expected failure without [hooks] configuration" >&2
+  exit 1
+fi
+grep -F -q 'post_tool_transform' "$tmp/err"
+grep -F -q 'pre_tool_transform' "$tmp/err"
+
+# Only the guard configured: still fails, naming the missing RTK hook only.
+cat >"$home/.jcode/config.toml" <<'EOF'
+[hooks]
+post_tool_transform = ["~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
+
+[other]
+pre_tool_transform = ["~/.jcode/plugins/rtk/rtk-transform"]
+EOF
+if HOME="$home" JCODE_HOME="$home/.jcode" \
+  just --justfile "$repo_root/justfile" ensure-personal-assets 2>"$tmp/err"; then
+  echo "expected failure when pre_tool_transform is outside [hooks]" >&2
+  exit 1
+fi
+grep -F -q 'pre_tool_transform' "$tmp/err"
+if grep -F -q 'missing [hooks] post_tool_transform' "$tmp/err"; then
+  echo "post_tool_transform was configured but reported missing" >&2
+  exit 1
+fi
+
+cat >"$home/.jcode/config.toml" <<'EOF'
+[hooks]
+pre_tool_transform = ["~/.jcode/plugins/rtk/rtk-transform"]
+post_tool_transform = ["~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
+post_tool_transform_timeout_ms = 500
+EOF
+
 HOME="$home" JCODE_HOME="$home/.jcode" \
   just --justfile "$repo_root/justfile" ensure-personal-assets
 

@@ -50,9 +50,11 @@ single-element arrays because jcode supports ordered transformer chains.
    just ensure-personal-assets
    ```
 
-   The recipe is idempotent and establishes both catalog symlinks. If it refuses
-   to replace a real plugin or worker-blueprint directory, stop without changing
-   configuration and tell the user to resolve that conflict.
+   The recipe is idempotent and establishes both catalog symlinks, then checks
+   that `[hooks]` configures both transformers. If it refuses to replace a real
+   plugin or worker-blueprint directory, stop without changing configuration
+   and tell the user to resolve that conflict. If it fails only because hooks
+   are not configured (`missing [hooks] ...`), continue: this skill fixes that.
 2. Resolve and inspect `~/.jcode/plugins`. Confirm it is a symlink and that
    both configured executable files exist and are executable:
    - `rtk/rtk-transform`
@@ -65,7 +67,8 @@ single-element arrays because jcode supports ordered transformer chains.
    comments where practical. Before writing an existing config, create a
    timestamped sibling backup ending in `.bak`.
 6. Re-read and parse the written TOML. Verify the three values exactly and verify
-   each configured executable path.
+   each configured executable path. Run `just ensure-personal-assets` again;
+   it must now succeed, confirming both hooks are configured.
 7. Report whether the config was already correct or which hook keys changed,
    plus the backup path if one was created.
 
