@@ -13,11 +13,17 @@ isolated credentials and caches, autocomplete, TUI visibility, and pricing
 lookup that uses EU catalog and endpoint cache rates. Model picker route
 building uses the active runtime cache namespace so standard-only models
 do not leak through the EU rewrite as EU-labeled routes.
+Auth refresh updates runtime identity, credentials, and transport without
+changing startup selection markers. Fresh sessions therefore honor configured
+provider/model defaults unless an explicit launch override selected a provider.
+This shared lifecycle behavior covers direct providers and compatible profiles,
+including Azure OpenAI. Genuine launch overrides retain their selected model.
 
 Why it exists:
 Lets users route through a European OpenRouter endpoint with separate API keys
-and cache namespaces. Non-goal is changing the standard OpenRouter provider or
-its credentials.
+and cache namespaces. Standard OpenRouter endpoint and credentials remain
+unchanged. Shared auth activation deliberately stops manufacturing explicit
+launch overrides that previously suppressed configured new-session defaults.
 
 Upstream integration points:
 crates/jcode-provider-core/src/lib.rs adds RuntimeKey::OpenRouterEu,
@@ -35,6 +41,9 @@ adds catalog_lists_model_for_namespace for namespace-aware catalog membership
 checks. src/cli/login.rs and provider_init.rs add EU login and init flows.
 crates/jcode-tui/ adds EU auth, header (listed only once configured),
 onboarding, and model suggestions.
+crates/jcode-base/src/auth/lifecycle.rs uses routing-neutral activation plans.
+ProviderActivation::apply_env preserves unchanged routing even for EU refresh.
+New-session provider forks distinguish auth refresh from explicit launch pins.
 
 Update guidance:
 Keep openrouter and openrouter-eu as separate families. Preserve EU endpoint,
@@ -43,6 +52,9 @@ standard OpenRouter runtime implementation with only deployment-specific
 overrides. Keep append_openrouter_routes and append_openrouter_alternative_routes
 namespace-aware so that the EU rewrite only relabels routes backed by the EU
 catalog, not standard-only models from the global cache.
+Keep auth refresh independent of initial CLI selection for every provider.
+Preserve existing launch pins without creating new ones during credential
+refresh. New sessions must continue to reload configured provider/model defaults.
 
 Validation:
 scripts/cargo_exec.sh test -p jcode-provider-openrouter-runtime eu_openrouter --lib
@@ -53,36 +65,41 @@ scripts/cargo_exec.sh test -p jcode-base eu_pricing_is_isolated --lib
 scripts/cargo_exec.sh test -p jcode-base set_model_openrouter_eu_prefix_respects_policy --lib
 scripts/cargo_exec.sh test -p jcode-base eu_dispatch_enforced_by_allowed_providers --lib
 scripts/cargo_exec.sh test -p jcode-tui --lib -- test_updates_header_repeated_renders_stay_stable_near_scrollbar_threshold
+cargo test -p jcode-base direct_login_provider --lib
+cargo test -p jcode-base compatible_profile_auth_runtime_preserves_initial_provider_markers --lib
+cargo test -p jcode-base openrouter_eu_rewrites_active_provider_only_for_explicit_openrouter_selection --lib
+cargo test -p jcode-base openrouter_eu_auth_refresh_preserves_configured_provider_in_new_session_forks --lib
+cargo test -p jcode-base new_session_fork_reloads_changed_config_provider_and_model --lib
 ---
  Cargo.lock                                    |   1 +
  crates/jcode-base/src/auth/integration.rs     |   5 +-
- crates/jcode-base/src/auth/lifecycle.rs       |  12 +-
+ crates/jcode-base/src/auth/lifecycle.rs       | 190 ++++++---
  crates/jcode-base/src/auth/mod.rs             |  34 +-
  crates/jcode-base/src/config/default_file.rs  |   7 +-
- crates/jcode-base/src/provider/activation.rs  |  23 +-
- .../jcode-base/src/provider/catalog_routes.rs | 275 +++++++++++++++-
- crates/jcode-base/src/provider/mod.rs         |  86 ++++-
+ crates/jcode-base/src/provider/activation.rs  |  96 ++++-
+ .../jcode-base/src/provider/catalog_routes.rs | 275 ++++++++++++-
+ crates/jcode-base/src/provider/mod.rs         |  86 +++-
  crates/jcode-base/src/provider/openrouter.rs  |  30 +-
- crates/jcode-base/src/provider/pricing.rs     |  58 +++-
+ crates/jcode-base/src/provider/pricing.rs     |  58 ++-
  crates/jcode-base/src/provider/selection.rs   |  32 +-
  crates/jcode-base/src/provider/startup.rs     |  48 ++-
- crates/jcode-base/src/provider/tests.rs       | 293 ++++++++++++++++++
+ crates/jcode-base/src/provider/tests.rs       | 370 ++++++++++++++++++
  .../tests/issue_534_profile_preservation.rs   |   1 +
  crates/jcode-base/src/provider_activity.rs    |   4 +
  crates/jcode-base/src/provider_catalog.rs     |   3 +
  crates/jcode-base/src/session.rs              |   1 +
- crates/jcode-provider-core/src/lib.rs         |  56 +++-
+ crates/jcode-provider-core/src/lib.rs         |  56 ++-
  crates/jcode-provider-core/src/models.rs      |   1 +
  crates/jcode-provider-core/src/selection.rs   |  13 +-
  crates/jcode-provider-metadata/Cargo.toml     |   1 +
  crates/jcode-provider-metadata/src/catalog.rs |  18 +-
  crates/jcode-provider-metadata/src/lib.rs     |  13 +-
- .../src/lib.rs                                |  74 +++--
- .../src/openrouter_provider_impl.rs           |  64 ++--
- .../src/openrouter_tests.rs                   |  95 ++++++
- crates/jcode-provider-openrouter/src/lib.rs   |  95 +++++-
+ .../src/lib.rs                                |  74 +++-
+ .../src/openrouter_provider_impl.rs           |  64 ++-
+ .../src/openrouter_tests.rs                   |  95 +++++
+ crates/jcode-provider-openrouter/src/lib.rs   |  95 ++++-
  crates/jcode-sdk/src/auth.rs                  |   2 +-
- crates/jcode-tui/src/tui/app/auth.rs          |  40 ++-
+ crates/jcode-tui/src/tui/app/auth.rs          |  40 +-
  .../src/tui/app/auth_account_commands.rs      |   8 +-
  crates/jcode-tui/src/tui/app/auth_tests.rs    |  27 ++
  .../src/tui/app/inline_interactive.rs         |   4 +-
@@ -95,11 +112,11 @@ scripts/cargo_exec.sh test -p jcode-tui --lib -- test_updates_header_repeated_re
  crates/jcode-tui/src/tui/ui_header.rs         |  20 +-
  src/cli/auth_test/probes.rs                   |   4 +-
  src/cli/auth_test/run.rs                      |   2 +-
- src/cli/login.rs                              |  35 ++-
- src/cli/provider_init.rs                      |  38 ++-
+ src/cli/login.rs                              |  35 +-
+ src/cli/provider_init.rs                      |  38 +-
  src/cli/provider_init_tests.rs                |  25 +-
  tests/provider_matrix.rs                      |   4 +-
- 45 files changed, 1454 insertions(+), 149 deletions(-)
+ 45 files changed, 1720 insertions(+), 211 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
 index be40f75bc..30742c78e 100644
@@ -130,10 +147,30 @@ index 461a22bab..a226a8a3d 100644
          LoginProviderTarget::Azure => Some(RuntimeProviderId::AzureOpenAi),
          LoginProviderTarget::OpenAiCompatible(_) => Some(RuntimeProviderId::OpenAiCompatible),
 diff --git a/crates/jcode-base/src/auth/lifecycle.rs b/crates/jcode-base/src/auth/lifecycle.rs
-index b9eee241d..9967eebda 100644
+index b9eee241d..0d296bdc4 100644
 --- a/crates/jcode-base/src/auth/lifecycle.rs
 +++ b/crates/jcode-base/src/auth/lifecycle.rs
-@@ -998,6 +998,9 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
+@@ -1,7 +1,6 @@
+ use crate::protocol::{AuthChanged, CatalogNamespace, RuntimeProviderKey};
+ use crate::provider::ModelRoute;
+ use crate::provider::activation::{ProviderActivation, RuntimeProviderId};
+-use jcode_provider_core::ActiveProvider;
+ 
+ #[derive(Clone, Debug, Default, PartialEq, Eq)]
+ pub struct AuthActivationRequest {
+@@ -963,7 +962,10 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
+             );
+         }
+         "grok-build" => {
+-            return matches!(api_method, crate::provider::ModelRouteApiMethod::GrokBuildAcp);
++            return matches!(
++                api_method,
++                crate::provider::ModelRouteApiMethod::GrokBuildAcp
++            );
+         }
+         "azure-openai" => {
+             // Azure OpenAI reuses the OpenRouter transport (configured via Azure
+@@ -998,6 +1000,9 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
  
  pub fn normalized_auth_provider_id(provider_hint: Option<&str>) -> Option<&'static str> {
      let provider = provider_hint?.trim();
@@ -143,7 +180,7 @@ index b9eee241d..9967eebda 100644
      if provider.eq_ignore_ascii_case("azure")
          || provider.eq_ignore_ascii_case("azure-openai")
          || provider.eq_ignore_ascii_case("azure openai")
-@@ -1059,6 +1062,7 @@ fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
+@@ -1059,6 +1064,7 @@ fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
              Some("openai-api")
          }
          "openrouter" => Some("openrouter"),
@@ -151,15 +188,93 @@ index b9eee241d..9967eebda 100644
          "jcode" | "subscription" | "jcode-subscription" => Some("jcode"),
          "grok-build" => Some("grok-build"),
          "bedrock" | "aws-bedrock" | "aws_bedrock" => Some("bedrock"),
-@@ -1316,6 +1320,7 @@ fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
-         "openai" => (RuntimeProviderId::OpenAi, ActiveProvider::OpenAI),
-         "openai-api" => (RuntimeProviderId::OpenAiApiKey, ActiveProvider::OpenAI),
-         "openrouter" => (RuntimeProviderId::OpenRouter, ActiveProvider::OpenRouter),
-+        "openrouter-eu" => (RuntimeProviderId::OpenRouterEu, ActiveProvider::OpenRouter),
-         "jcode" => (RuntimeProviderId::Jcode, ActiveProvider::OpenRouter),
-         "bedrock" => (RuntimeProviderId::Bedrock, ActiveProvider::Bedrock),
-         "cursor" => (RuntimeProviderId::Cursor, ActiveProvider::Cursor),
-@@ -1347,6 +1352,7 @@ pub fn model_switch_request_for_provider_id(
+@@ -1245,18 +1251,20 @@ fn sync_process_env_from_saved_credentials(
+ 
+ fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<String> {
+     match normalized_auth_provider_id(provider_id) {
+-        Some("azure-openai") => match crate::provider::activation::apply_azure_openai_runtime() {
+-            Ok(model) => model,
+-            Err(error) => {
+-                let message = error.to_string();
+-                crate::logging::auth_event(
+-                    "auth_changed_runtime_activation_failed",
+-                    "azure-openai",
+-                    &[("reason", message.as_str())],
+-                );
+-                None
++        Some("azure-openai") => {
++            match crate::provider::activation::apply_azure_openai_auth_runtime() {
++                Ok(model) => model,
++                Err(error) => {
++                    let message = error.to_string();
++                    crate::logging::auth_event(
++                        "auth_changed_runtime_activation_failed",
++                        "azure-openai",
++                        &[("reason", message.as_str())],
++                    );
++                    None
++                }
+             }
+-        },
++        }
+         Some(profile_id)
+             if direct_provider_activation(profile_id).is_none()
+                 && crate::provider_catalog::openai_compatible_profile_by_id(profile_id)
+@@ -1278,9 +1286,9 @@ fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<String> {
+             crate::provider_catalog::force_apply_openai_compatible_profile_env(Some(profile));
+             let default_model =
+                 crate::provider_catalog::resolve_openai_compatible_profile(profile).default_model;
+-            if let Err(error) =
+-                crate::provider::activation::apply_openai_compatible_runtime(default_model.clone())
+-            {
++            if let Err(error) = crate::provider::activation::apply_openai_compatible_auth_runtime(
++                default_model.clone(),
++            ) {
+                 let message = error.to_string();
+                 crate::logging::auth_event(
+                     "auth_changed_runtime_activation_failed",
+@@ -1310,22 +1318,26 @@ fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<String> {
+ }
+ 
+ fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
+-    let (runtime_id, active) = match normalized_login_provider_id(provider_id)? {
+-        "claude" => (RuntimeProviderId::Claude, ActiveProvider::Claude),
+-        "claude-api" => (RuntimeProviderId::ClaudeApiKey, ActiveProvider::Claude),
+-        "openai" => (RuntimeProviderId::OpenAi, ActiveProvider::OpenAI),
+-        "openai-api" => (RuntimeProviderId::OpenAiApiKey, ActiveProvider::OpenAI),
+-        "openrouter" => (RuntimeProviderId::OpenRouter, ActiveProvider::OpenRouter),
+-        "jcode" => (RuntimeProviderId::Jcode, ActiveProvider::OpenRouter),
+-        "bedrock" => (RuntimeProviderId::Bedrock, ActiveProvider::Bedrock),
+-        "cursor" => (RuntimeProviderId::Cursor, ActiveProvider::Cursor),
+-        "copilot" => (RuntimeProviderId::Copilot, ActiveProvider::Copilot),
+-        "gemini" => (RuntimeProviderId::Gemini, ActiveProvider::Gemini),
+-        "antigravity" => (RuntimeProviderId::Antigravity, ActiveProvider::Antigravity),
+-        "grok-build" => (RuntimeProviderId::GrokBuild, ActiveProvider::OpenRouter),
++    let runtime_id = match normalized_login_provider_id(provider_id)? {
++        "claude" => RuntimeProviderId::Claude,
++        "claude-api" => RuntimeProviderId::ClaudeApiKey,
++        "openai" => RuntimeProviderId::OpenAi,
++        "openai-api" => RuntimeProviderId::OpenAiApiKey,
++        "openrouter" => RuntimeProviderId::OpenRouter,
++        "openrouter-eu" => RuntimeProviderId::OpenRouterEu,
++        "jcode" => RuntimeProviderId::Jcode,
++        "bedrock" => RuntimeProviderId::Bedrock,
++        "cursor" => RuntimeProviderId::Cursor,
++        "copilot" => RuntimeProviderId::Copilot,
++        "gemini" => RuntimeProviderId::Gemini,
++        "antigravity" => RuntimeProviderId::Antigravity,
++        "grok-build" => RuntimeProviderId::GrokBuild,
+         _ => return None,
+     };
+-    Some(ProviderActivation::initial(runtime_id, active))
++    Some(ProviderActivation::new(
++        runtime_id,
++        crate::provider::activation::RuntimeSelection::Unchanged,
++    ))
+ }
+ 
+ pub fn model_switch_request_for_provider_id(
+@@ -1347,6 +1359,7 @@ pub fn model_switch_request_for_provider_id(
          Some("openai") => format!("openai-oauth:{}", model),
          Some("openai-api") => format!("openai-api:{}", model),
          Some("openrouter") => format!("openrouter:{}", model),
@@ -167,19 +282,184 @@ index b9eee241d..9967eebda 100644
          Some("jcode") => model.to_string(),
          Some("grok-build") => crate::provider::grok_build_model_spec(model),
          Some("bedrock") => format!("bedrock:{}", model),
-@@ -1748,8 +1754,9 @@ mod tests {
+@@ -1676,25 +1689,26 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn direct_login_provider_activation_sets_runtime_identity_and_active_provider() {
++    fn direct_login_provider_activation_preserves_selection_environment() {
+         // Sandbox JCODE_HOME so activation's env-file credential sync (#453)
+         // cannot read the developer's real ~/.config/jcode/*.env files and
+         // leak keys into this process during the matrix run.
+         let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+ 
+-        for (provider, runtime, active) in [
+-            ("claude", "claude", "claude"),
+-            ("claude-api", "claude-api", "claude"),
+-            ("openai", "openai", "openai"),
+-            ("openai-api", "openai-api", "openai"),
+-            ("openrouter", "openrouter", "openrouter"),
+-            ("jcode", "jcode", "openrouter"),
+-            ("grok-build", "grok-build", "openrouter"),
+-            ("bedrock", "bedrock", "bedrock"),
+-            ("cursor", "cursor", "cursor"),
+-            ("copilot", "copilot", "copilot"),
+-            ("gemini", "gemini", "gemini"),
+-            ("antigravity", "antigravity", "antigravity"),
++        for (provider, runtime) in [
++            ("claude", "claude"),
++            ("claude-api", "claude-api"),
++            ("openai", "openai"),
++            ("openai-api", "openai-api"),
++            ("openrouter", "openrouter"),
++            ("openrouter-eu", "openrouter-eu"),
++            ("jcode", "jcode"),
++            ("grok-build", "grok-build"),
++            ("bedrock", "bedrock"),
++            ("cursor", "cursor"),
++            ("copilot", "copilot"),
++            ("gemini", "gemini"),
++            ("antigravity", "antigravity"),
+         ] {
+             crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+             crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
+@@ -1712,13 +1726,61 @@ mod tests {
+             );
+             assert_eq!(
+                 std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+-                Ok(active)
++                Err(&std::env::VarError::NotPresent)
+             );
+             assert_eq!(
+                 std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
+-                Ok("1")
++                Err(&std::env::VarError::NotPresent)
+             );
+         }
++
++        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openai");
++        crate::env::set_var("JCODE_INITIAL_PROVIDER_EXPLICIT", "1");
++        let _ = activate_auth_change(&AuthActivationRequest::new(
++            None,
++            Some(AuthChanged::new("claude")),
++        ));
++        assert_eq!(
++            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
++            Ok("openai")
++        );
++        assert_eq!(
++            std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
++            Ok("1")
++        );
++    }
++
++    #[test]
++    fn compatible_profile_auth_runtime_preserves_initial_provider_markers() {
++        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
++        for key in [
++            "JCODE_RUNTIME_PROVIDER",
++            "JCODE_ACTIVE_PROVIDER",
++            "JCODE_INITIAL_PROVIDER_EXPLICIT",
++            "JCODE_OPENROUTER_MODEL",
++        ] {
++            crate::env::remove_var(key);
++        }
++        crate::provider_catalog::force_apply_openai_compatible_profile_env(Some(
++            crate::provider_catalog::OPENAI_COMPAT_PROFILE,
++        ));
++        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openrouter");
++        crate::env::set_var("JCODE_INITIAL_PROVIDER_EXPLICIT", "1");
++
++        apply_auth_provider_runtime(Some("cerebras"));
++
++        assert_eq!(
++            std::env::var("JCODE_RUNTIME_PROVIDER").as_deref(),
++            Ok("openai-compatible")
++        );
++        assert_eq!(
++            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
++            Ok("openrouter")
++        );
++        assert_eq!(
++            std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
++            Ok("1")
++        );
+     }
+ 
+     #[test]
+@@ -1729,42 +1791,41 @@ mod tests {
+ 
+         let mut covered = Vec::new();
+         for provider in crate::provider_catalog::login_providers() {
+-            let Some((normalized, runtime, active, switch_prefix)) = (match provider.target {
+-                crate::provider_catalog::LoginProviderTarget::Jcode => {
+-                    Some(("jcode", "jcode", "openrouter", ""))
+-                }
++            let Some((normalized, runtime, switch_prefix)) = (match provider.target {
++                crate::provider_catalog::LoginProviderTarget::Jcode => Some(("jcode", "jcode", "")),
+                 crate::provider_catalog::LoginProviderTarget::GrokBuild => {
+-                    Some(("grok-build", "grok-build", "openrouter", "grok-build"))
++                    Some(("grok-build", "grok-build", "grok-build"))
+                 }
+                 crate::provider_catalog::LoginProviderTarget::Claude => {
+-                    Some(("claude", "claude", "claude", "claude-oauth"))
++                    Some(("claude", "claude", "claude-oauth"))
+                 }
+                 crate::provider_catalog::LoginProviderTarget::ClaudeApiKey => {
+-                    Some(("claude-api", "claude-api", "claude", "claude-api"))
++                    Some(("claude-api", "claude-api", "claude-api"))
+                 }
+                 crate::provider_catalog::LoginProviderTarget::OpenAi => {
+-                    Some(("openai", "openai", "openai", "openai-oauth"))
++                    Some(("openai", "openai", "openai-oauth"))
+                 }
                  crate::provider_catalog::LoginProviderTarget::OpenAiApiKey => {
-                     Some(("openai-api", "openai-api", "openai", "openai-api"))
+-                    Some(("openai-api", "openai-api", "openai", "openai-api"))
++                    Some(("openai-api", "openai-api", "openai-api"))
                  }
 -                crate::provider_catalog::LoginProviderTarget::OpenRouter => {
 -                    Some(("openrouter", "openrouter", "openrouter", "openrouter"))
 +                crate::provider_catalog::LoginProviderTarget::OpenRouter(deployment) => {
 +                    let id = deployment.spec().route_id;
-+                    Some((id, id, id, id))
++                    Some((id, id, id))
                  }
                  crate::provider_catalog::LoginProviderTarget::Bedrock => {
-                     Some(("bedrock", "bedrock", "bedrock", "bedrock"))
-@@ -1838,6 +1845,7 @@ mod tests {
+-                    Some(("bedrock", "bedrock", "bedrock", "bedrock"))
++                    Some(("bedrock", "bedrock", "bedrock"))
+                 }
+                 crate::provider_catalog::LoginProviderTarget::Cursor => {
+-                    Some(("cursor", "cursor", "cursor", "cursor"))
++                    Some(("cursor", "cursor", "cursor"))
+                 }
+                 crate::provider_catalog::LoginProviderTarget::Copilot => {
+-                    Some(("copilot", "copilot", "copilot", "copilot"))
++                    Some(("copilot", "copilot", "copilot"))
+                 }
+                 crate::provider_catalog::LoginProviderTarget::Gemini => {
+-                    Some(("gemini", "gemini", "gemini", "gemini"))
++                    Some(("gemini", "gemini", "gemini"))
+                 }
+                 crate::provider_catalog::LoginProviderTarget::Antigravity => {
+-                    Some(("antigravity", "antigravity", "antigravity", "antigravity"))
++                    Some(("antigravity", "antigravity", "antigravity"))
+                 }
+                 _ => None,
+             }) else {
+@@ -1813,11 +1874,11 @@ mod tests {
+             );
+             assert_eq!(
+                 std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+-                Ok(active)
++                Err(&std::env::VarError::NotPresent)
+             );
+             assert_eq!(
+                 std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
+-                Ok("1")
++                Err(&std::env::VarError::NotPresent)
+             );
+             let expected_switch = if switch_prefix.is_empty() {
+                 "shared-model".to_string()
+@@ -1838,6 +1899,7 @@ mod tests {
              "openai",
              "openai-api",
              "openrouter",
@@ -284,7 +564,7 @@ index 9f68399dc..1da9fa855 100644
  openai_reasoning_effort = "low"
  # Anthropic reasoning effort for Claude reasoning models (none|low|medium|high|xhigh|max)
 diff --git a/crates/jcode-base/src/provider/activation.rs b/crates/jcode-base/src/provider/activation.rs
-index 88e7521ae..a8076a548 100644
+index 88e7521ae..3a8072838 100644
 --- a/crates/jcode-base/src/provider/activation.rs
 +++ b/crates/jcode-base/src/provider/activation.rs
 @@ -14,6 +14,7 @@ pub enum RuntimeProviderId {
@@ -341,17 +621,102 @@ index 88e7521ae..a8076a548 100644
              }
              RuntimeProviderId::AzureOpenAi => {
                  crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key")
-@@ -200,6 +217,10 @@ impl ProviderActivation {
+@@ -200,6 +217,18 @@ impl ProviderActivation {
              RuntimeSelection::Unchanged => {}
          }
  
-+        if self.runtime_id == RuntimeProviderId::OpenRouterEu {
++        if self.runtime_id == RuntimeProviderId::OpenRouterEu
++            && matches!(
++                self.selection,
++                RuntimeSelection::Initial(ActiveProvider::OpenRouter)
++                    | RuntimeSelection::Unlocked {
++                        active_hint: Some(ActiveProvider::OpenRouter)
++                    }
++            )
++        {
 +            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openrouter-eu");
 +        }
 +
          if let Some(model_hint) = &self.model_hint {
              crate::env::set_var(model_hint.env_key, &model_hint.model);
          }
+@@ -257,6 +286,29 @@ pub fn apply_openai_compatible_runtime(default_model: Option<String>) -> Result<
+     ProviderActivation::openai_compatible(default_model).apply_env()
+ }
+ 
++pub fn apply_azure_openai_auth_runtime() -> Result<Option<String>> {
++    crate::auth::azure::apply_runtime_env()?;
++    let model = crate::auth::azure::load_model();
++    let mut activation =
++        ProviderActivation::new(RuntimeProviderId::AzureOpenAi, RuntimeSelection::Unchanged);
++    if let Some(model_hint) = model.as_ref() {
++        activation = activation.with_model_hint("JCODE_OPENROUTER_MODEL", model_hint.clone());
++    }
++    activation.apply_env()?;
++    Ok(model)
++}
++
++pub fn apply_openai_compatible_auth_runtime(default_model: Option<String>) -> Result<()> {
++    let mut activation = ProviderActivation::new(
++        RuntimeProviderId::OpenAiCompatible,
++        RuntimeSelection::Unchanged,
++    );
++    if let Some(model_hint) = default_model {
++        activation = activation.with_model_hint("JCODE_OPENROUTER_MODEL", model_hint);
++    }
++    activation.apply_env()
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -345,4 +397,46 @@ mod tests {
+             Ok("gpt-4.1-mini")
+         );
+     }
++
++    #[test]
++    fn openrouter_eu_rewrites_active_provider_only_for_explicit_openrouter_selection() {
++        let _lock = crate::storage::lock_test_env();
++        let _env = EnvGuard::new(&[
++            "JCODE_RUNTIME_PROVIDER",
++            "JCODE_ACTIVE_PROVIDER",
++            "JCODE_INITIAL_PROVIDER_EXPLICIT",
++        ]);
++
++        ProviderActivation::new(RuntimeProviderId::OpenRouterEu, RuntimeSelection::Unchanged)
++            .apply_env()
++            .unwrap();
++        assert!(std::env::var_os("JCODE_ACTIVE_PROVIDER").is_none());
++        assert!(std::env::var_os("JCODE_INITIAL_PROVIDER_EXPLICIT").is_none());
++
++        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openai");
++        crate::env::set_var("JCODE_INITIAL_PROVIDER_EXPLICIT", "1");
++        ProviderActivation::new(RuntimeProviderId::OpenRouterEu, RuntimeSelection::Unchanged)
++            .apply_env()
++            .unwrap();
++        assert_eq!(
++            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
++            Ok("openai")
++        );
++        assert_eq!(
++            std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
++            Ok("1")
++        );
++
++        ProviderActivation::initial(RuntimeProviderId::OpenRouterEu, ActiveProvider::OpenRouter)
++            .apply_env()
++            .unwrap();
++        assert_eq!(
++            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
++            Ok("openrouter-eu")
++        );
++        assert_eq!(
++            std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
++            Ok("1")
++        );
++    }
+ }
 diff --git a/crates/jcode-base/src/provider/catalog_routes.rs b/crates/jcode-base/src/provider/catalog_routes.rs
 index b783d7065..be8a33a8f 100644
 --- a/crates/jcode-base/src/provider/catalog_routes.rs
@@ -1246,10 +1611,30 @@ index 96676b034..62da44b90 100644
                  Ok(p) => Some(p),
                  Err(e) => {
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index e8c31d78c..6f6b010ce 100644
+index e8c31d78c..1741b681e 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
-@@ -1053,6 +1053,34 @@ impl StubExternalRuntime {
+@@ -154,6 +154,7 @@ fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
+         std::env::var_os(crate::subscription_catalog::JCODE_SUBSCRIPTION_ACTIVE_ENV);
+     let mut profile_env_keys = vec![
+         "OPENROUTER_API_KEY",
++        "OPENROUTER_EU_API_KEY",
+         "DEEPSEEK_API_KEY",
+         "KIMI_API_KEY",
+         "JCODE_OPENROUTER_API_BASE",
+@@ -175,9 +176,11 @@ fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
+         "OPENAI_API_KEY",
+         "ANTHROPIC_API_KEY",
+         "ANTHROPIC_AUTH_TOKEN",
++        "JCODE_PROVIDER",
+         "JCODE_RUNTIME_PROVIDER",
+         "JCODE_ACTIVE_PROVIDER",
+         "JCODE_INITIAL_PROVIDER_EXPLICIT",
++        "JCODE_INITIAL_PROVIDER",
+         "JCODE_OPENAI_MODEL",
+         "JCODE_NAMED_PROVIDER_PROFILE",
+         "JCODE_PROVIDER_PROFILE_ACTIVE",
+@@ -1053,6 +1056,34 @@ impl StubExternalRuntime {
      }
  }
  
@@ -1284,7 +1669,7 @@ index e8c31d78c..6f6b010ce 100644
  #[test]
  fn official_openrouter_fallback_activation_clears_stale_profile_identity() {
      with_clean_provider_test_env(|| {
-@@ -1095,6 +1123,22 @@ fn official_openrouter_fallback_activation_clears_stale_profile_identity() {
+@@ -1095,6 +1126,22 @@ fn official_openrouter_fallback_activation_clears_stale_profile_identity() {
      });
  }
  
@@ -1307,7 +1692,7 @@ index e8c31d78c..6f6b010ce 100644
  #[test]
  fn openrouter_only_dispatches_official_runtime_not_shared_slot_runtimes() {
      with_clean_provider_test_env(|| {
-@@ -1396,6 +1440,9 @@ fn register_test_external_runtimes() {
+@@ -1396,6 +1443,9 @@ fn register_test_external_runtimes() {
              OpenRouterRuntimeSpec::Official(
                  jcode_provider_core::OpenRouterDeploymentId::Standard,
              ) => Arc::new(OpenRouterProvider::new_openrouter_api_key_runtime()?),
@@ -1317,7 +1702,88 @@ index e8c31d78c..6f6b010ce 100644
              OpenRouterRuntimeSpec::CompatibleProfile(profile) => Arc::new(
                  OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
              ),
-@@ -1818,3 +1865,249 @@ fn policy_blocks_persisted_route_restoration_for_disallowed_family() {
+@@ -1610,6 +1660,80 @@ fn new_session_fork_reloads_changed_config_provider_and_model() {
+     });
+ }
+ 
++#[test]
++fn openrouter_eu_auth_refresh_preserves_configured_provider_in_new_session_forks() {
++    with_clean_provider_test_env(|| {
++        let runtime = enter_test_runtime();
++        runtime.block_on(async {
++            crate::env::set_var("OPENROUTER_EU_API_KEY", "sk-eu-test");
++            crate::provider_catalog::save_env_value_to_env_file(
++                "OPENROUTER_EU_API_KEY",
++                "openrouter-eu.env",
++                Some("sk-eu-test"),
++            )
++            .expect("save EU credential");
++            let config_path = crate::config::Config::path().expect("config path");
++            std::fs::create_dir_all(config_path.parent().expect("config parent"))
++                .expect("config parent");
++            std::fs::write(
++                &config_path,
++                "[provider]\ndefault_provider = \"openrouter-eu\"\ndefault_model = \"openai/gpt-6-luna\"\n",
++            )
++            .expect("save EU provider config");
++            crate::config::invalidate_config_cache();
++
++            let template = MultiProvider::new_fast();
++            assert_eq!(template.active_provider(), ActiveProvider::OpenRouter);
++            assert_eq!(template.runtime_key_for_provider(ActiveProvider::OpenRouter), Some(RuntimeKey::OpenRouterEu));
++            assert_eq!(template.model(), "openai/gpt-6-luna");
++
++            crate::auth::lifecycle::activate_auth_change(
++                &crate::auth::lifecycle::AuthActivationRequest::new(
++                    None,
++                    Some(crate::protocol::AuthChanged::new("openrouter-eu")),
++                ),
++            );
++            assert!(std::env::var_os("JCODE_ACTIVE_PROVIDER").is_none());
++
++            let fresh = template.fork_for_new_session();
++            assert_eq!(fresh.model(), "openai/gpt-6-luna");
++            assert!(fresh.model_routes().iter().any(|route| route.api_method == "openrouter-eu"));
++
++            crate::config::Config::set_default_model(Some("gpt-5.5"), Some("openai-api"))
++                .expect("save changed provider config");
++            crate::env::set_var("OPENAI_API_KEY", "sk-openai-test");
++            crate::provider_catalog::save_env_value_to_env_file(
++                "OPENAI_API_KEY",
++                "openai.env",
++                Some("sk-openai-test"),
++            )
++            .expect("save OpenAI credential");
++            let reloaded = template.fork_for_new_session();
++            assert_eq!(reloaded.name(), "OpenAI");
++            assert_eq!(reloaded.model(), "gpt-5.5");
++
++            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openai");
++            crate::env::set_var("JCODE_INITIAL_PROVIDER_EXPLICIT", "1");
++            let explicitly_pinned = MultiProvider::new_fast();
++            let pinned_model = explicitly_pinned.model();
++            crate::auth::lifecycle::activate_auth_change(
++                &crate::auth::lifecycle::AuthActivationRequest::new(
++                    None,
++                    Some(crate::protocol::AuthChanged::new("openrouter-eu")),
++                ),
++            );
++            assert_eq!(std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(), Ok("openai"));
++            assert_eq!(
++                std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
++                Ok("1")
++            );
++            let pinned_fork = explicitly_pinned.fork_for_new_session();
++            assert_eq!(pinned_fork.name(), "OpenAI");
++            assert_eq!(pinned_fork.model(), pinned_model);
++        });
++    });
++}
++
+ include!("tests/auth_refresh.rs");
+ include!("tests/model_resolution.rs");
+ include!("tests/issue_534_profile_preservation.rs");
+@@ -1818,3 +1942,249 @@ fn policy_blocks_persisted_route_restoration_for_disallowed_family() {
          });
      });
  }
@@ -1360,7 +1826,10 @@ index e8c31d78c..6f6b010ce 100644
 +            jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter-eu")
 +                .expect("EU cache should exist");
 +        assert!(
-+            !eu_cache.models.iter().any(|m| m.id == "openai/std-only-model"),
++            !eu_cache
++                .models
++                .iter()
++                .any(|m| m.id == "openai/std-only-model"),
 +            "standard-only model must not appear in EU cache"
 +        );
 +
@@ -1377,7 +1846,6 @@ index e8c31d78c..6f6b010ce 100644
 +        );
 +    });
 +}
-+
 +
 +/// EU pricing must use the EU cache, not the standard cache. A model present
 +/// in both caches with different prices must return the EU price when queried
@@ -1432,9 +1900,8 @@ index e8c31d78c..6f6b010ce 100644
 +            "EU pricing must use the EU cache, not the standard cache"
 +        );
 +
-+        let std_estimate =
-+            pricing::metered_pricing_for_source("openrouter", "openai/dual-priced")
-+                .expect("standard pricing should resolve");
++        let std_estimate = pricing::metered_pricing_for_source("openrouter", "openai/dual-priced")
++            .expect("standard pricing should resolve");
 +        assert_eq!(
 +            std_estimate.input_price_per_mtok_micros,
 +            Some(2_200_000),
@@ -1529,8 +1996,7 @@ index e8c31d78c..6f6b010ce 100644
 +            crate::config::invalidate_config_cache();
 +
 +            let provider = test_multi_provider_with_openai();
-+            *provider.active.write().expect("active provider lock") =
-+                ActiveProvider::OpenRouter;
++            *provider.active.write().expect("active provider lock") = ActiveProvider::OpenRouter;
 +            // Install a standard OpenRouter stub as the active runtime.
 +            let standard = Arc::new(StubExternalRuntime::new(
 +                "OpenRouter",
