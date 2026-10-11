@@ -62,6 +62,21 @@ Count calls, not just output size.
 - Long sessions rely on proactive compaction near 300K tokens. There is no
   session handoff for now.
 
+## Plan-reading exception
+
+The coordinator may read a user-selected implementation plan in full before
+scoping or executing it. This exception applies only to the plan document
+itself, not to source files, logs, research, or other supporting material.
+Plan reads may stay inline even when completing the read exceeds the usual
+inline-call budget. Prefer bounded, sequential `read` calls on the original
+plan file so every section reaches the coordinator's context.
+
+If the delegation guard withholds a plan read, the coordinator may continue
+reading the original plan in bounded chunks, or paginate only the plan
+content in the saved result, until the whole plan has been read. Do not use
+this exception to reconstruct any non-plan output. The guard remains enabled,
+and all other delegation and verification rules still apply.
+
 ## Plan, delegate, verify
 
 - **Own the decisions.** Establish scope, dependencies, acceptance criteria,
@@ -105,10 +120,10 @@ run, so you have already paid for that call; bounding output beforehand is
 cheaper. `just ensure-personal-assets` fails when the hook is not
 configured.
 
-On a nudge, rerun once only if a small, specific answer can be extracted
-directly. Otherwise delegate extraction to a worker and cite the saved path.
-Never read the saved file yourself, paginate it, or reconstruct it through
-many narrow queries.
+For output not covered by the plan-reading exception above, rerun once on a
+nudge only if a small, specific answer can be extracted directly. Otherwise
+delegate extraction to a worker and cite the saved path. Never read the saved
+file yourself, paginate it, or reconstruct it through many narrow queries.
 
 ## Internet isolation
 
