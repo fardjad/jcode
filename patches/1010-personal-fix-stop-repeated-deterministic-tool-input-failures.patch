@@ -1,0 +1,748 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Mon, 12 Oct 2026 16:27:24 +0200
+Subject: [PATCH] fix: stop repeated deterministic tool input failures
+
+X-Jcode-Patch-Intent: Stop retries of repeated typed input errors
+X-Jcode-Patch-Kind: personal-fix
+X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch
+
+Patch intent:
+Stop a turn after three matching typed deterministic tool-input failures,
+including nested batch dispatches, in both turn loops. Unknown tool names use
+the same typed classification; other untyped tool errors are not classified.
+
+Why it exists:
+Repeated invalid inputs can otherwise trigger repeated provider requests without
+progress. Classification is explicit through a typed error, not inferred from
+error text. This does not classify arbitrary validation or runtime failures.
+
+Upstream integration points:
+The change adds tool::retry_guard and wraps Registry::execute dispatches,
+including nested BatchTool calls. Agent::run_turn and
+Agent::run_turn_streaming_mpsc reset and check the shared per-turn guard. The
+retry guard also depends on hook context established by patch 0002.
+
+Update guidance:
+Keep failure classification limited to explicit typed input errors and unknown
+tool names. Preserve separate guard state for cloned registries, nested batch
+dispatch tracking, the bounded repeat window, and terminal checks in both turn
+loops. Preserve the hook context dependency inherited from patch 0002.
+
+Validation:
+scripts/cargo_exec.sh test -p jcode-app-core retry_guard --lib
+scripts/cargo_exec.sh test -p jcode-app-core malformed_tool_call_recovery_tests --lib
+scripts/cargo_exec.sh test -p jcode-app-core tool::batch_tests --lib
+
+(cherry picked from commit 38a68a4c74c3f17d263df7118a81856b417622c5)
+---
+ .../src/agent/response_recovery.rs            |  81 ++++++
+ crates/jcode-app-core/src/agent/turn_loops.rs |  19 +-
+ .../src/agent/turn_streaming_mpsc.rs          |  20 +-
+ crates/jcode-app-core/src/tool/mod.rs         | 152 +++++++++-
+ crates/jcode-app-core/src/tool/retry_guard.rs | 271 ++++++++++++++++++
+ 5 files changed, 538 insertions(+), 5 deletions(-)
+ create mode 100644 crates/jcode-app-core/src/tool/retry_guard.rs
+
+diff --git a/crates/jcode-app-core/src/agent/response_recovery.rs b/crates/jcode-app-core/src/agent/response_recovery.rs
+index 167f70615..9017496c2 100644
+--- a/crates/jcode-app-core/src/agent/response_recovery.rs
++++ b/crates/jcode-app-core/src/agent/response_recovery.rs
+@@ -762,6 +762,30 @@ mod malformed_tool_call_recovery_tests {
+         }
+     }
+ 
++    struct RejectTool;
++    #[async_trait]
++    impl crate::tool::Tool for RejectTool {
++        fn name(&self) -> &str {
++            "reject"
++        }
++        fn description(&self) -> &str {
++            "Reject deterministic input"
++        }
++        fn parameters_schema(&self) -> Value {
++            json!({"type":"object"})
++        }
++        async fn execute(
++            &self,
++            _: Value,
++            _: crate::tool::ToolContext,
++        ) -> Result<crate::tool::ToolOutput> {
++            Err(crate::tool::retry_guard::DeterministicToolInputError::new(
++                "fixture input rejected",
++            )
++            .into())
++        }
++    }
++
+     /// A round whose single tool call has null arguments: the streamed
+     /// fragments fail JSON parsing, which is exactly how the reported
+     /// GLM-5.3 null-argument `write`/`bash` calls reach the agent.
+@@ -807,6 +831,23 @@ mod malformed_tool_call_recovery_tests {
+         events
+     }
+ 
++    fn repeated_rejected_round(id: &str) -> Vec<StreamEvent> {
++        vec![
++            StreamEvent::ToolUseStart {
++                id: id.into(),
++                name: "reject".into(),
++            },
++            StreamEvent::ToolInputDeltaFor {
++                id: id.into(),
++                delta: r#"{"value":"same"}"#.into(),
++            },
++            StreamEvent::ToolUseEndFor { id: id.into() },
++            StreamEvent::MessageEnd {
++                stop_reason: Some("tool_use".into()),
++            },
++        ]
++    }
++
+     /// One malformed plus one valid capture call in a single round.
+     fn mixed_round(bad_id: &str, good_id: &str) -> Vec<StreamEvent> {
+         vec![
+@@ -868,6 +909,25 @@ mod malformed_tool_call_recovery_tests {
+         (agent, session_ids, exec_log)
+     }
+ 
++    async fn scripted_rejecting_agent(rounds: Vec<Vec<StreamEvent>>) -> (Agent, SessionLog) {
++        let session_ids: SessionLog = Arc::new(Mutex::new(Vec::new()));
++        let provider: Arc<dyn Provider> = Arc::new(MalformedScriptProvider {
++            rounds: Arc::new(Mutex::new(rounds)),
++            session_ids: Arc::clone(&session_ids),
++        });
++        let registry = Registry::empty();
++        registry.register("reject".into(), Arc::new(RejectTool)).await;
++        let mut agent = Agent::new(provider, registry);
++        agent.add_message(
++            Role::User,
++            vec![ContentBlock::Text {
++                text: "test repeat guard".into(),
++                cache_control: None,
++            }],
++        );
++        (agent, session_ids)
++    }
++
+     fn correction_reminders(agent: &Agent) -> Vec<String> {
+         agent
+             .session
+@@ -1081,6 +1141,27 @@ mod malformed_tool_call_recovery_tests {
+         }
+     }
+ 
++    #[tokio::test]
++    async fn repeated_deterministic_input_errors_stop_both_turn_loops() {
++        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
++        for streaming in [false, true] {
++            let rounds = vec![
++                repeated_rejected_round("r1"),
++                repeated_rejected_round("r2"),
++                repeated_rejected_round("r3"),
++                repeated_rejected_round("r4"),
++            ];
++            let (mut agent, session_ids) = scripted_rejecting_agent(rounds).await;
++            let error = run_scripted_turn(&mut agent, streaming)
++                .await
++                .expect_err("third matching deterministic error ends the turn");
++            assert!(error
++                .to_string()
++                .contains("Repeated identical deterministic tool input error"));
++            assert_eq!(session_ids.lock().unwrap().len(), 3, "streaming={streaming}");
++        }
++    }
++
+     #[tokio::test]
+     async fn valid_tool_calls_reset_the_malformed_round_bound() {
+         let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
+diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
+index 9ac346b07..ffcbeda4b 100644
+--- a/crates/jcode-app-core/src/agent/turn_loops.rs
++++ b/crates/jcode-app-core/src/agent/turn_loops.rs
+@@ -53,6 +53,8 @@ impl Agent {
+ 
+     pub(super) async fn run_turn(&mut self, print_output: bool) -> Result<String> {
+         self.ensure_session_lease()?;
++        let retry_guard = self.registry.retry_guard_handle();
++        retry_guard.reset();
+         self.set_log_context();
+         let usage_turn_id = self.model_usage_turn_id();
+         crate::session_metrics::record_turn(&self.session.id);
+@@ -1189,7 +1191,15 @@ impl Agent {
+                     model: Some(self.provider.model()),
+                 }));
+ 
+-                let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
++                let result = self
++                    .registry
++                    .execute_with_retry_guard(
++                        &tc.name,
++                        tc.input.clone(),
++                        ctx,
++                        retry_guard.clone(),
++                    )
++                    .await;
+                 crate::telemetry::record_tool_call();
+                 self.unlock_tools_if_needed(&tc.name);
+                 let tool_elapsed = tool_start.elapsed();
+@@ -1293,6 +1303,13 @@ impl Agent {
+                 &tools,
+             )?;
+ 
++            if let Some(message) = retry_guard.terminal_error() {
++                if print_output {
++                    println!("\n{}", message);
++                }
++                return Err(anyhow::anyhow!(message));
++            }
++
+             if print_output {
+                 println!();
+             }
+diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
+index ff5f8c652..426ed0ba8 100644
+--- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
++++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
+@@ -129,6 +129,8 @@ impl Agent {
+         event_tx: mpsc::UnboundedSender<ServerEvent>,
+     ) -> Result<()> {
+         self.ensure_session_lease()?;
++        let retry_guard = self.registry.retry_guard_handle();
++        retry_guard.reset();
+         self.set_log_context();
+         let usage_turn_id = self.model_usage_turn_id();
+         // Mark this session as actively streaming for presence UIs (e.g. the
+@@ -1678,14 +1680,19 @@ impl Agent {
+ 
+                 // Spawn tool in its own task so we can detach it to background on Alt+B
+                 let registry_clone = self.registry.clone();
++                let retry_guard_for_tool = retry_guard.clone();
+                 let tool_name_for_spawn = tc.name.clone();
+                 let tool_input_for_spawn = tc.input.clone();
+                 let swarm_ctx = crate::hooks::current_swarm_context();
+                 let tool_handle = tokio::spawn(async move {
+                     crate::hooks::with_swarm_context(
+                         swarm_ctx,
+-                        registry_clone
+-                            .execute(&tool_name_for_spawn, tool_input_for_spawn, ctx),
++                        registry_clone.execute_with_retry_guard(
++                            &tool_name_for_spawn,
++                            tool_input_for_spawn,
++                            ctx,
++                            retry_guard_for_tool,
++                        ),
+                     )
+                     .await
+                 });
+@@ -1926,6 +1933,15 @@ impl Agent {
+                 &tools,
+             )?;
+ 
++            if let Some(message) = retry_guard.terminal_error() {
++                let _ = event_tx.send(ServerEvent::TurnStopped {
++                    reason: crate::protocol::TurnStopReason::Failure,
++                    message: message.clone(),
++                    provider_stop_reason: None,
++                });
++                return Err(anyhow::anyhow!(message));
++            }
++
+             // === INJECTION POINT D: All tools done, before next API call ===
+             // This is the safest point for non-urgent injection since all tool_results
+             // have been added and the conversation is in a valid state.
+diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
+index 857869402..9ac99f97c 100644
+--- a/crates/jcode-app-core/src/tool/mod.rs
++++ b/crates/jcode-app-core/src/tool/mod.rs
+@@ -40,6 +40,7 @@ mod panel;
+ mod patch;
+ mod read;
+ mod replace;
++pub(crate) mod retry_guard;
+ pub(crate) mod sdk;
+ pub mod selfdev;
+ pub(crate) mod serde_coerce;
+@@ -60,6 +61,7 @@ use jcode_message_types::ToolDefinition;
+ use serde_json::Value;
+ use std::collections::{HashMap, HashSet};
+ use std::sync::Arc;
++use std::sync::Mutex as StdMutex;
+ use std::sync::atomic::{AtomicU64, Ordering};
+ 
+ pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
+@@ -288,6 +290,19 @@ pub struct Registry {
+     compaction: Arc<RwLock<CompactionManager>>,
+ }
+ 
++struct RetryDispatchContext {
++    guard: Arc<retry_guard::RepeatGuard>,
++    tool_name: StdMutex<String>,
++    arguments: StdMutex<Value>,
++}
++
++tokio::task_local! {
++    static ACTIVE_RETRY_DISPATCH: Arc<RetryDispatchContext>;
++}
++
++static RETRY_GUARDS: LazyLock<StdMutex<HashMap<usize, (std::sync::Weak<RwLock<CompactionManager>>, Arc<retry_guard::RepeatGuard>)>>> =
++    LazyLock::new(|| StdMutex::new(HashMap::new()));
++
+ /// Non-owning handle used by tools stored inside a registry.
+ ///
+ /// A tool cannot strongly own the registry containing it without creating an
+@@ -324,6 +339,24 @@ impl Clone for Registry {
+ }
+ 
+ impl Registry {
++    fn retry_guard(&self) -> Arc<retry_guard::RepeatGuard> {
++        let key = Arc::as_ptr(&self.compaction) as usize;
++        let mut guards = RETRY_GUARDS.lock().unwrap_or_else(|e| e.into_inner());
++        guards.retain(|_, (owner, _)| owner.strong_count() > 0);
++        if let Some((owner, guard)) = guards.get(&key)
++            && owner.ptr_eq(&Arc::downgrade(&self.compaction))
++        {
++            return Arc::clone(guard);
++        }
++        let guard = Arc::new(retry_guard::RepeatGuard::default());
++        guards.insert(key, (Arc::downgrade(&self.compaction), Arc::clone(&guard)));
++        guard
++    }
++
++    pub(crate) fn retry_guard_handle(&self) -> Arc<retry_guard::RepeatGuard> {
++        self.retry_guard()
++    }
++
+     fn downgrade(&self) -> WeakRegistry {
+         WeakRegistry {
+             tools: Arc::downgrade(&self.tools),
+@@ -1027,8 +1060,49 @@ impl Registry {
+         }
+     }
+ 
+-    /// Execute a tool by name
++    /// Execute a tool by name, sharing repeat state with nested dispatches such
++    /// as batch calls while keeping cloned registries independent.
+     pub async fn execute(&self, name: &str, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let guard = ACTIVE_RETRY_DISPATCH
++            .try_with(|active| Arc::clone(&active.guard))
++            .unwrap_or_else(|_| self.retry_guard());
++        self.execute_with_retry_guard(name, input, ctx, guard).await
++    }
++
++    pub(crate) async fn execute_with_retry_guard(
++        &self,
++        name: &str,
++        input: Value,
++        ctx: ToolContext,
++        guard: Arc<retry_guard::RepeatGuard>,
++    ) -> Result<ToolOutput> {
++        let dispatch = Arc::new(RetryDispatchContext {
++            guard: Arc::clone(&guard),
++            tool_name: StdMutex::new(name.to_string()),
++            arguments: StdMutex::new(input.clone()),
++        });
++        let result = ACTIVE_RETRY_DISPATCH
++            .scope(Arc::clone(&dispatch), self.execute_inner(name, input, ctx))
++            .await;
++        let arguments = dispatch
++            .arguments
++            .lock()
++            .unwrap_or_else(|e| e.into_inner())
++            .clone();
++        let tool_name = dispatch
++            .tool_name
++            .lock()
++            .unwrap_or_else(|e| e.into_inner())
++            .clone();
++        let result = match (result, guard.terminal_error()) {
++            (Ok(_), Some(message)) if tool_name == "batch" => Err(anyhow::anyhow!(message)),
++            (result, _) => result,
++        };
++        guard.record(&tool_name, &arguments, &result);
++        result
++    }
++
++    async fn execute_inner(&self, name: &str, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+         // Mark this call in-flight for the whole execution so the missing
+         // tool-output repair paths do not mistake a slow tool for an
+         // interrupted one and inject a duplicate synthetic result. See
+@@ -1036,6 +1110,10 @@ impl Registry {
+         let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
+         let tools = self.tools.read().await;
+         let resolved_name = Self::resolve_tool_name_for_session(&ctx.session_id, name);
++        let _ = ACTIVE_RETRY_DISPATCH.try_with(|dispatch| {
++            *dispatch.tool_name.lock().unwrap_or_else(|e| e.into_inner()) =
++                resolved_name.to_string();
++        });
+         let is_custom = sdk::custom(&ctx.session_id, resolved_name);
+         if is_custom && let Some(config) = sdk::config(&ctx.session_id) {
+             let disabled = config.disabled.into_iter().collect();
+@@ -1099,7 +1177,7 @@ impl Registry {
+                         msg.push_str(&format!(" Did you mean: {}?", suggestions.join(", ")));
+                     }
+                     msg.push_str(&format!(" Available tools: {}.", available.join(", ")));
+-                    return Err(anyhow::anyhow!(msg));
++                    return Err(retry_guard::DeterministicToolInputError::new(msg).into());
+                 }
+             }
+         };
+@@ -1118,6 +1196,9 @@ impl Registry {
+             input,
+         )
+         .await;
++        let _ = ACTIVE_RETRY_DISPATCH.try_with(|dispatch| {
++            *dispatch.arguments.lock().unwrap_or_else(|e| e.into_inner()) = input.clone();
++        });
+ 
+         // User-configured pre_tool gate: external policy hook that can block
+         // this call (exit 2). Skipped entirely when not configured.
+@@ -1927,3 +2008,70 @@ mod mcp_allow_list_tests {
+ 
+ #[cfg(test)]
+ mod tests;
++
++#[cfg(test)]
++mod batch_tests {
++    use super::*;
++    use async_trait::async_trait;
++    use serde_json::{Value, json};
++    use std::sync::Arc;
++
++    struct RejectedInputTool;
++
++    #[async_trait]
++    impl Tool for RejectedInputTool {
++        fn name(&self) -> &str {
++            "rejected_input"
++        }
++
++        fn description(&self) -> &str {
++            "Always rejects deterministic input"
++        }
++
++        fn parameters_schema(&self) -> Value {
++            json!({"type":"object"})
++        }
++
++        async fn execute(&self, _: Value, _: ToolContext) -> Result<ToolOutput> {
++            Err(retry_guard::DeterministicToolInputError::new("fixture rejection").into())
++        }
++    }
++
++    #[tokio::test]
++    async fn batch_subcall_failures_reach_registry_repeat_guard() {
++        let registry = Registry::empty();
++        let mut tools = registry.tools.write().await;
++        tools.insert("rejected_input".into(), Arc::new(RejectedInputTool));
++        tools.insert(
++            "batch".into(),
++            Arc::new(batch::BatchTool::new(registry.downgrade())),
++        );
++        drop(tools);
++        let context = || ToolContext {
++            session_id: "retry-guard-batch-test".into(),
++            message_id: "message".into(),
++            tool_call_id: "batch".into(),
++            working_dir: None,
++            stdin_request_tx: None,
++            graceful_shutdown_signal: None,
++            execution_mode: ToolExecutionMode::Direct,
++        };
++
++        for attempt in 0..3 {
++            let result = registry
++                .execute(
++                    "batch",
++                    json!({"tool_calls":[{"tool":"rejected_input","parameters":{"value":"same"}}]}),
++                    context(),
++                )
++                .await;
++            if attempt < 2 {
++                assert!(result.unwrap().output.contains("1 failed"));
++            } else {
++                let error = result.unwrap_err().to_string();
++                assert!(error.contains("Repeated identical deterministic tool input error"));
++                assert!(!error.contains("same"));
++            }
++        }
++    }
++}
+diff --git a/crates/jcode-app-core/src/tool/retry_guard.rs b/crates/jcode-app-core/src/tool/retry_guard.rs
+new file mode 100644
+index 000000000..81bb8b4e0
+--- /dev/null
++++ b/crates/jcode-app-core/src/tool/retry_guard.rs
+@@ -0,0 +1,271 @@
++use anyhow::Result;
++use serde_json::Value;
++use std::collections::VecDeque;
++use std::error::Error;
++use std::fmt;
++use std::sync::Mutex;
++
++const WINDOW_SIZE: usize = 32;
++const TERMINAL_MESSAGE: &str = "Repeated identical deterministic tool input error detected after 3 attempts. Stop retrying this call, correct the tool input, or use a different approach.";
++
++#[derive(Debug)]
++pub(crate) struct DeterministicToolInputError {
++    message: String,
++}
++
++impl DeterministicToolInputError {
++    pub(crate) fn new(message: impl Into<String>) -> Self {
++        Self {
++            message: message.into(),
++        }
++    }
++}
++
++impl fmt::Display for DeterministicToolInputError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter.write_str(&self.message)
++    }
++}
++
++impl Error for DeterministicToolInputError {}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++struct Signature {
++    tool_name: String,
++    arguments: String,
++    error: String,
++}
++
++struct Dispatch {
++    tool_name: String,
++    arguments: String,
++    failure: Option<Signature>,
++}
++
++#[derive(Default)]
++struct State {
++    recent: VecDeque<Dispatch>,
++    terminal: bool,
++}
++
++#[derive(Default)]
++pub(crate) struct RepeatGuard {
++    state: Mutex<State>,
++}
++
++impl RepeatGuard {
++    pub(crate) fn reset(&self) {
++        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
++        state.recent.clear();
++        state.terminal = false;
++    }
++
++    pub(crate) fn record(&self, tool_name: &str, arguments: &Value, result: &Result<impl Sized>) {
++        let arguments = canonical_json(arguments);
++        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
++        let failure = result.as_ref().err().and_then(|error| {
++            error
++                .downcast_ref::<DeterministicToolInputError>()
++                .map(|_| Signature {
++                    tool_name: tool_name.to_string(),
++                    arguments: arguments.clone(),
++                    error: error.to_string(),
++                })
++        });
++        if result.is_ok() {
++            for dispatch in &mut state.recent {
++                if dispatch.tool_name == tool_name && dispatch.arguments == arguments {
++                    dispatch.failure = None;
++                }
++            }
++        }
++
++        state.recent.push_back(Dispatch {
++            tool_name: tool_name.to_string(),
++            arguments,
++            failure: failure.clone(),
++        });
++        while state.recent.len() > WINDOW_SIZE {
++            state.recent.pop_front();
++        }
++
++        if let Some(signature) = failure {
++            let occurrences = state
++                .recent
++                .iter()
++                .filter(|dispatch| dispatch.failure.as_ref() == Some(&signature))
++                .count();
++            if occurrences >= 3 {
++                state.terminal = true;
++            }
++        }
++    }
++
++    pub(crate) fn terminal_error(&self) -> Option<String> {
++        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
++        state.terminal.then(|| TERMINAL_MESSAGE.to_string())
++    }
++}
++
++fn canonical_json(value: &Value) -> String {
++    match value {
++        Value::Null => "null".to_string(),
++        Value::Bool(value) => value.to_string(),
++        Value::Number(value) => value.to_string(),
++        Value::String(value) => serde_json::to_string(value).unwrap_or_default(),
++        Value::Array(values) => format!(
++            "[{}]",
++            values
++                .iter()
++                .map(canonical_json)
++                .collect::<Vec<_>>()
++                .join(",")
++        ),
++        Value::Object(object) => {
++            let mut keys = object.keys().collect::<Vec<_>>();
++            keys.sort_unstable();
++            format!(
++                "{{{}}}",
++                keys.into_iter()
++                    .map(|key| format!(
++                        "{}:{}",
++                        serde_json::to_string(key).unwrap_or_default(),
++                        canonical_json(&object[key])
++                    ))
++                    .collect::<Vec<_>>()
++                    .join(",")
++            )
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use anyhow::anyhow;
++    use serde_json::json;
++
++    fn typed_error(message: &str) -> Result<()> {
++        Err(DeterministicToolInputError::new(message).into())
++    }
++
++    fn untyped_error(message: &str) -> Result<()> {
++        Err(anyhow!(message.to_string()))
++    }
++
++    #[test]
++    fn three_matching_typed_failures_are_terminal() {
++        let guard = RepeatGuard::default();
++        for _ in 0..2 {
++            guard.record("edit", &json!({"path":"a"}), &typed_error("invalid input"));
++            assert!(guard.terminal_error().is_none());
++        }
++        guard.record("edit", &json!({"path":"a"}), &typed_error("invalid input"));
++        assert!(guard.terminal_error().unwrap().contains("3 attempts"));
++        assert!(!guard.terminal_error().unwrap().contains("path"));
++    }
++
++    #[test]
++    fn fingerprints_ignore_object_key_order() {
++        let guard = RepeatGuard::default();
++        guard.record("edit", &json!({"a":1,"b":{"x":true,"y":null}}), &typed_error("bad"));
++        guard.record("edit", &json!({"b":{"y":null,"x":true},"a":1}), &typed_error("bad"));
++        guard.record("edit", &json!({"b":{"x":true,"y":null},"a":1}), &typed_error("bad"));
++        assert!(guard.terminal_error().is_some());
++    }
++
++    #[test]
++    fn separate_guards_and_changed_arguments_do_not_share_counts() {
++        let first = RepeatGuard::default();
++        let second = RepeatGuard::default();
++        first.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        first.record("edit", &json!({"path":"b"}), &typed_error("bad"));
++        first.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        second.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        assert!(first.terminal_error().is_none());
++        assert!(second.terminal_error().is_none());
++    }
++
++    #[test]
++    fn registry_clones_have_independent_repeat_counters() {
++        let registry = crate::tool::Registry::empty();
++        let guard = registry.retry_guard_handle();
++        let clone = registry.clone();
++        for _ in 0..2 {
++            guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        }
++        clone
++            .retry_guard()
++            .record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        assert!(guard.terminal_error().is_none());
++        assert!(clone.retry_guard_handle().terminal_error().is_none());
++        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        assert!(guard.terminal_error().is_some());
++        assert!(clone.retry_guard_handle().terminal_error().is_none());
++    }
++
++    #[test]
++    fn registry_retry_guards_prune_dead_compaction_entries() {
++        use std::sync::Arc;
++
++        let registry = crate::tool::Registry::empty();
++        let stale_key = Arc::as_ptr(&registry.compaction) as usize;
++        let stale_guard = registry.retry_guard_handle();
++        for _ in 0..3 {
++            stale_guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        }
++        assert!(stale_guard.terminal_error().is_some());
++        drop(registry);
++
++        let replacement = crate::tool::Registry::empty();
++        let replacement_key = Arc::as_ptr(&replacement.compaction) as usize;
++        let replacement_guard = replacement.retry_guard_handle();
++        assert!(replacement_guard.terminal_error().is_none());
++
++        let guards = crate::tool::RETRY_GUARDS
++            .lock()
++            .unwrap_or_else(|error| error.into_inner());
++        if stale_key != replacement_key {
++            assert!(
++                !guards.contains_key(&stale_key),
++                "a dead compaction owner must be pruned on the next guard lookup"
++            );
++        } else {
++            let (owner, _) = guards.get(&replacement_key).expect("replacement guard entry");
++            assert!(owner.ptr_eq(&Arc::downgrade(&replacement.compaction)));
++        }
++    }
++
++    #[test]
++    fn matching_success_clears_prior_failures() {
++        let guard = RepeatGuard::default();
++        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        guard.record("edit", &json!({"path":"a"}), &Ok(()));
++        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        assert!(guard.terminal_error().is_none());
++    }
++
++    #[test]
++    fn only_last_32_dispatches_count() {
++        let guard = RepeatGuard::default();
++        let args = json!({"path":"a"});
++        guard.record("edit", &args, &typed_error("bad"));
++        guard.record("edit", &args, &typed_error("bad"));
++        for index in 0..30 {
++            guard.record("other", &json!({"n":index}), &untyped_error("transient"));
++        }
++        guard.record("edit", &args, &typed_error("bad"));
++        assert!(guard.terminal_error().is_none());
++    }
++
++    #[test]
++    fn untyped_errors_are_not_classified_by_message() {
++        let guard = RepeatGuard::default();
++        for _ in 0..5 {
++            guard.record("read", &json!({"path":"a"}), &untyped_error("invalid input"));
++        }
++        assert!(guard.terminal_error().is_none());
++    }
++}

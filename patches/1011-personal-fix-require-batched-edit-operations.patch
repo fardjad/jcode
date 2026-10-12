@@ -1,0 +1,437 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Mon, 12 Oct 2026 16:27:37 +0200
+Subject: [PATCH] fix: require batched edit operations
+
+X-Jcode-Patch-Intent: Require the edit tool batch operations input contract
+X-Jcode-Patch-Kind: personal-fix
+X-Jcode-Patch-Depends-On: 1010-personal-fix-stop-repeated-deterministic-tool-input-failures.patch
+
+Patch intent:
+Require edit inputs to provide a non-empty edits array, remove top-level
+single-edit shorthand, and retain the batch operation schema through the tested
+OpenRouter and OpenAI strict schema mappings.
+
+Why it exists:
+The single-edit shorthand and batch form create inconsistent edit inputs and
+schemas. Require the batch contract and reject malformed edit inputs before file
+access, while preserving empty replacement strings for deletions.
+
+Upstream integration points:
+The change updates EditTool input parsing, validation, and parameters_schema in
+crates/jcode-app-core/src/tool/edit.rs. The file_diff and edit_stats tests use
+the required edits array.
+
+Update guidance:
+Preserve the required non-empty edits array and reject only the three known
+top-level shorthand fields. Keep empty new_string values valid so edits can
+delete matched text. Avoid claims of OS-level write atomicity.
+
+Validation:
+scripts/cargo_exec.sh test -p jcode-app-core edit::tests --lib
+scripts/cargo_exec.sh test -p jcode-app-core tool::file_diff --lib
+scripts/cargo_exec.sh test -p jcode-app-core tool::edit_stats --lib
+---
+ crates/jcode-app-core/src/tool/edit.rs       | 284 +++++++++++++------
+ crates/jcode-app-core/src/tool/edit_stats.rs |   4 +-
+ crates/jcode-app-core/src/tool/file_diff.rs  |   6 +-
+ 3 files changed, 210 insertions(+), 84 deletions(-)
+
+diff --git a/crates/jcode-app-core/src/tool/edit.rs b/crates/jcode-app-core/src/tool/edit.rs
+index e183f25e6..86c85d367 100644
+--- a/crates/jcode-app-core/src/tool/edit.rs
++++ b/crates/jcode-app-core/src/tool/edit.rs
+@@ -23,14 +23,7 @@ struct EditInput {
+     #[serde(default)]
+     intent: Option<String>,
+     file_path: String,
+-    #[serde(default)]
+-    edits: Option<Vec<EditOperation>>,
+-    #[serde(default)]
+-    old_string: Option<String>,
+-    #[serde(default)]
+-    new_string: Option<String>,
+-    #[serde(default)]
+-    replace_all: bool,
++    edits: Vec<EditOperation>,
+ }
+ 
+ #[derive(Deserialize, Clone)]
+@@ -42,33 +35,58 @@ struct EditOperation {
+ }
+ 
+ impl EditInput {
+-    /// Accept either the `edits` array or the single-edit shorthand, never both.
+     fn operations(&self) -> Result<Vec<EditOperation>> {
+-        let single = self.old_string.is_some() || self.new_string.is_some();
+-        match (&self.edits, single) {
+-            (Some(_), true) => Err(anyhow::anyhow!(
+-                "Use either `edits` or `old_string`/`new_string`, not both."
+-            )),
+-            (Some(edits), false) if edits.is_empty() => {
+-                Err(anyhow::anyhow!("`edits` must contain at least one edit."))
++        if self.edits.is_empty() {
++            return Err(super::retry_guard::DeterministicToolInputError::new(
++                "`edits` must contain at least one edit.",
++            )
++            .into());
++        }
++        Ok(self.edits.clone())
++    }
++
++    fn validate_operations(&self) -> Result<()> {
++        for (index, edit) in self.edits.iter().enumerate() {
++            let label = if self.edits.len() == 1 {
++                String::new()
++            } else {
++                format!("Edit {}: ", index + 1)
++            };
++            if edit.old_string == edit.new_string {
++                return Err(super::retry_guard::DeterministicToolInputError::new(format!(
++                    "{}old_string and new_string must be different",
++                    label
++                ))
++                .into());
++            }
++            if edit.old_string.is_empty() {
++                return Err(super::retry_guard::DeterministicToolInputError::new(format!(
++                    "{}old_string must not be empty",
++                    label
++                ))
++                .into());
+             }
+-            (Some(edits), false) => Ok(edits.clone()),
+-            (None, true) => Ok(vec![EditOperation {
+-                old_string: self.old_string.clone().ok_or_else(|| {
+-                    anyhow::anyhow!("`old_string` is required with `new_string`.")
+-                })?,
+-                new_string: self.new_string.clone().ok_or_else(|| {
+-                    anyhow::anyhow!("`new_string` is required with `old_string`.")
+-                })?,
+-                replace_all: self.replace_all,
+-            }]),
+-            (None, false) => Err(anyhow::anyhow!(
+-                "Provide `edits` (array of old_string/new_string) or `old_string` and `new_string`."
+-            )),
+         }
++        Ok(())
+     }
+ }
+ 
++fn parse_input(input: Value) -> Result<EditInput> {
++    if let Some(object) = input.as_object() {
++        for field in ["old_string", "new_string", "replace_all"] {
++            if object.contains_key(field) {
++                return Err(super::retry_guard::DeterministicToolInputError::new(format!(
++                    "Top-level `{field}` is not supported; use `edits`."
++                ))
++                .into());
++            }
++        }
++    }
++    serde_json::from_value(input).map_err(|error| {
++        super::retry_guard::DeterministicToolInputError::new(error.to_string()).into()
++    })
++}
++
+ struct AppliedEdit {
+     occurrences: usize,
+     start_line: usize,
+@@ -93,17 +111,6 @@ fn apply_edits(
+     };
+ 
+     for (index, edit) in edits.iter().enumerate() {
+-        if edit.old_string == edit.new_string {
+-            failures.push(format!(
+-                "{}old_string and new_string must be different",
+-                label(index)
+-            ));
+-            continue;
+-        }
+-        if edit.old_string.is_empty() {
+-            failures.push(format!("{}old_string must not be empty", label(index)));
+-            continue;
+-        }
+         let occurrences = content.matches(&edit.old_string).count();
+         if occurrences == 0 {
+             let hint = flexible_match_hint(&content, &edit.old_string, file_path);
+@@ -163,7 +170,7 @@ impl Tool for EditTool {
+     fn parameters_schema(&self) -> Value {
+         json!({
+             "type": "object",
+-            "required": ["file_path"],
++            "required": ["file_path", "edits"],
+             "properties": {
+                 "intent": super::intent_schema_property(),
+                 "file_path": {
+@@ -183,26 +190,15 @@ impl Tool for EditTool {
+                             "replace_all": {"type": "boolean", "description": "Replace every match."}
+                         }
+                     }
+-                },
+-                "old_string": {
+-                    "type": "string",
+-                    "description": "Single-edit shorthand: exact text to replace. Omit when using edits."
+-                },
+-                "new_string": {
+-                    "type": "string",
+-                    "description": "Single-edit shorthand: replacement text."
+-                },
+-                "replace_all": {
+-                    "type": "boolean",
+-                    "description": "Single-edit shorthand: replace every match."
+                 }
+             }
+         })
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+-        let params: EditInput = serde_json::from_value(input)?;
++        let params = parse_input(input)?;
+         let edits = params.operations()?;
++        params.validate_operations()?;
+         let path = ctx.resolve_path(Path::new(&params.file_path));
+ 
+         if !path.exists() {
+@@ -595,33 +591,163 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn input_accepts_single_or_array_but_not_both() {
+-        let parse = |value: Value| serde_json::from_value::<EditInput>(value).unwrap();
+-        assert_eq!(
+-            parse(json!({"file_path":"f","old_string":"a","new_string":"b"}))
+-                .operations()
+-                .unwrap()
+-                .len(),
+-            1
+-        );
+-        assert_eq!(
+-            parse(json!({"file_path":"f","edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d"}]}))
+-                .operations()
+-                .unwrap()
+-                .len(),
+-            2
+-        );
+-        assert!(
+-            parse(json!({"file_path":"f","edits":[],"old_string":"a","new_string":"b"}))
+-                .operations()
+-                .is_err()
+-        );
+-        assert!(parse(json!({"file_path":"f"})).operations().is_err());
++    fn batch_input_parser_and_schema_reject_shorthand() {
++        let valid = parse_input(json!({
++            "file_path":"a.txt",
++            "intent":"Remove greeting",
++            "edits":[{"old_string":"Hello","new_string":""}]
++        }))
++        .unwrap();
++        assert_eq!(valid.operations().unwrap().len(), 1);
++        valid.validate_operations().unwrap();
++
++        for input in [
++            json!({"file_path":"f","old_string":"a","new_string":"b"}),
++            json!({"file_path":"f","edits":[{"old_string":"a","new_string":"b"}],"old_string":null}),
++            json!({"file_path":"f","edits":[{"old_string":"a","new_string":"b"}],"new_string":null}),
++            json!({"file_path":"f","edits":[{"old_string":"a","new_string":"b"}],"replace_all":false}),
++            json!({"file_path":"f","edits":[]}),
++            json!({"file_path":"f","edits":[{"old_string":"","new_string":"x"}]}),
++            json!({"file_path":"f","edits":[{"old_string":"x","new_string":"x"}]}),
++        ] {
++            let result = parse_input(input).and_then(|parsed| {
++                parsed.operations().and_then(|_| parsed.validate_operations())
++            });
++            assert!(result.is_err());
++        }
++
++        let schema = EditTool.parameters_schema();
++        assert!(schema["required"].as_array().unwrap().contains(&json!("edits")));
++        assert!(schema["properties"].get("edits").is_some());
++        for shorthand in ["old_string", "new_string", "replace_all"] {
++            assert!(schema["properties"].get(shorthand).is_none());
++        }
++    }
++
++    fn assert_provider_schema_preserves_edit_contract(schema: &Value) {
++        let required = schema["required"].as_array().unwrap();
++        assert!(required.contains(&json!("file_path")));
++        assert!(required.contains(&json!("edits")));
++        assert!(schema["properties"].get("intent").is_some());
++        assert_eq!(schema["properties"]["edits"]["minItems"], 1);
++        let operation_required = schema["properties"]["edits"]["items"]["required"]
++            .as_array()
++            .unwrap();
++        assert!(operation_required.contains(&json!("old_string")));
++        assert!(operation_required.contains(&json!("new_string")));
++        for shorthand in ["old_string", "new_string", "replace_all"] {
++            assert!(
++                schema["properties"].get(shorthand).is_none(),
++                "top-level shorthand {shorthand} must stay absent"
++            );
++        }
++        let new_string = &schema["properties"]["edits"]["items"]["properties"]["new_string"];
++        assert_eq!(new_string["type"], "string");
++        assert!(new_string.get("minLength").is_none());
++
++        let deletion = parse_input(json!({
++            "file_path": "a.txt",
++            "edits": [{"old_string": "remove me", "new_string": ""}]
++        }))
++        .unwrap();
++        assert_eq!(deletion.edits[0].new_string, "");
++    }
++
++    #[test]
++    fn edit_schema_preserves_batch_contract_through_openrouter_dialect() {
++        let schema = EditTool.parameters_schema();
++        let normalized =
++            jcode_schema_dialect::dialect::apply(&schema, &jcode_schema_dialect::registry::OPENROUTER);
++        assert_provider_schema_preserves_edit_contract(&normalized);
++    }
++
++    #[test]
++    fn edit_schema_preserves_batch_contract_through_openai_strict_mapping() {
++        let schema = EditTool.parameters_schema();
++        let compatible = jcode_provider_core::openai_schema::openai_compatible_schema(&schema);
+         assert!(
+-            parse(json!({"file_path":"f","old_string":"a"}))
+-                .operations()
+-                .is_err()
++            jcode_provider_core::openai_schema::schema_supports_strict(&compatible),
++            "edit schema should remain eligible for OpenAI strict mode"
+         );
++        let normalized = jcode_provider_core::openai_schema::strict_normalize_schema(&compatible);
++        assert_provider_schema_preserves_edit_contract(&normalized);
++    }
++
++    #[tokio::test]
++    #[allow(clippy::await_holding_lock)]
++    async fn batch_input_rejections_do_not_write_and_valid_deletions_work() {
++        use crate::tool::ToolExecutionMode;
++        let _lock = crate::storage::lock_test_env();
++        let home = tempfile::tempdir().unwrap();
++        struct Home(Option<std::ffi::OsString>);
++        impl Drop for Home {
++            fn drop(&mut self) {
++                if let Some(old) = self.0.take() {
++                    crate::env::set_var("JCODE_HOME", old);
++                } else {
++                    crate::env::remove_var("JCODE_HOME");
++                }
++            }
++        }
++        let _home = Home(std::env::var_os("JCODE_HOME"));
++        crate::env::set_var("JCODE_HOME", home.path());
++        let ctx = ToolContext {
++            session_id: "edit_batch_test".into(),
++            message_id: "m".into(),
++            tool_call_id: "t".into(),
++            working_dir: Some(home.path().into()),
++            stdin_request_tx: None,
++            graceful_shutdown_signal: None,
++            execution_mode: ToolExecutionMode::Direct,
++        };
++        let path = home.path().join("fixture.txt");
++        std::fs::write(&path, "Hello, world!\n").unwrap();
++        let unchanged = || assert_eq!(std::fs::read_to_string(&path).unwrap(), "Hello, world!\n");
++
++        let invalid = [
++            json!({"file_path":"fixture.txt","intent":"Remove greeting","edits":[{"old_string":"Hello","new_string":"","replace_all":false}],"old_string":"Hello","new_string":"","replace_all":false}),
++            json!({"file_path":"fixture.txt","old_string":"Hello","new_string":""}),
++            json!({"file_path":"fixture.txt","edits":[{"old_string":"Hello","new_string":""}],"old_string":null}),
++            json!({"file_path":"fixture.txt","edits":[{"old_string":"Hello","new_string":""}],"new_string":null}),
++            json!({"file_path":"fixture.txt","edits":[{"old_string":"Hello","new_string":""}],"replace_all":false}),
++            json!({"file_path":"fixture.txt","edits":[]}),
++            json!({"file_path":"fixture.txt","edits":[{"old_string":"","new_string":"x"}]}),
++            json!({"file_path":"fixture.txt","edits":[{"old_string":"Hello","new_string":"Hello"}]}),
++        ];
++        for input in invalid {
++            assert!(EditTool.execute(input, ctx.clone()).await.is_err());
++            unchanged();
++        }
++
++        let atomic_failure = json!({
++            "file_path":"fixture.txt",
++            "edits":[
++                {"old_string":"Hello","new_string":"Hi"},
++                {"old_string":"missing","new_string":"never written"}
++            ]
++        });
++        assert!(EditTool.execute(atomic_failure, ctx.clone()).await.is_err());
++        unchanged();
++
++        let ambiguous_failure = json!({
++            "file_path":"fixture.txt",
++            "edits":[{"old_string":"l","new_string":"L"}]
++        });
++        assert!(EditTool.execute(ambiguous_failure, ctx.clone()).await.is_err());
++        unchanged();
++
++        EditTool
++            .execute(
++                json!({
++                    "file_path":"fixture.txt",
++                    "intent":"Remove greeting",
++                    "edits":[{"old_string":"Hello, ","new_string":""}]
++                }),
++                ctx,
++            )
++            .await
++            .unwrap();
++        assert_eq!(std::fs::read_to_string(&path).unwrap(), "world!\n");
+     }
+ 
+     #[test]
+diff --git a/crates/jcode-app-core/src/tool/edit_stats.rs b/crates/jcode-app-core/src/tool/edit_stats.rs
+index dba1f05cb..835aaaeee 100644
+--- a/crates/jcode-app-core/src/tool/edit_stats.rs
++++ b/crates/jcode-app-core/src/tool/edit_stats.rs
+@@ -109,7 +109,7 @@ mod tests {
+         );
+         crate::tool::edit::EditTool
+             .execute(
+-                json!({"file_path":"f","old_string":"old","new_string":"new","replace_all":true}),
++                json!({"file_path":"f","edits":[{"old_string":"old","new_string":"new","replace_all":true}]}),
+                 ctx.clone(),
+             )
+             .await
+@@ -125,7 +125,7 @@ mod tests {
+         assert!(
+             crate::tool::edit::EditTool
+                 .execute(
+-                    json!({"file_path":"f","old_string":"missing","new_string":"bad"}),
++                    json!({"file_path":"f","edits":[{"old_string":"missing","new_string":"bad"}]}),
+                     ctx.clone()
+                 )
+                 .await
+diff --git a/crates/jcode-app-core/src/tool/file_diff.rs b/crates/jcode-app-core/src/tool/file_diff.rs
+index 0999cc9ec..ee1a25d5a 100644
+--- a/crates/jcode-app-core/src/tool/file_diff.rs
++++ b/crates/jcode-app-core/src/tool/file_diff.rs
+@@ -146,7 +146,7 @@ mod tests {
+         let edited = super::super::edit::EditTool::new()
+             .execute(
+                 json!({
+-                    "file_path": "file.rs", "old_string": "ine 40", "new_string": "ong 40"
++                    "file_path": "file.rs", "edits": [{"old_string": "ine 40", "new_string": "ong 40"}]
+                 }),
+                 ctx.clone(),
+             )
+@@ -178,7 +178,7 @@ mod tests {
+         );
+         assert!(multi.output.contains("@@ -87,7 +88,7 @@"));
+         let repeated = super::super::edit::EditTool::new().execute(json!({
+-            "file_path":"file.rs", "old_string":"line", "new_string":"row", "replace_all":true
++            "file_path":"file.rs", "edits":[{"old_string":"line", "new_string":"row", "replace_all":true}]
+         }), ctx.clone()).await.unwrap();
+         let after_repeat = std::fs::read_to_string(&path).unwrap();
+         assert_eq!(
+@@ -227,7 +227,7 @@ mod tests {
+         let failed = super::super::edit::EditTool::new()
+             .execute(
+                 json!({
+-                    "file_path":"moved.rs", "old_string":"missing", "new_string":"not applied"
++                    "file_path":"moved.rs", "edits":[{"old_string":"missing", "new_string":"not applied"}]
+                 }),
+                 ctx.clone(),
+             )
