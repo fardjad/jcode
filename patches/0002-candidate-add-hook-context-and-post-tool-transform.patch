@@ -1,4 +1,4 @@
-From 0243c83e023cdb64773a56dd781b0f3c5e747e58 Mon Sep 17 00:00:00 2001
+From 245911273d9bd055e05d9ab1acc730eb58e8ea9c Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add hook context and post-tool transform
@@ -14,8 +14,8 @@ Add synchronous post_tool_transform and detached post_tool_record hooks that
 receive tool input and result JSON on stdin, with large payloads spilled to
 temp files. Propagate the swarm context into spawned tool-execution tasks so
 transformer hooks always see the correct coordinator or worker identity.
-The transform runs before upstream's post_tool_feedback hook, so feedback is
-appended to the transformed result rather than discarded by a replacement.
+The transform runs before upstream's post_tool_feedback hook, so feedback
+is appended to the transformed result rather than discarded by a replacement.
 
 Why it exists:
 Post-tool transformers need swarm metadata to decide whether to act (e.g., the
@@ -30,15 +30,17 @@ Upstream integration points:
 crates/jcode-base/src/hooks.rs (SwarmContext, ProcessRole, with_swarm_context,
 current_swarm_context, transform_tool_result_with_files,
 dispatch_post_tool_record_with_files, hook_configured), crates/jcode-app-core/
-src/tool/mod.rs (Registry::execute transform invocation), crates/jcode-app-core/
-src/agent.rs (per-session swarm state), src/agent/turn_execution.rs
-(run_once, run_once_streaming, current_swarm_hook_context), crates/jcode-app-core/src/agent/
-turn_streaming_mpsc.rs (tokio::spawn tool execution context propagation),
-crates/jcode-app-core/src/server/swarm.rs (run_swarm_task worker context),
+src/tool/mod.rs (Registry::execute transform invocation),
+src/agent.rs (per-session swarm state),
+src/agent/turn_execution.rs (run_once, run_once_streaming,
+current_swarm_hook_context),
+crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs (tokio::spawn tool
+execution context propagation), crates/jcode-app-core/src/server/swarm.rs
+(run_swarm_task worker context),
 crates/jcode-config-types/src/lib.rs (HooksConfig fields, alongside upstream
 post_tool_feedback and its timeout),
-crates/jcode-base/src/config/default_file.rs, crates/jcode-base/src/config/
-env_overrides.rs, docs/HOOKS.md.
+crates/jcode-base/src/config/default_file.rs,
+crates/jcode-base/src/config/env_overrides.rs, docs/HOOKS.md.
 
 Update guidance:
 Keep the swarm context scope around the complete turn lifecycle, including
@@ -53,21 +55,24 @@ original result unchanged. Keep transform-then-feedback ordering in
 Registry::execute and reuse upstream's fire_post_tool_hook(input) signature.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-app-core --lib -- agent_turn_hook_context_tracks_coordinator_swarm_feature
-scripts/cargo_exec.sh test -p jcode-app-core --lib -- agent_turn_hook_context_preserves_explicit_worker_scope
-scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_replaces_model_visible_result
-scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_fails_open_for_all_failure_modes
-scripts/cargo_exec.sh test -p jcode-app-core --lib -- registry_execute_post_tool_transform_and_record_share_temp_files
-scripts/cargo_exec.sh test -p jcode-app-core --lib -- post_tool_feedback_appends_after_post_tool_transform
-scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_propagates_into_spawned_task
-scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_lost_without_explicit_propagation_in_spawned_task
-scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_defaults_to_internal
-scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_is_scoped_to_async_future
+cargo test -p jcode-app-core --lib -- agent_turn_hook_context_tracks_coordinator_swarm_feature
+cargo test -p jcode-app-core --lib -- agent_turn_hook_context_preserves_explicit_worker_scope
+cargo test -p jcode-app-core --lib -- registry_execute_post_tool_transform_replaces_model_visible_result
+cargo test -p jcode-app-core --lib -- registry_execute_post_tool_transform_fails_open_for_all_failure_modes
+cargo test -p jcode-app-core --lib -- registry_execute_post_tool_transform_and_record_share_temp_files
+cargo test -p jcode-app-core --lib -- post_tool_feedback_appends_after_post_tool_transform
+cargo test -p jcode-base --lib -- swarm_context_propagates_into_spawned_task
+cargo test -p jcode-base --lib -- swarm_context_lost_without_explicit_propagation_in_spawned_task
+cargo test -p jcode-base --lib -- swarm_context_defaults_to_internal
+cargo test -p jcode-base --lib -- swarm_context_is_scoped_to_async_future
+cargo test -p jcode-app-core run_subagent_hook_context --lib
 ---
  crates/jcode-app-core/src/agent.rs            |    3 +
  .../src/agent/turn_execution.rs               |   41 +-
  .../src/agent/turn_streaming_mpsc.rs          |   10 +-
  crates/jcode-app-core/src/agent_tests.rs      |   88 ++
+ .../src/server/client_actions.rs              |   11 +-
+ .../src/server/client_actions_tests.rs        |  121 +-
  crates/jcode-app-core/src/server/swarm.rs     |    8 +-
  crates/jcode-app-core/src/tool/mod.rs         |   33 +
  crates/jcode-app-core/src/tool/tests.rs       |  334 +++++
@@ -76,7 +81,7 @@ scripts/cargo_exec.sh test -p jcode-base --lib -- swarm_context_is_scoped_to_asy
  crates/jcode-base/src/hooks.rs                | 1101 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   17 +
  docs/HOOKS.md                                 |   79 +-
- 12 files changed, 1743 insertions(+), 16 deletions(-)
+ 14 files changed, 1870 insertions(+), 21 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
 index f0683a9e0..4e264c956 100644
@@ -100,7 +105,7 @@ index f0683a9e0..4e264c956 100644
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index aea2172b6..3d8c16dcd 100644
+index ba18d2f73..1ba362b91 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
 @@ -37,7 +37,8 @@ impl Agent {
@@ -176,7 +181,7 @@ index aea2172b6..3d8c16dcd 100644
      /// loop publishes a throttled output tail to the global bus so a
      /// coordinator can render a live inline gallery viewport for it.
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index 168f56d4c..d7c4df988 100644
+index 195b88003..d50615eb2 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 @@ -1676,10 +1676,14 @@ impl Agent {
@@ -198,7 +203,7 @@ index 168f56d4c..d7c4df988 100644
  
                  // Reset background signal before waiting
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 22e0a904a..48a32f7f3 100644
+index e6cff4fa4..56ce03583 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
 @@ -214,6 +214,94 @@ fn content_text(content: &[ContentBlock]) -> &str {
@@ -296,6 +301,180 @@ index 22e0a904a..48a32f7f3 100644
  fn message_text(message: &Message) -> &str {
      content_text(&message.content)
  }
+diff --git a/crates/jcode-app-core/src/server/client_actions.rs b/crates/jcode-app-core/src/server/client_actions.rs
+index 3988a5b1a..219735530 100644
+--- a/crates/jcode-app-core/src/server/client_actions.rs
++++ b/crates/jcode-app-core/src/server/client_actions.rs
+@@ -320,8 +320,9 @@ pub(super) fn handle_run_subagent(
+ ) {
+     let agent = Arc::clone(agent);
+     let tx = client_event_tx.clone();
++    let swarm_context = crate::hooks::current_swarm_context();
+ 
+-    tokio::spawn(async move {
++    tokio::spawn(crate::hooks::with_swarm_context(swarm_context, async move {
+         let description = derive_subagent_description(&prompt);
+         let tool_call_id = crate::id::new_id("call");
+         let tool_name = "subagent".to_string();
+@@ -387,8 +388,12 @@ pub(super) fn handle_run_subagent(
+ 
+         let started = Instant::now();
+         let tool_name_for_exec = tool_name.clone();
++        let tool_swarm_context = crate::hooks::current_swarm_context();
+         let result = match tokio::spawn(async move {
+-            registry.execute(&tool_name_for_exec, tool_input, ctx).await
++            crate::hooks::with_swarm_context(tool_swarm_context, async move {
++                registry.execute(&tool_name_for_exec, tool_input, ctx).await
++            })
++            .await
+         })
+         .await
+         {
+@@ -443,7 +448,7 @@ pub(super) fn handle_run_subagent(
+                 let _ = tx.send(ServerEvent::Done { id });
+             }
+         }
+-    });
++    }));
+ }
+ 
+ #[expect(
+diff --git a/crates/jcode-app-core/src/server/client_actions_tests.rs b/crates/jcode-app-core/src/server/client_actions_tests.rs
+index fc49439a6..a458f5d75 100644
+--- a/crates/jcode-app-core/src/server/client_actions_tests.rs
++++ b/crates/jcode-app-core/src/server/client_actions_tests.rs
+@@ -2,8 +2,8 @@
+ 
+ use super::{
+     NotifySessionContext, clone_split_session, create_transfer_child_session,
+-    handle_notify_session, handle_rename_session, handle_resume_all_sessions, handle_set_feature,
+-    handle_split,
++    handle_notify_session, handle_rename_session, handle_resume_all_sessions, handle_run_subagent,
++    handle_set_feature, handle_split,
+ };
+ use crate::agent::Agent;
+ use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
+@@ -1066,3 +1066,120 @@ async fn daemon_saved_flag_survives_later_session_writes() {
+         crate::env::remove_var("JCODE_HOME");
+     }
+ }
++
++struct RunSubagentHookContextTool {
++    observed: Arc<StdMutex<Vec<(String, bool, Option<String>, Option<String>)>>>,
++}
++
++#[async_trait]
++impl crate::tool::Tool for RunSubagentHookContextTool {
++    fn name(&self) -> &str {
++        "subagent"
++    }
++
++    fn description(&self) -> &str {
++        "Record the current hook context for a RunSubagent request."
++    }
++
++    fn parameters_schema(&self) -> serde_json::Value {
++        serde_json::json!({"type": "object", "properties": {}})
++    }
++
++    async fn execute(
++        &self,
++        _input: serde_json::Value,
++        _ctx: crate::tool::ToolContext,
++    ) -> Result<crate::tool::ToolOutput> {
++        let context = crate::hooks::current_swarm_context();
++        self.observed.lock().unwrap().push((
++            context.role.as_str().to_string(),
++            context.enabled,
++            context.mode,
++            context.worker_id,
++        ));
++        Ok(crate::tool::ToolOutput::new("context recorded"))
++    }
++}
++
++#[tokio::test]
++async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
++    let _guard = crate::storage::lock_test_env();
++    let _home = SplitTestHome::new();
++    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
++    let registry = Registry::empty();
++    let observed = Arc::new(StdMutex::new(Vec::new()));
++    registry
++        .register(
++            "subagent".to_string(),
++            Arc::new(RunSubagentHookContextTool {
++                observed: Arc::clone(&observed),
++            }),
++        )
++        .await;
++    let agent = Arc::new(Mutex::new(Agent::new_with_initial_working_dir(
++        provider,
++        registry,
++        Some("/project/run-subagent-hook-context"),
++    )));
++    let (tx, mut rx) = mpsc::unbounded_channel();
++    let context = crate::hooks::SwarmContext {
++        enabled: true,
++        mode: Some("parallel".to_string()),
++        role: crate::hooks::ProcessRole::Coordinator,
++        worker_id: None,
++        blueprint_id: None,
++        blueprint_name: None,
++    };
++
++    crate::hooks::with_swarm_context(context, async {
++        handle_run_subagent(
++            73,
++            "inspect hook context".to_string(),
++            "general".to_string(),
++            None,
++            None,
++            &agent,
++            &tx,
++        );
++    })
++    .await;
++    handle_run_subagent(
++        74,
++        "verify default context".to_string(),
++        "general".to_string(),
++        None,
++        None,
++        &agent,
++        &tx,
++    );
++
++    timeout(Duration::from_secs(2), async {
++        let mut completed = 0;
++        loop {
++            if matches!(
++                rx.recv().await,
++                Some(ServerEvent::Done { id: 73 | 74 })
++            ) {
++                completed += 1;
++                if completed == 2 {
++                    break;
++                }
++            }
++        }
++    })
++    .await
++    .expect("RunSubagent should finish");
++
++    assert_eq!(
++        *observed.lock().unwrap(),
++        vec![
++            (
++                "coordinator".to_string(),
++                true,
++                Some("parallel".to_string()),
++                None,
++            ),
++            ("internal".to_string(), false, None, None),
++        ]
++    );
++}
 diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
 index 0a04ba956..819e29237 100644
 --- a/crates/jcode-app-core/src/server/swarm.rs
@@ -716,10 +895,10 @@ index 226c9bac6..3b01304bc 100644
 +    );
 +}
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 8a6be036f..dc58ede4a 100644
+index 065f4c122..d541e5179 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -602,7 +602,8 @@ swarm_max_concurrent_agents = 32
+@@ -605,7 +605,8 @@ swarm_max_concurrent_agents = 32
  # (quotes work) but executed directly, with JCODE_HOOK_* env vars describing
  # the event:
  #   JCODE_HOOK_EVENT       - "turn_start", "turn_end", "session_start",
@@ -729,7 +908,7 @@ index 8a6be036f..dc58ede4a 100644
  #   JCODE_HOOK_SESSION_ID  - the session the event belongs to
  #   JCODE_HOOK_CWD         - session working directory (also the hook's cwd)
  #   JCODE_HOOK_PAYLOAD     - JSON mirror of all fields
-@@ -611,7 +612,11 @@ swarm_max_concurrent_agents = 32
+@@ -614,7 +615,11 @@ swarm_max_concurrent_agents = 32
  # All hooks except pre_tool are observers: detached, fire-and-forget, failures
  # only logged. Env overrides: JCODE_HOOK_TURN_START, JCODE_HOOK_TURN_END,
  # JCODE_HOOK_SESSION_START, JCODE_HOOK_SESSION_END, JCODE_HOOK_PRE_TOOL,
@@ -742,7 +921,7 @@ index 8a6be036f..dc58ede4a 100644
  #
  # Runs when an agent turn begins, before the model starts generating and before
  # the first pre_tool. Lets integrations detect the agent is working during the
-@@ -652,6 +657,19 @@ swarm_max_concurrent_agents = 32
+@@ -655,6 +660,19 @@ swarm_max_concurrent_agents = 32
  # the tool result the model sees, so linters can report findings inline.
  # post_tool_feedback = "~/bin/jcode-vale"
  # post_tool_feedback_timeout_ms = 10000
@@ -763,10 +942,10 @@ index 8a6be036f..dc58ede4a 100644
  [ambient]
  # Ambient mode: background agent that maintains your codebase
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 18c6841df..0849672c4 100644
+index 70ed62d64..48164de68 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
-@@ -542,6 +542,29 @@ impl Config {
+@@ -545,6 +545,29 @@ impl Config {
          {
              self.hooks.post_tool_feedback_timeout_ms = parsed;
          }
@@ -1988,7 +2167,7 @@ index 318fac845..fcd3bcb39 100644
      #[tokio::test]
      async fn tool_transformers_compose_json_replacements() {
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 6f7264e72..6ff70c071 100644
+index 465045ad7..e6ef1fa50 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -935,6 +935,18 @@ pub struct HooksConfig {

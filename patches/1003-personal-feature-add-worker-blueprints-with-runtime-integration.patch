@@ -125,39 +125,39 @@ must use the same final_report text so summary offsets stay valid.
 Transcript scope must stay newest-first and label its direction.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-swarm-core append_swarm_completion_report_instructions_is_idempotent --lib
-scripts/cargo_exec.sh test -p jcode-app-core blueprint --lib
-scripts/cargo_exec.sh test -p jcode-app-core blank_follow_up_session_selects_spawn_mode --lib
-scripts/cargo_exec.sh test -p jcode-app-core generated_blueprint_workers_default_to_headless_spawn --lib
-scripts/cargo_exec.sh test -p jcode-app-core generated_blueprint_tool_executes_through_server_without_visible_attachment --lib
-scripts/cargo_exec.sh test -p jcode-app-core requested_unknown_blueprint_is_rejected_before_generic_swarm_spawn --lib
-scripts/cargo_exec.sh test -p jcode-app-core generated_blueprint_id_resolves_model_or_configured_luna_at_runtime --lib
-scripts/cargo_exec.sh test -p jcode-app-core tool_descriptions_stay_under_token_cap --lib
-scripts/cargo_exec.sh test -p jcode-base worker_blueprint --lib
-scripts/cargo_exec.sh test -p jcode-base discovery_follows_symlinked_markdown_files --lib
-scripts/cargo_exec.sh test -p jcode-base discovery_follows_a_symlinked_blueprint_directory --lib
-scripts/cargo_exec.sh test -p jcode-base resolve_default_dir_uses_documented_worker_blueprints_path --lib
-scripts/cargo_exec.sh test -p jcode-protocol --lib
-scripts/cargo_exec.sh test -p jcode-config-types --lib
-scripts/cargo_exec.sh check -p jcode-app-core
-scripts/cargo_exec.sh test -p jcode-app-core swarm_tools_are_hidden_and_not_executable_when_swarm_is_off --lib
-scripts/cargo_exec.sh test -p jcode-app-core swarm_disabled_does_not_apply_coordinator_tool_policy_to_root --lib
-scripts/cargo_exec.sh test -p jcode-app-core swarm_disabled_retains_global_disabled_tool_policy --lib
-scripts/cargo_exec.sh test -p jcode-app-core toggling_swarm_off_removes_root_coordinator_tool_policy --lib
-scripts/cargo_exec.sh test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disabled --lib
-scripts/cargo_exec.sh test -p jcode-base coordinator_override_rejects_worker_only_fields --lib
-scripts/cargo_exec.sh test -p jcode-base coordinator_override_accepts_enabled_disabled_only --lib
-scripts/cargo_exec.sh test -p jcode-base coordinator_md_loaded_from_blueprint_dir --lib
-scripts/cargo_exec.sh test -p jcode-base coordinator_md_missing_returns_missing --lib
-scripts/cargo_exec.sh test -p jcode-base coordinator_md_malformed_returns_invalid --lib
-scripts/cargo_exec.sh test -p jcode-base coordinator_id_rejected_in_ordinary_blueprint --lib
-scripts/cargo_exec.sh test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
-scripts/cargo_exec.sh test -p jcode-base swarm_context_serializes_all_fields --lib
-scripts/cargo_exec.sh test -p jcode-base swarm_context_applies_only_known_environment_values --lib
-scripts/cargo_exec.sh test -p jcode-app-core long_report_summary_shows_head_and_tail_and_follow_up_returns_omitted_middle --lib
-scripts/cargo_exec.sh test -p jcode-app-core transcript_scope_offset_zero_returns_end_of_conversation --lib
-scripts/cargo_exec.sh test -p jcode-app-core follow_up_mode_offset_beyond_end_returns_empty --lib
-scripts/cargo_exec.sh test -p jcode-app-core follow_up_scope_parses_report_default_and_transcript --lib
+cargo test -p jcode-swarm-core append_swarm_completion_report_instructions_is_idempotent --lib
+cargo test -p jcode-app-core blueprint --lib
+cargo test -p jcode-app-core blank_follow_up_session_selects_spawn_mode --lib
+cargo test -p jcode-app-core generated_blueprint_workers_default_to_headless_spawn --lib
+cargo test -p jcode-app-core generated_blueprint_tool_executes_through_server_without_visible_attachment --lib
+cargo test -p jcode-app-core requested_unknown_blueprint_is_rejected_before_generic_swarm_spawn --lib
+cargo test -p jcode-app-core generated_blueprint_id_resolves_model_or_configured_luna_at_runtime --lib
+cargo test -p jcode-app-core tool_descriptions_stay_under_token_cap --lib
+cargo test -p jcode-base worker_blueprint --lib
+cargo test -p jcode-base discovery_follows_symlinked_markdown_files --lib
+cargo test -p jcode-base discovery_follows_a_symlinked_blueprint_directory --lib
+cargo test -p jcode-base resolve_default_dir_uses_documented_worker_blueprints_path --lib
+cargo test -p jcode-protocol --lib
+cargo test -p jcode-config-types --lib
+cargo check -p jcode-app-core
+cargo test -p jcode-app-core swarm_tools_are_hidden_and_not_executable_when_swarm_is_off --lib
+cargo test -p jcode-app-core swarm_disabled_does_not_apply_coordinator_tool_policy_to_root --lib
+cargo test -p jcode-app-core swarm_disabled_retains_global_disabled_tool_policy --lib
+cargo test -p jcode-app-core toggling_swarm_off_removes_root_coordinator_tool_policy --lib
+cargo test -p jcode-base config_summary_hides_swarm_settings_when_swarm_is_disabled --lib
+cargo test -p jcode-base coordinator_override_rejects_worker_only_fields --lib
+cargo test -p jcode-base coordinator_override_accepts_enabled_disabled_only --lib
+cargo test -p jcode-base coordinator_md_loaded_from_blueprint_dir --lib
+cargo test -p jcode-base coordinator_md_missing_returns_missing --lib
+cargo test -p jcode-base coordinator_md_malformed_returns_invalid --lib
+cargo test -p jcode-base coordinator_id_rejected_in_ordinary_blueprint --lib
+cargo test -p jcode-base old_allowed_tools_key_diagnosed_as_unknown --lib
+cargo test -p jcode-base swarm_context_serializes_all_fields --lib
+cargo test -p jcode-base swarm_context_applies_only_known_environment_values --lib
+cargo test -p jcode-app-core long_report_summary_shows_head_and_tail_and_follow_up_returns_omitted_middle --lib
+cargo test -p jcode-app-core transcript_scope_offset_zero_returns_end_of_conversation --lib
+cargo test -p jcode-app-core follow_up_mode_offset_beyond_end_returns_empty --lib
+cargo test -p jcode-app-core follow_up_scope_parses_report_default_and_transcript --lib
 ---
  crates/jcode-app-core/src/agent.rs            |   96 +-
  crates/jcode-app-core/src/agent/prompting.rs  |   19 +-
@@ -393,7 +393,7 @@ index f0a445b78..284eaa3d8 100644
          crate::prompt::append_swarm_effort_directive(
              &mut split,
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index 3d8c16dcd..1f68c00e1 100644
+index 1ba362b91..cfea97714 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
 @@ -151,6 +151,8 @@ impl Agent {
@@ -451,7 +451,7 @@ index 3d8c16dcd..1f68c00e1 100644
          if enabled.is_none() && !self.disabled_tools.is_empty() {
              tools.retain(|tool| {
                  !self
-@@ -1085,6 +1115,12 @@ impl Agent {
+@@ -1130,6 +1160,12 @@ impl Agent {
                  "Tool 'jcode_docs' is disabled in self-development mode. Read the working tree documentation instead."
              ));
          }
@@ -465,7 +465,7 @@ index 3d8c16dcd..1f68c00e1 100644
              return Ok(());
          }
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 48a32f7f3..2d4d0a5f9 100644
+index 56ce03583..b0315d703 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
 @@ -282,6 +282,8 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
@@ -477,7 +477,7 @@ index 48a32f7f3..2d4d0a5f9 100644
      };
  
      crate::hooks::with_swarm_context(worker.clone(), async {
-@@ -1240,6 +1242,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
+@@ -1285,6 +1287,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
      crate::config::Config::invalidate_cache();
  }
  
@@ -696,10 +696,10 @@ index 1a1a54390..5298ba8a5 100644
      let json = serde_json::to_string(&req)?;
      assert!(json.contains("\"type\":\"comm_spawn\""));
 diff --git a/crates/jcode-app-core/src/server/client_actions.rs b/crates/jcode-app-core/src/server/client_actions.rs
-index 3988a5b1a..1a5201311 100644
+index 219735530..9d5be111d 100644
 --- a/crates/jcode-app-core/src/server/client_actions.rs
 +++ b/crates/jcode-app-core/src/server/client_actions.rs
-@@ -519,6 +519,10 @@ pub(super) async fn handle_set_feature(
+@@ -524,6 +524,10 @@ pub(super) async fn handle_set_feature(
              }
          }
          FeatureToggle::Swarm => {
@@ -711,7 +711,7 @@ index 3988a5b1a..1a5201311 100644
                  let _ = client_event_tx.send(ServerEvent::Done { id });
                  return;
 diff --git a/crates/jcode-app-core/src/server/client_actions_tests.rs b/crates/jcode-app-core/src/server/client_actions_tests.rs
-index fc49439a6..56135b05d 100644
+index a458f5d75..c0b082cb0 100644
 --- a/crates/jcode-app-core/src/server/client_actions_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_actions_tests.rs
 @@ -420,6 +420,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
@@ -905,10 +905,10 @@ index 783553bc8..280062542 100644
          )])));
          let sessions = Arc::new(RwLock::new(HashMap::from([(id.clone(), agent.clone())])));
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index c995a2ed5..9275e6e06 100644
+index 008ccbe1c..86c419da7 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
-@@ -2719,6 +2719,7 @@ pub(super) async fn handle_client(
+@@ -2742,6 +2742,7 @@ pub(super) async fn handle_client(
                  model,
                  effort,
                  label,
@@ -916,7 +916,7 @@ index c995a2ed5..9275e6e06 100644
              } => {
                  let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                      Some(spawn_mode) => spawn_mode,
-@@ -2734,6 +2735,7 @@ pub(super) async fn handle_client(
+@@ -2757,6 +2758,7 @@ pub(super) async fn handle_client(
                      model,
                      effort,
                      label,
@@ -925,10 +925,10 @@ index c995a2ed5..9275e6e06 100644
                      &sessions,
                      &global_session_id,
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-index 330f8adc5..a60e4eeb2 100644
+index 46599be64..26510aa75 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-@@ -1075,6 +1075,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
+@@ -1120,6 +1120,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -937,7 +937,7 @@ index 330f8adc5..a60e4eeb2 100644
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
 diff --git a/crates/jcode-app-core/src/server/client_lightweight_control.rs b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-index 810f01352..6316c07ae 100644
+index 5f336a343..93d85a463 100644
 --- a/crates/jcode-app-core/src/server/client_lightweight_control.rs
 +++ b/crates/jcode-app-core/src/server/client_lightweight_control.rs
 @@ -535,6 +535,7 @@ pub(super) async fn handle_lightweight_control_request(
@@ -1381,7 +1381,7 @@ index 72d5f5459..1aabe496c 100644
  }
  
 diff --git a/crates/jcode-app-core/src/server/state.rs b/crates/jcode-app-core/src/server/state.rs
-index 827acc377..d0c014dd2 100644
+index f03371f40..03d9c3502 100644
 --- a/crates/jcode-app-core/src/server/state.rs
 +++ b/crates/jcode-app-core/src/server/state.rs
 @@ -237,6 +237,13 @@ pub struct SwarmMember {
@@ -3741,10 +3741,10 @@ index fcd3bcb39..670ad4ab9 100644
          with_swarm_context(context, async {
              let handle = tokio::spawn(async move {
 diff --git a/crates/jcode-base/src/lib.rs b/crates/jcode-base/src/lib.rs
-index 125f17886..fa60ed242 100644
+index f71def3ff..e7e5ec145 100644
 --- a/crates/jcode-base/src/lib.rs
 +++ b/crates/jcode-base/src/lib.rs
-@@ -111,6 +111,7 @@ pub mod usage;
+@@ -112,6 +112,7 @@ pub mod usage;
  pub mod util;
  pub mod voice;
  pub mod voice_intent;
@@ -5981,7 +5981,7 @@ index 000000000..cfb3fd02b
 +    }
 +}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 3e7713f26..2a58947d1 100644
+index 5b4f0f1b1..3ff5145a9 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -634,6 +634,62 @@ pub struct AgentsConfig {
@@ -6070,10 +6070,10 @@ index f8a11933f..0c809ec6f 100644
      let json = serde_json::to_string(&req)?;
      assert!(json.contains("\"type\":\"comm_spawn\""));
 diff --git a/crates/jcode-protocol/src/wire.rs b/crates/jcode-protocol/src/wire.rs
-index c3e524a0f..2dd9d229c 100644
+index e59c38771..3d87a8cef 100644
 --- a/crates/jcode-protocol/src/wire.rs
 +++ b/crates/jcode-protocol/src/wire.rs
-@@ -678,6 +678,13 @@ pub enum Request {
+@@ -690,6 +690,13 @@ pub enum Request {
          /// otherwise derived from the first line of `initial_message`.
          #[serde(default, skip_serializing_if = "Option::is_none")]
          label: Option<String>,

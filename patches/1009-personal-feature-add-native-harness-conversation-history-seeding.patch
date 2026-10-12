@@ -31,16 +31,17 @@ normal User/Assistant stored messages, no model-turn events during seeding, and
 rollback of failed fresh sessions. Keep empty-history create behavior unchanged.
 
 Validation:
-python3 ../scripts/isolate_config.py -- cargo test -p jcode-harness-api -p jcode-protocol -p jcode-harness-api-server --lib
-python3 ../scripts/isolate_config.py -- cargo test -p jcode-app-core --lib server::client_lifecycle:: -- --test-threads=1
+cargo test -p jcode-harness-api -p jcode-protocol -p jcode-harness-api-server --lib
+cargo test -p jcode-app-core --lib server::client_lifecycle:: -- --test-threads=1
+cargo test -p jcode-sdk --test client_behavior session_busy_protocol_error_has_a_stable_sdk_code
 ---
  crates/jcode-app-core/src/agent/messages.rs   |  34 +++
  .../src/protocol_tests/misc_events.rs         |   3 +-
- .../src/server/client_lifecycle.rs            | 167 ++++++++++++++-
+ .../src/server/client_lifecycle.rs            | 171 +++++++++++++++-
  .../src/server/client_lifecycle_tests.rs      |  50 +++++
- .../src/server/client_lightweight_control.rs  |   2 +-
- crates/jcode-app-core/src/server/debug.rs     |   2 +-
- crates/jcode-harness-api-server/src/lib.rs    |  32 ++-
+ .../src/server/client_lightweight_control.rs  |   6 +-
+ crates/jcode-app-core/src/server/debug.rs     |   6 +-
+ crates/jcode-harness-api-server/src/lib.rs    |   9 +
  .../src/stdio_tests.rs                        | 131 +++++++++++-
  .../jcode-harness-api-server/src/translate.rs | 193 +++++++++++++++++-
  .../src/translate_tests.rs                    | 176 ++++++++++++++++
@@ -53,9 +54,11 @@ python3 ../scripts/isolate_config.py -- cargo test -p jcode-app-core --lib serve
  .../src/protocol_tests/core_events.rs         |  31 +++
  crates/jcode-protocol/src/wire.rs             |  18 ++
  crates/jcode-sdk/src/client.rs                |   1 +
+ crates/jcode-sdk/src/errors.rs                |   1 +
+ crates/jcode-sdk/tests/client_behavior.rs     |  21 ++
  sdk/typescript/src/client.ts                  |  11 +-
  sdk/typescript/src/protocol.ts                |   8 +-
- 21 files changed, 897 insertions(+), 29 deletions(-)
+ 23 files changed, 918 insertions(+), 19 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent/messages.rs b/crates/jcode-app-core/src/agent/messages.rs
 index 32bf45d13..2e7f164c4 100644
@@ -120,10 +123,10 @@ index 05cd40e14..5df988dcc 100644
          serde_json::from_value::<ServerEvent>(json)?,
          ServerEvent::Pong {
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index 138c13783..5c9b487de 100644
+index 86c419da7..5dccfbe8e 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
-@@ -49,8 +49,9 @@ use super::{
+@@ -50,8 +50,9 @@ use super::{
      AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileTouchService,
      SessionControlHandle, SessionInterruptQueues, SharedContext, SwarmEvent, SwarmMember,
      SwarmMutationRuntime, VersionedPlan, format_structured_completion_report,
@@ -135,7 +138,7 @@ index 138c13783..5c9b487de 100644
  };
  use crate::agent::Agent;
  use crate::bus::{Bus, BusEvent};
-@@ -77,6 +78,78 @@ type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<S
+@@ -78,6 +79,78 @@ type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<S
  const RELOAD_STARTING_GUARD_MAX_AGE: Duration = Duration::from_secs(30);
  const REQUEST_HANDLER_STALL_THRESHOLDS_MS: [u64; 3] = [2_000, 10_000, 60_000];
  
@@ -214,7 +217,7 @@ index 138c13783..5c9b487de 100644
  fn required_subscribe_working_dir(working_dir: Option<&str>) -> std::result::Result<&str, String> {
      let working_dir = working_dir
          .map(str::trim)
-@@ -799,6 +872,13 @@ pub(super) async fn handle_client(
+@@ -800,6 +873,13 @@ pub(super) async fn handle_client(
      // otherwise monopolize the select loop before the initial subscribe/read.
      let mut client_subscribed = false;
      let mut provisional_session = true;
@@ -228,7 +231,7 @@ index 138c13783..5c9b487de 100644
      let mut pending_request = Some(initial_request);
  
      let connection_result: Result<()> = async {
-@@ -1238,6 +1318,7 @@ pub(super) async fn handle_client(
+@@ -1247,6 +1327,7 @@ pub(super) async fn handle_client(
                  active_skill,
                  no_reply,
              } => {
@@ -236,20 +239,20 @@ index 138c13783..5c9b487de 100644
                  if no_reply {
                      append_context_message(
                          id,
-@@ -1358,6 +1439,7 @@ pub(super) async fn handle_client(
+@@ -1366,6 +1447,7 @@ pub(super) async fn handle_client(
                      start
                  };
                  if start_idle_turn {
 +                    seed_history_allowed = false;
-                     start_processing_message(
-                         ProcessingMessage {
-                             id,
-@@ -1582,13 +1664,86 @@ pub(super) async fn handle_client(
+                     // The interrupt becomes the new turn's prompt, so the
+                     // model sees it before anything else. A caller tracking it
+                     // by id must still learn that it was picked up.
+@@ -1611,13 +1693,90 @@ pub(super) async fn handle_client(
              }
  
              Request::Ping { id } => {
--                let json = encode_event(&ServerEvent::Pong { id, native_ssh_protocol: Some(1), capabilities: vec!["session_tools".into()] });
-+                let json = encode_event(&ServerEvent::Pong { id, native_ssh_protocol: Some(1), capabilities: vec!["session_tools".into(), "session_initial_history".into()] });
+-                let json = encode_event(&ServerEvent::Pong { id, native_ssh_protocol: Some(1), capabilities: vec!["session_tools".into(), "soft_interrupt_ids".into()] });
++                let json = encode_event(&ServerEvent::Pong { id, native_ssh_protocol: Some(1), capabilities: vec!["session_tools".into(), "soft_interrupt_ids".into(), "session_initial_history".into()] });
                  let mut w = writer.lock().await;
                  if w.write_all(json.as_bytes()).await.is_err() {
                      break;
@@ -316,13 +319,17 @@ index 138c13783..5c9b487de 100644
 +                        let mut signals = shutdown_signals.write().await;
 +                        signals.remove(&client_session_id);
 +                        drop(signals);
-+                        remove_session_interrupt_queue(&soft_interrupt_queues, &client_session_id).await;
++                        remove_session_interrupt_queue(&soft_interrupt_queues, &client_session_id)
++                            .await;
 +                        crate::server::remove_background_tool_signal(&client_session_id);
-+                        write_direct_event(&writer, &ServerEvent::Error {
-+                            id,
-+                            message: crate::util::format_error_chain(&error),
-+                            retry_after_secs: None,
-+                        })
++                        write_direct_event(
++                            &writer,
++                            &ServerEvent::Error {
++                                id,
++                                message: crate::util::format_error_chain(&error),
++                                retry_after_secs: None,
++                            },
++                        )
 +                        .await?;
 +                        break;
 +                    }
@@ -332,7 +339,7 @@ index 138c13783..5c9b487de 100644
              Request::PrepareDisconnect { id } => {
                  drop(crate::tool::sdk::ConnectionGuard(client_connection_id.clone()));
                  let json = encode_event(&ServerEvent::Done { id });
-@@ -1627,6 +1782,12 @@ pub(super) async fn handle_client(
+@@ -1657,6 +1816,12 @@ pub(super) async fn handle_client(
                  continue_on_disconnect: requested_continuation,
                  terminal_env,
              } => {
@@ -346,10 +353,10 @@ index 138c13783..5c9b487de 100644
                      validated_subscribe_working_dir(
                          subscribe_working_dir.as_deref(), requested_continuation,
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-index 423ca4ed6..8deaa3c64 100644
+index 26510aa75..9c8b6b7db 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-@@ -282,6 +282,56 @@ async fn context_message_persists_without_starting_turn() {
+@@ -328,6 +328,56 @@ async fn context_message_persists_without_starting_turn() {
      ));
  }
  
@@ -407,102 +414,68 @@ index 423ca4ed6..8deaa3c64 100644
  async fn context_message_rejects_while_busy_without_waiting_for_agent_lock() {
      let provider: Arc<dyn Provider> = Arc::new(PanicOnForkProvider {
 diff --git a/crates/jcode-app-core/src/server/client_lightweight_control.rs b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-index 9158da029..0e862fecf 100644
+index 93d85a463..69dd21b04 100644
 --- a/crates/jcode-app-core/src/server/client_lightweight_control.rs
 +++ b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-@@ -109,7 +109,7 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -112,7 +112,11 @@ pub(super) async fn handle_lightweight_control_request(
              &ServerEvent::Pong {
                  id,
                  native_ssh_protocol: Some(1),
--                capabilities: vec!["session_tools".into()],
-+                capabilities: vec!["session_tools".into(), "session_initial_history".into()],
+-                capabilities: vec!["session_tools".into(), "soft_interrupt_ids".into()],
++                capabilities: vec![
++                    "session_tools".into(),
++                    "soft_interrupt_ids".into(),
++                    "session_initial_history".into(),
++                ],
              },
          )
          .await?;
 diff --git a/crates/jcode-app-core/src/server/debug.rs b/crates/jcode-app-core/src/server/debug.rs
-index 863c2366b..e355324c8 100644
+index 8ade76ca9..8491aa9b1 100644
 --- a/crates/jcode-app-core/src/server/debug.rs
 +++ b/crates/jcode-app-core/src/server/debug.rs
-@@ -305,7 +305,7 @@ pub(super) async fn handle_debug_client(
+@@ -305,7 +305,11 @@ pub(super) async fn handle_debug_client(
                  let event = ServerEvent::Pong {
                      id,
                      native_ssh_protocol: Some(1),
--                    capabilities: vec!["session_tools".into()],
-+                    capabilities: vec!["session_tools".into(), "session_initial_history".into()],
+-                    capabilities: vec!["session_tools".into(), "soft_interrupt_ids".into()],
++                    capabilities: vec![
++                        "session_tools".into(),
++                        "soft_interrupt_ids".into(),
++                        "session_initial_history".into(),
++                    ],
                  };
                  let json = encode_event(&event);
                  writer.write_all(json.as_bytes()).await?;
 diff --git a/crates/jcode-harness-api-server/src/lib.rs b/crates/jcode-harness-api-server/src/lib.rs
-index 52d9ceb0d..9ca779f78 100644
+index 09cdf76e2..318ac8e99 100644
 --- a/crates/jcode-harness-api-server/src/lib.rs
 +++ b/crates/jcode-harness-api-server/src/lib.rs
-@@ -40,7 +40,8 @@ pub use jcode_harness_api::{api_socket_path, legacy_socket_path};
- /// Probe only an old, universally supported control request on a disposable
- /// connection. Older daemons close that connection after ping, and may close
- /// connections receiving unknown requests. Never probe on the session stream.
--async fn daemon_supports_session_tools(socket: &std::path::Path) -> bool {
-+/// Advertise optional API features only when this response confirms support.
-+async fn daemon_capabilities(socket: &std::path::Path) -> (bool, bool) {
-     let probe = async {
-         let mut stream = Stream::connect(socket).await.ok()?;
-         write_json_line(&mut stream, &serde_json::json!({"type":"ping", "id":0}))
-@@ -50,19 +51,21 @@ async fn daemon_supports_session_tools(socket: &std::path::Path) -> bool {
-         let mut line = String::new();
-         read_frame(&mut reader, &mut line).await.ok()?;
-         let reply: Value = serde_json::from_str(&line).ok()?;
--        Some(
--            reply["type"] == "pong"
--                && reply["id"] == 0
--                && reply["capabilities"]
--                    .as_array()
--                    .is_some_and(|caps| caps.iter().any(|cap| cap == "session_tools")),
--        )
-+        if reply["type"] != "pong" || reply["id"] != 0 {
-+            return None;
-+        }
-+        let capabilities = reply["capabilities"].as_array();
-+        Some((
-+            capabilities.is_some_and(|caps| caps.iter().any(|cap| cap == "session_tools")),
-+            capabilities
-+                .is_some_and(|caps| caps.iter().any(|cap| cap == "session_initial_history")),
-+        ))
-     };
-     tokio::time::timeout(std::time::Duration::from_millis(500), probe)
-         .await
-         .ok()
-         .flatten()
--        .unwrap_or(false)
-+        .unwrap_or((false, false))
- }
- 
- /// Largest single request frame accepted from an API client, in bytes.
-@@ -303,7 +306,8 @@ where
-     let legacy = Stream::connect(&legacy_socket)
-         .await
-         .with_context(|| format!("connect legacy socket {}", legacy_socket.display()))?;
--    let session_tools_supported = daemon_supports_session_tools(&legacy_socket).await;
-+    let (session_tools_supported, initial_history_supported) =
-+        daemon_capabilities(&legacy_socket).await;
+@@ -330,6 +330,7 @@ where
+     let daemon_caps = daemon_capabilities(&legacy_socket).await;
+     let session_tools_supported = daemon_caps.iter().any(|cap| cap == "session_tools");
+     let soft_interrupt_ids_supported = daemon_caps.iter().any(|cap| cap == "soft_interrupt_ids");
++    let initial_history_supported = daemon_caps.iter().any(|cap| cap == "session_initial_history");
      let hello_ok = ServerFrame::reply(
          reply_to,
          ApiEvent::HelloOk {
-@@ -327,6 +331,7 @@ where
+@@ -354,6 +355,7 @@ where
              .into_iter()
              .map(str::to_string)
              .chain(session_tools_supported.then(|| "session_tools".to_string()))
 +            .chain(initial_history_supported.then(|| "initial_history".to_string()))
-             .collect(),
-         },
-     );
-@@ -339,6 +344,7 @@ where
-     let mut state =
+             .chain(
+                 ["soft_interrupt_ids", "background_tool_result"]
+                     .into_iter()
+@@ -373,6 +375,7 @@ where
          translate::BridgeState::with_crash_on_disconnect(client_name.starts_with("jcode-desktop-"));
      state.session_tools_supported = session_tools_supported;
+     state.soft_interrupt_ids_supported = soft_interrupt_ids_supported;
 +    state.initial_history_supported = initial_history_supported;
  
      // 3. Pump both directions in one select loop so translation state stays
      //    single-threaded.
-@@ -426,6 +432,12 @@ where
+@@ -478,6 +481,12 @@ where
                  for frame in frames {
                      write_json_line(&mut write_half, &frame).await?;
                  }
@@ -512,9 +485,9 @@ index 52d9ceb0d..9ca779f78 100644
 +                for request in seed_requests {
 +                    write_json_line(&mut legacy_write, &request).await?;
 +                }
-             }
-         }
-     }
+                 if large {
+                     release_large_frame(&mut legacy_frame);
+                 }
 diff --git a/crates/jcode-harness-api-server/src/stdio_tests.rs b/crates/jcode-harness-api-server/src/stdio_tests.rs
 index 7a331fe12..a99e5fae2 100644
 --- a/crates/jcode-harness-api-server/src/stdio_tests.rs
@@ -692,7 +665,7 @@ index 7a331fe12..a99e5fae2 100644
 +    std::fs::remove_dir_all(root).unwrap();
 +}
 diff --git a/crates/jcode-harness-api-server/src/translate.rs b/crates/jcode-harness-api-server/src/translate.rs
-index 7650c11ae..b6eeec81a 100644
+index 7fac005ff..c4a3b3c1c 100644
 --- a/crates/jcode-harness-api-server/src/translate.rs
 +++ b/crates/jcode-harness-api-server/src/translate.rs
 @@ -3,7 +3,9 @@
@@ -706,7 +679,7 @@ index 7650c11ae..b6eeec81a 100644
  };
  use rusqlite::{Connection, params};
  use serde::Deserialize;
-@@ -100,6 +102,58 @@ pub enum Outbound {
+@@ -102,6 +104,58 @@ pub enum Outbound {
  type SessionFileStatus = (bool, String, Option<u64>, Option<u64>);
  type SessionFileStatusResult = Result<SessionFileStatus, (ErrorCode, String)>;
  
@@ -765,16 +738,16 @@ index 7650c11ae..b6eeec81a 100644
  // Legacy daemon replies are broadcast to every connected client. Request ids
  // must therefore be unique across bridge connections, not merely within one
  // `BridgeState`, or two panels issuing the same numbered request can each
-@@ -112,6 +166,8 @@ static NEXT_TEXT_ID: AtomicU64 = AtomicU64::new(1);
+@@ -114,6 +168,8 @@ static NEXT_TEXT_ID: AtomicU64 = AtomicU64::new(1);
  pub struct BridgeState {
      /// Set only after a safe legacy ping capability probe succeeds.
      pub session_tools_supported: bool,
 +    /// Set only after the daemon advertises its history-seeding request.
 +    pub initial_history_supported: bool,
-     /// Whether an unannounced transport loss should crash the attached session.
-     pub crash_on_disconnect: bool,
-     /// Session id assigned by the daemon for this connection.
-@@ -146,6 +202,12 @@ pub struct BridgeState {
+     /// The daemon accepts soft interrupt ids and per-id cancellation, and
+     /// replies to `background_tool` with a result.
+     pub soft_interrupt_ids_supported: bool,
+@@ -153,6 +209,12 @@ pub struct BridgeState {
      pending_attach_id: Option<(u64, u64, Option<String>)>,
      /// Subscribe errors can arrive before the correlated state response.
      pending_attach_subscribe_id: Option<u64>,
@@ -787,7 +760,7 @@ index 7650c11ae..b6eeec81a 100644
      /// Subscribe history may arrive before or after the correlated state reply.
      /// Keep its correlation independently, and consume even non-recovery history
      /// so duplicates cannot later inject a continuation into a completed turn.
-@@ -195,6 +257,10 @@ impl BridgeState {
+@@ -208,6 +270,10 @@ impl BridgeState {
              ..Self::default()
          }
      }
@@ -798,7 +771,7 @@ index 7650c11ae..b6eeec81a 100644
  }
  
  #[derive(Debug, Default)]
-@@ -366,6 +432,19 @@ impl BridgeState {
+@@ -406,6 +472,19 @@ impl BridgeState {
              ))];
          }
  
@@ -818,7 +791,7 @@ index 7650c11ae..b6eeec81a 100644
          // A request naming a session other than the attached one would be
          // silently applied to the attached session, because the legacy
          // protocol has no session field: `clear` on a typo'd id would wipe the
-@@ -504,6 +583,39 @@ impl BridgeState {
+@@ -544,6 +623,39 @@ impl BridgeState {
                  }
              }
              "create_session" | "attach_session" => {
@@ -858,7 +831,7 @@ index 7650c11ae..b6eeec81a 100644
                  let id = self.legacy_id();
                  let state_id = self.legacy_id();
                  let catalog_id = self.legacy_id();
-@@ -512,6 +624,10 @@ impl BridgeState {
+@@ -552,6 +664,10 @@ impl BridgeState {
                      .flatten();
                  self.pending_recovery_history = Some((id, requested_session.clone()));
                  self.pending_attach_id = Some((state_id, api_id, requested_session));
@@ -868,8 +841,8 @@ index 7650c11ae..b6eeec81a 100644
 +                }
                  self.pending_attach_subscribe_id = Some(id);
                  self.pending_model_probe = Some(catalog_id);
-                 let mut subscribe = json!({
-@@ -1222,6 +1338,22 @@ impl BridgeState {
+                 self.pending_create_dir = None;
+@@ -1415,6 +1531,22 @@ impl BridgeState {
      /// Translate one legacy server event (raw JSON) into API frames.
      pub fn legacy_event_to_api(&mut self, event: &Value) -> Vec<ServerFrame> {
          let kind = event["type"].as_str().unwrap_or("");
@@ -892,7 +865,7 @@ index 7650c11ae..b6eeec81a 100644
          // Filter stale owner callbacks before updating any turn/text state.
          if kind == "tool_call"
              && (self.session_id.is_none()
-@@ -1405,7 +1537,7 @@ impl BridgeState {
+@@ -1615,7 +1747,7 @@ impl BridgeState {
                      }
                      if fresh_activity {
                          frames.push(ServerFrame::event(ApiEvent::SessionStatus {
@@ -901,8 +874,8 @@ index 7650c11ae..b6eeec81a 100644
                              status: if self.observed_turn_active {
                                  "running"
                              } else {
-@@ -1414,6 +1546,15 @@ impl BridgeState {
-                             .into(),
+@@ -1627,6 +1759,15 @@ impl BridgeState {
+                                 .map(|count| count as u32),
                          }));
                      }
 +                    if let Some((_, api_id, history)) = self.pending_seed_create.take() {
@@ -917,7 +890,7 @@ index 7650c11ae..b6eeec81a 100644
                      frames
                  } else {
                      vec![]
-@@ -1960,6 +2101,13 @@ impl BridgeState {
+@@ -2215,6 +2356,13 @@ impl BridgeState {
              }
              "ack" => {
                  let id = event["id"].as_u64().unwrap_or(0);
@@ -931,7 +904,7 @@ index 7650c11ae..b6eeec81a 100644
                  // The daemon acking the in-flight `message` is the proof the
                  // agent has the text: report it as its own event so a client
                  // can move a message from "sent" to "acknowledged" without
-@@ -2002,10 +2150,46 @@ impl BridgeState {
+@@ -2257,10 +2405,46 @@ impl BridgeState {
                      }
                  }
              }
@@ -978,7 +951,7 @@ index 7650c11ae..b6eeec81a 100644
                  if let Some(index) = self
                      .pending_simple
                      .iter()
-@@ -2041,6 +2225,11 @@ impl BridgeState {
+@@ -2296,6 +2480,11 @@ impl BridgeState {
                      self.pending_attach_subscribe_id = None;
                      self.pending_model_probe = None;
                      self.pending_recovery_history = None;
@@ -991,10 +964,10 @@ index 7650c11ae..b6eeec81a 100644
                          api_id,
                          ApiEvent::Error {
 diff --git a/crates/jcode-harness-api-server/src/translate_tests.rs b/crates/jcode-harness-api-server/src/translate_tests.rs
-index 0b8d6d83c..7f8f296d7 100644
+index 5b4e5cfa4..cfb97f6b5 100644
 --- a/crates/jcode-harness-api-server/src/translate_tests.rs
 +++ b/crates/jcode-harness-api-server/src/translate_tests.rs
-@@ -195,6 +195,182 @@ fn create_session_maps_to_subscribe() {
+@@ -226,6 +226,182 @@ fn create_session_maps_to_subscribe() {
      assert!(value.get("system_prompt").is_none());
  }
  
@@ -1178,7 +1151,7 @@ index 0b8d6d83c..7f8f296d7 100644
  fn create_session_forwards_full_system_prompt_including_empty() {
      for prompt in ["You are a helpful tutor.\nAnswer briefly.", ""] {
 diff --git a/crates/jcode-harness-api/examples/harness_repl.rs b/crates/jcode-harness-api/examples/harness_repl.rs
-index 3d8e12476..6d733bf11 100644
+index 026197858..f972017d1 100644
 --- a/crates/jcode-harness-api/examples/harness_repl.rs
 +++ b/crates/jcode-harness-api/examples/harness_repl.rs
 @@ -47,6 +47,7 @@ fn run_session<R: BufRead, W: Write>(mut client: HarnessClient<R, W>, message: &
@@ -1190,10 +1163,10 @@ index 3d8e12476..6d733bf11 100644
          .expect("create session");
      let session_id = loop {
 diff --git a/crates/jcode-harness-api/src/events.rs b/crates/jcode-harness-api/src/events.rs
-index 98e296bca..a585c8358 100644
+index eb9827bbf..643e70758 100644
 --- a/crates/jcode-harness-api/src/events.rs
 +++ b/crates/jcode-harness-api/src/events.rs
-@@ -347,6 +347,7 @@ pub enum ErrorCode {
+@@ -442,6 +442,7 @@ pub enum ErrorCode {
      UnknownRequest,
      UnknownSession,
      InvalidRequest,
@@ -1202,7 +1175,7 @@ index 98e296bca..a585c8358 100644
  }
  
 diff --git a/crates/jcode-harness-api/src/harness_api_tests/schema_snapshot.rs b/crates/jcode-harness-api/src/harness_api_tests/schema_snapshot.rs
-index 1d49ddd4e..9b17176bb 100644
+index 8cb914df5..a4e5c7b0a 100644
 --- a/crates/jcode-harness-api/src/harness_api_tests/schema_snapshot.rs
 +++ b/crates/jcode-harness-api/src/harness_api_tests/schema_snapshot.rs
 @@ -11,6 +11,7 @@ fn create_session_system_prompt_roundtrip_and_legacy_default() {
@@ -1257,7 +1230,7 @@ index 1d49ddd4e..9b17176bb 100644
  #[test]
  fn token_usage_preserves_cache_creation_and_accepts_legacy_frames() {
      let legacy = r#"{"v":1,"ev":"token_usage","session_id":"s1","input":10,"output":5,"cache_read_input":2}"#;
-@@ -187,6 +225,7 @@ fn request_roundtrip() {
+@@ -277,6 +315,7 @@ fn request_roundtrip() {
          ApiRequest::CreateSession {
              working_dir: None,
              system_prompt: None,
@@ -1266,7 +1239,7 @@ index 1d49ddd4e..9b17176bb 100644
          ApiRequest::AttachSession {
              session_id: "s1".into(),
 diff --git a/crates/jcode-harness-api/src/requests.rs b/crates/jcode-harness-api/src/requests.rs
-index 17c411de0..b2f86026a 100644
+index b4dc745d5..f9792288d 100644
 --- a/crates/jcode-harness-api/src/requests.rs
 +++ b/crates/jcode-harness-api/src/requests.rs
 @@ -2,6 +2,25 @@
@@ -1306,7 +1279,7 @@ index 17c411de0..b2f86026a 100644
  
      /// Attach to an existing session and subscribe to its event stream.
 diff --git a/crates/jcode-protocol/src/lib.rs b/crates/jcode-protocol/src/lib.rs
-index f5d617a16..5fa5653a0 100644
+index 549cf91f8..cea62afde 100644
 --- a/crates/jcode-protocol/src/lib.rs
 +++ b/crates/jcode-protocol/src/lib.rs
 @@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
@@ -1318,7 +1291,7 @@ index f5d617a16..5fa5653a0 100644
  pub use comm_format::*;
  pub use jcode_session_types::TurnStopReason;
  pub use notifications::{FeatureToggle, NotificationType};
-@@ -583,6 +585,7 @@ impl Request {
+@@ -604,6 +606,7 @@ impl Request {
              Request::Rewind { id, .. } => *id,
              Request::RewindUndo { id } => *id,
              Request::Ping { id } => *id,
@@ -1337,10 +1310,10 @@ index ed1ef1693..075898e24 100644
  
  fn parse_request_json(json: &str) -> Result<Request> {
 diff --git a/crates/jcode-protocol/src/protocol_tests/core_events.rs b/crates/jcode-protocol/src/protocol_tests/core_events.rs
-index beba02d50..545d790bb 100644
+index 28649bac8..892b3aa3f 100644
 --- a/crates/jcode-protocol/src/protocol_tests/core_events.rs
 +++ b/crates/jcode-protocol/src/protocol_tests/core_events.rs
-@@ -14,6 +14,37 @@ fn test_request_roundtrip() -> Result<()> {
+@@ -75,6 +75,37 @@ fn test_request_roundtrip() -> Result<()> {
      Ok(())
  }
  
@@ -1379,7 +1352,7 @@ index beba02d50..545d790bb 100644
  fn test_soft_interrupt_images_roundtrip_and_legacy_default() -> Result<()> {
      let req = Request::SoftInterrupt {
 diff --git a/crates/jcode-protocol/src/wire.rs b/crates/jcode-protocol/src/wire.rs
-index cc9c80072..668023a4d 100644
+index 3d87a8cef..1e5033e7d 100644
 --- a/crates/jcode-protocol/src/wire.rs
 +++ b/crates/jcode-protocol/src/wire.rs
 @@ -51,6 +51,13 @@ pub struct SessionToolConfig {
@@ -1396,7 +1369,7 @@ index cc9c80072..668023a4d 100644
  /// Client request to server
  #[derive(Debug, Clone, Serialize, Deserialize)]
  #[serde(tag = "type")]
-@@ -126,6 +133,13 @@ pub enum Request {
+@@ -138,6 +145,13 @@ pub enum Request {
      #[serde(rename = "ping")]
      Ping { id: u64 },
  
@@ -1410,7 +1383,7 @@ index cc9c80072..668023a4d 100644
      /// Get current state (debug)
      #[serde(rename = "state")]
      GetState { id: u64 },
-@@ -1144,6 +1158,10 @@ pub enum ServerEvent {
+@@ -1259,6 +1273,10 @@ pub enum ServerEvent {
      #[serde(rename = "context_message_added")]
      ContextMessageAdded { id: u64 },
  
@@ -1422,7 +1395,7 @@ index cc9c80072..668023a4d 100644
      #[serde(rename = "error")]
      Error {
 diff --git a/crates/jcode-sdk/src/client.rs b/crates/jcode-sdk/src/client.rs
-index e9c6b84fd..fc3d9064e 100644
+index 3af21e22f..5cd3bf13f 100644
 --- a/crates/jcode-sdk/src/client.rs
 +++ b/crates/jcode-sdk/src/client.rs
 @@ -781,6 +781,7 @@ impl JcodeClient {
@@ -1433,11 +1406,55 @@ index e9c6b84fd..fc3d9064e 100644
              })?
              .event
          {
+diff --git a/crates/jcode-sdk/src/errors.rs b/crates/jcode-sdk/src/errors.rs
+index e98771b19..ca2a654e9 100644
+--- a/crates/jcode-sdk/src/errors.rs
++++ b/crates/jcode-sdk/src/errors.rs
+@@ -65,6 +65,7 @@ impl ErrorKind {
+                 jcode_harness_api::ErrorCode::UnknownRequest => "unknown_request",
+                 jcode_harness_api::ErrorCode::UnknownSession => "unknown_session",
+                 jcode_harness_api::ErrorCode::InvalidRequest => "invalid_request",
++                jcode_harness_api::ErrorCode::SessionBusy => "session_busy",
+                 jcode_harness_api::ErrorCode::Internal => "internal",
+             },
+         }
+diff --git a/crates/jcode-sdk/tests/client_behavior.rs b/crates/jcode-sdk/tests/client_behavior.rs
+index 62a489e44..8059d8dd6 100644
+--- a/crates/jcode-sdk/tests/client_behavior.rs
++++ b/crates/jcode-sdk/tests/client_behavior.rs
+@@ -796,6 +796,27 @@ fn model_switch_refusal_is_a_typed_error_not_a_success() {
+     assert!(error.message.contains("credential"));
+ }
+ 
++#[test]
++fn session_busy_protocol_error_has_a_stable_sdk_code() {
++    let client = fake_harness(|frame, writer| {
++        reply(
++            frame,
++            ApiEvent::Error {
++                code: jcode_harness_api::ErrorCode::SessionBusy,
++                message: "session is busy".into(),
++            },
++            writer,
++        );
++    });
++    let error = client.ping().expect_err("busy response must fail");
++    assert_eq!(
++        error.kind,
++        jcode_sdk::ErrorKind::Harness(jcode_harness_api::ErrorCode::SessionBusy)
++    );
++    assert_eq!(error.code(), "session_busy");
++    assert_eq!(error.message, "session is busy");
++}
++
+ #[test]
+ fn recovery_events_are_delivered_and_filtered_by_session() {
+     let client = fake_harness(|frame, writer| {
 diff --git a/sdk/typescript/src/client.ts b/sdk/typescript/src/client.ts
-index 4728520c4..85f543a73 100644
+index 01a308d65..5e6fdf2cf 100644
 --- a/sdk/typescript/src/client.ts
 +++ b/sdk/typescript/src/client.ts
-@@ -157,6 +157,8 @@ export interface CreateSessionOptions {
+@@ -158,6 +158,8 @@ export interface CreateSessionOptions {
     * Omit for normal prompt assembly. An empty string explicitly overrides with no text.
     */
    systemPrompt?: string;
@@ -1446,7 +1463,7 @@ index 4728520c4..85f543a73 100644
    /** Configured before createSession resolves, before any model turn starts. */
    tools?: SessionToolsOptions;
  }
-@@ -477,13 +479,18 @@ export class JcodeClient extends EventEmitter {
+@@ -478,13 +480,18 @@ export class JcodeClient extends EventEmitter {
    }
  
    async createSession(options?: string | CreateSessionOptions): Promise<SessionInfo> {
@@ -1468,7 +1485,7 @@ index 4728520c4..85f543a73 100644
      );
      if (tools) await this.configureTools(frame.session.session_id, tools);
 diff --git a/sdk/typescript/src/protocol.ts b/sdk/typescript/src/protocol.ts
-index 41c72dc93..ec3d7c1f9 100644
+index f2ec44e9e..ff794227e 100644
 --- a/sdk/typescript/src/protocol.ts
 +++ b/sdk/typescript/src/protocol.ts
 @@ -17,6 +17,7 @@ export type ErrorCode =

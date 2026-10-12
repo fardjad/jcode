@@ -1,4 +1,4 @@
-From 8d6b0584170718ad434730e631fa4cbdffd4faa6 Mon Sep 17 00:00:00 2001
+From 133db8348c83dca702e33a29032b61606cd46097 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:49 +0200
 Subject: [PATCH] feat: add provider family execution allowlist
@@ -41,14 +41,14 @@ all direct provider clients, not just main dispatch. The policy must fail
 closed for unknown entries and preserve empty-list legacy behavior.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-base provider_route_ --lib
-scripts/cargo_exec.sh test -p jcode-base sidecar_does_not_select_disallowed_direct_backends --lib
-scripts/cargo_exec.sh test -p jcode-base sidecar_provider_backend_delegates_to_main_dispatch_for_policy --lib
-scripts/cargo_exec.sh test -p jcode-base jcode_provider_complete_and_split_blocked_by_policy --lib
-scripts/cargo_exec.sh test -p jcode-base policy_blocks_failover --lib
-scripts/cargo_exec.sh test -p jcode-base policy_filters_catalog --lib
-scripts/cargo_exec.sh test -p jcode-base policy_blocks_persisted --lib
-scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provider_families --lib
+cargo test -p jcode-base provider_route_ --lib
+cargo test -p jcode-base sidecar_does_not_select_disallowed_direct_backends --lib
+cargo test -p jcode-base sidecar_provider_backend_delegates_to_main_dispatch_for_policy --lib
+cargo test -p jcode-base jcode_provider_complete_and_split_blocked_by_policy --lib
+cargo test -p jcode-base policy_blocks_failover --lib
+cargo test -p jcode-base policy_filters_catalog --lib
+cargo test -p jcode-base policy_blocks_persisted --lib
+cargo test -p jcode-base policy_blocks_set_model_for_all_provider_families --lib
 ---
  Cargo.toml                                    |   4 +-
  crates/jcode-app-core/src/agent/provider.rs   |   1 +
@@ -99,7 +99,7 @@ scripts/cargo_exec.sh test -p jcode-base policy_blocks_set_model_for_all_provide
  46 files changed, 1934 insertions(+), 138 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
-index 216650279..668940b27 100644
+index 1b9fb2da1..3641b4991 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -187,6 +187,7 @@ jcode-build-meta = { path = "crates/jcode-build-meta" }
@@ -133,10 +133,10 @@ index 1aa6e3a55..14c94aeb6 100644
  
      pub fn registry(&self) -> Registry {
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index a985695c0..c995a2ed5 100644
+index a57eaa3bb..008ccbe1c 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
-@@ -3772,6 +3772,7 @@ fn try_available_models_snapshot(agent: &Arc<Mutex<Agent>>) -> Option<String> {
+@@ -3806,6 +3806,7 @@ fn try_available_models_snapshot(agent: &Arc<Mutex<Agent>>) -> Option<String> {
  /// update size cap so clients still receive fresh model names.
  fn names_only_available_models_event(event: &ServerEvent) -> Option<ServerEvent> {
      let ServerEvent::AvailableModelsUpdated {
@@ -144,7 +144,7 @@ index a985695c0..c995a2ed5 100644
          provider_name,
          provider_model,
          available_models,
-@@ -3781,6 +3782,7 @@ fn names_only_available_models_event(event: &ServerEvent) -> Option<ServerEvent>
+@@ -3815,6 +3816,7 @@ fn names_only_available_models_event(event: &ServerEvent) -> Option<ServerEvent>
          return None;
      };
      Some(ServerEvent::AvailableModelsUpdated {
@@ -165,7 +165,7 @@ index be8da0e34..cb4ba0f9b 100644
          provider_model: Some("claude-opus-4.6".to_string()),
          available_models: vec!["claude-opus-4.6".to_string()],
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-index 618e9f849..330f8adc5 100644
+index e9675a073..46599be64 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 @@ -7,6 +7,44 @@ use futures::stream;
@@ -259,10 +259,10 @@ index 868a5003b..b9eee241d 100644
          "azure-openai" => {
              // Azure OpenAI reuses the OpenRouter transport (configured via Azure
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index dc58ede4a..9f68399dc 100644
+index d541e5179..84ba0bda6 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -397,6 +397,14 @@ tool_profile = "acp"
+@@ -400,6 +400,14 @@ tool_profile = "acp"
  # `claude` and `anthropic-api` are distinct providers with distinct credentials.
  # See docs/AUTH_CREDENTIAL_SOURCES.md for where each credential lives.
  # default_provider = "copilot"
@@ -277,7 +277,7 @@ index dc58ede4a..9f68399dc 100644
  # OpenAI reasoning effort (none|minimal|low|medium|high|xhigh|max)
  openai_reasoning_effort = "low"
  # Anthropic reasoning effort for Claude reasoning models (none|low|medium|high|xhigh|max)
-@@ -426,7 +434,9 @@ cross_provider_failover = "countdown"
+@@ -429,7 +437,9 @@ cross_provider_failover = "countdown"
  # provider labels ("openai", "anthropic", "copilot", "openrouter", ...), route
  # api methods ("claude-oauth", "openai-compatible:myprofile"), or bare
  # openai-compatible profile ids ("myprofile"). The active model's routes always
@@ -2369,10 +2369,10 @@ index 1e5193d29..d80d7e75c 100644
      fn test_chatgpt_oauth_uses_luna_with_no_reasoning_when_available() {
          let _guard = crate::storage::lock_test_env();
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 6ff70c071..3e7713f26 100644
+index e6ef1fa50..5b4f0f1b1 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1360,6 +1360,9 @@ pub struct ProviderConfig {
+@@ -1363,6 +1363,9 @@ pub struct ProviderConfig {
      pub default_model: Option<String>,
      /// Default provider to use (claude|openai|copilot|openrouter)
      pub default_provider: Option<String>,
@@ -2382,7 +2382,7 @@ index 6ff70c071..3e7713f26 100644
      /// Reasoning effort for OpenAI Responses API (none|minimal|low|medium|high|xhigh|max)
      pub openai_reasoning_effort: Option<String>,
      /// Reasoning effort for Anthropic Messages API output_config (none|low|medium|high|xhigh; max aliases to strongest supported)
-@@ -1395,10 +1398,12 @@ pub struct ProviderConfig {
+@@ -1398,10 +1401,12 @@ pub struct ProviderConfig {
      /// alias) overrides this value. Config values are never exported to env.
      pub gemini_project: Option<String>,
      /// When set (non-empty), /model only lists routes from these providers.
@@ -2398,7 +2398,7 @@ index 6ff70c071..3e7713f26 100644
      pub model_picker_providers: Option<Vec<String>>,
      /// Max seconds to wait for streaming data before timing out a request with
      /// no data received. Base budget only: high reasoning efforts scale it up
-@@ -1418,6 +1423,7 @@ impl Default for ProviderConfig {
+@@ -1421,6 +1426,7 @@ impl Default for ProviderConfig {
          Self {
              default_model: None,
              default_provider: None,
@@ -2407,10 +2407,10 @@ index 6ff70c071..3e7713f26 100644
              anthropic_reasoning_effort: None,
              anthropic_cache_ttl_1h: true,
 diff --git a/crates/jcode-protocol/src/wire.rs b/crates/jcode-protocol/src/wire.rs
-index 30f4438b6..c3e524a0f 100644
+index d80e83e8f..e59c38771 100644
 --- a/crates/jcode-protocol/src/wire.rs
 +++ b/crates/jcode-protocol/src/wire.rs
-@@ -1502,6 +1502,8 @@ pub enum ServerEvent {
+@@ -1550,6 +1550,8 @@ pub enum ServerEvent {
      /// Available models updated (pushed after auth changes)
      #[serde(rename = "available_models_updated")]
      AvailableModelsUpdated {
@@ -3308,10 +3308,10 @@ index 8a39c9336..972cb105c 100644
          OpenRouterProvider::runtime_display_name(self)
      }
 diff --git a/crates/jcode-tui/src/tui/app.rs b/crates/jcode-tui/src/tui/app.rs
-index 3b6e79ea9..6d092de92 100644
+index 650c1bc3b..54d1d537c 100644
 --- a/crates/jcode-tui/src/tui/app.rs
 +++ b/crates/jcode-tui/src/tui/app.rs
-@@ -1224,6 +1224,7 @@ pub struct App {
+@@ -1230,6 +1230,7 @@ pub struct App {
      remote_client_instance_id: String,
      remote_provider_name: Option<String>,
      remote_provider_model: Option<String>,
@@ -3320,7 +3320,7 @@ index 3b6e79ea9..6d092de92 100644
      /// catalog snapshot (`AvailableModelsUpdated`). The onboarding readiness
      /// validation uses this to wait for the post-login catalog refresh to land
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 2c690a68b..308c77747 100644
+index 2dfa2a760..7dc016b33 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
 @@ -641,12 +641,14 @@ impl App {
@@ -3352,7 +3352,7 @@ index 2c690a68b..308c77747 100644
          if let Some(name) = snapshot.provider_name
              && self.remote_provider_name.as_deref() != Some(name.as_str())
          {
-@@ -1100,6 +1107,7 @@ impl App {
+@@ -1116,6 +1123,7 @@ impl App {
      ) -> Vec<crate::provider::ModelRoute> {
          crate::provider::simplified_model_routes_for_picker(
              self.provider.name(),
@@ -3360,7 +3360,7 @@ index 2c690a68b..308c77747 100644
              current_model,
              self.provider.available_models_display(),
          )
-@@ -2232,9 +2240,13 @@ impl App {
+@@ -2248,9 +2256,13 @@ impl App {
                  self.remote_provider_model.as_deref().unwrap_or("unknown"),
              );
          }
@@ -3375,7 +3375,7 @@ index 2c690a68b..308c77747 100644
          )
      }
  
-@@ -2242,10 +2254,14 @@ impl App {
+@@ -2258,10 +2270,14 @@ impl App {
          &self,
          current_model: &str,
      ) -> Vec<crate::provider::ModelRoute> {
@@ -3419,10 +3419,10 @@ index a52690a31..d37aeaa60 100644
          | Method::Cursor
          | Method::Bedrock
 diff --git a/crates/jcode-tui/src/tui/app/remote/server_events.rs b/crates/jcode-tui/src/tui/app/remote/server_events.rs
-index 703671eae..224e35be2 100644
+index 919d0c074..f5ed47b3e 100644
 --- a/crates/jcode-tui/src/tui/app/remote/server_events.rs
 +++ b/crates/jcode-tui/src/tui/app/remote/server_events.rs
-@@ -2380,17 +2380,19 @@ pub(in crate::tui::app) fn handle_server_event(
+@@ -2419,17 +2419,19 @@ pub(in crate::tui::app) fn handle_server_event(
              true
          }
          ServerEvent::AvailableModelsUpdated {
@@ -3523,30 +3523,30 @@ index 3eb86eee2..32a526034 100644
              suggestions
                  .iter()
 diff --git a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-index d3a553903..672f9b208 100644
+index 969d6a259..8b7f01eff 100644
 --- a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
 +++ b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-@@ -540,6 +540,7 @@ impl App {
+@@ -542,6 +542,7 @@ impl App {
              remote_client_instance_id: crate::id::new_id("client"),
              remote_provider_name: None,
              remote_provider_model: None,
 +            remote_runtime_key: None,
              remote_model_catalog_generation: 0,
              remote_resolved_credential: None,
-             remote_startup_phase: None,
-@@ -1002,6 +1003,7 @@ impl App {
+             remote_session_facts_provisional: false,
+@@ -1007,6 +1008,7 @@ impl App {
              remote_client_instance_id: crate::id::new_id("client"),
              remote_provider_name: None,
              remote_provider_model: None,
 +            remote_runtime_key: None,
              remote_model_catalog_generation: 0,
              remote_resolved_credential: None,
-             remote_startup_phase: None,
+             remote_session_facts_provisional: false,
 diff --git a/src/cli/commands.rs b/src/cli/commands.rs
-index e81facb64..0a2bcf2fe 100644
+index 47b3e19a4..70dfa1bd0 100644
 --- a/src/cli/commands.rs
 +++ b/src/cli/commands.rs
-@@ -3557,7 +3557,7 @@ fn filter_cli_model_routes_for_choice(
+@@ -3559,7 +3559,7 @@ fn filter_cli_model_routes_for_choice(
          ProviderChoice::Openai => {
              let method = route.api_method_kind();
              matches!(method, crate::provider::ModelRouteApiMethod::OpenAIOAuth)

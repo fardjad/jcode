@@ -31,7 +31,7 @@ Keep engine selection out of the schema and out of dispatch. Any new
 dispatch path must derive engines only from [websearch] configuration.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-app-core tool::websearch::tests --lib
+cargo test -p jcode-app-core tool::websearch::tests --lib
 ---
  crates/jcode-app-core/src/tool/websearch.rs | 37 +++++++++++++++------
  1 file changed, 26 insertions(+), 11 deletions(-)

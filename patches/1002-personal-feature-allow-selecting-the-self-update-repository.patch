@@ -29,9 +29,9 @@ repository throughout a prepared source update. Fork releases must keep the
 expected platform assets and optional SHA256SUMS asset.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-app-core update_repository --lib
-scripts/cargo_exec.sh test -p jcode-app-core github_comparison_uses_selected_update_repository --lib
-scripts/cargo_exec.sh check -p jcode-app-core
+cargo test -p jcode-app-core update_repository --lib
+cargo test -p jcode-app-core github_comparison_uses_selected_update_repository --lib
+cargo check -p jcode-app-core
 ---
  README.md                                     |  36 +++-
  crates/jcode-app-core/src/update.rs           | 159 +++++++++++++-----

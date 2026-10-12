@@ -1,4 +1,4 @@
-From 56d83326c872dbe41295a7b60deb290d8c6ad819 Mon Sep 17 00:00:00 2001
+From 6e240e74fab163504fd09c659ea769a78db53809 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: delete sessions from picker with Ctrl+D
@@ -27,23 +27,23 @@ Preserve the unmodified d debug toggle. Keep deletion scoped to the selected
 entry and remove every storage file owned by that supported session source.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-tui ctrl_d_deletes_the_selected_session_without_closing_the_picker --lib
-scripts/cargo_exec.sh test -p jcode-tui ctrl_d_deletes_external --lib
-scripts/cargo_exec.sh test -p jcode-tui ctrl_d_deletes_session_with_missing --lib
-scripts/cargo_exec.sh test -p jcode-tui deleted_session_invalidates --lib
-scripts/cargo_exec.sh test -p jcode-tui ctrl_d_deletes_session_from_server_group --lib
+cargo test -p jcode-tui ctrl_d_deletes_the_selected_session_without_closing_the_picker --lib
+cargo test -p jcode-tui ctrl_d_deletes_external --lib
+cargo test -p jcode-tui ctrl_d_deletes_session_with_missing --lib
+cargo test -p jcode-tui deleted_session_invalidates --lib
+cargo test -p jcode-tui ctrl_d_deletes_session_from_server_group --lib
 ---
  crates/jcode-tui/src/tui/session_picker.rs    |  52 ++++
  .../src/tui/session_picker/loading.rs         |   3 +
  .../src/tui/session_picker/render.rs          |   4 +-
- .../jcode-tui/src/tui/session_picker_tests.rs | 230 ++++++++++++++++++
- 4 files changed, 287 insertions(+), 2 deletions(-)
+ .../jcode-tui/src/tui/session_picker_tests.rs | 231 +++++++++++++++++-
+ 4 files changed, 287 insertions(+), 3 deletions(-)
 
 diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
-index 74deb668f..8d94e6339 100644
+index 02608edab..2e56f3c76 100644
 --- a/crates/jcode-tui/src/tui/session_picker.rs
 +++ b/crates/jcode-tui/src/tui/session_picker.rs
-@@ -825,6 +825,55 @@ impl SessionPicker {
+@@ -828,6 +828,55 @@ impl SessionPicker {
          self.selected_session_ids.len()
      }
  
@@ -99,7 +99,7 @@ index 74deb668f..8d94e6339 100644
      fn toggle_selected_session(&mut self) {
          let Some(session_id) = self.selected_session().map(|session| session.id.clone()) else {
              return;
-@@ -1255,6 +1304,9 @@ impl SessionPicker {
+@@ -1258,6 +1307,9 @@ impl SessionPicker {
              KeyCode::Char('/') => {
                  self.search_active = true;
              }
@@ -141,7 +141,7 @@ index 04fa4c557..b3603adf8 100644
              }
          };
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index 1f920e2a8..bf635faf9 100644
+index 87badad05..73d7a5e37 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
 @@ -1152,6 +1152,45 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
@@ -190,8 +190,16 @@ index 1f920e2a8..bf635faf9 100644
  #[test]
  fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
      let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
-@@ -2601,3 +2640,194 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
+@@ -2623,7 +2662,6 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
          "no search means no highlight color in preview"
+     );
+ }
+-
+ #[test]
+ fn onboarding_start_label_marks_home_directory() {
+     let Some(home) = dirs::home_dir() else {
+@@ -2640,3 +2678,194 @@ fn onboarding_start_label_marks_home_directory() {
+         "home directory should read '~ (home)': {lines:#?}"
      );
  }
 +/// Deleting a session backed by an external transcript (e.g. Claude Code)

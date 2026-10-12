@@ -27,9 +27,9 @@ Keep the guard before every completed-todo quality continuation. Do not disable
 incomplete-work progress reminders, and require both review settings to be off.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-tui completion_quality_gates_are_disabled_only_when_review_and_judge_are_off --lib
-scripts/cargo_exec.sh test -p jcode-tui --lib -- ownership_gate
-scripts/cargo_exec.sh test -p jcode-tui --lib -- confidence
+cargo test -p jcode-tui completion_quality_gates_are_disabled_only_when_review_and_judge_are_off --lib
+cargo test -p jcode-tui --lib -- ownership_gate
+cargo test -p jcode-tui --lib -- confidence
 ---
  crates/jcode-tui/src/tui/app/input.rs         | 15 ++++++
  .../tests/remote_events_reload_01/part_02.rs  |  6 +++
@@ -38,10 +38,10 @@ scripts/cargo_exec.sh test -p jcode-tui --lib -- confidence
  4 files changed, 81 insertions(+)
 
 diff --git a/crates/jcode-tui/src/tui/app/input.rs b/crates/jcode-tui/src/tui/app/input.rs
-index 1ec93bcaf..42f5fd95a 100644
+index 043ad4960..b6b1a6cac 100644
 --- a/crates/jcode-tui/src/tui/app/input.rs
 +++ b/crates/jcode-tui/src/tui/app/input.rs
-@@ -1679,6 +1679,21 @@ impl App {
+@@ -1776,6 +1776,21 @@ impl App {
                  self.last_todo_ownership_fingerprint = None;
                  return false;
              }

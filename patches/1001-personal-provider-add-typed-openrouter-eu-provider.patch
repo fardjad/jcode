@@ -57,14 +57,14 @@ Preserve existing launch pins without creating new ones during credential
 refresh. New sessions must continue to reload configured provider/model defaults.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-provider-openrouter-runtime eu_openrouter --lib
-scripts/cargo_exec.sh test -p jcode-provider-core runtime_key_ --lib
-scripts/cargo_exec.sh test -p jcode-base eu_routes_absent_without_eu_credentials --lib
-scripts/cargo_exec.sh test -p jcode-base eu_and_standard_caches_are_namespace --lib
-scripts/cargo_exec.sh test -p jcode-base eu_pricing_is_isolated --lib
-scripts/cargo_exec.sh test -p jcode-base set_model_openrouter_eu_prefix_respects_policy --lib
-scripts/cargo_exec.sh test -p jcode-base eu_dispatch_enforced_by_allowed_providers --lib
-scripts/cargo_exec.sh test -p jcode-tui --lib -- test_updates_header_repeated_renders_stay_stable_near_scrollbar_threshold
+cargo test -p jcode-provider-openrouter-runtime eu_openrouter --lib
+cargo test -p jcode-provider-core runtime_key_ --lib
+cargo test -p jcode-base eu_routes_absent_without_eu_credentials --lib
+cargo test -p jcode-base eu_and_standard_caches_are_namespace --lib
+cargo test -p jcode-base eu_pricing_is_isolated --lib
+cargo test -p jcode-base set_model_openrouter_eu_prefix_respects_policy --lib
+cargo test -p jcode-base eu_dispatch_enforced_by_allowed_providers --lib
+cargo test -p jcode-tui --lib -- test_updates_header_repeated_renders_stay_stable_near_scrollbar_threshold
 cargo test -p jcode-base direct_login_provider --lib
 cargo test -p jcode-base compatible_profile_auth_runtime_preserves_initial_provider_markers --lib
 cargo test -p jcode-base openrouter_eu_rewrites_active_provider_only_for_explicit_openrouter_selection --lib
@@ -119,7 +119,7 @@ cargo test -p jcode-base new_session_fork_reloads_changed_config_provider_and_mo
  45 files changed, 1720 insertions(+), 211 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index be40f75bc..30742c78e 100644
+index 27f4cef88..f7862321f 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -3886,6 +3886,7 @@ dependencies = [
@@ -545,10 +545,10 @@ index a0c49cfd8..ea1c46902 100644
              AuthCredentialSource::None,
              "not configured".to_string(),
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 9f68399dc..1da9fa855 100644
+index 84ba0bda6..19091068f 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -401,10 +401,11 @@ tool_profile = "acp"
+@@ -404,10 +404,11 @@ tool_profile = "acp"
  # for model switching, persisted routes, dispatch, and failover, not just picker
  # visibility. Empty or unset keeps all providers enabled. A non-empty list with
  # only unknown entries fails closed. Unknown entries are warned about and denied.
@@ -3266,7 +3266,7 @@ index 887f465b2..d88378d86 100644
      let _env_guard = crate::storage::lock_test_env();
      let temp = tempfile::tempdir().expect("tempdir");
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 308c77747..32535d090 100644
+index 7dc016b33..7feb73c44 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
 @@ -479,6 +479,7 @@ fn model_picker_provider_hint_from_model_spec(model_spec: &str) -> Option<(&str,
@@ -3277,7 +3277,7 @@ index 308c77747..32535d090 100644
              | "gemini"
      ) || crate::provider_catalog::openai_compatible_profile_by_id(provider_hint).is_some()
      {
-@@ -1654,7 +1655,8 @@ impl App {
+@@ -1670,7 +1671,8 @@ impl App {
                  | crate::provider::ModelRouteApiMethod::OpenAiCompatible { .. } => 1,
                  crate::provider::ModelRouteApiMethod::Cursor => 2,
                  crate::provider::ModelRouteApiMethod::Copilot => 3,
@@ -3316,10 +3316,10 @@ index d37aeaa60..d5ffdac86 100644
          // Expanding them here creates one duplicate picker row per effort.
          Method::OpenAiCompatible { .. } => false,
 diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
-index e9360ea6d..1e7d6ca60 100644
+index 07e692e20..7b454d3cf 100644
 --- a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
 +++ b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
-@@ -1439,7 +1439,17 @@ impl App {
+@@ -1423,7 +1423,17 @@ impl App {
          use crate::auth::AuthState;
          let status = crate::auth::AuthStatus::check_fast();
          // (display name, provider-key, state)
@@ -3338,7 +3338,7 @@ index e9360ea6d..1e7d6ca60 100644
              ("Anthropic (Claude)", "anthropic", status.anthropic.state),
              ("OpenAI", "openai", status.openai),
              ("Jcode subscription", "jcode", status.jcode),
-@@ -1447,6 +1457,7 @@ impl App {
+@@ -1431,6 +1441,7 @@ impl App {
              ("GitHub Copilot", "copilot", status.copilot),
              ("Cursor", "cursor", status.cursor),
              ("OpenRouter", "openrouter", status.openrouter),
@@ -3347,10 +3347,10 @@ index e9360ea6d..1e7d6ca60 100644
          ];
          // Normalize the default provider's key so aliases like "claude" map to
 diff --git a/crates/jcode-tui/src/tui/app/remote.rs b/crates/jcode-tui/src/tui/app/remote.rs
-index 18e44261e..e0983461c 100644
+index cd2609392..8f4c130e3 100644
 --- a/crates/jcode-tui/src/tui/app/remote.rs
 +++ b/crates/jcode-tui/src/tui/app/remote.rs
-@@ -743,6 +743,11 @@ pub(super) async fn handle_bus_event(
+@@ -749,6 +749,11 @@ pub(super) async fn handle_bus_event(
  /// after an Anthropic API-key login) and skipping the post-login model switch.
  fn auth_provider_hint_for_login_provider(provider: &str) -> Option<&'static str> {
      let provider = provider.trim();
@@ -3363,10 +3363,10 @@ index 18e44261e..e0983461c 100644
      // ("azure"); keep the dedicated mapping used across the auth lifecycle.
      if provider.eq_ignore_ascii_case("azure")
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index d43d010c3..085bc627f 100644
+index 5d268a4a6..179eb48ac 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-@@ -498,7 +498,9 @@ impl App {
+@@ -497,7 +497,9 @@ impl App {
              };
  
              for route in routes {
@@ -3377,7 +3377,7 @@ index d43d010c3..085bc627f 100644
                      let help = if route.provider == "auto" {
                          "Use automatic OpenRouter provider routing"
                      } else {
-@@ -507,12 +509,29 @@ impl App {
+@@ -506,12 +508,29 @@ impl App {
                      push_unique(
                          &mut seen,
                          &mut suggestions,

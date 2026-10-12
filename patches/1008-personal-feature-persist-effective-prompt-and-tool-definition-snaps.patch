@@ -51,11 +51,11 @@ also contains transcript and journal data. Keep independent deduplication and
 the representative regression bound when evolving snapshot persistence.
 
 Validation:
-scripts/cargo_exec.sh check -p jcode-session-types -p jcode-base -p jcode-app-core -p jcode-tui
-scripts/cargo_exec.sh test -p jcode-session-types request_snapshot --lib
-scripts/cargo_exec.sh test -p jcode-base request_snapshot --lib
-scripts/cargo_exec.sh test -p jcode-app-core tool_streaming --lib
-scripts/cargo_exec.sh test -p jcode-app-core provider_request --lib
+cargo check -p jcode-session-types -p jcode-base -p jcode-app-core -p jcode-tui
+cargo test -p jcode-session-types request_snapshot --lib
+cargo test -p jcode-base request_snapshot --lib
+cargo test -p jcode-app-core tool_streaming --lib
+cargo test -p jcode-app-core provider_request --lib
 ---
  Cargo.lock                                    |   1 +
  crates/jcode-app-core/src/agent.rs            |   1 +
@@ -93,7 +93,7 @@ scripts/cargo_exec.sh test -p jcode-app-core provider_request --lib
  33 files changed, 1099 insertions(+), 16 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 30742c78e..731d94c1a 100644
+index f7862321f..0531b3754 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -4029,6 +4029,7 @@ dependencies = [
@@ -139,7 +139,7 @@ index fa397996c..9ac346b07 100644
                  self.session.save()?;
                  self.record_model_turn_usage(&usage_turn_id);
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index d7c4df988..746e4793a 100644
+index d50615eb2..ff5f8c652 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 @@ -295,6 +295,8 @@ impl Agent {
@@ -161,10 +161,10 @@ index d7c4df988..746e4793a 100644
                  self.session.save()?;
                  self.record_model_turn_usage(&usage_turn_id);
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 2d4d0a5f9..4fbf7ce81 100644
+index b0315d703..03febab3c 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -1844,6 +1844,7 @@ async fn env_snapshot_detail_is_minimal_for_empty_sessions_and_full_after_histor
+@@ -1889,6 +1889,7 @@ async fn env_snapshot_detail_is_minimal_for_empty_sessions_and_full_after_histor
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -766,10 +766,10 @@ index 6ed0fe2ea..ae0c3e74f 100644
 +    );
 +}
 diff --git a/crates/jcode-app-core/src/ambient/runner.rs b/crates/jcode-app-core/src/ambient/runner.rs
-index 0367be4a4..7610d2c24 100644
+index 95a59c9d1..5895ff65b 100644
 --- a/crates/jcode-app-core/src/ambient/runner.rs
 +++ b/crates/jcode-app-core/src/ambient/runner.rs
-@@ -429,6 +429,8 @@ impl AmbientRunnerHandle {
+@@ -430,6 +430,8 @@ impl AmbientRunnerHandle {
                      ),
                  );
                  child.replace_messages(parent.messages.clone());
@@ -792,10 +792,10 @@ index 15bdf8016..6b3346c64 100644
      child.provider_key = parent.provider_key.clone();
      child.route_api_method = parent.route_api_method.clone();
 diff --git a/crates/jcode-app-core/src/server/client_actions.rs b/crates/jcode-app-core/src/server/client_actions.rs
-index 1a5201311..edaf50024 100644
+index 9d5be111d..31a4ab8b0 100644
 --- a/crates/jcode-app-core/src/server/client_actions.rs
 +++ b/crates/jcode-app-core/src/server/client_actions.rs
-@@ -803,6 +803,8 @@ fn clone_split_session(
+@@ -808,6 +808,8 @@ fn clone_split_session(
  
      let mut child = Session::create(Some(parent_session_id.to_string()), None);
      child.replace_messages(parent.messages.clone());
@@ -1815,7 +1815,7 @@ index 1a5206f7d..4a386df83 100644
  
  #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 diff --git a/crates/jcode-tui/src/tui/app/commands_review.rs b/crates/jcode-tui/src/tui/app/commands_review.rs
-index bf096749c..5bf4f1ac7 100644
+index 4fe70edd7..350018dae 100644
 --- a/crates/jcode-tui/src/tui/app/commands_review.rs
 +++ b/crates/jcode-tui/src/tui/app/commands_review.rs
 @@ -73,6 +73,7 @@ fn judge_transcript_text_message(role: Role, text: String) -> StoredMessage {
@@ -1835,7 +1835,7 @@ index bf096749c..5bf4f1ac7 100644
      session.compaction = None;
      session.provider_session_id = None;
  }
-@@ -659,6 +662,8 @@ fn clone_session_for_review(
+@@ -660,6 +663,8 @@ fn clone_session_for_review(
      let parent_session_id = current_feedback_target_session_id(app);
      let mut child = Session::create(Some(parent_session_id), Some(session_title.to_string()));
      child.replace_messages(app.session.messages.clone());
@@ -1844,7 +1844,7 @@ index bf096749c..5bf4f1ac7 100644
      child.compaction = app.session.compaction.clone();
      child.working_dir = app.session.working_dir.clone();
      child.model = Some(initial_model);
-@@ -675,6 +680,8 @@ fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
+@@ -676,6 +681,8 @@ fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
      let parent_session_id = active_session_id(app);
      let mut child = Session::create(Some(parent_session_id.clone()), None);
      child.replace_messages(app.session.messages.clone());
@@ -2067,7 +2067,7 @@ index b8505da31..2714ff4cb 100644
      session.save().expect("save session");
  
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index 16237cd2c..53358b790 100644
+index 4feba646e..ea77a4bd7 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
 @@ -653,6 +653,7 @@ fn test_loading_preview_refreshes_search_index_for_picker_filtering() {
