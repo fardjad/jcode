@@ -1,4 +1,4 @@
-From 6e240e74fab163504fd09c659ea769a78db53809 Mon Sep 17 00:00:00 2001
+From d7eb82fd8d6524b9b7958b6b0af5d53123e686c5 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: delete sessions from picker with Ctrl+D
@@ -36,17 +36,17 @@ cargo test -p jcode-tui ctrl_d_deletes_session_from_server_group --lib
  crates/jcode-tui/src/tui/session_picker.rs    |  52 ++++
  .../src/tui/session_picker/loading.rs         |   3 +
  .../src/tui/session_picker/render.rs          |   4 +-
- .../jcode-tui/src/tui/session_picker_tests.rs | 231 +++++++++++++++++-
- 4 files changed, 287 insertions(+), 3 deletions(-)
+ .../jcode-tui/src/tui/session_picker_tests.rs | 232 +++++++++++++++++-
+ 4 files changed, 288 insertions(+), 3 deletions(-)
 
 diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
-index 02608edab..2e56f3c76 100644
+index 567b86d99..d690c937f 100644
 --- a/crates/jcode-tui/src/tui/session_picker.rs
 +++ b/crates/jcode-tui/src/tui/session_picker.rs
-@@ -828,6 +828,55 @@ impl SessionPicker {
+@@ -896,6 +896,55 @@ impl SessionPicker {
          self.selected_session_ids.len()
      }
- 
+
 +    /// Delete the selected session and remove it from this picker immediately.
 +    ///
 +    /// Local jcode sessions have both a snapshot and an optional journal. Other
@@ -99,7 +99,7 @@ index 02608edab..2e56f3c76 100644
      fn toggle_selected_session(&mut self) {
          let Some(session_id) = self.selected_session().map(|session| session.id.clone()) else {
              return;
-@@ -1258,6 +1307,9 @@ impl SessionPicker {
+@@ -1326,6 +1375,9 @@ impl SessionPicker {
              KeyCode::Char('/') => {
                  self.search_active = true;
              }
@@ -121,13 +121,13 @@ index d6d1c18d5..b2dc7731b 100644
 +        let _ = std::fs::remove_file(path);
 +    }
  }
- 
+
  #[cfg(test)]
 diff --git a/crates/jcode-tui/src/tui/session_picker/render.rs b/crates/jcode-tui/src/tui/session_picker/render.rs
-index 04fa4c557..b3603adf8 100644
+index a7df2aa81..f044ce55e 100644
 --- a/crates/jcode-tui/src/tui/session_picker/render.rs
 +++ b/crates/jcode-tui/src/tui/session_picker/render.rs
-@@ -643,10 +643,10 @@ impl SessionPicker {
+@@ -632,10 +632,10 @@ impl SessionPicker {
          } else {
              match crate::config::config().keybindings.session_picker_enter {
                  crate::config::SessionPickerResumeAction::CurrentTerminal => {
@@ -141,13 +141,13 @@ index 04fa4c557..b3603adf8 100644
              }
          };
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index 87badad05..73d7a5e37 100644
+index c9e8bcf1d..9dc0e0a29 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
-@@ -1152,6 +1152,45 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
+@@ -1152,6 +1152,237 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
      }
  }
- 
+
 +#[test]
 +fn ctrl_d_deletes_the_selected_session_without_closing_the_picker() {
 +    let _env_lock = crate::storage::lock_test_env();
@@ -187,21 +187,6 @@ index 87badad05..73d7a5e37 100644
 +    }
 +}
 +
- #[test]
- fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
-     let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
-@@ -2623,7 +2662,6 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
-         "no search means no highlight color in preview"
-     );
- }
--
- #[test]
- fn onboarding_start_label_marks_home_directory() {
-     let Some(home) = dirs::home_dir() else {
-@@ -2640,3 +2678,194 @@ fn onboarding_start_label_marks_home_directory() {
-         "home directory should read '~ (home)': {lines:#?}"
-     );
- }
 +/// Deleting a session backed by an external transcript (e.g. Claude Code)
 +/// must remove the external file and the picker row.
 +#[test]
@@ -393,3 +378,15 @@ index 87badad05..73d7a5e37 100644
 +        crate::env::remove_var("JCODE_HOME");
 +    }
 +}
++
+ #[test]
+ fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
+     let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
+@@ -2623,7 +2854,6 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
+         "no search means no highlight color in preview"
+     );
+ }
+-
+ #[test]
+ fn onboarding_start_label_marks_home_directory() {
+     let Some(home) = dirs::home_dir() else {

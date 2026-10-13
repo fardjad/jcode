@@ -30,10 +30,19 @@ def git(*args: str, cwd: Path | None = None, quiet: bool = False) -> str:
     try:
         result = subprocess.run(
             ["git", *args], cwd=cwd, check=True, text=True,
-            stdout=subprocess.PIPE, stderr=None if not quiet else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE if quiet else None,
         )
     except subprocess.CalledProcessError as error:
-        raise CatalogError(f"git {' '.join(args)} failed") from error
+        message = f"git {' '.join(args)} failed"
+        details = [
+            ("stderr", error.stderr),
+            ("stdout", error.stdout),
+        ]
+        for name, output in details:
+            if output and output.strip():
+                message += f"\n{name}:\n{output.strip()}"
+        raise CatalogError(message) from error
     return result.stdout.strip()
 
 

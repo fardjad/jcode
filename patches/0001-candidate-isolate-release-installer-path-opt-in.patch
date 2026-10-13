@@ -1,4 +1,4 @@
-From 0162a77b05572e33355b6228aab15bc6220d4304 Mon Sep 17 00:00:00 2001
+From b6072893c0452b6899a4b8e0dd72893a9640b0a0 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] fix: isolate release installer PATH opt-in
@@ -49,13 +49,13 @@ bash scripts/test_install_release_metadata.sh
  create mode 100755 scripts/test_install_release_policy.sh
 
 diff --git a/README.md b/README.md
-index 577bd28ce..f160b7974 100644
+index 979a1f54e..a4080d046 100644
 --- a/README.md
 +++ b/README.md
-@@ -969,6 +969,13 @@ Then symlink to your PATH:
+@@ -983,6 +983,13 @@ Then symlink to your PATH:
  scripts/install_release.sh
  ```
- 
+
 +Source release installs do not modify shell startup files by default. Pass
 +`--configure-path` to persist the launcher directory in `PATH`. Automation may
 +instead set `JCODE_CONFIGURE_PATH=1`; the case-insensitive values `1`, `true`,
@@ -64,7 +64,7 @@ index 577bd28ce..f160b7974 100644
 +may be supplied in either order.
 +
  ### Uninstall
- 
+
  Removes installed binaries and the launcher but keeps your config, auth, and
 diff --git a/scripts/install_release.sh b/scripts/install_release.sh
 index 074874a51..bdab7011a 100755
@@ -73,12 +73,12 @@ index 074874a51..bdab7011a 100755
 @@ -9,18 +9,16 @@
  # - ~/.local/bin/jcode -> ~/.jcode/builds/current/jcode (launcher)
  set -euo pipefail
- 
+
 -repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 +script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +# shellcheck source=scripts/lib/install_release_policy.sh
 +. "$script_dir/lib/install_release_policy.sh"
- 
+
  profile="${JCODE_RELEASE_PROFILE:-release-lto}"
 -if [[ "${1:-}" == "--fast" ]]; then
 -  profile="release"
@@ -87,19 +87,19 @@ index 074874a51..bdab7011a 100755
 +configure_path=0
 +install_release_program="$0"
 +parse_install_release_args "$@"
- 
+
 -if [[ "$#" -gt 0 ]]; then
 -  echo "Usage: $0 [--fast]" >&2
 -  exit 1
 -fi
 +repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
- 
+
  case "$profile" in
    release-lto)
 @@ -146,7 +144,6 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$install_dir"; then
    echo "Tip: add $install_dir to PATH if needed."
  fi
- 
+
 -# Ensure the launcher dir is on PATH for bash, zsh and fish in future shells.
 -# shellcheck source=scripts/lib/configure_path.sh
 -. "$(dirname "$0")/lib/configure_path.sh"

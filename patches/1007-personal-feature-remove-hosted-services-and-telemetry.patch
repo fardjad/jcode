@@ -64,8 +64,8 @@ cargo test -p jcode-app-core --lib -- tool_descriptions_stay_under_token_cap
  .../src/tool/discover_secrets.rs              |  193 --
  crates/jcode-app-core/src/tool/feedback.rs    |    8 +-
  crates/jcode-app-core/src/tool/mod.rs         |   19 -
- crates/jcode-app-core/src/tool/tests.rs       |   21 -
- crates/jcode-base/src/config.rs               |   33 +-
+ crates/jcode-app-core/src/tool/tests.rs       |   25 +-
+ crates/jcode-base/src/config.rs               |   35 +-
  crates/jcode-base/src/config/config_file.rs   |   16 +-
  crates/jcode-base/src/config/default_file.rs  |   13 +-
  crates/jcode-base/src/config_tests.rs         |   66 -
@@ -89,7 +89,7 @@ cargo test -p jcode-app-core --lib -- tool_descriptions_stay_under_token_cap
  .../jcode-tui/src/tui/app/onboarding_flow.rs  |  145 +-
  .../src/tui/app/onboarding_flow_control.rs    |  230 +-
  .../jcode-tui/src/tui/app/onboarding_sim.rs   |    4 +-
- .../src/tui/app/remote/server_events.rs       |    6 +-
+ .../src/tui/app/remote/server_events.rs       |    5 +-
  .../src/tui/app/state_ui_input_helpers.rs     |   41 +-
  .../jcode-tui/src/tui/app/subscribe_nudge.rs  |  368 --
  .../app/tests/commands_accounts_01/part_02.rs |   61 +-
@@ -137,7 +137,7 @@ cargo test -p jcode-app-core --lib -- tool_descriptions_stay_under_token_cap
  src/cli/provider_init_tests.rs                |   71 +-
  src/cli/startup.rs                            |  263 +-
  src/cli/telemetry.rs                          |   78 -
- 82 files changed, 551 insertions(+), 11865 deletions(-)
+ 82 files changed, 556 insertions(+), 11865 deletions(-)
  delete mode 100644 TELEMETRY.md
  delete mode 100644 crates/jcode-app-core/src/tool/compile_remote.rs
  delete mode 100644 crates/jcode-app-core/src/tool/compile_remote/source.rs
@@ -169,10 +169,10 @@ cargo test -p jcode-app-core --lib -- tool_descriptions_stay_under_token_cap
  delete mode 100644 src/cli/telemetry.rs
 
 diff --git a/README.md b/README.md
-index 00f042a6f..8572a5773 100644
+index f10559802..e4d641edb 100644
 --- a/README.md
 +++ b/README.md
-@@ -858,7 +858,6 @@ Notes:
+@@ -872,7 +872,6 @@ Notes:
  - [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
  - [Server Architecture](docs/SERVER_ARCHITECTURE.md)
  - [Safety System](docs/SAFETY_SYSTEM.md)
@@ -5569,12 +5569,12 @@ index b34ebd985..7b234cf33 100644
 +++ b/crates/jcode-app-core/src/tool/feedback.rs
 @@ -83,7 +83,7 @@ impl Tool for MaintainerFeedbackTool {
      }
- 
+
      fn description(&self) -> &str {
 -        "Send product feedback to Jcode's maintainer. Respects telemetry settings."
 +        "Send product feedback to Jcode's maintainer."
      }
- 
+
      fn parameters_schema(&self) -> Value {
 @@ -125,9 +125,7 @@ impl Tool for MaintainerFeedbackTool {
      async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
@@ -5594,7 +5594,7 @@ index b34ebd985..7b234cf33 100644
 -        assert!(tool.description().contains("telemetry settings"));
 +        assert!(!tool.description().contains("telemetry"));
      }
- 
+
      #[test]
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
 index 6da1af30e..857869402 100644
@@ -5644,16 +5644,16 @@ index 6da1af30e..857869402 100644
 -            );
 -        }
          let session_tools_ms = session_tools_start.elapsed().as_millis();
- 
+
          // Register generated `swarm_<id>` tools for every valid effective
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 45c3cf781..0fe67596f 100644
+index ab1d3598d..4e3221836 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
 @@ -291,22 +291,6 @@ fn test_resolve_skill_aliases_to_skill_manage() {
      assert_eq!(Registry::resolve_tool_name("skill_manage"), "skill_manage");
  }
- 
+
 -#[tokio::test]
 -async fn test_discover_tools_not_registered_when_sponsors_disabled() {
 -    // sponsors.enabled is the legacy config key; when false, integration discovery must not exist.
@@ -5682,31 +5682,44 @@ index 45c3cf781..0fe67596f 100644
      // swarm appends the user-tunable swarm-prompt.md by design.
      // batch carries a deliberate parallel-call example (2f4abae33, pinned by
      // batch_tests::description_includes_parallel_tool_call_example).
-@@ -967,10 +949,7 @@ async fn tool_descriptions_stay_under_token_cap() {
-     // jcode_docs identifies bundled docs; macos_computer_use and side_panel
-     // have external desktop-tool contracts. Generated swarm_<id> tools carry
-     // user-owned blueprint role instructions and are filtered below.
--    // compile_remote ships an over-cap upstream description (v0.93).
+@@ -964,9 +946,11 @@ async fn tool_descriptions_stay_under_token_cap() {
+     // user, so planning happens proactively rather than only when prompted.
+     // applet carries the whole view-node vocabulary inline, since the model has
+     // no other way to learn which node types and props the host renders.
+-    // codemode documents its sandbox API; compile_remote a credit/consent notice.
++    // codemode documents its sandbox API.
++    // jcode_docs identifies bundled docs; macos_computer_use and side_panel
++    // have external desktop-tool contracts. Generated swarm_<id> tools carry
++    // user-owned blueprint role instructions and are filtered below.
      const EXEMPT: &[&str] = &[
 -        "integration_tools",
--        "compile_remote",
          "swarm",
          "batch",
          "browser",
+@@ -986,7 +970,6 @@ async fn tool_descriptions_stay_under_token_cap() {
+         // separately from the existing exemption list.
+         .filter(|def| {
+             ![
+-                "compile_remote",
+                 "jcode_docs",
+                 "macos_computer_use",
+                 "side_panel",
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index 1ae7a535f..d28b18cb1 100644
+index ea70e3621..033d3fed0 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
-@@ -10,7 +10,7 @@ pub use jcode_config_types::{
-     KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
-     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
-     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, PowerConfig, ProviderConfig,
--    ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
-+    ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SwarmSpawnMode,
-     SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine, WorkerBlueprintOverride,
+@@ -12,8 +12,8 @@ pub use jcode_config_types::{
+     MarkdownSpacingMode, MenubarConfig, NamedProviderAuth, NamedProviderConfig,
+     NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig, NotificationsConfig,
+     PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
+-    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
+-    WebSearchConfig, WebSearchEngine,
++    SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig,
++    WebSearchEngine,
  };
  use serde::{Deserialize, Serialize};
-@@ -58,10 +58,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+ use std::collections::{BTreeMap, BTreeSet, HashSet};
+@@ -64,10 +64,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
      "JCODE_COPY_BADGE_ALT_LABEL",
      "JCODE_COPY_SELECTION_TOGGLE_KEY",
      "JCODE_COPILOT_PREMIUM",
@@ -5717,7 +5730,7 @@ index 1ae7a535f..d28b18cb1 100644
      "JCODE_CROSS_PROVIDER_FAILOVER",
      "JCODE_DEBUG_SOCKET",
      "JCODE_DEFAULT_REASONING_DISPLAY",
-@@ -182,8 +178,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+@@ -188,8 +184,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
      "JCODE_RETRY_BACKOFF_CAP_SECS",
      "JCODE_SWARM_ENABLED",
      "JCODE_SWARM_EFFORT",
@@ -5726,10 +5739,10 @@ index 1ae7a535f..d28b18cb1 100644
      "JCODE_SWARM_MODEL",
      "JCODE_SWARM_MAX_CONCURRENT_AGENTS",
      "JCODE_SWARM_SPAWN_MODE",
-@@ -561,12 +555,6 @@ pub struct Config {
+@@ -570,12 +564,6 @@ pub struct Config {
      /// Auto-judge configuration
      pub autojudge: AutoJudgeConfig,
- 
+
 -    /// Partner discovery configuration. Skipped when it matches the shipped
 -    /// default so saving config never bakes today's default into the file (see
 -    /// [`sponsors_is_default`]).
@@ -5738,8 +5751,8 @@ index 1ae7a535f..d28b18cb1 100644
 -
      /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
      pub launch_hotkeys: LaunchHotkeysConfig,
- 
-@@ -869,22 +857,3 @@ mod tests;
+
+@@ -878,22 +866,3 @@ mod tests;
  #[cfg(test)]
  #[path = "config_color_tests.rs"]
  mod color_tests;
@@ -5763,7 +5776,7 @@ index 1ae7a535f..d28b18cb1 100644
 -    )
 -}
 diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
-index 0fa56ae83..407255f45 100644
+index aa95db9c6..35c5b0e2a 100644
 --- a/crates/jcode-base/src/config/config_file.rs
 +++ b/crates/jcode-base/src/config/config_file.rs
 @@ -72,8 +72,6 @@ impl Config {
@@ -5774,11 +5787,11 @@ index 0fa56ae83..407255f45 100644
 -        // default endpoint too, so table shape cannot establish user intent.
          Ok(Some(config))
      }
- 
-@@ -102,13 +100,6 @@ impl Config {
-         super::invalidate_config_cache();
+
+@@ -120,13 +118,6 @@ impl Config {
+         cfg.save()
      }
- 
+
 -    /// Persist the Anthropic cache duration for clients and the shared daemon.
 -    pub fn set_anthropic_cache_ttl_1h(enabled: bool) -> anyhow::Result<()> {
 -        let mut cfg = Self::load_for_update()?;
@@ -5789,7 +5802,7 @@ index 0fa56ae83..407255f45 100644
      /// Update the copilot premium mode in the config file.
      /// Reloads, patches, and saves so it doesn't clobber other fields.
      pub fn set_copilot_premium(mode: Option<&str>) -> anyhow::Result<()> {
-@@ -775,6 +766,13 @@ impl Config {
+@@ -793,6 +784,13 @@ impl Config {
          }
          Ok(())
      }
@@ -5801,13 +5814,13 @@ index 0fa56ae83..407255f45 100644
 +        cfg.save()
 +    }
  }
- 
+
  #[cfg(test)]
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index b3bd48444..dfcf04a4e 100644
+index eb82a264e..fca64222f 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -785,18 +785,7 @@ desktop_notifications = true
+@@ -805,18 +805,7 @@ desktop_notifications = true
  # jade_relay_reply_enabled = false   # Deliver cloud prompts to one configured live session.
  # jade_relay_launch_enabled = false  # Allow cloud device commands to open headed local sessions.
  # jade_relay_launch_working_dir = "" # Optional default cwd for launched sessions.
@@ -5824,17 +5837,17 @@ index b3bd48444..dfcf04a4e 100644
 -# endpoint = "https://api.jcode.sh/v1/discovery"
 -	"##;
 +"##;
- 
+
          // Substitute platform-specific defaults from the keybinding registry.
          let p = jcode_config_types::KeybindingPlatform::current();
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index 65a32c0fe..50dd4a942 100644
+index c4cd89efe..f1c4265ef 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
-@@ -1511,72 +1511,6 @@ fn migrate_idle_animation_off_noops_without_enabled_value() {
+@@ -1524,72 +1524,6 @@ fn migrate_idle_animation_off_noops_without_enabled_value() {
      restore_env_var("JCODE_HOME", prev_home);
  }
- 
+
 -/// Explicit opt-outs, including the shape written by older versions, must
 -/// survive real config loads, saves, and unrelated preference updates.
 -#[test]
@@ -5923,7 +5936,7 @@ index 96927eced..95ad3f77a 100644
 @@ -22,17 +22,6 @@ type OwnedConnectionResult = Option<std::result::Result<(), String>>;
  type OwnedConnectionSender = watch::Sender<OwnedConnectionResult>;
  type OwnedConnecting = Arc<Mutex<HashMap<String, OwnedConnectionSender>>>;
- 
+
 -/// Meter a completed tool call for partner-discovery provenance. No-op for
 -/// servers without discovery provenance (the overwhelmingly common case) and
 -/// whenever `sponsors.enabled` is false. Counts only; never content.
@@ -5957,7 +5970,7 @@ index 96927eced..95ad3f77a 100644
              if let Some(pool) = &self.pool {
                  pool.connect_server(name, config).await?;
 @@ -370,9 +348,6 @@ impl McpManager {
- 
+
      /// Disconnect from all servers
      pub async fn disconnect_all(&self) {
 -        // Session is ending: flush any pending partner-discovery usage
@@ -6557,13 +6570,13 @@ index 9f0579536..000000000
 -    }
 -}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 5b6309d41..18a8fb5a9 100644
+index e51904776..2c6b61ee3 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1068,34 +1068,6 @@ pub struct AutoReviewConfig {
+@@ -1088,34 +1088,6 @@ pub struct AutoReviewConfig {
      pub model: Option<String>,
  }
- 
+
 -/// Integration discovery configuration (legacy `[sponsors]` section name).
 -///
 -/// Integration discovery makes third-party developer tools discoverable to
@@ -6596,10 +6609,10 @@ index 5b6309d41..18a8fb5a9 100644
  #[derive(Debug, Clone, Serialize, Deserialize, Default)]
  #[serde(default)]
 diff --git a/crates/jcode-telemetry-core/src/lib.rs b/crates/jcode-telemetry-core/src/lib.rs
-index 35b6d55be..1fe5b1be0 100644
+index d43776f64..ef1676b16 100644
 --- a/crates/jcode-telemetry-core/src/lib.rs
 +++ b/crates/jcode-telemetry-core/src/lib.rs
-@@ -7,7 +7,7 @@ pub mod onboarding_trace;
+@@ -9,7 +9,7 @@ pub mod onboarding_trace;
  mod state_support;
  use chrono::{DateTime, NaiveDate, Utc};
  use jcode_usage_types::{
@@ -6608,7 +6621,7 @@ index 35b6d55be..1fe5b1be0 100644
      SessionLifecycleEvent, SessionStartEvent, TelemetryProjectProfile as ProjectProfile,
      TelemetryToolCategory as ToolCategory, TelemetryWorkflowCounts, TodoSessionEvent, TurnEndEvent,
      UpgradeEvent, UsageReportEvent, classify_telemetry_tool_category as classify_tool_category,
-@@ -24,7 +24,8 @@ use std::sync::Mutex;
+@@ -26,7 +26,8 @@ use std::sync::Mutex;
  #[cfg(not(test))]
  use std::sync::OnceLock;
  #[cfg(not(test))]
@@ -6618,7 +6631,7 @@ index 35b6d55be..1fe5b1be0 100644
  #[cfg(not(test))]
  use std::sync::mpsc::TrySendError;
  use std::sync::mpsc::{SyncSender, sync_channel};
-@@ -40,7 +41,6 @@ const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
+@@ -42,7 +43,6 @@ const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
  const BLOCKING_LIFECYCLE_TIMEOUT: Duration = Duration::from_millis(800);
  const BLOCKING_FIRST_PROMPT_TIMEOUT: Duration = Duration::from_millis(500);
  const TELEMETRY_SCHEMA_VERSION: u32 = 6;
@@ -6626,10 +6639,10 @@ index 35b6d55be..1fe5b1be0 100644
  #[cfg(not(test))]
  static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
  #[cfg(not(test))]
-@@ -54,24 +54,6 @@ static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::ne
+@@ -56,24 +56,6 @@ static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::ne
  #[cfg(test)]
  static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
- 
+
 -#[derive(Debug, Clone)]
 -pub struct DiscoveryTelemetry<'a> {
 -    pub request_id: &'a str,
@@ -6651,7 +6664,7 @@ index 35b6d55be..1fe5b1be0 100644
  /// A distribution-safe numeric summary. Callers provide only scores, never the
  /// todo, goal, plan, or feedback-loop text those scores describe.
  #[derive(Debug, Clone, Copy, Default, PartialEq)]
-@@ -461,27 +443,32 @@ pub fn opt_out_source() -> Option<TelemetryOptOutSource> {
+@@ -463,27 +445,32 @@ pub fn opt_out_source() -> Option<TelemetryOptOutSource> {
  pub fn status() -> TelemetryStatus {
      let opt_out_source = opt_out_source();
      TelemetryStatus {
@@ -6662,7 +6675,7 @@ index 35b6d55be..1fe5b1be0 100644
          telemetry_id: read_existing_id(),
      }
  }
- 
+
 +/// Telemetry is disabled in this distribution. Every producer and delivery
 +/// path checks this boundary before collecting or sending data.
  pub fn is_enabled() -> bool {
@@ -6686,7 +6699,7 @@ index 35b6d55be..1fe5b1be0 100644
      }
 +    false
  }
- 
+
 +#[cfg(test)]
 +static TEST_OVERRIDE_ENABLED: std::sync::atomic::AtomicBool =
 +    std::sync::atomic::AtomicBool::new(false);
@@ -6694,8 +6707,8 @@ index 35b6d55be..1fe5b1be0 100644
  /// Marker file recording that the user opted out of anonymous usage telemetry.
  /// Its presence is equivalent to setting `JCODE_NO_TELEMETRY=1`, but persists
  /// across shells so the onboarding "Telemetry settings" screen can honor the
-@@ -814,58 +801,6 @@ pub fn record_feedback(text: &str) {
- 
+@@ -816,58 +803,6 @@ pub fn record_feedback(text: &str) {
+
  /// Emit one completed discovery attempt. This intentionally excludes query and
  /// reason text, endpoint URLs, and all transcript content.
 -pub fn record_discovery_event(data: DiscoveryTelemetry<'_>) {
@@ -6753,8 +6766,8 @@ index 35b6d55be..1fe5b1be0 100644
  /// Return the fresh correlation UUID for the active telemetry session.
  ///
  /// This is intentionally unavailable while telemetry is disabled, so callers
-@@ -1439,14 +1374,23 @@ fn transcript_background_sender() -> &'static SyncSender<Value> {
- 
+@@ -1457,14 +1392,23 @@ fn transcript_background_sender() -> &'static SyncSender<Value> {
+
  #[cfg(test)]
  fn send_transcript_payload(payload: Value) -> bool {
 -    if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
@@ -6771,7 +6784,7 @@ index 35b6d55be..1fe5b1be0 100644
      }
 -    true
  }
- 
+
  #[cfg(not(test))]
  fn send_transcript_payload(payload: Value) -> bool {
 +    if !is_enabled() {
@@ -6780,8 +6793,8 @@ index 35b6d55be..1fe5b1be0 100644
      match transcript_background_sender().try_send(payload) {
          Ok(()) => true,
          Err(TrySendError::Full(_)) => {
-@@ -1462,6 +1406,9 @@ fn send_transcript_payload(payload: Value) -> bool {
- 
+@@ -1480,6 +1424,9 @@ fn send_transcript_payload(payload: Value) -> bool {
+
  #[cfg(test)]
  fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
 +    if !is_enabled() {
@@ -6790,8 +6803,8 @@ index 35b6d55be..1fe5b1be0 100644
      concurrency::mark_legacy_concurrency_unavailable(&mut payload);
      tests::TEST_DELIVERY_MODES.lock().unwrap().push(mode);
      if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
-@@ -1472,6 +1419,11 @@ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
- 
+@@ -1490,6 +1437,11 @@ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
+
  #[cfg(not(test))]
  fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
 +    // Delivery boundary: no producer can reach the network while telemetry is
@@ -6802,7 +6815,7 @@ index 35b6d55be..1fe5b1be0 100644
      concurrency::mark_legacy_concurrency_unavailable(&mut payload);
      match mode {
          DeliveryMode::Background => {
-@@ -1853,7 +1805,6 @@ pub fn record_install_if_first_run() {
+@@ -1874,7 +1826,6 @@ pub fn record_install_if_first_run() {
      }
      if first_run {
          emit_onboarding_step_once("first_run", None, None);
@@ -6810,10 +6823,10 @@ index 35b6d55be..1fe5b1be0 100644
      }
      mark_current_version_recorded();
  }
-@@ -2716,25 +2667,5 @@ pub fn current_provider_model() -> Option<(String, String)> {
+@@ -2737,25 +2688,5 @@ pub fn current_provider_model() -> Option<(String, String)> {
      })
  }
- 
+
 -fn show_first_run_notice() {
 -    // This can print before any terminal setup enables VT processing. Legacy
 -    // Windows consoles (conhost without ENABLE_VIRTUAL_TERMINAL_PROCESSING,
@@ -6837,7 +6850,7 @@ index 35b6d55be..1fe5b1be0 100644
  #[cfg(test)]
  mod tests;
 diff --git a/crates/jcode-telemetry-core/src/tests.rs b/crates/jcode-telemetry-core/src/tests.rs
-index 17359d8b1..9adf6748b 100644
+index b9ff5c836..2b9228923 100644
 --- a/crates/jcode-telemetry-core/src/tests.rs
 +++ b/crates/jcode-telemetry-core/src/tests.rs
 @@ -21,6 +21,7 @@ struct TestEnvironment {
@@ -6846,7 +6859,7 @@ index 17359d8b1..9adf6748b 100644
      _lock: MutexGuard<'static, ()>,
 +    _enabled_guard: TestEnabledGuard,
  }
- 
+
  impl Drop for TestEnvironment {
 @@ -59,6 +60,7 @@ fn global_test_lock() -> TestEnvironment {
          previous_no_telemetry,
@@ -6855,11 +6868,11 @@ index 17359d8b1..9adf6748b 100644
 +        _enabled_guard: TestEnabledGuard::acquire(),
      }
  }
- 
+
 @@ -154,11 +156,29 @@ fn lock_telemetry_test_state() -> TestEnvironment {
      global_test_lock()
  }
- 
+
 +/// Temporarily enable telemetry delivery for internal tests that verify
 +/// event emission logic. The production `is_enabled()` is always `false`;
 +/// this guard lets tests opt in to the delivery path so payloads are captured.
@@ -6886,7 +6899,7 @@ index 17359d8b1..9adf6748b 100644
 +    assert!(opt_out_forced_by_env());
      jcode_core::env::remove_var("JCODE_NO_TELEMETRY");
  }
- 
+
 @@ -166,36 +186,66 @@ fn test_opt_out_env_var() {
  fn test_do_not_track() {
      let _guard = lock_test_env();
@@ -6895,7 +6908,7 @@ index 17359d8b1..9adf6748b 100644
 +    assert!(opt_out_forced_by_env());
      jcode_core::env::remove_var("DO_NOT_TRACK");
  }
- 
+
  #[test]
 -fn false_opt_out_values_keep_telemetry_enabled() {
 +fn false_opt_out_values_do_not_force_opt_out_source() {
@@ -6918,7 +6931,7 @@ index 17359d8b1..9adf6748b 100644
 +    jcode_core::env::remove_var("JCODE_NO_TELEMETRY");
 +    jcode_core::env::remove_var("DO_NOT_TRACK");
  }
- 
+
  #[test]
 -fn in_app_opt_out_emits_once_then_stops_telemetry() {
 +fn in_app_opt_out_does_not_emit_when_telemetry_is_disabled() {
@@ -6926,13 +6939,13 @@ index 17359d8b1..9adf6748b 100644
 +    // Drop the test-enabled guard so we observe the production disabled state.
 +    let _disabled = TestDisabledGuard::new();
      TEST_EMITTED_PAYLOADS.lock().unwrap().clear();
- 
+
 +    // Telemetry is always disabled in this distribution, so an in-app opt-out
 +    // must not emit any telemetry payload (there is nowhere to send it).
      assert!(set_usage_telemetry_enabled(false));
      assert!(!is_enabled());
 -    assert!(set_usage_telemetry_enabled(false));
- 
+
      let payloads = TEST_EMITTED_PAYLOADS.lock().unwrap();
 -    let opt_outs = payloads
 -        .iter()
@@ -6963,16 +6976,16 @@ index 17359d8b1..9adf6748b 100644
 +        TEST_OVERRIDE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
 +    }
  }
- 
+
  #[test]
 @@ -224,10 +274,12 @@ fn record_turn_emits_prompt_submitted_immediately() {
  #[test]
  fn telemetry_status_on_fresh_home_is_read_only() {
      let _guard = lock_test_env();
 +    let _disabled = TestDisabledGuard::new();
- 
+
      let snapshot = status();
- 
+
 -    assert!(snapshot.enabled);
 +    // Telemetry is always disabled in this distribution.
 +    assert!(!snapshot.enabled);
@@ -6982,7 +6995,7 @@ index 17359d8b1..9adf6748b 100644
 @@ -465,47 +517,6 @@ fn test_session_start_event_serialization() {
      assert_eq!(json["sessions_started_24h"], 3);
  }
- 
+
 -#[test]
 -fn test_discovery_event_serialization_excludes_free_text() {
 -    let event = DiscoveryEvent {
@@ -7027,9 +7040,9 @@ index 17359d8b1..9adf6748b 100644
  #[test]
  fn test_session_end_event_serialization() {
      let event = SessionLifecycleEvent {
-@@ -1596,3 +1607,47 @@ fn concurrency_crash_lifecycle_does_not_emit_untrusted_legacy_counts() {
-     assert!(crash.get("active_sessions_at_start").is_none());
-     assert!(crash.get("multi_sessioned").is_none());
+@@ -1704,3 +1715,47 @@ fn desktop_update_sanitizes_tokens() {
+         );
+     }
  }
 +
 +/// Delivery boundary: no telemetry payload is ever sent when telemetry is
@@ -7110,7 +7123,7 @@ index 683de1f1d..33f92cbe5 100644
          "Edit" => "edit",
          "MultiEdit" => "multiedit",
 diff --git a/crates/jcode-tui/src/tui/app.rs b/crates/jcode-tui/src/tui/app.rs
-index 54d1d537c..c40e540b6 100644
+index 2fb95c409..795534a78 100644
 --- a/crates/jcode-tui/src/tui/app.rs
 +++ b/crates/jcode-tui/src/tui/app.rs
 @@ -111,7 +111,6 @@ mod state_ui_maintenance;
@@ -7121,7 +7134,7 @@ index 54d1d537c..c40e540b6 100644
  mod support;
  mod swarm_hint;
  mod terminal_liveness;
-@@ -1195,10 +1194,6 @@ pub struct App {
+@@ -1197,10 +1196,6 @@ pub struct App {
      /// to target the agent repair brief (`jcode auth-test --provider X`). `None`
      /// when unknown.
      onboarding_import_failed_provider: Option<String>,
@@ -7132,7 +7145,7 @@ index 54d1d537c..c40e540b6 100644
      /// Pending first-run model-validation request for the new-session screen.
      /// In remote/client mode the live default model is reported by the server
      /// asynchronously, so we record that a validation is wanted and let the
-@@ -1583,7 +1578,6 @@ pub struct App {
+@@ -1585,7 +1580,6 @@ pub struct App {
      terminal_setup_hint_shown_this_session: bool,
      // Whether the swarm-config-is-a-prompt hint has been surfaced this session.
      swarm_hint_shown_this_session: bool,
@@ -7147,7 +7160,7 @@ index b63280db6..095e53a47 100644
 @@ -66,139 +66,6 @@ impl App {
          notices.join("\n")
      }
- 
+
 -    pub(super) fn show_jcode_subscription_status(&mut self) {
 -        let configured_key = crate::subscription_catalog::configured_api_key().is_some();
 -        let configured_base = crate::subscription_catalog::configured_api_base()
@@ -7287,7 +7300,7 @@ index b63280db6..095e53a47 100644
 @@ -273,13 +140,10 @@ impl App {
      ) {
          use crate::provider_catalog::LoginProviderTarget;
- 
+
 -        if matches!(provider.target, LoginProviderTarget::Jcode) {
 -            self.start_jcode_account_logout();
 -            return;
@@ -7317,7 +7330,7 @@ index b63280db6..095e53a47 100644
 @@ -608,258 +476,6 @@ impl App {
          self.start_claude_login_for_account(&label);
      }
- 
+
 -    fn start_jcode_login(&mut self) {
 -        self.push_display_message(DisplayMessage::system(
 -            "Jcode Account Login\n\nRequesting a secure browser approval flow. No email or API key will be requested in the terminal."
@@ -7580,7 +7593,7 @@ index d7babdbb4..7a7980fda 100644
 @@ -73,19 +73,6 @@ pub(crate) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
          return true;
      }
- 
+
 -    if matches!(
 -        trimmed,
 -        "/hosted status" | "/subscription" | "/subscription status"
@@ -7620,7 +7633,7 @@ index d7babdbb4..7a7980fda 100644
 @@ -1173,26 +1154,6 @@ mod tests {
          ));
      }
- 
+
 -    #[test]
 -    fn parse_native_jcode_account_actions() {
 -        assert!(matches!(
@@ -7659,13 +7672,13 @@ index 7936b89d6..2f6a275bd 100644
          provider_id: String,
          label: Option<String>,
 diff --git a/crates/jcode-tui/src/tui/app/commands.rs b/crates/jcode-tui/src/tui/app/commands.rs
-index 94b11ee4e..a4d53b685 100644
+index 37fd451bc..67b0e9bab 100644
 --- a/crates/jcode-tui/src/tui/app/commands.rs
 +++ b/crates/jcode-tui/src/tui/app/commands.rs
-@@ -3573,11 +3573,6 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
+@@ -3765,11 +3765,6 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
          return true;
      }
- 
+
 -    if trimmed == "/subscription" || trimmed == "/subscription status" {
 -        app.show_jcode_subscription_status();
 -        return true;
@@ -7674,10 +7687,10 @@ index 94b11ee4e..a4d53b685 100644
      if trimmed == "/config" {
          use crate::config::config;
          app.push_display_message(DisplayMessage {
-@@ -3730,59 +3725,6 @@ pub(super) fn handle_feedback_command(app: &mut App, trimmed: &str) -> bool {
+@@ -3922,59 +3917,6 @@ pub(super) fn handle_feedback_command(app: &mut App, trimmed: &str) -> bool {
      true
  }
- 
+
 -/// `/telemetry [everything|no-prompts|nothing]` - show or change the same
 -/// three-way telemetry level offered by the onboarding "Telemetry settings"
 -/// page, so the promise made there ("change this later with /telemetry") holds.
@@ -7755,7 +7768,7 @@ index 203e000c3..e05dac125 100644
          || super::state_ui::handle_info_command(app, trimmed)
          || super::auth::handle_auth_command(app, trimmed)
 diff --git a/crates/jcode-tui/src/tui/app/input_help.rs b/crates/jcode-tui/src/tui/app/input_help.rs
-index 075783e8c..4d7332b3b 100644
+index 5d26758ec..ae0e5e0da 100644
 --- a/crates/jcode-tui/src/tui/app/input_help.rs
 +++ b/crates/jcode-tui/src/tui/app/input_help.rs
 @@ -177,12 +177,6 @@ impl App {
@@ -7792,16 +7805,16 @@ index 4a7f739d3..3db984c1a 100644
 -            // fires once when a 1h+ batch completes with quality gates passed.
 -            self.note_todo_update_for_subscribe_nudge(&session_id);
          }
- 
+
          // The schedule tool queues/cancels ambient tasks, which the ambient panel
 diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
-index 879141fe4..87ffbe5d9 100644
+index fe3d3cf5b..aa60d7f22 100644
 --- a/crates/jcode-tui/src/tui/app/onboarding_flow.rs
 +++ b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
 @@ -21,10 +21,8 @@
  use std::path::PathBuf;
  use std::time::{Duration, Instant};
- 
+
 -/// How long we wait on a yes/no decision phase (login import, telemetry
 -/// consent) before auto-selecting the highlighted default. We keep this short
 -/// enough that the user doesn't get stuck deliberating, but long enough to
@@ -7809,12 +7822,12 @@ index 879141fe4..87ffbe5d9 100644
 +/// How long we wait on the continue prompt before auto-selecting its
 +/// highlighted default.
  pub(crate) const DECISION_TIMEOUT: Duration = Duration::from_secs(60);
- 
+
  /// Which external CLI an OAuth login was detected for.
 @@ -49,68 +47,6 @@ impl ExternalCli {
      }
  }
- 
+
 -/// Which telemetry level the "Telemetry settings" page has highlighted.
 -///
 -/// The page is a three-way choice rather than a yes/no so the middle ground
@@ -7892,7 +7905,7 @@ index 879141fe4..87ffbe5d9 100644
 +    #[cfg(test)]
      pub(crate) shown_at: Instant,
  }
- 
+
 @@ -156,16 +90,10 @@ pub(crate) enum SummaryPill {
      Continue,
      /// Open the per-login checkbox list to import fewer logins.
@@ -7900,7 +7913,7 @@ index 879141fe4..87ffbe5d9 100644
 -    /// Open the telemetry settings sub-page.
 -    Telemetry,
  }
- 
+
  impl SummaryPill {
 -    const ORDER: [SummaryPill; 3] = [
 -        SummaryPill::Continue,
@@ -7908,7 +7921,7 @@ index 879141fe4..87ffbe5d9 100644
 -        SummaryPill::Telemetry,
 -    ];
 +    const ORDER: [SummaryPill; 2] = [SummaryPill::Continue, SummaryPill::ImportLess];
- 
+
      fn index(self) -> usize {
          Self::ORDER.iter().position(|&p| p == self).unwrap_or(0)
 @@ -201,7 +129,7 @@ impl ImportReview {
@@ -7951,7 +7964,7 @@ index 879141fe4..87ffbe5d9 100644
 -        };
 -        self.telemetry = Some(order[next]);
      }
- 
+
      /// Move the summary pill focus. Keeps `continue_focused` in sync so the
 @@ -358,21 +260,6 @@ impl ImportReview {
      pub(crate) fn checked_count(&self) -> usize {
@@ -7973,7 +7986,7 @@ index 879141fe4..87ffbe5d9 100644
 -        self.telemetry.is_none() && !self.choosing && self.shown_at.elapsed() >= DECISION_TIMEOUT
 -    }
  }
- 
+
  /// The current phase of the onboarding flow.
 @@ -387,12 +274,12 @@ pub(crate) enum OnboardingPhase {
      /// When `None`, there was nothing to import and we prompt the user to pick a
@@ -7999,7 +8012,7 @@ index 879141fe4..87ffbe5d9 100644
      /// resume menu opens unless the user declines.
      ContinuePrompt {
          cli: ExternalCli,
-@@ -490,6 +377,7 @@ impl OnboardingFlow {
+@@ -493,6 +380,7 @@ impl OnboardingFlow {
      /// Start the post-login flow. The app immediately advances this legacy
      /// phase to continue/suggestions so first-run onboarding no longer blocks on
      /// choosing a model.
@@ -8007,10 +8020,10 @@ index 879141fe4..87ffbe5d9 100644
      pub(crate) fn begin() -> Self {
          Self {
              phase: OnboardingPhase::ModelSelect,
-@@ -518,13 +406,9 @@ impl OnboardingFlow {
+@@ -521,13 +409,9 @@ impl OnboardingFlow {
          !matches!(self.phase, OnboardingPhase::Done)
      }
- 
+
 -    /// Seconds remaining on the longer [`DECISION_TIMEOUT`] yes/no phases
 -    /// (login import walkthrough, continue prompt), if one is active.
 +    /// Seconds remaining on the continue prompt, if one is active.
@@ -8022,10 +8035,10 @@ index 879141fe4..87ffbe5d9 100644
              OnboardingPhase::ContinuePrompt { shown_at, .. } => Some(
                  DECISION_TIMEOUT
                      .saturating_sub(shown_at.elapsed())
-@@ -534,13 +418,10 @@ impl OnboardingFlow {
+@@ -537,13 +421,10 @@ impl OnboardingFlow {
          }
      }
- 
+
 -    /// Whether a [`DECISION_TIMEOUT`] yes/no phase has elapsed and should
 -    /// auto-select its default.
 +    /// Whether the continue prompt has elapsed and should auto-select its
@@ -8045,7 +8058,7 @@ index 7b454d3cf..e02e8b5e5 100644
 @@ -70,137 +70,20 @@ impl App {
          flow.phase = next;
      }
- 
+
 -    /// Gate + start the flow after a successful login. Only fires for brand-new
 -    /// users (no prior onboarding flow this session) so returning users who
 -    /// re-auth aren't dragged through onboarding.
@@ -8067,7 +8080,7 @@ index 7b454d3cf..e02e8b5e5 100644
          }
 -        self.begin_onboarding_flow();
      }
- 
+
 -    /// One-shot startup check: the fresh-install path logs the user in at the CLI
 -    /// *before* the TUI launches, so no in-TUI login event ever fires. If we boot
 -    /// already authenticated as a brand-new user, kick the guided flow here.
@@ -8184,7 +8197,7 @@ index 7b454d3cf..e02e8b5e5 100644
 -        }
 -        false
      }
- 
+
      /// Whether this is a self-dev / canary session.
 @@ -223,6 +106,7 @@ impl App {
      /// model picker; the default route is used and `/model` remains available.
@@ -8202,7 +8215,7 @@ index 7b454d3cf..e02e8b5e5 100644
          self.start_login_provider(crate::provider_catalog::OPENAI_LOGIN_PROVIDER);
          self.set_status_notice("Login: opening OpenAI sign-in (or type /login for others)");
      }
- 
+
 -    /// Advance out of a login phase once credentials are available. Prompt and
 -    /// transcript content sharing stays off unless the user explicitly opted in
 -    /// on the "Telemetry settings" page, so we only write the default when no
@@ -8316,7 +8329,7 @@ index 7b454d3cf..e02e8b5e5 100644
 @@ -776,33 +614,16 @@ impl App {
          }
      }
- 
+
 -    /// Whether the import screen's telemetry settings sub-page is currently
 -    /// showing. Used so Esc means "go back" there rather than "leave
 -    /// onboarding", and so the import countdown pauses while it is open.
@@ -8354,7 +8367,7 @@ index 7b454d3cf..e02e8b5e5 100644
 @@ -1736,27 +1557,14 @@ impl App {
              changed = true;
          }
- 
+
 -        // Drive the longer (60s) yes/no decision phases: the login-import
 -        // walkthrough and the telemetry consent prompt. On timeout we pick the
 -        // highlighted default; otherwise we keep the countdown notice fresh.
@@ -8392,7 +8405,7 @@ index bc286cf88..87f5a0ec5 100644
 -//! connected, and onboarding never rewrites an existing telemetry choice. The
 -//! one rehearsal-only guard is that a telemetry choice made here is not saved.
 +//! connected.
- 
+
  use super::App;
  use super::SessionPickerMode;
 @@ -91,7 +90,6 @@ impl App {
@@ -8402,29 +8415,28 @@ index bc286cf88..87f5a0ec5 100644
 -        self.onboarding_telemetry_choice_made = false;
          self.onboarding_auto_model_selection_active
              .store(false, std::sync::atomic::Ordering::Release);
- 
+
 diff --git a/crates/jcode-tui/src/tui/app/remote/server_events.rs b/crates/jcode-tui/src/tui/app/remote/server_events.rs
-index f5ed47b3e..fed6fe5bf 100644
+index 1989ad3a8..f852a1abb 100644
 --- a/crates/jcode-tui/src/tui/app/remote/server_events.rs
 +++ b/crates/jcode-tui/src/tui/app/remote/server_events.rs
-@@ -1299,8 +1299,10 @@ pub(in crate::tui::app) fn handle_server_event(
-                     .as_ref()
-                     .map(|pending| pending.is_system)
-                 {
--                    let rate_limit_line =
--                        app.rate_limit_notice_with_nudge(reset_duration.as_secs());
-+                    let rate_limit_line = format!(
-+                        "⏳ Rate limit hit. Will auto-retry in {} seconds...",
-+                        reset_duration.as_secs()
-+                    );
-                     app.push_display_message(DisplayMessage::system(rate_limit_line));
-                     if is_system {
-                         app.set_status_notice("Rate limited; queued system retry");
+@@ -1337,7 +1337,10 @@ pub(in crate::tui::app) fn handle_server_event(
+                 })
+             {
+                 app.rate_limit_reset = Some(Instant::now() + reset_duration);
+-                let rate_limit_line = app.rate_limit_notice_with_nudge(reset_duration.as_secs());
++                let rate_limit_line = format!(
++                    "⏳ Rate limit hit. Will auto-retry in {} seconds...",
++                    reset_duration.as_secs()
++                );
+                 app.push_display_message(DisplayMessage::system(rate_limit_line));
+                 if is_system {
+                     app.set_status_notice("Rate limited; queued system retry");
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index 179eb48ac..0e30b9f4f 100644
+index 2ca664558..5d16092a7 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-@@ -165,10 +165,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
+@@ -164,10 +164,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
      ),
      RegisteredCommand::public("/wrapped", "Alias for /productivity"),
      RegisteredCommand::public("/feedback", "Send feedback about jcode"),
@@ -8435,10 +8447,10 @@ index 179eb48ac..0e30b9f4f 100644
      RegisteredCommand::public("/config", "Show or edit configuration"),
      RegisteredCommand::public("/log", "Mark the current location in the jcode logs"),
      RegisteredCommand::public(
-@@ -1425,40 +1422,24 @@ impl App {
+@@ -1435,40 +1432,24 @@ impl App {
          true
      }
- 
+
 -    /// Whether to show the dedicated first-run onboarding welcome screen
 -    /// (gray telemetry header, prominent donut, welcome text, login prompt).
 +    /// Whether to show the dedicated onboarding welcome screen.
@@ -8473,7 +8485,7 @@ index 179eb48ac..0e30b9f4f 100644
 -        !self.suggestion_prompts().is_empty()
 +        self.onboarding_preview_mode || self.onboarding_flow_drives_welcome()
      }
- 
+
      /// What the onboarding welcome screen should render in its body, driven by
      /// the active guided flow phase. Defaults to the starter suggestion cards.
      pub fn onboarding_welcome_kind(&self) -> crate::tui::OnboardingWelcomeKind {
@@ -8483,7 +8495,7 @@ index 179eb48ac..0e30b9f4f 100644
          match self.onboarding_phase() {
              Some(OnboardingPhase::Login { import }) => {
                  let prompt = import.as_ref().map(|review| {
-@@ -1480,16 +1461,8 @@ impl App {
+@@ -1490,16 +1471,8 @@ impl App {
                          summary_pill: match review.summary_pill {
                              SummaryPill::Continue => crate::tui::ImportSummaryPill::Continue,
                              SummaryPill::ImportLess => crate::tui::ImportSummaryPill::ImportLess,
@@ -8879,7 +8891,7 @@ index 4229869c1..67e240cee 100644
 --- a/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs
 @@ -97,10 +97,7 @@ fn test_alignment_command_persists_and_applies_immediately() {
- 
+
          let last = app.display_messages().last().expect("missing response");
          assert_eq!(last.role, "system");
 -        assert!(
@@ -8889,9 +8901,9 @@ index 4229869c1..67e240cee 100644
 +        assert!(last.content.contains("Saved default alignment: centered"));
      });
  }
- 
+
 @@ -117,10 +114,7 @@ fn test_alignment_status_shows_current_and_saved_defaults() {
- 
+
          let last = app.display_messages().last().expect("missing response");
          assert_eq!(last.role, "system");
 -        assert!(
@@ -8904,7 +8916,7 @@ index 4229869c1..67e240cee 100644
          // The keycap hint is platform-dependent: the message renders the
 @@ -219,53 +213,18 @@ fn test_mask_email_censors_local_part() {
  }
- 
+
  #[test]
 -fn test_subscription_command_shows_jcode_status_scaffold() {
 -    let _guard = crate::storage::lock_test_env();
@@ -8916,7 +8928,7 @@ index 4229869c1..67e240cee 100644
      let mut app = create_test_app();
      app.input = "/subscription".to_string();
      app.submit_input();
- 
+
 -    let msg = app
 -        .display_messages()
 -        .last()
@@ -8962,10 +8974,10 @@ index 4229869c1..67e240cee 100644
 +        "hosted subscription status must not be shown"
 +    );
  }
- 
+
  #[test]
 diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
-index d182c1d7f..e76318cd3 100644
+index 1f3befc5b..0a3ed6c12 100644
 --- a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
 @@ -217,7 +217,10 @@ fn login_welcome_kind_shows_import_checkbox_list() {
@@ -8982,13 +8994,13 @@ index d182c1d7f..e76318cd3 100644
              assert_eq!(prompt.rows[0].source_name, "Codex auth.json");
 @@ -419,20 +422,68 @@ fn login_openai_arrows_toggle_highlight() {
  }
- 
+
  #[test]
 -fn import_review_decision_timer_counts_down_and_times_out() {
 +fn elapsed_import_review_does_not_import_without_explicit_action() {
      use crate::external_auth::ExternalAuthReviewCandidate;
      use crate::tui::app::onboarding_flow::{DECISION_TIMEOUT, ImportReview};
- 
+
 -    let mut review =
 -        ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("Cursor", "Cursor")]).unwrap();
 -    // Fresh review: a full timeout's worth of seconds remain and it hasn't
@@ -9058,7 +9070,7 @@ index d182c1d7f..e76318cd3 100644
 +        assert!(app.onboarding_import_in_progress.is_some() || app.onboarding_import_error.is_some());
 +    });
  }
- 
+
  #[test]
 @@ -475,7 +526,9 @@ fn pending_login_entry_is_not_intercepted_by_onboarding_login_phase() {
          // Simulate having chosen OpenRouter: the picker closed and a pending
@@ -9070,7 +9082,7 @@ index d182c1d7f..e76318cd3 100644
 +        );
          assert!(app.pending_login.is_some());
          assert!(app.inline_interactive_state.is_none());
- 
+
 @@ -523,14 +576,18 @@ fn openrouter_key_typed_through_full_key_path_does_not_reopen_picker() {
          // are no longer swallowed.
          let key = "sk-or-key-no-loop";
@@ -9089,7 +9101,7 @@ index d182c1d7f..e76318cd3 100644
 +            app.input, key,
 +            "every typed character must reach the input buffer"
 +        );
- 
+
          // Pressing Enter submits the key to the pending-login handler instead of
          // re-opening the provider picker (the old loop).
 @@ -543,7 +600,10 @@ fn openrouter_key_typed_through_full_key_path_does_not_reopen_picker() {
@@ -9101,7 +9113,7 @@ index d182c1d7f..e76318cd3 100644
 +            app.input.is_empty(),
 +            "input buffer should clear after submit"
 +        );
- 
+
          // Crucially: the key must actually be *persisted*, not just "not loop".
          // It is written to $JCODE_HOME/config/jcode/openrouter.env, which is
 @@ -584,9 +644,10 @@ fn import_failure_resets_login_to_manual_prompt() {
@@ -9118,19 +9130,19 @@ index d182c1d7f..e76318cd3 100644
          if let Some(flow) = app.onboarding_flow.as_mut() {
              flow.phase = OnboardingPhase::Login {
                  import: Some(review),
-@@ -735,7 +796,7 @@ fn startup_check_skips_when_session_already_has_activity() {
+@@ -743,7 +804,7 @@ fn startup_check_skips_when_session_already_has_activity() {
  }
- 
+
  #[test]
 -fn startup_check_ignores_synthetic_scaffolding_messages() {
 +fn startup_check_never_starts_automatic_onboarding() {
      with_temp_jcode_home(|| {
          let mut app = create_test_app();
          app.onboarding_flow = None;
-@@ -749,21 +810,30 @@ fn startup_check_ignores_synthetic_scaffolding_messages() {
- 
+@@ -757,21 +818,30 @@ fn startup_check_ignores_synthetic_scaffolding_messages() {
+
          app.maybe_begin_onboarding_flow_on_startup();
- 
+
 -        // The guard must not be tripped by scaffolding alone. In a temp home with
 -        // no working credentials the flow begins at the in-TUI Login phase (the
 -        // fresh-install path no longer logs in at the CLI before the TUI).
@@ -9167,7 +9179,7 @@ index d182c1d7f..e76318cd3 100644
          );
      });
  }
-@@ -836,7 +906,10 @@ fn model_validation_success_appends_single_ready_line() {
+@@ -844,7 +914,10 @@ fn model_validation_success_appends_single_ready_line() {
      let messages = app.display_messages();
      assert_eq!(messages.len(), before + 1, "exactly one summary block");
      let line = &messages.last().unwrap().content;
@@ -9179,7 +9191,7 @@ index d182c1d7f..e76318cd3 100644
      assert!(
          line.contains("GPT-5.5 (low) (default)"),
          "names the default model: {line:?}"
-@@ -873,7 +946,10 @@ fn model_validation_failure_appends_single_warning_line_with_detail() {
+@@ -881,7 +954,10 @@ fn model_validation_failure_appends_single_warning_line_with_detail() {
          line.contains("Claude Opus 4.8 (default)"),
          "names the default model: {line:?}"
      );
@@ -9191,7 +9203,7 @@ index d182c1d7f..e76318cd3 100644
      assert!(line.contains("/model"), "offers a way out: {line:?}");
      assert!(
          line.contains('\u{2715}'),
-@@ -902,7 +978,10 @@ fn model_validation_auth_failure_offers_login_fix() {
+@@ -910,7 +986,10 @@ fn model_validation_auth_failure_offers_login_fix() {
      let line = &messages.last().unwrap().content;
      // Auth failures should point the user at /login to re-authenticate, while
      // still offering /model as an alternative.
@@ -9202,10 +9214,10 @@ index d182c1d7f..e76318cd3 100644
 +    );
      assert!(line.contains("/model"), "still offers /model: {line:?}");
  }
- 
-@@ -975,22 +1054,17 @@ fn local_post_import_validation_waits_for_model_activation() {
+
+@@ -983,22 +1062,17 @@ fn local_post_import_validation_waits_for_model_activation() {
  }
- 
+
  #[test]
 -fn startup_check_skips_user_with_established_session_history() {
 +fn startup_check_never_auto_starts_onboarding_with_native_session_history() {
@@ -9229,9 +9241,9 @@ index d182c1d7f..e76318cd3 100644
 +            std::fs::write(sessions_dir.join(format!("session_test_{i:02}.json")), "{}")
 +                .expect("write session file");
          }
- 
+
          let mut app = create_test_app();
-@@ -1002,16 +1076,16 @@ fn startup_check_skips_user_with_established_session_history() {
+@@ -1010,16 +1084,16 @@ fn startup_check_skips_user_with_established_session_history() {
          assert!(app.onboarding_startup_checked);
          assert!(
              app.onboarding_flow.is_none(),
@@ -9240,7 +9252,7 @@ index d182c1d7f..e76318cd3 100644
          );
      });
  }
- 
+
  #[test]
 -fn startup_check_imported_transcripts_do_not_count_as_history() {
 +fn startup_check_never_auto_starts_onboarding_even_on_fresh_install() {
@@ -9252,8 +9264,8 @@ index d182c1d7f..e76318cd3 100644
          let sessions_dir = crate::storage::jcode_dir()
              .expect("jcode dir")
              .join("sessions");
-@@ -1032,8 +1106,8 @@ fn startup_check_imported_transcripts_do_not_count_as_history() {
- 
+@@ -1040,8 +1114,8 @@ fn startup_check_imported_transcripts_do_not_count_as_history() {
+
          assert!(app.onboarding_startup_checked);
          assert!(
 -            app.onboarding_flow.is_some(),
@@ -9263,7 +9275,7 @@ index d182c1d7f..e76318cd3 100644
          );
      });
  }
-@@ -1296,9 +1370,10 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
+@@ -1304,9 +1378,10 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
          app.onboarding_flow = None;
          app.begin_onboarding_flow_at_login();
          // Must be in the Login phase for the failure handler to apply.
@@ -9277,7 +9289,7 @@ index d182c1d7f..e76318cd3 100644
          if let Some(flow) = app.onboarding_flow.as_mut() {
              flow.phase = OnboardingPhase::Login {
                  import: Some(review),
-@@ -1306,7 +1381,8 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
+@@ -1314,7 +1389,8 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
          }
          // A multi-line markdown failure message with marker noise and a
          // lowercase first word, mimicking the importer's render_markdown output.
@@ -9287,7 +9299,7 @@ index d182c1d7f..e76318cd3 100644
          app.onboarding_handle_login_failed(Some(raw.to_string()));
          let shown = app
              .onboarding_import_error
-@@ -1315,7 +1391,10 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
+@@ -1323,7 +1399,10 @@ fn import_failure_reason_is_cleaned_and_capitalized() {
          // Markdown bold headers and the "Logins imported" line are stripped; the
          // first meaningful line is kept, marker trimmed, first letter uppercased.
          assert!(!shown.contains("**"), "markdown bold stripped: {shown}");
@@ -9299,7 +9311,7 @@ index d182c1d7f..e76318cd3 100644
          assert!(
              shown.starts_with("The token has expired"),
              "first meaningful line kept + capitalized: {shown}"
-@@ -1351,16 +1430,31 @@ fn import_failure_h_key_prepares_agent_repair_brief() {
+@@ -1359,16 +1438,31 @@ fn import_failure_h_key_prepares_agent_repair_brief() {
              .find(|m| m.content.contains("Agent repair brief"))
              .map(|m| m.content.clone())
              .expect("repair brief message");
@@ -9338,7 +9350,7 @@ index d182c1d7f..e76318cd3 100644
          // Staying on the recovery screen, Enter still opens the provider picker.
          assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
          assert!(app.inline_interactive_state.is_some());
-@@ -1433,11 +1527,8 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
+@@ -1441,11 +1535,8 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
          let legacy_auth = crate::auth::codex::legacy_auth_file_path().expect("legacy auth path");
          std::fs::create_dir_all(legacy_auth.parent().expect("legacy auth parent"))
              .expect("create legacy auth dir");
@@ -9350,9 +9362,9 @@ index d182c1d7f..e76318cd3 100644
 +        std::fs::write(legacy_auth, r#"{"OPENAI_API_KEY":"sk-onboarding-test"}"#)
 +            .expect("seed importable Codex key");
          crate::auth::AuthStatus::invalidate_cache();
- 
+
          // App construction performs synchronous runtime-backed setup, so build
-@@ -1490,9 +1581,8 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
+@@ -1498,9 +1589,8 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
                  app.onboarding_phase(),
                  Some(OnboardingPhase::StartChoice { .. })
              ));
@@ -9364,7 +9376,7 @@ index d182c1d7f..e76318cd3 100644
                      loop {
                          match bus_rx.recv().await {
                              Ok(crate::bus::BusEvent::ProviderModelActivated {
-@@ -1506,10 +1596,9 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
+@@ -1514,10 +1604,9 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
                              _ => {}
                          }
                      }
@@ -9375,10 +9387,10 @@ index d182c1d7f..e76318cd3 100644
 +                })
 +                .await
 +                .expect("strongest model activation event");
- 
+
              assert_eq!(model, jcode_provider_core::DEFAULT_OPENAI_MODEL);
              assert_eq!(provider_key.as_deref(), Some("openai-api"));
-@@ -1638,10 +1727,7 @@ fn starting_recent_project_review_queues_remote_turn_without_stuck_sending() {
+@@ -1646,10 +1735,7 @@ fn starting_recent_project_review_queues_remote_turn_without_stuck_sending() {
          "remote review must stay idle until the remote queue dispatches"
      );
      assert!(app.input.is_empty());
@@ -9388,18 +9400,18 @@ index d182c1d7f..e76318cd3 100644
 -    );
 +    assert_eq!(app.queued_messages, vec![expected]);
  }
- 
+
  #[test]
-@@ -1660,7 +1746,7 @@ fn recent_project_review_falls_back_cleanly_when_no_repo_is_known() {
+@@ -1668,7 +1754,7 @@ fn recent_project_review_falls_back_cleanly_when_no_repo_is_known() {
      }));
  }
- 
+
 -include!("onboarding_flow_telemetry.rs");
 +include!("onboarding_start_choice.rs");
- 
+
  #[test]
  fn import_less_enter_on_row_toggles_instead_of_committing() {
-@@ -1694,12 +1780,9 @@ fn import_less_enter_on_row_toggles_instead_of_committing() {
+@@ -1702,12 +1788,9 @@ fn import_less_enter_on_row_toggles_instead_of_committing() {
              }) => {
                  assert!(review.choosing, "still on the Import less list");
                  assert_eq!(review.checked, vec![true, false, true]);
@@ -9599,7 +9611,7 @@ index 6c3c94cd2..68588396f 100644
 --- a/crates/jcode-tui/src/tui/app/tests/onboarding_golden.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/onboarding_golden.rs
 @@ -263,7 +263,7 @@ fn onboarding_golden_walks_every_phase() {
- 
+
      // 2. Login with detected imports: the default SUMMARY screen. It lists
      // everything we detected read-only and lands focus on a preselected
 -    // import action, with secondary import/telemetry controls beside it.
@@ -9619,7 +9631,7 @@ index 6c3c94cd2..68588396f 100644
 @@ -504,47 +504,6 @@ fn onboarding_golden_walks_failure_and_async_states() {
      }
  }
- 
+
 -/// Golden render of the "Telemetry settings" sub-page reached from the import
 -/// summary. Three stacked options with dim consequence captions, defaulting to
 -/// "Send everything".
@@ -9667,7 +9679,7 @@ index 6c3c94cd2..68588396f 100644
 @@ -611,23 +570,6 @@ fn onboarding_import_happy_path_images() {
          write_onboarding_svg(&output_dir, "login-import-choose.svg", &app, width, height);
      }
- 
+
 -    // ---- login_import (telemetry sub-page) ----
 -    {
 -        let mut review = ImportReview::new(many_candidates()).unwrap();
@@ -9689,7 +9701,7 @@ index 6c3c94cd2..68588396f 100644
      {
          let mut app = app_in_phase(OnboardingPhase::Login { import: None });
 @@ -735,3 +677,34 @@ fn onboarding_import_happy_path_images() {
- 
+
      println!("wrote onboarding images to {}", output_dir.display());
  }
 +
@@ -9733,13 +9745,13 @@ index 2df6ec5c1..0c81770c6 100644
          app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
 -        assert_eq!(pill(&app), SummaryPill::Telemetry);
 +        assert_eq!(pill(&app), SummaryPill::Continue);
- 
+
          // Enter on "Import less" opens the real checkbox list.
          app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
 @@ -113,31 +113,6 @@ fn rehearsal_keys_drive_the_real_import_summary() {
      });
  }
- 
+
 -#[test]
 -fn rehearsal_telemetry_choice_is_not_saved() {
 -    with_temp_jcode_home(|| {
@@ -9828,26 +9840,26 @@ index 000000000..2abec0e88
 +    );
 +}
 diff --git a/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_01.rs b/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_01.rs
-index 3404242dc..513a53eea 100644
+index 74dea2adf..d4f8704cc 100644
 --- a/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_01.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_01.rs
-@@ -977,7 +977,7 @@ fn test_auth_doctor_command_suggestion_is_not_shadowed_by_provider_suggestions()
+@@ -1000,7 +1000,7 @@ fn test_auth_doctor_command_suggestion_is_not_shadowed_by_provider_suggestions()
  }
- 
+
  #[test]
 -fn test_top_level_command_suggestions_include_config_and_subscription() {
 +fn test_top_level_command_suggestions_include_config_but_not_subscription() {
      let app = create_test_app();
      let suggestions = app.get_suggestions_for("/con");
      assert!(suggestions.iter().any(|(cmd, _)| cmd == "/config"));
-@@ -987,7 +987,7 @@ fn test_top_level_command_suggestions_include_config_and_subscription() {
+@@ -1010,7 +1010,7 @@ fn test_top_level_command_suggestions_include_config_and_subscription() {
      assert!(suggestions.iter().any(|(cmd, _)| cmd == "/alignment"));
- 
+
      let suggestions = app.get_suggestions_for("/sub");
 -    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/subscription"));
 +    assert!(!suggestions.iter().any(|(cmd, _)| cmd == "/subscription"));
  }
- 
+
  #[test]
 diff --git a/crates/jcode-tui/src/tui/app/tests/terminal_setup_command.rs b/crates/jcode-tui/src/tui/app/tests/terminal_setup_command.rs
 index 8d4b8fb80..964c1b2d4 100644
@@ -9856,7 +9868,7 @@ index 8d4b8fb80..964c1b2d4 100644
 @@ -208,7 +208,6 @@ fn terminal_setup_command_is_dispatched_and_reports_something_actionable() {
      );
  }
- 
+
 -
  #[test]
  fn terminal_setup_is_offered_in_the_command_palette() {
@@ -9875,10 +9887,10 @@ index 8d4b8fb80..964c1b2d4 100644
 +    assert!(!commands.contains(&"/subscription"));
 +}
 diff --git a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-index 8b7f01eff..59ed701a3 100644
+index 40f141960..bc6deb0de 100644
 --- a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
 +++ b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-@@ -526,7 +526,6 @@ impl App {
+@@ -553,7 +553,6 @@ impl App {
              onboarding_startup_checked: false,
              onboarding_import_in_progress: None,
              onboarding_import_error: None,
@@ -9886,7 +9898,7 @@ index 8b7f01eff..59ed701a3 100644
              onboarding_import_failed_provider: None,
              onboarding_pending_model_validation: None,
              onboarding_recent_project_prefetch: None,
-@@ -709,7 +708,6 @@ impl App {
+@@ -736,7 +735,6 @@ impl App {
              learn_hint_shown_this_session: false,
              terminal_setup_hint_shown_this_session: false,
              swarm_hint_shown_this_session: false,
@@ -9894,7 +9906,7 @@ index 8b7f01eff..59ed701a3 100644
              hotkey_feedback: None,
              hotkey_usage: None,
              unknown_hotkey_seen: std::collections::HashMap::new(),
-@@ -992,7 +990,6 @@ impl App {
+@@ -1021,7 +1019,6 @@ impl App {
              onboarding_startup_checked: false,
              onboarding_import_in_progress: None,
              onboarding_import_error: None,
@@ -9902,7 +9914,7 @@ index 8b7f01eff..59ed701a3 100644
              onboarding_import_failed_provider: None,
              onboarding_pending_model_validation: None,
              onboarding_recent_project_prefetch: None,
-@@ -1175,7 +1172,6 @@ impl App {
+@@ -1204,7 +1201,6 @@ impl App {
              learn_hint_shown_this_session: false,
              terminal_setup_hint_shown_this_session: false,
              swarm_hint_shown_this_session: false,
@@ -9911,10 +9923,10 @@ index 8b7f01eff..59ed701a3 100644
              hotkey_usage: None,
              unknown_hotkey_seen: std::collections::HashMap::new(),
 diff --git a/crates/jcode-tui/src/tui/mod.rs b/crates/jcode-tui/src/tui/mod.rs
-index e4fbf5f0d..fc112b512 100644
+index b4ce61d9c..f7dd409e4 100644
 --- a/crates/jcode-tui/src/tui/mod.rs
 +++ b/crates/jcode-tui/src/tui/mod.rs
-@@ -846,10 +846,8 @@ pub trait TuiState {
+@@ -1146,10 +1146,8 @@ pub trait TuiState {
      fn onboarding_preview_mode(&self) -> bool {
          false
      }
@@ -9927,7 +9939,7 @@ index e4fbf5f0d..fc112b512 100644
      fn onboarding_welcome_active(&self) -> bool {
          self.onboarding_preview_mode()
      }
-@@ -1175,11 +1173,10 @@ pub struct PromptHistorySearchView {
+@@ -1475,11 +1473,10 @@ pub struct PromptHistorySearchView {
  /// resting state (the starter prompt cards).
  #[derive(Debug, Clone, PartialEq, Eq)]
  pub enum OnboardingWelcomeKind {
@@ -9942,7 +9954,7 @@ index e4fbf5f0d..fc112b512 100644
      /// When `None` and `importing` is false, there was nothing to import and the
      /// card points the user at the provider picker. When `None` and `importing`
      /// is true, the user just committed the import and it is running, so the card
-@@ -1196,8 +1193,9 @@ pub enum OnboardingWelcomeKind {
+@@ -1496,8 +1493,9 @@ pub enum OnboardingWelcomeKind {
          /// option.
          repair_agent_label: Option<String>,
      },
@@ -9954,7 +9966,7 @@ index e4fbf5f0d..fc112b512 100644
      /// choice. Yes starts the OpenAI sign-in, No skips login and finishes
      /// onboarding (the user can run `/login` later).
      LoginOpenAi { yes_highlighted: bool },
-@@ -1222,24 +1220,16 @@ pub struct LoginImportPrompt {
+@@ -1522,24 +1520,16 @@ pub struct LoginImportPrompt {
      /// Index of the row the cursor is currently on.
      pub cursor: usize,
      /// When `true`, the navigable "Continue" pill is focused. On the summary
@@ -9981,9 +9993,9 @@ index e4fbf5f0d..fc112b512 100644
 -    /// Seconds left before the screen auto-imports all checked logins.
 -    pub seconds_left: u64,
  }
- 
+
  /// The actions on the import summary screen, left to right.
-@@ -1249,19 +1239,6 @@ pub enum ImportSummaryPill {
+@@ -1549,19 +1539,6 @@ pub enum ImportSummaryPill {
      Continue,
      /// Open the per-login checkbox list to import fewer logins.
      ImportLess,
@@ -10001,7 +10013,7 @@ index e4fbf5f0d..fc112b512 100644
 -    /// Nothing at all.
 -    Nothing,
  }
- 
+
  /// One row in the login-import checkbox list.
 diff --git a/crates/jcode-tui/src/tui/ui_messages.rs b/crates/jcode-tui/src/tui/ui_messages.rs
 index 80da09e09..652c832b2 100644
@@ -10009,17 +10021,17 @@ index 80da09e09..652c832b2 100644
 +++ b/crates/jcode-tui/src/tui/ui_messages.rs
 @@ -12,8 +12,6 @@ use std::borrow::Cow;
  use unicode_width::UnicodeWidthStr;
- 
+
  const MAX_INLINE_DIFF_LINES: usize = 12;
 -const MAX_DISCOVERY_DETAIL_LINES: usize = 2;
 -const MAX_DISCOVERY_SETUP_LINES: usize = 3;
- 
+
  fn prefer_width_stable_system_glyphs() -> bool {
      std::env::var("TERM_PROGRAM")
 @@ -3372,326 +3370,6 @@ fn render_gmail_draft_card(
      ))
  }
- 
+
 -fn split_discovery_blurb_url(value: &str) -> (String, Option<String>) {
 -    let value = value.trim();
 -    if let Some((blurb, url)) = value.rsplit_once(" (")
@@ -10350,13 +10362,13 @@ index 80da09e09..652c832b2 100644
 -    if let Some(discovery_lines) = render_discovery_card(tc, &msg.content, is_error, row_width) {
 -        lines.extend(discovery_lines);
 -    }
- 
+
      // Optionally render the full agentgrep search output inline in the
      // transcript. Gated behind `display.show_agentgrep_output` (default false)
 @@ -4114,20 +3789,6 @@ pub(crate) fn render_tool_message(
                  lines.extend(draft_lines);
              }
- 
+
 -            if let Some(result) = sub_result
 -                && let Some(mut discovery_lines) = render_discovery_card(
 -                    &sub_tc,
@@ -10381,7 +10393,7 @@ index 40959e54e..8b45b142c 100644
 @@ -2383,276 +2383,6 @@ fn render_batch_tool_message_shows_flat_and_nested_subcall_intents() {
      crate::tui::ui::tools_ui::tests_tool_call_details_override::set(false);
  }
- 
+
 -fn discovery_message(content: &str, input: serde_json::Value) -> DisplayMessage {
 -    DisplayMessage {
 -        role: "tool".to_string(),
@@ -10661,7 +10673,7 @@ index 96cd9b24e..9c9a449c6 100644
 +++ b/crates/jcode-tui/src/tui/ui_onboarding.rs
 @@ -134,7 +134,7 @@ fn continue_pill_line(focused: bool, align: Alignment) -> Line<'static> {
  }
- 
+
  /// The summary-screen action row. A new user can import the logins we found,
 -/// with secondary controls for a selective import and telemetry settings.
 +/// with a secondary control for a selective import.
@@ -10679,7 +10691,7 @@ index 96cd9b24e..9c9a449c6 100644
 -    ));
      Line::from(spans).alignment(align)
  }
- 
+
 -/// The telemetry settings sub-page: three stacked pills, most sharing first,
 -/// each with a dim one-line consequence caption. Reached from the "Telemetry
 -/// settings" pill on the import summary; Esc returns without changing anything.
@@ -10797,7 +10809,7 @@ index b6f3e2300..9e8be7ebb 100644
 -        "/subscribe",
 -        "Why and how to subscribe to jcode",
 -    ));
- 
+
      lines.push(Line::from(""));
      lines.push(separator());
 diff --git a/crates/jcode-tui/src/tui/ui_tests/onboarding.rs b/crates/jcode-tui/src/tui/ui_tests/onboarding.rs
@@ -10806,13 +10818,13 @@ index 2d5a50f66..64fa94832 100644
 +++ b/crates/jcode-tui/src/tui/ui_tests/onboarding.rs
 @@ -41,17 +41,17 @@ fn onboarding_state() -> TestState {
  }
- 
+
  #[test]
 -fn onboarding_welcome_shows_title_and_suggestions_without_telemetry_blurb() {
 +fn onboarding_welcome_shows_title_and_suggestions_without_telemetry() {
      let state = onboarding_state();
      let text = render_onboarding(&state, 80, 30);
- 
+
      assert!(
          !text.contains("anonymous usage statistics"),
 -        "first page should not carry the telemetry blurb:\n{text}"
@@ -10896,7 +10908,7 @@ index 074030a1d..0c6f9b0e8 100644
 @@ -448,47 +448,6 @@ pub struct FeedbackEvent {
      pub ran_from_cargo: bool,
  }
- 
+
 -/// One completed sponsored-discovery attempt. Free-text query and reason
 -/// content are deliberately excluded. Only coarse presence flags and bounded
 -/// service-controlled labels are emitted.
@@ -13391,13 +13403,13 @@ index 0ff42c556..000000000
 -    }
 -}
 diff --git a/src/cli/args.rs b/src/cli/args.rs
-index 272bfd29c..44a8e5390 100644
+index 19ace982f..eb1294221 100644
 --- a/src/cli/args.rs
 +++ b/src/cli/args.rs
-@@ -257,12 +257,6 @@ pub(crate) enum Command {
+@@ -263,12 +263,6 @@ pub(crate) enum Command {
          api_key_env: Option<String>,
      },
- 
+
 -    /// Log in to and manage your Jcode account
 -    Account {
 -        #[command(subcommand)]
@@ -13406,11 +13418,11 @@ index 272bfd29c..44a8e5390 100644
 -
      /// Run in simple REPL mode (no TUI)
      Repl,
- 
-@@ -283,10 +277,6 @@ pub(crate) enum Command {
+
+@@ -289,10 +283,6 @@ pub(crate) enum Command {
          json: bool,
      },
- 
+
 -    /// Inspect or change anonymous telemetry settings
 -    #[command(subcommand)]
 -    Telemetry(TelemetryCommand),
@@ -13418,10 +13430,10 @@ index 272bfd29c..44a8e5390 100644
      /// Self-development mode: run as a canary session on the shared server
      #[command(alias = "selfdev")]
      SelfDev {
-@@ -592,40 +582,6 @@ pub(crate) enum Command {
+@@ -598,40 +588,6 @@ pub(crate) enum Command {
      },
  }
- 
+
 -#[derive(Subcommand, Debug)]
 -pub(crate) enum TelemetryCommand {
 -    /// Show the current telemetry state without creating an anonymous ID
@@ -13466,7 +13478,7 @@ index dfeead84a..2a6484143 100644
 @@ -126,30 +126,6 @@ fn server_promote_parses_default_and_explicit_version() {
      ));
  }
- 
+
 -#[test]
 -fn telemetry_subcommands_parse() {
 -    let status = Args::try_parse_from(["jcode", "telemetry", "status", "--json"])
@@ -13497,7 +13509,7 @@ index dfeead84a..2a6484143 100644
 @@ -730,43 +706,6 @@ fn login_scriptable_flags_parse() {
      }
  }
- 
+
 -#[test]
 -fn account_subcommands_parse() {
 -    let login =
@@ -13548,20 +13560,20 @@ index dfeead84a..2a6484143 100644
 +    assert!(Args::try_parse_from(["jcode", "account", "status"]).is_err());
 +}
 diff --git a/src/cli/dispatch.rs b/src/cli/dispatch.rs
-index adc7d6709..58c43c37b 100644
+index a0a9d7e08..cebac81a8 100644
 --- a/src/cli/dispatch.rs
 +++ b/src/cli/dispatch.rs
 @@ -16,8 +16,7 @@ use crate::{
  };
- 
+
  use super::{
 -    account, acp, commands, debug, hot_exec, login, output, provider_init, selfdev, terminal,
 -    tui_launch,
 +    acp, commands, debug, hot_exec, login, output, provider_init, selfdev, terminal, tui_launch,
  };
  use provider_init::ProviderChoice;
- 
-@@ -336,14 +335,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
+
+@@ -341,14 +340,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
              )
              .await?;
          }
@@ -13576,7 +13588,7 @@ index adc7d6709..58c43c37b 100644
          Some(Command::Repl) => {
              let (provider, registry) =
                  provider_init::init_provider_and_registry(&args.provider, args.model.as_deref())
-@@ -360,7 +351,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
+@@ -365,7 +356,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
          Some(Command::Usage { json }) => {
              commands::run_usage_command(json).await?;
          }
@@ -13589,7 +13601,7 @@ index 0cad8025f..07478d564 100644
 --- a/src/cli/login.rs
 +++ b/src/cli/login.rs
 @@ -14,7 +14,6 @@ use crate::provider_catalog::save_named_api_key;
- 
+
  mod existing_key_notice;
  mod google;
 -mod jcode_device;
@@ -13612,7 +13624,7 @@ index 0cad8025f..07478d564 100644
 @@ -566,16 +565,6 @@ async fn notify_running_server_auth_changed_best_effort(provider: Option<&str>)
      }
  }
- 
+
 -async fn login_jcode_flow(no_browser: bool) -> Result<()> {
 -    eprintln!("Starting jcode subscription sign-in...");
 -    let _ = jcode_device::login_jcode_device_flow(no_browser).await?;
@@ -13910,7 +13922,7 @@ index b0b61c3d1..b6dfdff9c 100644
          None
 @@ -479,6 +484,9 @@ fn env_model_for_choice_from<'a>(
  }
- 
+
  pub fn profile_for_choice(choice: &ProviderChoice) -> Option<OpenAiCompatibleProfile> {
 +    if matches!(choice, ProviderChoice::Jcode) {
 +        return Some(crate::provider_catalog::OPENAI_COMPAT_PROFILE);
@@ -13919,7 +13931,7 @@ index b0b61c3d1..b6dfdff9c 100644
          LoginProviderTarget::OpenAiCompatible(profile) => Some(profile),
          _ => None,
 @@ -1565,8 +1573,11 @@ async fn init_provider_with_model_policy(
- 
+
      let provider: Arc<dyn provider::Provider> = match choice {
          ProviderChoice::Jcode => {
 -            init_notice("Using Jcode subscription provider");
@@ -13938,7 +13950,7 @@ index bba8e7126..c4b464555 100644
 +++ b/src/cli/provider_init_tests.rs
 @@ -297,60 +297,11 @@ fn test_auto_init_login_selection_preserves_order() {
  }
- 
+
  #[test]
 -fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
 -    let _guard = lock_env();
@@ -13998,12 +14010,12 @@ index bba8e7126..c4b464555 100644
 -        None => crate::env::remove_var("JCODE_HOME"),
 -    }
  }
- 
+
  #[test]
 @@ -1044,22 +995,6 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
          "auto mode should skip untrusted external auth, not fail with the consent prompt error: {message}"
      );
- 
+
 -    // Production `serve` must bind before Desktop can sign in, without a
 -    // launcher-specific deferred-auth environment variable.
 -    let daemon_provider = init_provider_for_serve(&ProviderChoice::Auto, None)
@@ -14030,18 +14042,18 @@ index 14c89af2c..f59d917a7 100644
 @@ -2,9 +2,7 @@ use anyhow::Result;
  use clap::Parser;
  use std::process::Command as ProcessCommand;
- 
+
 -use crate::{
 -    build, logging, perf, server, setup_hints, startup_profile, storage, telemetry, update,
 -};
 +use crate::{build, logging, perf, server, setup_hints, startup_profile, storage, update};
- 
+
  use super::{
      args::{Args, Command},
 @@ -140,15 +138,7 @@ pub async fn run() -> Result<()> {
      perf::init_background();
      startup_profile::mark("perf_init");
- 
+
 -    // Telemetry settings commands must run before they can cause telemetry. In
 -    // particular, a first-ever `jcode telemetry disable` must not emit the
 -    // install event that the command is trying to opt out of. Keep the normal
@@ -14052,13 +14064,13 @@ index 14c89af2c..f59d917a7 100644
 -    }
 -    startup_profile::mark("telemetry_check");
 +    startup_profile::mark("startup");
- 
+
      let args = parse_and_prepare_args(args)?;
      spawn_background_update_check(&args);
 @@ -161,53 +151,6 @@ pub async fn run() -> Result<()> {
      Ok(())
  }
- 
+
 -fn is_telemetry_subcommand_invocation(
 -    args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
 -) -> bool {
@@ -14112,7 +14124,7 @@ index 14c89af2c..f59d917a7 100644
 @@ -346,6 +289,24 @@ fn remote_working_dir_is_absolute(path: &str) -> bool {
          && bytes[0].is_ascii_alphabetic()
  }
- 
+
 +fn source_update_check_status(result: anyhow::Result<Option<bool>>) -> crate::bus::UpdateStatus {
 +    use crate::bus::UpdateStatus;
 +
@@ -14137,7 +14149,7 @@ index 14c89af2c..f59d917a7 100644
 @@ -461,24 +422,6 @@ fn spawn_background_update_check(args: &Args) {
      }
  }
- 
+
 -fn source_update_check_status(result: anyhow::Result<Option<bool>>) -> crate::bus::UpdateStatus {
 -    use crate::bus::UpdateStatus;
 -
@@ -14162,7 +14174,7 @@ index 14c89af2c..f59d917a7 100644
 @@ -527,172 +470,6 @@ mod tests {
          Args::parse_from(argv)
      }
- 
+
 -    #[test]
 -    fn source_update_check_preserves_git_error() {
 -        let crate::bus::UpdateStatus::Error(message) =

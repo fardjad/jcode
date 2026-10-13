@@ -64,7 +64,7 @@ index 043ad4960..b6b1a6cac 100644
              // every todo write during the turn. Every point recorded during the
              // turn is raised, including ones whose score later climbed: work
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_02.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_02.rs
-index bc1b8dfdc..b385bf77a 100644
+index 0a01df535..d57d6d010 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_02.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_02.rs
 @@ -130,6 +130,8 @@ fn test_remote_auto_poke_followup_preserves_visible_timer_and_stays_hidden() {
@@ -85,7 +85,7 @@ index bc1b8dfdc..b385bf77a 100644
          let rt = tokio::runtime::Runtime::new().unwrap();
          let _guard = rt.enter();
          let mut remote = crate::tui::backend::RemoteConnection::dummy();
-@@ -441,6 +445,8 @@ fn test_remote_done_does_not_challenge_moderate_or_unrecorded_confidence_jumps()
+@@ -442,6 +446,8 @@ fn test_remote_done_does_not_challenge_moderate_or_unrecorded_confidence_jumps()
              ),
          ] {
              let mut app = create_test_app();
@@ -115,7 +115,7 @@ index 3bedbeb91..a4d6c99ad 100644
 +        reloaded_app.autojudge_enabled = true;
          reloaded_app.apply_restored_reload_input(restored);
          assert!(reloaded_app.todo_confidence_spike_challenged);
- 
+
 @@ -283,6 +287,8 @@ fn test_reload_preserves_completed_confidence_spike_challenge() {
  fn test_completion_gate_nudges_stop_after_budget_exhausted() {
      with_temp_jcode_home(|| {
@@ -123,7 +123,7 @@ index 3bedbeb91..a4d6c99ad 100644
 +        // Completion gates run only with review or judging enabled.
 +        app.autojudge_enabled = true;
          app.auto_poke_incomplete_todos = true;
- 
+
          // A completed todo with confidence below the gate threshold keeps the
 @@ -347,6 +353,8 @@ fn test_completion_gate_nudges_stop_after_budget_exhausted() {
  fn low_ownership_is_gated_after_the_completed_todo_was_saved() {
@@ -132,7 +132,7 @@ index 3bedbeb91..a4d6c99ad 100644
 +        // Completion gates run only with review or judging enabled.
 +        app.autojudge_enabled = true;
          app.auto_poke_incomplete_todos = true;
- 
+
          crate::todo::save_todos(
 @@ -396,6 +404,8 @@ fn low_ownership_is_gated_after_the_completed_todo_was_saved() {
  fn remote_ownership_gate_reads_the_remote_goal_assessment() {
@@ -146,7 +146,7 @@ index 3bedbeb91..a4d6c99ad 100644
 @@ -481,10 +491,30 @@ fn dispatch_ownership_followup(app: &mut App) {
      app.pending_queued_dispatch = false;
  }
- 
+
 +#[test]
 +fn completion_quality_gates_are_disabled_only_when_review_and_judge_are_off() {
 +    with_temp_jcode_home(|| {
@@ -243,11 +243,11 @@ index 3bedbeb91..a4d6c99ad 100644
 +        // Completion gates run only with review or judging enabled.
 +        app.autojudge_enabled = true;
          app.auto_poke_incomplete_todos = true;
- 
+
          // Completed work with validated confidence, so the completion gate is
 @@ -1067,6 +1113,10 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
          };
- 
+
          let mut app = create_test_app();
 +
 +        // Completion gates run only with review or judging enabled.
@@ -266,7 +266,7 @@ index 3bedbeb91..a4d6c99ad 100644
          reloaded.auto_poke_incomplete_todos = true;
          reloaded.auto_poke_default_on = true;
 @@ -1176,6 +1228,8 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
- 
+
          // An explicit /poke off must stick.
          let mut app = create_test_app();
 +        // Completion gates run only with review or judging enabled.

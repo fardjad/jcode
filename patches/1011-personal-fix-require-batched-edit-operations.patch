@@ -55,11 +55,11 @@ index e183f25e6..86c85d367 100644
 -    replace_all: bool,
 +    edits: Vec<EditOperation>,
  }
- 
+
  #[derive(Deserialize, Clone)]
 @@ -42,33 +35,58 @@ struct EditOperation {
  }
- 
+
  impl EditInput {
 -    /// Accept either the `edits` array or the single-edit shorthand, never both.
      fn operations(&self) -> Result<Vec<EditOperation>> {
@@ -117,7 +117,7 @@ index e183f25e6..86c85d367 100644
 +        Ok(())
      }
  }
- 
+
 +fn parse_input(input: Value) -> Result<EditInput> {
 +    if let Some(object) = input.as_object() {
 +        for field in ["old_string", "new_string", "replace_all"] {
@@ -139,7 +139,7 @@ index e183f25e6..86c85d367 100644
      start_line: usize,
 @@ -93,17 +111,6 @@ fn apply_edits(
      };
- 
+
      for (index, edit) in edits.iter().enumerate() {
 -        if edit.old_string == edit.new_string {
 -            failures.push(format!(
@@ -184,18 +184,18 @@ index e183f25e6..86c85d367 100644
              }
          })
      }
- 
+
      async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
 -        let params: EditInput = serde_json::from_value(input)?;
 +        let params = parse_input(input)?;
          let edits = params.operations()?;
 +        params.validate_operations()?;
          let path = ctx.resolve_path(Path::new(&params.file_path));
- 
+
          if !path.exists() {
 @@ -595,33 +591,163 @@ mod tests {
      }
- 
+
      #[test]
 -    fn input_accepts_single_or_array_but_not_both() {
 -        let parse = |value: Value| serde_json::from_value::<EditInput>(value).unwrap();
@@ -380,7 +380,7 @@ index e183f25e6..86c85d367 100644
 +            .unwrap();
 +        assert_eq!(std::fs::read_to_string(&path).unwrap(), "world!\n");
      }
- 
+
      #[test]
 diff --git a/crates/jcode-app-core/src/tool/edit_stats.rs b/crates/jcode-app-core/src/tool/edit_stats.rs
 index dba1f05cb..835aaaeee 100644

@@ -66,7 +66,10 @@ def _header_value(message: str, name: str) -> str:
 def format_patch(worktree: Path, commit: str, kind: str) -> str:
     """Generate a patch from one commit, sanitizing personal patches."""
     output = subprocess.run(
-        ["git", "format-patch", "--no-signature", "--stdout", "-1", commit],
+        [
+            "git", "-c", "diff.suppressBlankEmpty=true", "format-patch",
+            "--no-signature", "--stdout", "-1", commit,
+        ],
         cwd=worktree,
         check=True,
         text=True,

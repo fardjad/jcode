@@ -45,13 +45,13 @@ scripts/cargo_exec.sh test -p jcode-app-core tool::batch_tests --lib
  create mode 100644 crates/jcode-app-core/src/tool/retry_guard.rs
 
 diff --git a/crates/jcode-app-core/src/agent/response_recovery.rs b/crates/jcode-app-core/src/agent/response_recovery.rs
-index 167f70615..9017496c2 100644
+index 0c5601aef..73d0b1927 100644
 --- a/crates/jcode-app-core/src/agent/response_recovery.rs
 +++ b/crates/jcode-app-core/src/agent/response_recovery.rs
-@@ -762,6 +762,30 @@ mod malformed_tool_call_recovery_tests {
+@@ -882,6 +882,30 @@ mod malformed_tool_call_recovery_tests {
          }
      }
- 
+
 +    struct RejectTool;
 +    #[async_trait]
 +    impl crate::tool::Tool for RejectTool {
@@ -79,10 +79,10 @@ index 167f70615..9017496c2 100644
      /// A round whose single tool call has null arguments: the streamed
      /// fragments fail JSON parsing, which is exactly how the reported
      /// GLM-5.3 null-argument `write`/`bash` calls reach the agent.
-@@ -807,6 +831,23 @@ mod malformed_tool_call_recovery_tests {
+@@ -927,6 +951,23 @@ mod malformed_tool_call_recovery_tests {
          events
      }
- 
+
 +    fn repeated_rejected_round(id: &str) -> Vec<StreamEvent> {
 +        vec![
 +            StreamEvent::ToolUseStart {
@@ -103,10 +103,10 @@ index 167f70615..9017496c2 100644
      /// One malformed plus one valid capture call in a single round.
      fn mixed_round(bad_id: &str, good_id: &str) -> Vec<StreamEvent> {
          vec![
-@@ -868,6 +909,25 @@ mod malformed_tool_call_recovery_tests {
+@@ -988,6 +1029,25 @@ mod malformed_tool_call_recovery_tests {
          (agent, session_ids, exec_log)
      }
- 
+
 +    async fn scripted_rejecting_agent(rounds: Vec<Vec<StreamEvent>>) -> (Agent, SessionLog) {
 +        let session_ids: SessionLog = Arc::new(Mutex::new(Vec::new()));
 +        let provider: Arc<dyn Provider> = Arc::new(MalformedScriptProvider {
@@ -129,10 +129,10 @@ index 167f70615..9017496c2 100644
      fn correction_reminders(agent: &Agent) -> Vec<String> {
          agent
              .session
-@@ -1081,6 +1141,27 @@ mod malformed_tool_call_recovery_tests {
+@@ -1201,6 +1261,27 @@ mod malformed_tool_call_recovery_tests {
          }
      }
- 
+
 +    #[tokio::test]
 +    async fn repeated_deterministic_input_errors_stop_both_turn_loops() {
 +        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
@@ -158,11 +158,11 @@ index 167f70615..9017496c2 100644
      async fn valid_tool_calls_reset_the_malformed_round_bound() {
          let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
 diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
-index 9ac346b07..ffcbeda4b 100644
+index e7be2d4fb..d9fc6cf86 100644
 --- a/crates/jcode-app-core/src/agent/turn_loops.rs
 +++ b/crates/jcode-app-core/src/agent/turn_loops.rs
 @@ -53,6 +53,8 @@ impl Agent {
- 
+
      pub(super) async fn run_turn(&mut self, print_output: bool) -> Result<String> {
          self.ensure_session_lease()?;
 +        let retry_guard = self.registry.retry_guard_handle();
@@ -170,10 +170,10 @@ index 9ac346b07..ffcbeda4b 100644
          self.set_log_context();
          let usage_turn_id = self.model_usage_turn_id();
          crate::session_metrics::record_turn(&self.session.id);
-@@ -1189,7 +1191,15 @@ impl Agent {
+@@ -1203,7 +1205,15 @@ impl Agent {
                      model: Some(self.provider.model()),
                  }));
- 
+
 -                let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
 +                let result = self
 +                    .registry
@@ -187,10 +187,10 @@ index 9ac346b07..ffcbeda4b 100644
                  crate::telemetry::record_tool_call();
                  self.unlock_tools_if_needed(&tc.name);
                  let tool_elapsed = tool_start.elapsed();
-@@ -1293,6 +1303,13 @@ impl Agent {
+@@ -1307,6 +1317,13 @@ impl Agent {
                  &tools,
              )?;
- 
+
 +            if let Some(message) = retry_guard.terminal_error() {
 +                if print_output {
 +                    println!("\n{}", message);
@@ -202,7 +202,7 @@ index 9ac346b07..ffcbeda4b 100644
                  println!();
              }
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index ff5f8c652..426ed0ba8 100644
+index 1acb77274..9068b0087 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 @@ -129,6 +129,8 @@ impl Agent {
@@ -214,8 +214,8 @@ index ff5f8c652..426ed0ba8 100644
          self.set_log_context();
          let usage_turn_id = self.model_usage_turn_id();
          // Mark this session as actively streaming for presence UIs (e.g. the
-@@ -1678,14 +1680,19 @@ impl Agent {
- 
+@@ -1702,14 +1704,19 @@ impl Agent {
+
                  // Spawn tool in its own task so we can detach it to background on Alt+B
                  let registry_clone = self.registry.clone();
 +                let retry_guard_for_tool = retry_guard.clone();
@@ -236,10 +236,10 @@ index ff5f8c652..426ed0ba8 100644
                      )
                      .await
                  });
-@@ -1926,6 +1933,15 @@ impl Agent {
+@@ -1950,6 +1957,15 @@ impl Agent {
                  &tools,
              )?;
- 
+
 +            if let Some(message) = retry_guard.terminal_error() {
 +                let _ = event_tx.send(ServerEvent::TurnStopped {
 +                    reason: crate::protocol::TurnStopReason::Failure,
@@ -270,12 +270,12 @@ index 857869402..9ac99f97c 100644
  use std::sync::Arc;
 +use std::sync::Mutex as StdMutex;
  use std::sync::atomic::{AtomicU64, Ordering};
- 
+
  pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
 @@ -288,6 +290,19 @@ pub struct Registry {
      compaction: Arc<RwLock<CompactionManager>>,
  }
- 
+
 +struct RetryDispatchContext {
 +    guard: Arc<retry_guard::RepeatGuard>,
 +    tool_name: StdMutex<String>,
@@ -294,7 +294,7 @@ index 857869402..9ac99f97c 100644
  /// A tool cannot strongly own the registry containing it without creating an
 @@ -324,6 +339,24 @@ impl Clone for Registry {
  }
- 
+
  impl Registry {
 +    fn retry_guard(&self) -> Arc<retry_guard::RepeatGuard> {
 +        let key = Arc::as_ptr(&self.compaction) as usize;
@@ -320,7 +320,7 @@ index 857869402..9ac99f97c 100644
 @@ -1027,8 +1060,49 @@ impl Registry {
          }
      }
- 
+
 -    /// Execute a tool by name
 +    /// Execute a tool by name, sharing repeat state with nested dispatches such
 +    /// as batch calls while keeping cloned registries independent.
@@ -395,11 +395,11 @@ index 857869402..9ac99f97c 100644
 +        let _ = ACTIVE_RETRY_DISPATCH.try_with(|dispatch| {
 +            *dispatch.arguments.lock().unwrap_or_else(|e| e.into_inner()) = input.clone();
 +        });
- 
+
          // User-configured pre_tool gate: external policy hook that can block
          // this call (exit 2). Skipped entirely when not configured.
 @@ -1927,3 +2008,70 @@ mod mcp_allow_list_tests {
- 
+
  #[cfg(test)]
  mod tests;
 +

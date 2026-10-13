@@ -41,13 +41,13 @@ cargo check -p jcode-app-core
  5 files changed, 231 insertions(+), 51 deletions(-)
 
 diff --git a/README.md b/README.md
-index f160b7974..00f042a6f 100644
+index a4080d046..f10559802 100644
 --- a/README.md
 +++ b/README.md
 @@ -51,6 +51,13 @@ Run `/update` in the TUI to download the latest stable release in the background
  and reload with your session preserved. From a terminal, use `jcode update`, then
  restart the client. Both commands use the same update policy, including for dev builds.
- 
+
 +Set `JCODE_UPDATE_REPO=OWNER/REPOSITORY` to use releases and main-channel
 +source updates published by a GitHub fork. Fork releases must retain jcode's
 +platform asset names and optional `SHA256SUMS` asset. This affects only
@@ -59,29 +59,29 @@ index f160b7974..00f042a6f 100644
  compares the running binary's Git commit with the release tag. Builds ahead of,
  identical to, or diverged from the release are preserved. If ancestry cannot be
 @@ -333,16 +340,14 @@ Memories are automatically consolidated every so often via the ambient mode. Thi
- 
+
  ## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
- 
+
 -The `panel` tool opens a new desktop panel from Markdown content or a linked Markdown/PDF file, and supports update, focus, close, and list actions. See [Desktop panels](docs/PANELS.md) for the API, PDF limits, and compatibility details.
 -
 -The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline. 
 +The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline.
  <img width="2877" height="1762" alt="image" src="https://github.com/user-attachments/assets/6c7bec81-ef3f-434d-8a7b-d55f8a54e5cf" />
- 
+
  To make this possible, I created a new mermaid rendering library to render diagrams 1800x faster. It has no browser or Typescript dependency. See https://github.com/1jehuang/mermaid-rs-renderer
- 
+
 -To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any. 
 +To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any.
- 
+
 -Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems. 
 +Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems.
- 
+
  The custom scrollback implementation of jcode allows it to do much more than a native scrollback. However, it is a terminal-level limitation that I cannot have smooth, partial line scrolling with a custom scrollback. To fix this, I made my own terminal. Handterm https://github.com/1jehuang/handterm implements a native scroll api, and also happens to be very efficient. This is a work in progress. Scrolling is still well implemented for normal terminals.
- 
+
 @@ -370,6 +375,27 @@ Agents are also able to spawn their own swarms autonomously. They have a swarm t
- 
+
  ---
- 
+
 +## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
 +
 +The `panel` tool opens a new desktop panel from Markdown content or a linked Markdown/PDF file, and supports update, focus, close, and list actions. See [Desktop panels](docs/PANELS.md) for the API, PDF limits, and compatibility details.
@@ -105,7 +105,7 @@ index f160b7974..00f042a6f 100644
 +
  Swarm modes keep root reasoning separate from worker effort. Configure each mode
  in `~/.jcode/config.toml`:
- 
+
 diff --git a/crates/jcode-app-core/src/update.rs b/crates/jcode-app-core/src/update.rs
 index 740145b40..1bb26f1b6 100644
 --- a/crates/jcode-app-core/src/update.rs
@@ -122,7 +122,7 @@ index 740145b40..1bb26f1b6 100644
 @@ -17,8 +19,6 @@ use std::io::Read;
  use std::path::{Path, PathBuf};
  use std::time::{Duration, Instant, SystemTime};
- 
+
 -#[path = "update_dev_guard.rs"]
 -mod update_dev_guard;
  #[path = "update_metadata.rs"]
@@ -131,7 +131,7 @@ index 740145b40..1bb26f1b6 100644
 @@ -28,7 +28,75 @@ use update_metadata::{record_release_update_duration, record_source_update_durat
  pub use update_rate_limit::{RATE_LIMIT_ERROR_PREFIX, is_rate_limit_error};
  use update_rate_limit::{clear_rate_limit_backoff, rate_limit_error};
- 
+
 -const GITHUB_REPO: &str = "1jehuang/jcode";
 +const DEFAULT_UPDATE_REPOSITORY: &str = "fardjad/jcode";
 +const UPDATE_REPOSITORY_ENV: &str = "JCODE_UPDATE_REPO";
@@ -219,10 +219,10 @@ index 740145b40..1bb26f1b6 100644
 +        || update_dev_guard::should_install_release(&release.tag_name, repository),
      )
  }
- 
+
 @@ -236,13 +304,15 @@ fn release_url_override_with(value: Option<String>, sandboxed_home: bool) -> Opt
  }
- 
+
  pub fn fetch_latest_release_blocking() -> Result<GitHubRelease> {
 +    let repository = update_repository()?;
 +    fetch_latest_release_blocking_for(&repository)
@@ -239,13 +239,13 @@ index 740145b40..1bb26f1b6 100644
 +    let url = override_url
 +        .clone()
 +        .unwrap_or_else(|| repository.github_api_url("releases/latest"));
- 
+
      let client = reqwest::blocking::Client::builder()
          .timeout(UPDATE_CHECK_TIMEOUT)
 @@ -294,8 +364,8 @@ fn github_api_request(
      }
  }
- 
+
 -fn latest_main_sha_blocking() -> Result<String> {
 -    let url = format!("https://api.github.com/repos/{}/commits/main", GITHUB_REPO);
 +fn latest_main_sha_blocking(repository: &UpdateRepository) -> Result<String> {
@@ -256,7 +256,7 @@ index 740145b40..1bb26f1b6 100644
 @@ -360,19 +430,22 @@ fn verify_asset_checksum_if_available(
      Ok(())
  }
- 
+
 -fn synthetic_main_release(latest_sha: &str) -> GitHubRelease {
 +fn synthetic_main_release(latest_sha: &str, repository: &UpdateRepository) -> GitHubRelease {
      GitHubRelease {
@@ -269,7 +269,7 @@ index 740145b40..1bb26f1b6 100644
          _target_commitish: latest_sha.to_string(),
      }
  }
- 
+
 -fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
 -    let path = build_from_source()?;
 +fn install_main_source_update_blocking(
@@ -283,13 +283,13 @@ index 740145b40..1bb26f1b6 100644
 @@ -403,11 +476,11 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
      Ok(path)
  }
- 
+
 -fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
 +fn prepare_stable_update_blocking(repository: &UpdateRepository) -> Result<PreparedUpdate> {
      let current_version = jcode_build_meta::version();
 -    let release = fetch_latest_release_blocking()?;
 +    let release = fetch_latest_release_blocking_for(repository)?;
- 
+
 -    if !release_is_update(&release)? {
 +    if !release_is_update(&release, repository)? {
          return Ok(PreparedUpdate::None {
@@ -298,7 +298,7 @@ index 740145b40..1bb26f1b6 100644
 @@ -440,7 +513,7 @@ fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
      })
  }
- 
+
 -fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
 +fn prepare_main_update_blocking(repository: &UpdateRepository) -> Result<PreparedUpdate> {
      let current_hash = jcode_build_meta::git_hash();
@@ -307,7 +307,7 @@ index 740145b40..1bb26f1b6 100644
 @@ -449,7 +522,7 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
          });
      }
- 
+
 -    let latest_sha = latest_main_sha_blocking()?;
 +    let latest_sha = latest_main_sha_blocking(repository)?;
      if latest_sha.is_empty() {
@@ -321,12 +321,12 @@ index 740145b40..1bb26f1b6 100644
              estimate: update_estimate(summary, duration),
          });
      }
- 
+
      crate::logging::info("Main channel: cargo not found, falling back to latest release");
 -    prepare_stable_update_blocking()
 +    prepare_stable_update_blocking(repository)
  }
- 
+
  pub fn prepare_update_blocking() -> Result<PreparedUpdate> {
 +    let repository = update_repository()?;
      let channel = crate::config::config().features.update_channel;
@@ -337,7 +337,7 @@ index 740145b40..1bb26f1b6 100644
 +        crate::config::UpdateChannel::Stable => prepare_stable_update_blocking(&repository),
      }
  }
- 
+
 @@ -584,6 +659,7 @@ pub fn spawn_background_session_update(session_id: String) {
              }
              Ok(PreparedUpdate::MainSource {
@@ -359,7 +359,7 @@ index 740145b40..1bb26f1b6 100644
                          action,
 @@ -623,17 +701,20 @@ pub fn spawn_background_session_update(session_id: String) {
  }
- 
+
  pub fn check_for_update_blocking() -> Result<Option<GitHubRelease>> {
 +    let repository = update_repository()?;
      let channel = crate::config::config().features.update_channel;
@@ -370,14 +370,14 @@ index 740145b40..1bb26f1b6 100644
 +        crate::config::UpdateChannel::Stable => check_for_stable_update_blocking(&repository),
      }
  }
- 
+
 -fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
 -    let release = fetch_latest_release_blocking()?;
 +fn check_for_stable_update_blocking(
 +    repository: &UpdateRepository,
 +) -> Result<Option<GitHubRelease>> {
 +    let release = fetch_latest_release_blocking_for(repository)?;
- 
+
 -    if release_is_update(&release)? {
 +    if release_is_update(&release, repository)? {
          let asset_name = get_asset_name();
@@ -394,10 +394,10 @@ index 740145b40..1bb26f1b6 100644
          crate::logging::info("Main channel: no git hash in binary, skipping update check");
          return Ok(None);
      }
- 
+
 -    let latest_sha = latest_main_sha_blocking()?;
 +    let latest_sha = latest_main_sha_blocking(repository)?;
- 
+
      if latest_sha.is_empty() {
          return Ok(None);
 @@ -686,9 +767,9 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
@@ -414,7 +414,7 @@ index 740145b40..1bb26f1b6 100644
                  crate::logging::error(&format!("Main channel: build failed: {}", e));
 @@ -700,13 +781,13 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
      }
- 
+
      // Fallback: use latest stable release if available
 -    if let Ok(release) = fetch_latest_release_blocking() {
 +    if let Ok(release) = fetch_latest_release_blocking_for(repository) {
@@ -430,7 +430,7 @@ index 740145b40..1bb26f1b6 100644
      }
 @@ -724,7 +805,7 @@ fn has_cargo() -> bool {
  }
- 
+
  /// Build jcode from source by cloning/pulling the repo and running cargo build
 -fn build_from_source() -> Result<PathBuf> {
 +fn build_from_source(repository: &UpdateRepository) -> Result<PathBuf> {
@@ -467,11 +467,11 @@ index c83a52661..b0b7b2e13 100644
 +        |release_tag, current_hash| github_comparison(repository, release_tag, current_hash),
      )
  }
- 
+
 @@ -123,11 +126,20 @@ fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
      }
  }
- 
+
 -fn github_comparison(release_tag: &str, current_hash: &str) -> Result<bool> {
 -    let url = format!(
 -        "https://api.github.com/repos/{}/compare/{release_tag}...{current_hash}",
@@ -497,7 +497,7 @@ index c83a52661..b0b7b2e13 100644
 @@ -242,6 +254,15 @@ mod tests {
          }
      }
- 
+
 +    #[test]
 +    fn github_comparison_uses_selected_update_repository() {
 +        let repository = super::super::UpdateRepository::parse("ForkOwner/jcode-fork").unwrap();
@@ -517,7 +517,7 @@ index bc281ed44..f4991e4d1 100644
 @@ -2,6 +2,57 @@ use super::*;
  use jcode_update_core::parse_sha256sums;
  use sha2::{Digest, Sha256};
- 
+
 +#[test]
 +fn update_repository_defaults_to_fork() {
 +    assert_eq!(

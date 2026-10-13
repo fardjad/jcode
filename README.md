@@ -131,6 +131,18 @@ body sections (`Patch intent:`,
 `Why it exists:`, `Upstream integration points:`, `Update guidance:`,
 `Validation:`). See `AGENTS.md` for the full format.
 
+#### Patch whitespace
+
+The catalog validator checks whitespace only in added source lines inside
+unified-diff hunks. Snapshots automatically suppress the space prefix on empty
+context lines; the validator distinguishes those formatting lines from added
+or removed empty source lines, and still reports genuine whitespace defects at
+their source line. Running `git diff --check` directly on a `.patch` file can
+report false positives because diff context prefixes and mail-patch formatting
+are not source whitespace. Fix a reported source line in the owning commit in
+`.patched-jcode`, then regenerate the patch with `just snapshot-patches`.
+Never strip whitespace from generated `.patch` artifacts directly.
+
 ### 3. Install the patched version
 
 Build and install the current patched jcode:
