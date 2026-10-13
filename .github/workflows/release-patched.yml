@@ -147,6 +147,8 @@ jobs:
           if (-not [string]::IsNullOrWhiteSpace($extraArgs)) {
             $cargoArgs += $extraArgs -split ' '
           }
+          # Clear upstream's POSIX rustc wrapper on Windows.
+          if ("${{ runner.os }}" -eq "Windows") { $env:CARGO_BUILD_RUSTC_WRAPPER = "" }
           & cargo @cargoArgs
         env:
           JCODE_CI: "1"
