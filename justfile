@@ -172,6 +172,10 @@ install-patched-version:
   just --justfile "$repo_root/justfile" create-patched-copy
   (
     cd "$worktree"
+    # rust-objcopy cannot load libLLVM on macOS, so disable release stripping.
+    if [[ "$(uname -s)" == Darwin ]]; then
+      export CARGO_PROFILE_RELEASE_STRIP=none
+    fi
     JCODE_INSTALL_DIR="$install_dir" ./scripts/install_release.sh --fast
   )
 
