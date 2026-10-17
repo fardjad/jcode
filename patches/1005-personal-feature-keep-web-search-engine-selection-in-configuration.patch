@@ -6,6 +6,7 @@ Subject: [PATCH] feat: keep web-search engine selection in configuration
 X-Jcode-Patch-Intent: websearch tool runs only configured engines
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 1005-personal-feature-keep-web-search-engine-selection-in-configuration.patch
 
 Patch intent:
 Remove the request-level engine parameter from the local websearch tool so

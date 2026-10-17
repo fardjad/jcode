@@ -37,10 +37,10 @@ At runtime, each valid regular blueprint becomes a coordinator-visible
 `swarm_<id>` tool. The supplied roles in `workers/blueprints/` demonstrate this
 pattern:
 
+- `fixer` performs one literal mechanical change within coordinator-defined
+  scope.
 - `investigator` runs commands, searches code, and returns compact facts.
-- 
 - `research` handles web and jcode documentation research.
-- `automation` handles browser, desktop, and Gmail workflows.
 
 The coordinator blueprint explicitly guides selection of these workers for
 large reads, verbose commands, broad searches, research, and focused edits.
@@ -54,11 +54,13 @@ placing its raw investigation and tool output in the coordinator context.
 
 ## Bounded worker results and incremental inspection
 
-The same `1008` patch makes the initial swarm-tool response a compact summary,
-bounded to 2,000 characters. It also supplies deterministic, non-LLM follow-up
-reads, paged in 2,000-character chunks. Consequently, the coordinator can ask
-for a small conclusion first and inspect more evidence only for ambiguous or
-important cases.
+Patch
+`1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
+makes the initial swarm-tool response a compact summary, bounded to 2,000
+characters. It also supplies deterministic, non-LLM follow-up reads, paged in
+2,000-character chunks. Consequently, the coordinator can ask for a small
+conclusion first and inspect more evidence only for ambiguous or important
+cases.
 
 This is a context-shaping mechanism, not information deletion: the worker's
 full result remains available for paged retrieval according to the runtime's

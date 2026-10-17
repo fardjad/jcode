@@ -6,6 +6,7 @@ Subject: [PATCH] feat: persist effective prompt and tool definition snapshots
 X-Jcode-Patch-Intent: persist effective request prompts and tools alongside assistant replies
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 1008-personal-feature-persist-effective-prompt-and-tool-definition-snaps.patch
 
 Patch intent:
 Capture the exact combined system text and common tool definitions passed

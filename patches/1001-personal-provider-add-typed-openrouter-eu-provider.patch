@@ -6,6 +6,7 @@ Subject: [PATCH] feat: add typed OpenRouter EU provider
 X-Jcode-Patch-Intent: typed EU deployment identity, auth, caches, and pricing
 X-Jcode-Patch-Kind: personal-provider
 X-Jcode-Patch-Depends-On: 0004-candidate-add-provider-family-execution-allowlist.patch
+X-Jcode-Patch-File: 1001-personal-provider-add-typed-openrouter-eu-provider.patch
 
 Patch intent:
 Add OpenRouter EU as a first-class typed deployment with an EU endpoint,

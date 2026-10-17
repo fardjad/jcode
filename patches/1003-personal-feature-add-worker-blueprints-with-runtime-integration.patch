@@ -6,6 +6,7 @@ Subject: [PATCH] feat: add worker blueprints with runtime integration
 X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch
+X-Jcode-Patch-File: 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
 
 Patch intent:
 Add a worker blueprint system that lets a jcode user define reusable,

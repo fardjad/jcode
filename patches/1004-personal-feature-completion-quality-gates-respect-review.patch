@@ -7,6 +7,7 @@ X-Jcode-Patch-Intent: Skip automatic post-completion todo quality
 continuations when auto-review and auto-judge are both disabled.
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
+X-Jcode-Patch-File: 1004-personal-feature-completion-quality-gates-respect-review.patch
 
 Patch intent:
 Make automatic ownership, validation, and final-response todo continuations

@@ -7,6 +7,7 @@ X-Jcode-Patch-Intent: Allow configuring session picker sort order and
 default filter
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 1006-personal-feature-configure-session-picker-sort-and-filter.patch
 
 Patch intent:
 Add configurable sorting and default filter for the session picker,

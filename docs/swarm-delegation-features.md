@@ -3,19 +3,22 @@
 These patches add reusable worker blueprints and runtime hook integration for
 swarm-based delegation. The coordinator prompt in
 `workers/blueprints/coordinator.md` guides the coordinator on when and how to
-delegate token-heavy work to cheaper worker models.
+delegate token-heavy work to workers configured with task-appropriate models.
 
 ## Worker blueprints
 
 Patch `1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
 enables reusable worker blueprints with coordinator delegation. Each blueprint
-declares its enabled tools, effort level, and communication policy. Workers run
-on a cheaper model and return compact summaries instead of raw tool output.
+declares its enabled tools, effort level, and communication policy. A blueprint
+can pin a model that may cost less than the coordinator's model. Workers return
+compact summaries instead of raw tool output.
 
 Available workers:
 
 ```text
-swarm_investigator  Read-only investigation, shell commands, grep, file search, file reading, grep, tracing
+swarm_fixer         One literal mechanical change in coordinator-defined scope
+swarm_investigator  Read-only investigation, shell commands, grep, file search,
+                    file reading, grep, tracing
 swarm_research      Web and documentation research
 ```
 
@@ -46,7 +49,7 @@ Configure a post-tool transformer in `~/.jcode/config.toml`:
 
 ```toml
 [hooks]
-post_tool_transform = ["~/.jcode/plugins/delegation-guard-transform"]
+post_tool_transform = ["~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
 post_tool_transform_timeout_ms = 500
 ```
 
@@ -66,5 +69,5 @@ Configure a pre-tool transformer in `~/.jcode/config.toml`:
 
 ```toml
 [hooks]
-pre_tool_transform = ["~/.jcode/plugins/rtk-transform"]
+pre_tool_transform = ["~/.jcode/plugins/rtk/rtk-transform"]
 ```

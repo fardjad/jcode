@@ -1,4 +1,4 @@
-From fa918658f909c2d9988fa2bb77128a2491cb0e40 Mon Sep 17 00:00:00 2001
+From 12352402b23445a11fa3c31c5a295129d932f187 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:49 +0200
 Subject: [PATCH] feat: add provider family execution allowlist
@@ -6,6 +6,7 @@ Subject: [PATCH] feat: add provider family execution allowlist
 X-Jcode-Patch-Intent: expose and enforce provider-family execution allowlist
 X-Jcode-Patch-Kind: upstream-candidate
 X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 0004-candidate-add-provider-family-execution-allowlist.patch
 
 Patch intent:
 Add a provider-family execution allowlist that gates model switching,

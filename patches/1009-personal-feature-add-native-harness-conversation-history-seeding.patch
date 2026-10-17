@@ -6,6 +6,7 @@ Subject: [PATCH] feat: add native harness conversation history seeding
 X-Jcode-Patch-Intent: seed durable harness sessions from prior conversation turns
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 1009-personal-feature-add-native-harness-conversation-history-seeding.patch
 
 Patch intent:
 Add the native jcode harness API and daemon support needed for a caller to seed

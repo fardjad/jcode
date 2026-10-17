@@ -7,6 +7,7 @@ X-Jcode-Patch-Intent: Strip hosted services, telemetry, promotional
 content, onboarding, and sponsored integrations from jcode
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: 1001-personal-provider-add-typed-openrouter-eu-provider.patch, 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
+X-Jcode-Patch-File: 1007-personal-feature-remove-hosted-services-and-telemetry.patch
 
 Patch intent:
 Remove hosted accounts, billing, promotional content, sponsored discovery,

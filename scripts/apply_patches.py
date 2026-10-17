@@ -29,21 +29,23 @@ def apply(root: Path, worktree: Path, target: str | None, required_kind: str | N
             ordered = dependency_order(root, target_path)
         for patch in ordered:
             print(f"applying {patch.path.name}")
-            with isolated_environment() as environment:
-                subprocess.run(
-                    [
-                        "git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
-                        "am", str(patch.path),
-                    ],
-                    cwd=worktree,
-                    env=environment,
-                    check=True,
-                )
+        if not ordered:
+            return
+        with isolated_environment() as environment:
+            subprocess.run(
+                [
+                    "git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                    "am", *(str(patch.path) for patch in ordered),
+                ],
+                cwd=worktree,
+                env=environment,
+                check=True,
+            )
     except subprocess.CalledProcessError as error:
         raise CatalogError(
             f"git am conflict in {worktree}\n"
             f"git -C {worktree} status\n"
-            f"Resolve conflicts, then run: git -C {worktree} am --continue\n"
+            f"Resolve conflicts, then run: git -C {worktree} am --continue (applies the remaining patches)\n"
             f"Or abandon and retry: git -C {worktree} am --abort"
         ) from error
 

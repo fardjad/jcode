@@ -1,4 +1,5 @@
 # List orphan catalog workflow recipes.
+[default]
 help:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -63,18 +64,13 @@ ensure-personal-assets:
   printf 'rtk and delegation-guard hooks are configured\n'
 
 # Validate catalog patch metadata and synthetic application.
-validate-patch-files base="":
+validate-patch-files:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  if [[ -n "{{base}}" ]]; then
-    python3 "$repo_root/scripts/isolate_config.py" -- \
-      python3 "$repo_root/scripts/validate_patches.py" --base "{{base}}"
-  else
-    python3 "$repo_root/scripts/isolate_config.py" -- \
-      python3 "$repo_root/scripts/validate_patches.py"
-  fi
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/validate_patches.py"
 
 _bootstrap-nextest:
   #!/usr/bin/env bash
@@ -85,19 +81,16 @@ _bootstrap-nextest:
     python3 "$repo_root/scripts/bootstrap_nextest.py"
 
 # Create/reset persistent patched copy from VERSION.txt's upstream release.
-create-patched-copy base="":
+create-patched-copy:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  base="{{base}}"
-  if [[ -z "$base" ]]; then
-    base=$(python3 "$repo_root/scripts/version_base.py" resolve)
-  fi
+  base=$(python3 "$repo_root/scripts/version_base.py" resolve)
   worktree="$repo_root/.patched-jcode"
 
   python3 "$repo_root/scripts/isolate_config.py" -- \
-    python3 "$repo_root/scripts/validate_patches.py" --base "$base"
+    python3 "$repo_root/scripts/validate_patches.py"
   worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create patched-jcode "$base" --path "$worktree")
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
@@ -109,57 +102,75 @@ create-patched-copy base="":
 # Apply every patch, compile the complete patched workspace, and run its
 # compatibility suite. Use this after upstream changes and before publishing
 # catalog updates, because patch application alone cannot detect Rust errors.
-validate-patched-copy base="":
+# Validate the complete patched workspace and its compatibility suite.
+validate-patched-copy:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
   worktree="$repo_root/.patched-jcode"
 
-  just --justfile "$repo_root/justfile" create-patched-copy "{{base}}"
+  just --justfile "$repo_root/justfile" create-patched-copy
   (
     cd "$worktree"
     python3 "$repo_root/scripts/isolate_config.py" -- cargo check --workspace
   )
-  base="{{base}}"
-  if [[ -z "$base" ]]; then
-    base=$(python3 "$repo_root/scripts/version_base.py" resolve)
-  fi
+  base=$(python3 "$repo_root/scripts/version_base.py" resolve)
   just --justfile "$repo_root/justfile" _fast-test "$worktree" "$base"
   printf 'patched workspace validated: %s\n' "$worktree"
 
 # Regenerate every catalog patch and normalize personal From hashes.
-snapshot-patches:
+snapshot-patches *args:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  python3 "$repo_root/scripts/snapshot_patches.py"
-  python3 "$repo_root/scripts/normalize_patch.py"
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/snapshot_patches.py" {{args}}
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/normalize_patch.py"
 
-# Zero personal patch From hashes to avoid backing-commit-only diffs.
-normalize-patch:
+# Runs every scripts/test_* and plugins/*/test_* file under isolation, except
+# test_install_patched_version_recipe.sh, which does a full release build and
+# resets .patched-jcode; run that one by hand when changing the install recipe.
+# Run the catalog's own script and plugin tests.
+test-catalog:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  python3 "$repo_root/scripts/normalize_patch.py"
+  cd "$repo_root"
+  failed=()
+  for test in scripts/test_* plugins/*/test_*; do
+    case "$test" in
+      scripts/test_install_patched_version_recipe.sh)
+        printf 'skip %s (full release build)\n' "$test"
+        continue
+        ;;
+      *.py) runner=python3 ;;
+      *.sh) runner=bash ;;
+      *) continue ;;
+    esac
+    if python3 scripts/isolate_config.py -- "$runner" "$test" >/dev/null 2>&1; then
+      printf 'ok   %s\n' "$test"
+    else
+      printf 'FAIL %s\n' "$test"
+      failed+=("$test")
+    fi
+  done
+  if (( ${#failed[@]} )); then
+    printf 'rerun to see output: python3 scripts/isolate_config.py -- <runner> %s\n' "${failed[0]}" >&2
+    exit 1
+  fi
 
 # Print the commit-to-patch mapping for .patched-jcode.
-list-patches:
+list-patches *args:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  python3 "$repo_root/scripts/snapshot_patches.py" --list
-
-# One-time: copy patch metadata into .patched-jcode commit messages.
-migrate-commit-metadata:
-  #!/usr/bin/env bash
-  set -euo pipefail
-
-  repo_root=$(git rev-parse --show-toplevel)
-  python3 "$repo_root/scripts/migrate_commit_metadata.py"
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/snapshot_patches.py" --list {{args}}
 
 # Refresh patched copy, then install its fast release build.
 install-patched-version:
@@ -190,7 +201,7 @@ test-patch-file patch:
 
   base=$(python3 "$repo_root/scripts/version_base.py" resolve)
   python3 "$repo_root/scripts/isolate_config.py" -- \
-    python3 "$repo_root/scripts/validate_patches.py" --base "$base"
+    python3 "$repo_root/scripts/validate_patches.py"
   worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create "$name" "$base")
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
@@ -216,7 +227,7 @@ create-upstream-candidate-branch-from patch:
 
   base=$(python3 "$repo_root/scripts/version_base.py" resolve)
   python3 "$repo_root/scripts/isolate_config.py" -- \
-    python3 "$repo_root/scripts/validate_patches.py" --base "$base"
+    python3 "$repo_root/scripts/validate_patches.py"
   worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create "$name" "$base")
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
@@ -231,80 +242,60 @@ create-upstream-candidate-branch-from patch:
 # Learn compatibility exclusions from a clean worktree at the pinned release.
 # This is intentionally separate from patched validation so patch failures
 # cannot be learned or hidden.
-learn-upstream-exclusions base="":
+# Learn exclusions only from clean upstream compatibility test runs.
+learn-upstream-exclusions:
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  base="{{base}}"
-  if [[ -z "$base" ]]; then
-    base=$(python3 "$repo_root/scripts/version_base.py" resolve)
-  fi
-  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create sync-upstream "$base")
+  base=$(python3 "$repo_root/scripts/version_base.py" resolve)
+  worktree=$(python3 "$repo_root/scripts/patch_worktree.py" create clean-upstream "$base")
   trap 'printf "clean-upstream learning failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
   just --justfile "$repo_root/justfile" _learn-tests "$worktree" "$base"
-  python3 "$repo_root/scripts/patch_worktree.py" cleanup sync-upstream --path "$worktree"
+  python3 "$repo_root/scripts/patch_worktree.py" cleanup clean-upstream --path "$worktree"
   trap - ERR
   printf 'learned clean-upstream exclusions for: %s\n' "$base"
 
-# Sync to the newest canonical jcode stable release by default, or select a
-# specific stable vX.Y.Z tag. VERSION.txt changes only after validation passes.
-sync release="":
+# Fetches the tag, refuses a moved tag when given the reviewed commit hash, and
+# writes VERSION.txt. It does not validate patches: fix them on the new base,
+# finish with learn-upstream-exclusions and validate-patched-copy, and commit
+# the pin with the patch changes.
+# Pin the catalog to a canonical jcode stable release.
+set-version release expected="":
   #!/usr/bin/env bash
   set -euo pipefail
 
   repo_root=$(git rev-parse --show-toplevel)
-  requested_release="{{release}}"
+  release="{{release}}"
+  expected="{{expected}}"
   current_branch=$(git branch --show-current)
 
   if [[ "$current_branch" != personalized ]]; then
-    printf 'sync must run on personalized; current branch: %s\n' "$current_branch" >&2
+    printf 'set-version must run on personalized; current branch: %s\n' "$current_branch" >&2
     exit 1
   fi
   if [[ -n "$(git status --porcelain)" ]]; then
-    printf 'sync requires clean personalized checkout\n' >&2
+    printf 'set-version requires clean personalized checkout\n' >&2
     exit 1
   fi
-  if git worktree list --porcelain | grep -Fxq 'branch refs/heads/master'; then
-    printf 'refusing to update master: it is checked out in another worktree\n' >&2
-    exit 1
-  fi
-  if [[ -z "$requested_release" ]]; then
-    release=$(python3 "$repo_root/scripts/version_base.py" latest)
-    printf 'selected latest canonical jcode release tag: %s\n' "$release"
-  else
-    release="$requested_release"
-  fi
-
   [[ "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-    printf 'sync requires a stable vX.Y.Z release tag\n' >&2
+    printf 'set-version requires a stable vX.Y.Z release tag\n' >&2
     exit 1
   }
+  # Always refetch so a tag that moved since review is detected.
   selected_base=$(python3 "$repo_root/scripts/version_base.py" resolve "$release" --fetch)
-  printf 'selected canonical release: %s\nselected base: %s\n' "$release" "$selected_base"
-
-  original_version=$(python3 "$repo_root/scripts/version_base.py" pinned)
-  original_master=$(git show-ref --verify --hash refs/heads/master 2>/dev/null || true)
-  rollback_sync() {
-    python3 "$repo_root/scripts/version_base.py" write "$original_version" || true
-    if [[ -n "$original_master" ]]; then
-      git branch -f master "$original_master" || true
-    else
-      git branch -D master >/dev/null 2>&1 || true
-    fi
-  }
-  trap rollback_sync ERR
-
-  just --justfile "$repo_root/justfile" validate-patch-files "$selected_base"
-  just --justfile "$repo_root/justfile" learn-upstream-exclusions "$selected_base"
-  just --justfile "$repo_root/justfile" validate-patched-copy "$selected_base"
-
-  git branch -f master "$selected_base"
+  printf 'canonical release: %s\nrelease commit: %s\n' "$release" "$selected_base"
+  if [[ -n "$expected" ]]; then
+    [[ "$expected" =~ ^[0-9a-f]{7,40}$ && "$selected_base" == "$expected"* ]] || {
+      printf 'release commit %s does not match reviewed hash %s\n' "$selected_base" "$expected" >&2
+      exit 1
+    }
+  fi
   python3 "$repo_root/scripts/version_base.py" write "$release"
-  trap - ERR
+  printf 'VERSION.txt now pins %s; revert with: git checkout -- VERSION.txt\n' "$release"
 
-# Push catalog, pinned local release base, and candidate branches to origin.
+# Push catalog and candidate branches to origin.
 push:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -315,14 +306,8 @@ push:
     printf 'push must run on personalized; current branch: %s\n' "$current_branch" >&2
     exit 1
   fi
-  git show-ref --verify --quiet refs/heads/master || {
-    printf 'local master missing; run just sync first\n' >&2
-    exit 1
-  }
-
   refs=(
     refs/heads/personalized:refs/heads/personalized
-    refs/heads/master:refs/heads/master
   )
   while IFS= read -r ref; do
     branch=${ref#refs/heads/}

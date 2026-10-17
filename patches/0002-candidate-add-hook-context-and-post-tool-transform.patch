@@ -1,4 +1,4 @@
-From b666cc82fa528eb628dc39403fd6da17d048ebff Mon Sep 17 00:00:00 2001
+From 9b6114b2e83f7db0ac417e626e58b5535e41f45a Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add hook context and post-tool transform
@@ -6,6 +6,7 @@ Subject: [PATCH] feat: add hook context and post-tool transform
 X-Jcode-Patch-Intent: Scope turn hooks and add post-tool transforms
 X-Jcode-Patch-Kind: upstream-candidate
 X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 0002-candidate-add-hook-context-and-post-tool-transform.patch
 
 Patch intent:
 Add a swarm context system that scopes hook invocations to the correct

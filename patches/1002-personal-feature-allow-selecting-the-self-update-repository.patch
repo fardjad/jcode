@@ -6,6 +6,7 @@ Subject: [PATCH] feat: allow selecting the self-update repository
 X-Jcode-Patch-Intent: let fork builds check and install updates from a selected GitHub repository
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 1002-personal-feature-allow-selecting-the-self-update-repository.patch
 
 Patch intent:
 Add a validated JCODE_UPDATE_REPO override for GitHub release, main-channel,

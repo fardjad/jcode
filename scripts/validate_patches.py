@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import re
 import shutil
 import subprocess
@@ -117,7 +116,7 @@ def check_patch_whitespace(root: Path, patch: Patch, text: str) -> None:
             )
 
 
-def validate_file(root: Path, patch: Patch) -> None:
+def validate_file(root: Path, patch: Patch, *, require_file_header: bool = False) -> None:
     """Validate one discovered patch's body sections and metadata."""
     path = patch.path
     relative = path.relative_to(root).as_posix()
@@ -132,6 +131,14 @@ def validate_file(root: Path, patch: Patch) -> None:
             f"duplicate or missing patch body section: {relative}")
     for header in ("X-Jcode-Patch-Intent:", "X-Jcode-Patch-Kind:", "X-Jcode-Patch-Depends-On:"):
         require(header_body.count(header) == 1, f"duplicate or missing {header}: {relative}")
+    file_header = re.findall(r"^X-Jcode-Patch-File:\s*(.*?)\s*$", header_body, re.MULTILINE)
+    require(len(file_header) <= 1, f"duplicate X-Jcode-Patch-File: {relative}")
+    if file_header:
+        require(bool(file_header[0].strip()), f"empty X-Jcode-Patch-File: {relative}")
+        require(file_header[0].strip() == path.name,
+                f"X-Jcode-Patch-File does not match filename: {relative}")
+    else:
+        require(not require_file_header, f"missing X-Jcode-Patch-File: {relative}")
     require(all(position >= 0 for position in positions) and positions == sorted(positions),
             f"missing or out-of-order patch body section: {relative}")
     for index, (start, end) in enumerate(zip(positions, positions[1:] + [len(header_body)])):
@@ -147,19 +154,16 @@ def validate_file(root: Path, patch: Patch) -> None:
 
 def main() -> None:
     """Run discovered catalog validation and apply every patch to its pinned release."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--base", help="explicit release commit for a sync preflight")
-    args = parser.parse_args()
     root = repository_root()
     temporary: Path | None = None
     applied: Path | None = None
     try:
         require(git("branch", "--show-current", cwd=root) == "personalized", "current branch must be personalized")
-        base = args.base or resolve_base(root)
+        base = resolve_base(root)
         catalog = patches(root)
         ordered = [catalog[name] for name in sorted(catalog)]
         for patch in ordered:
-            validate_file(root, patch)
+            validate_file(root, patch, require_file_header=True)
         tracked = set(git("ls-files", "patches/*", cwd=root).splitlines())
         expected_files = {patch.path.relative_to(root).as_posix() for patch in ordered}
         require(tracked == expected_files, f"unexpected patch files: {' '.join(sorted(tracked - expected_files))}")

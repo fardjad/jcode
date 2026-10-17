@@ -93,10 +93,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch selected upstream base
-        shell: bash
-        run: git fetch origin master:master
-
       # git am creates local commits while materializing the patch catalog.
       # GitHub-hosted runners have no default committer identity.
       - name: Configure catalog patch committer

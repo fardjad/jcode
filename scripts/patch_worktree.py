@@ -59,6 +59,12 @@ def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-"
         if git("status", "--porcelain", cwd=path):
             raise CatalogError(f"existing worktree is dirty: {path}")
         print(f"reusing worktree {path}", file=sys.stderr)
+        previous_head = git("rev-parse", "HEAD", cwd=path)
+        print(
+            f"previous HEAD {previous_head}; recover with: "
+            f"git -C {path} reset --hard {previous_head}",
+            file=sys.stderr,
+        )
         resolved_revision = git("rev-parse", f"{revision}^{{commit}}", cwd=root)
         # Use reset --hard instead of checkout --detach to avoid git's
         # "leaving N commits behind" warning when the worktree HEAD already

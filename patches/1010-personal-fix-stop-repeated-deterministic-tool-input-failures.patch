@@ -6,6 +6,7 @@ Subject: [PATCH] fix: stop repeated deterministic tool input failures
 X-Jcode-Patch-Intent: Stop repeated deterministic panel and applet input errors
 X-Jcode-Patch-Kind: personal-fix
 X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch
+X-Jcode-Patch-File: 1010-personal-fix-stop-repeated-deterministic-tool-input-failures.patch
 
 Patch intent:
 Stop a turn after three matching typed deterministic tool-input failures,

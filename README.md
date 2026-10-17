@@ -77,33 +77,55 @@ or modify personal configuration as part of normal workflows.
 
 ### 1. Sync jcode and carry patches forward
 
-Sync to the newest stable upstream release tag:
+Upgrades start with a decision-first review from a jcode session in this
+repository:
 
-```bash
-just sync
+```text
+/plan-upstream-sync vX.Y.Z
 ```
 
-Or choose a specific upstream release tag:
+The project-local skill checks that the catalog is clean and current with its
+tracking remote, then compares the pinned release with the chosen canonical
+stable release. It creates four temporary reports in ignored `sync-scratch/`
+covering upstream context, upstream intent, patch overlap, and a decision-ready
+plan. Patch metadata remains the source of truth for patch intent. The skill
+stops at the plan; executing it needs your separate approval. Reports may be
+discarded after a successful validated sync with your permission.
+
+See [the skill](.jcode/skills/plan-upstream-sync/SKILL.md) for the procedure and
+[AGENTS.md](AGENTS.md#decision-first-upstream-review) for the governing rules.
+These are agent workflow rules, not checks enforced by any recipe.
+
+Executing the plan uses ordinary recipes. Pin the new release, checking the
+commit hash that was reviewed:
 
 ```bash
-just sync vX.Y.Z
+just set-version vX.Y.Z <reviewed-hash>
 ```
 
-`VERSION.txt` records the stable upstream release targeted by the catalog. Patch
-validation and application always use that release, independent of local branch
-names or remote-tracking refs. Sync fetches from the canonical jcode repository,
-tests the selected release with the complete patch stack, then updates the
-version pin. If upstream changes conflict with a patch, resolve the conflict in
-`.patched-jcode/`, amend the affected commit, then run `just snapshot-patches`.
-Sync uses the canonical jcode URL regardless of configured `upstream` or
-`origin` remote URLs.
+`VERSION.txt` records the stable upstream release targeted by the catalog.
+`set-version` fetches it from the canonical jcode URL, regardless of configured
+remotes, and writes the pin without validating anything. Every recipe then
+works on the new release: recreate `.patched-jcode`, carry patches forward with
+the commit-first workflow below, snapshot, and finish with:
 
-When you are happy with the synchronized catalog, push both the catalog and
-selected upstream base:
+```bash
+just learn-upstream-exclusions
+just validate-patched-copy
+```
+
+The pin, patches, and docs are committed together. Until then,
+`git checkout -- VERSION.txt` restores the previous pin.
+
+When you are happy with the synchronized catalog, you can push the catalog and
+any candidate branches. Agents push only when you explicitly ask:
 
 ```bash
 just push
 ```
+
+`VERSION.txt` is the only version pin. Catalog workflows do not use a `master`
+branch; upgrades go through `/plan-upstream-sync` and `just set-version`.
 
 ### 2. Make a change (commit-first workflow)
 
@@ -117,19 +139,23 @@ just list-patches                 # see which commit maps to which patch
 # commit or amend the relevant commit there
 just snapshot-patches             # regenerate and normalize personal patch hashes
 just validate-patch-files         # confirm patches apply cleanly
+just test-catalog                 # after changing scripts/, plugins/, or the justfile
 just test-patch-file patches/<name>.patch   # run the patch's validation
 ```
 
 `just snapshot-patches` automatically zeroes the `From` hash in every personal
-patch so recreated backing commits do not create irrelevant diffs. Use `just
-normalize-patch` to apply that cleanup independently. Upstream-candidate patch
-hashes are preserved as provenance.
+patch so recreated backing commits do not create irrelevant diffs.
+Upstream-candidate patch hashes are preserved as provenance.
 
 Each commit above the release pinned by `VERSION.txt` in `.patched-jcode/` is
-one patch. The commit message must include the `X-Jcode-Patch-*` headers and the
+one patch. The commit message must include the `X-Jcode-Patch-*` headers,
+including `X-Jcode-Patch-File` naming its patch file, and the
 body sections (`Patch intent:`,
 `Why it exists:`, `Upstream integration points:`, `Update guidance:`,
-`Validation:`). See `AGENTS.md` for the full format.
+`Validation:`). Snapshot maps commits to files by that header, checks every
+commit before writing, and deletes patches no commit claims only with
+`just snapshot-patches --prune`. See `AGENTS.md` for the full format and the
+remove, reorder and split steps.
 
 #### Patch whitespace
 

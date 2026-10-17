@@ -41,7 +41,7 @@ pre_tool_transform = ["~/.jcode/plugins/rtk/rtk-transform"]
 Run isolated contract tests from repository root:
 
 ```bash
-python3 plugins/rtk/test_rtk_transform.py
+python3 scripts/isolate_config.py -- python3 plugins/rtk/test_rtk_transform.py
 ```
 
 jcode-side generic pre-tool transformer implementation is supplied by the
@@ -73,5 +73,5 @@ post_tool_transform_timeout_ms = 500
 Run isolated contract tests from repository root:
 
 ```bash
-python3 plugins/delegation-guard/test_transform.py
+python3 scripts/isolate_config.py -- python3 plugins/delegation-guard/test_transform.py
 ```
