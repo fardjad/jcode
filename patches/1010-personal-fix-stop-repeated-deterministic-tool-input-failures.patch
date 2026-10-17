@@ -1,51 +1,66 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <public@fardjad.com>
-Date: Mon, 12 Oct 2026 16:27:24 +0200
+Date: Thu, 15 Oct 2026 05:12:49 +0200
 Subject: [PATCH] fix: stop repeated deterministic tool input failures
 
-X-Jcode-Patch-Intent: Stop retries of repeated typed input errors
+X-Jcode-Patch-Intent: Stop repeated deterministic panel and applet input errors
 X-Jcode-Patch-Kind: personal-fix
 X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch
 
 Patch intent:
 Stop a turn after three matching typed deterministic tool-input failures,
-including nested batch dispatches, in both turn loops. Unknown tool names use
-the same typed classification; other untyped tool errors are not classified.
+including unknown tool names and nested batch dispatches, in both turn loops.
+Preserve exact matching for uncategorized errors and use stable panel and applet
+input categories so revised arguments can reach correction without extra
+provider retries.
 
 Why it exists:
 Repeated invalid inputs can otherwise trigger repeated provider requests without
 progress. Classification is explicit through a typed error, not inferred from
-error text. This does not classify arbitrary validation or runtime failures.
+error text. Panel and applet deterministic input failures are categorized;
+unknown tool names are typed but uncategorized. Runtime and other untyped tool
+errors remain unclassified.
 
 Upstream integration points:
-The change adds tool::retry_guard and wraps Registry::execute dispatches,
+The change extends tool::retry_guard and wraps Registry::execute dispatches,
 including nested BatchTool calls. Agent::run_turn and
-Agent::run_turn_streaming_mpsc reset and check the shared per-turn guard. The
-retry guard also depends on hook context established by patch 0002.
+Agent::run_turn_streaming_mpsc reset and check the shared per-turn guard.
+PanelTool and AppletTool expose UI schemas and validate their inputs; OpenAI
+strict-schema normalization requires nullable panel fields while dynamic applet
+node fields remain non-strict. Registry also types unknown tool names. The retry
+guard depends on hook context established by patch 0002.
 
 Update guidance:
 Keep failure classification limited to explicit typed input errors and unknown
-tool names. Preserve separate guard state for cloned registries, nested batch
-dispatch tracking, the bounded repeat window, and terminal checks in both turn
-loops. Preserve the hook context dependency inherited from patch 0002.
+tool names. Preserve exact matching for uncategorized errors, stable categories
+for panel and applet input failures, tool/category separation, and clearing
+matching prior failures after a successful call. Keep runtime failures untyped.
+Preserve cloned-registry guard state, nested batch dispatch tracking, the
+bounded repeat window, and terminal checks in both turn loops. Keep the UI tool
+schemas aligned with their deserializers and preserve permissive nested applet
+fields.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-app-core retry_guard --lib
-scripts/cargo_exec.sh test -p jcode-app-core malformed_tool_call_recovery_tests --lib
-scripts/cargo_exec.sh test -p jcode-app-core tool::batch_tests --lib
-
-(cherry picked from commit 38a68a4c74c3f17d263df7118a81856b417622c5)
+cargo test -p jcode-app-core panel --lib
+cargo test -p jcode-app-core applet --lib
+cargo test -p jcode-app-core retry_guard --lib
+cargo test -p jcode-app-core malformed_tool_call_recovery_tests --lib
+cargo test -p jcode-app-core tool::batch_tests --lib
 ---
- .../src/agent/response_recovery.rs            |  81 ++++++
+ .../src/agent/response_recovery.rs            | 197 +++++++++
  crates/jcode-app-core/src/agent/turn_loops.rs |  19 +-
  .../src/agent/turn_streaming_mpsc.rs          |  20 +-
- crates/jcode-app-core/src/tool/mod.rs         | 152 +++++++++-
- crates/jcode-app-core/src/tool/retry_guard.rs | 271 ++++++++++++++++++
- 5 files changed, 538 insertions(+), 5 deletions(-)
+ crates/jcode-app-core/src/tool/applet.rs      | 104 +++--
+ .../jcode-app-core/src/tool/applet_tests.rs   | 116 ++++++
+ crates/jcode-app-core/src/tool/mod.rs         | 152 ++++++-
+ crates/jcode-app-core/src/tool/panel.rs       |  87 ++--
+ crates/jcode-app-core/src/tool/panel_tests.rs | 229 +++++++++++
+ crates/jcode-app-core/src/tool/retry_guard.rs | 381 ++++++++++++++++++
+ 9 files changed, 1240 insertions(+), 65 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/retry_guard.rs
 
 diff --git a/crates/jcode-app-core/src/agent/response_recovery.rs b/crates/jcode-app-core/src/agent/response_recovery.rs
-index 0c5601aef..73d0b1927 100644
+index 0c5601aef..4f0820439 100644
 --- a/crates/jcode-app-core/src/agent/response_recovery.rs
 +++ b/crates/jcode-app-core/src/agent/response_recovery.rs
 @@ -882,6 +882,30 @@ mod malformed_tool_call_recovery_tests {
@@ -79,10 +94,27 @@ index 0c5601aef..73d0b1927 100644
      /// A round whose single tool call has null arguments: the streamed
      /// fragments fail JSON parsing, which is exactly how the reported
      /// GLM-5.3 null-argument `write`/`bash` calls reach the agent.
-@@ -927,6 +951,23 @@ mod malformed_tool_call_recovery_tests {
+@@ -927,6 +951,40 @@ mod malformed_tool_call_recovery_tests {
          events
      }
 
++    fn tool_round(id: &str, name: &str, arguments: Value) -> Vec<StreamEvent> {
++        vec![
++            StreamEvent::ToolUseStart {
++                id: id.into(),
++                name: name.into(),
++            },
++            StreamEvent::ToolInputDeltaFor {
++                id: id.into(),
++                delta: arguments.to_string(),
++            },
++            StreamEvent::ToolUseEndFor { id: id.into() },
++            StreamEvent::MessageEnd {
++                stop_reason: Some("tool_use".into()),
++            },
++        ]
++    }
++
 +    fn repeated_rejected_round(id: &str) -> Vec<StreamEvent> {
 +        vec![
 +            StreamEvent::ToolUseStart {
@@ -103,10 +135,28 @@ index 0c5601aef..73d0b1927 100644
      /// One malformed plus one valid capture call in a single round.
      fn mixed_round(bad_id: &str, good_id: &str) -> Vec<StreamEvent> {
          vec![
-@@ -988,6 +1029,25 @@ mod malformed_tool_call_recovery_tests {
+@@ -988,6 +1046,43 @@ mod malformed_tool_call_recovery_tests {
          (agent, session_ids, exec_log)
      }
 
++    async fn scripted_ui_agent(rounds: Vec<Vec<StreamEvent>>) -> (Agent, SessionLog) {
++        let session_ids: SessionLog = Arc::new(Mutex::new(Vec::new()));
++        let provider: Arc<dyn Provider> = Arc::new(MalformedScriptProvider {
++            rounds: Arc::new(Mutex::new(rounds)),
++            session_ids: Arc::clone(&session_ids),
++        });
++        let registry = Registry::new(Arc::clone(&provider)).await;
++        let mut agent = Agent::new(provider, registry);
++        agent.add_message(
++            Role::User,
++            vec![ContentBlock::Text {
++                text: "test actual UI recovery".into(),
++                cache_control: None,
++            }],
++        );
++        (agent, session_ids)
++    }
++
 +    async fn scripted_rejecting_agent(rounds: Vec<Vec<StreamEvent>>) -> (Agent, SessionLog) {
 +        let session_ids: SessionLog = Arc::new(Mutex::new(Vec::new()));
 +        let provider: Arc<dyn Provider> = Arc::new(MalformedScriptProvider {
@@ -129,10 +179,91 @@ index 0c5601aef..73d0b1927 100644
      fn correction_reminders(agent: &Agent) -> Vec<String> {
          agent
              .session
-@@ -1201,6 +1261,27 @@ mod malformed_tool_call_recovery_tests {
+@@ -1201,6 +1296,108 @@ mod malformed_tool_call_recovery_tests {
          }
      }
 
++    #[tokio::test]
++    async fn ui_errors_stop_both_turn_loops_across_changed_inputs_and_batch_dispatch() {
++        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
++        for streaming in [false, true] {
++            for (tool, args) in [
++                (
++                    "panel",
++                    vec![
++                        json!({"action":"spawn","title":"first","intent":"first notes"}),
++                        json!({"action":"spawn","title":"second","intent":"different notes"}),
++                        json!({"action":"spawn","title":"third","intent":"latest notes"}),
++                    ],
++                ),
++                (
++                    "applet",
++                    vec![
++                        json!({"title":"first","intent":"first view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
++                        json!({"title":"second","intent":"second view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
++                        json!({"title":"third","intent":"third view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
++                    ],
++                ),
++            ] {
++                let rounds = args
++                    .into_iter()
++                    .enumerate()
++                    .map(|(index, input)| tool_round(&format!("{tool}-{index}"), tool, input))
++                    .chain(std::iter::once(final_text_round()))
++                    .collect();
++                let (mut agent, session_ids) = scripted_ui_agent(rounds).await;
++                let error = run_scripted_turn(&mut agent, streaming)
++                    .await
++                    .expect_err("third same-category UI validation failure ends turn");
++                assert!(error
++                    .to_string()
++                    .contains("Repeated identical deterministic tool input error"));
++                assert_eq!(session_ids.lock().unwrap().len(), 3, "{tool}, streaming={streaming}");
++            }
++
++            let batch_args = ["one", "two", "three"].into_iter().enumerate().map(|(index, title)| {
++                json!({
++                    "tool_calls":[{
++                        "tool":"panel",
++                        "intent":format!("batch panel {index}"),
++                        "parameters":{"action":"spawn","title":title,"intent":format!("panel {index}")}
++                    }]
++                })
++            });
++            let rounds = batch_args
++                .enumerate()
++                .map(|(index, input)| tool_round(&format!("batch-{index}"), "batch", input))
++                .chain(std::iter::once(final_text_round()))
++                .collect();
++            let (mut agent, session_ids) = scripted_ui_agent(rounds).await;
++            let error = run_scripted_turn(&mut agent, streaming)
++                .await
++                .expect_err("third nested panel input failure ends turn");
++            assert!(error
++                .to_string()
++                .contains("Repeated identical deterministic tool input error"));
++            assert_eq!(session_ids.lock().unwrap().len(), 3, "batch, streaming={streaming}");
++        }
++    }
++
++    #[tokio::test]
++    async fn corrected_ui_input_succeeds_before_repeat_threshold_in_both_turn_loops() {
++        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
++        for streaming in [false, true] {
++            let rounds = vec![
++                tool_round("p1", "panel", json!({"action":"spawn","title":"one","intent":"first"})),
++                tool_round("p2", "panel", json!({"action":"spawn","title":"two","intent":"second"})),
++                tool_round("p3", "panel", json!({"action":"spawn","title":"fixed","intent":"fixed","content":"# Good"})),
++                final_text_round(),
++            ];
++            let (mut agent, session_ids) = scripted_ui_agent(rounds).await;
++            run_scripted_turn(&mut agent, streaming)
++                .await
++                .expect("corrected panel input should reset matching failures");
++            assert_eq!(session_ids.lock().unwrap().len(), 4, "streaming={streaming}");
++        }
++    }
++
 +    #[tokio::test]
 +    async fn repeated_deterministic_input_errors_stop_both_turn_loops() {
 +        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
@@ -252,6 +383,360 @@ index 1acb77274..9068b0087 100644
              // === INJECTION POINT D: All tools done, before next API call ===
              // This is the safest point for non-urgent injection since all tool_results
              // have been added and the conversation is in a valid state.
+diff --git a/crates/jcode-app-core/src/tool/applet.rs b/crates/jcode-app-core/src/tool/applet.rs
+index 52dfe6e30..54e9234c3 100644
+--- a/crates/jcode-app-core/src/tool/applet.rs
++++ b/crates/jcode-app-core/src/tool/applet.rs
+@@ -1,6 +1,6 @@
+ //! `applet` tool: mount declarative native UI (agent applets) into the session.
+ use super::{Tool, ToolContext, ToolOutput};
+-use anyhow::{Context, Result, anyhow, bail};
++use anyhow::{Result, bail};
+ use async_trait::async_trait;
+ use jcode_applet_types::{
+     Anchor, AssetDecl, Document, Instance, Lifetime, PatchOp, Placement, Scope, View,
+@@ -103,6 +103,7 @@ impl AppletTool {
+ }
+
+ #[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
+ struct AppletInput {
+     #[serde(default)]
+     action: Option<String>,
+@@ -128,6 +129,14 @@ struct AppletInput {
+     wait: Option<bool>,
+     #[serde(default)]
+     timeout_seconds: Option<u64>,
++    #[serde(default, rename = "intent")]
++    _intent: Option<String>,
++    #[serde(default, rename = "accept_large_output")]
++    _accept_large_output: Option<bool>,
++}
++
++fn invalid_input(category: &'static str, message: impl Into<String>) -> anyhow::Error {
++    super::retry_guard::DeterministicToolInputError::new_categorized(message, category).into()
+ }
+
+ fn resolve_placement(raw: Option<&Value>, ctx: &ToolContext) -> Result<Placement> {
+@@ -155,15 +164,17 @@ fn resolve_placement(raw: Option<&Value>, ctx: &ToolContext) -> Result<Placement
+             "composer" => Placement::Composer {
+                 session_id: ctx.session_id.clone(),
+             },
+-            other => bail!(
+-                "unknown placement {other:?}; use inline, end, panel, sidebar, overlay, composer, or an object"
+-            ),
++            other => {
++                return Err(invalid_input(
++                    "applet.placement",
++                    format!("unknown placement {other:?}; use inline, end, panel, sidebar, overlay, composer, or an object"),
++                ));
++            }
+         });
+     }
+-    let mut obj = raw
+-        .as_object()
+-        .cloned()
+-        .ok_or_else(|| anyhow!("placement must be a string or object"))?;
++    let mut obj = raw.as_object().cloned().ok_or_else(|| {
++        invalid_input("applet.placement", "placement must be a string or object")
++    })?;
+     let kind = obj
+         .get("kind")
+         .and_then(Value::as_str)
+@@ -180,11 +191,18 @@ fn resolve_placement(raw: Option<&Value>, ctx: &ToolContext) -> Result<Placement
+             json!({"kind":"tool_call","call_id":ctx.tool_call_id}),
+         );
+     }
+-    serde_json::from_value(Value::Object(obj)).context("invalid placement")
++    serde_json::from_value(Value::Object(obj)).map_err(|error| {
++        invalid_input("applet.placement", format!("invalid placement: {error}"))
++    })
+ }
+
+ fn parse_view(view: Value) -> Result<View> {
+-    serde_json::from_value(view).context("invalid view (see the node list in the tool description)")
++    serde_json::from_value(view).map_err(|error| {
++        invalid_input(
++            "applet.view",
++            format!("invalid view (example: {{\"type\":\"markdown\",\"text\":\"Hello\"}}): {error}"),
++        )
++    })
+ }
+
+ #[async_trait]
+@@ -194,7 +212,7 @@ impl Tool for AppletTool {
+     }
+
+     fn description(&self) -> &str {
+-        "Show interactive native UI (an applet) in Jcode Desktop. By default the card replaces this tool call in the transcript. \
++        "Show interactive native UI (an applet) in Jcode Desktop. For static Markdown or PDF content, prefer the panel tool. A minimal valid view is {\"type\":\"markdown\",\"text\":\"# Hello\\nWelcome\"}. By default the card replaces this tool call in the transcript. \
+ View is a tree of nodes, each {\"type\":...}. Layout: stack{direction:vertical|horizontal,gap,padding,align,children}, grid{min_column_width,children}, scroll{max_height,children}, card{title,children} (don't nest), tabs{bind,tabs:[{id,label,children}]}, spacer, divider. \
+ Content: text{text,style:body|title|heading|caption|mono,tone,max_lines}, markdown{text}, code{text,language}, image{source:{url|data|asset},alt,aspect_ratio}, icon{name}, key_value{rows:[{key,value}]}, table{columns,rows}, progress{value 0-1,label}, empty{title,detail}, error{message,retry}. \
+ Controls (always pills): button{label,variant:primary|secondary|compact|danger,on_press}, chip{label,on_press}, toggle{label,bind}, input{bind,placeholder,multiline,on_submit}, select{bind,options:[{value,label}]}, list{children:[list_item{title,subtitle,meta,badges,on_press}]}. Escape hatch: html{source,height}. \
+@@ -205,14 +223,17 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+     }
+
+     fn parameters_schema(&self) -> Value {
++        let known_types = jcode_applet_types::view::KNOWN_TYPES;
++        let known_type_names = known_types.join(", ");
+         json!({
+             "type": "object",
++            "additionalProperties": false,
+             "properties": {
+                 "intent": super::intent_schema_property(),
+                 "action": {"type":"string","enum":["mount","update","patch","move","close","list"],"default":"mount"},
+                 "instance": {"type":"string","description":"Instance id. Optional for mount (generated). Required otherwise."},
+                 "title": {"type":"string"},
+-                "view": {"type":"object","description":"Root view node, e.g. {\"type\":\"stack\",\"gap\":\"sm\",\"children\":[...]}."},
++                "view": {"type":"object", "required":["type"], "properties":{"type":{"type":"string", "examples":known_types}}, "additionalProperties":true,"description":format!("Root view node; required type identifies the node and fields or nested children follow its guidance. Known node types: {known_type_names}. Unknown node types and their fields are preserved, e.g. {{\"type\":\"markdown\",\"text\":\"Hello\"}}.")},
+                 "state": {"type":"object","description":"Initial values for bound controls."},
+                 "assets": {"type":"array","items":{"type":"object"},"description":"Images: [{id,mime,data(base64)}], referenced as {\"asset\":id}."},
+                 "placement": {"description":"Default: inline in place of this tool call. Shorthand: inline, end, panel, sidebar, overlay, composer. Or an object like {\"kind\":\"panel\"}.","anyOf":[{"type":"string"},{"type":"object"}]},
+@@ -226,14 +247,18 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+     }
+
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+-        let params: AppletInput = serde_json::from_value(input).context("invalid applet input")?;
++        let params: AppletInput = serde_json::from_value(input).map_err(|error| {
++            invalid_input("applet.input", format!("invalid applet input: {error}"))
++        })?;
+         let action = params.action.as_deref().unwrap_or("mount");
+         let sid = ctx.session_id.clone();
+         let require_id = || {
+-            params
+-                .instance
+-                .clone()
+-                .ok_or_else(|| anyhow!("instance is required for {action}"))
++            params.instance.clone().ok_or_else(|| {
++                invalid_input(
++                    "applet.instance",
++                    format!("instance is required for {action}"),
++                )
++            })
+         };
+
+         let (snapshot, id) = match action {
+@@ -266,7 +291,12 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+                     (None, "mount") => {
+                         generate_instance_id(params.title.as_deref().unwrap_or("applet"))
+                     }
+-                    _ => bail!("instance is required for update"),
++                    _ => {
++                        return Err(invalid_input(
++                            "applet.instance",
++                            "instance is required for update",
++                        ));
++                    }
+                 };
+                 let prior = existing.get(&id);
+                 if action == "update" && prior.is_none() {
+@@ -276,7 +306,7 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+                     Some(v) => parse_view(v)?,
+                     None => prior
+                         .map(|p| p.document.view.clone())
+-                        .ok_or_else(|| anyhow!("view is required for mount"))?,
++                        .ok_or_else(|| invalid_input("applet.view", "view is required for mount"))?,
+                 };
+                 let title = params
+                     .title
+@@ -302,6 +332,21 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+                     .or_else(|| prior.map(|p| p.lifetime))
+                     .unwrap_or_default();
+                 let revision = prior.map(|p| p.document.revision + 1).unwrap_or(1);
++                let document = Document {
++                    revision,
++                    title,
++                    view,
++                    state,
++                    assets,
++                };
++                jcode_applet_types::validate_document(
++                    &document,
++                    &agent::manifest(),
++                    &Default::default(),
++                )
++                .map_err(|error| {
++                    invalid_input("applet.view", format!("invalid applet document: {error}"))
++                })?;
+                 let snapshot = crate::applets::mount(
+                     &sid,
+                     Instance {
+@@ -312,13 +357,7 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+                             session_id: sid.clone(),
+                         },
+                         lifetime,
+-                        document: Document {
+-                            revision,
+-                            title,
+-                            view,
+-                            state,
+-                            assets,
+-                        },
++                        document,
+                     },
+                 )?;
+                 (snapshot, id)
+@@ -328,7 +367,7 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+                 let ops = params
+                     .ops
+                     .clone()
+-                    .ok_or_else(|| anyhow!("ops is required for patch"))?;
++                    .ok_or_else(|| invalid_input("applet.ops", "ops is required for patch"))?;
+                 let (snapshot, _) = crate::applets::patch(&sid, &id, params.base_revision, &ops)?;
+                 (snapshot, id)
+             }
+@@ -339,7 +378,9 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+                         params
+                             .placement
+                             .as_ref()
+-                            .ok_or_else(|| anyhow!("placement is required for move"))?,
++                            .ok_or_else(|| {
++                                invalid_input("applet.placement", "placement is required for move")
++                            })?,
+                     ),
+                     &ctx,
+                 )?;
+@@ -354,7 +395,12 @@ Use update to replace the document, patch for small changes (ops on /view, /stat
+                 publish(&sid, snapshot);
+                 return Ok(ToolOutput::new(format!("Closed applet `{id}`.")).with_title("applet"));
+             }
+-            other => bail!("unknown applet action {other:?}"),
++            other => {
++                return Err(invalid_input(
++                    "applet.action",
++                    format!("unknown applet action {other:?}; use mount, update, patch, move, close, or list"),
++                ));
++            }
+         };
+
+         let revision = snapshot
+diff --git a/crates/jcode-app-core/src/tool/applet_tests.rs b/crates/jcode-app-core/src/tool/applet_tests.rs
+index 99914722b..f9cd4fc74 100644
+--- a/crates/jcode-app-core/src/tool/applet_tests.rs
++++ b/crates/jcode-app-core/src/tool/applet_tests.rs
+@@ -130,6 +130,122 @@ async fn mount_patch_wait_and_close() {
+     );
+ }
+
++#[tokio::test]
++async fn applet_input_view_and_placement_errors_are_categorized() {
++    use super::super::retry_guard::DeterministicToolInputError;
++
++    let _guard = crate::storage::lock_test_env();
++    let _home = temp_home();
++    let tool = AppletTool::new();
++    let empty_view_error = tool
++        .execute(
++            json!({"view":{}}),
++            context("applet-invalid-input", "call-missing-view-type"),
++        )
++        .await
++        .unwrap_err();
++    assert!(
++        empty_view_error
++            .downcast_ref::<DeterministicToolInputError>()
++            .is_some(),
++        "expected categorized applet view error: {empty_view_error:#}"
++    );
++    assert!(
++        empty_view_error.to_string().contains("missing a string `type`"),
++        "missing type detail should be actionable: {empty_view_error:#}"
++    );
++    assert!(
++        empty_view_error
++            .to_string()
++            .contains(r#"example: {"type":"markdown","text":"Hello"}"#),
++        "view error should include a valid markdown example: {empty_view_error:#}"
++    );
++
++    let malformed_nested_node_error = tool
++        .execute(
++            json!({"view":{"type":"stack","children":[{"type":"image","alt":"bad"}]}}),
++            context("applet-invalid-input", "call-malformed-nested-node"),
++        )
++        .await
++        .unwrap_err();
++    assert!(
++        malformed_nested_node_error
++            .downcast_ref::<DeterministicToolInputError>()
++            .is_some(),
++        "expected categorized malformed node error: {malformed_nested_node_error:#}"
++    );
++    assert!(
++        malformed_nested_node_error
++            .to_string()
++            .contains("invalid `image` node: missing field `source`"),
++        "malformed known node should retain serde detail: {malformed_nested_node_error:#}"
++    );
++
++    let unknown_view = super::parse_view(json!({
++        "type":"future_widget",
++        "custom_field":{"value":7},
++        "custom_list":["a","b"]
++    }))
++    .expect("unknown node types are preserved");
++    let unknown_view = serde_json::to_value(&unknown_view).unwrap();
++    assert_eq!(
++        unknown_view,
++        json!({
++            "type":"future_widget",
++            "custom_field":{"value":7},
++            "custom_list":["a","b"]
++        })
++    );
++
++    for input in [
++        json!({}),
++        json!({"view":{"type":"stack","children":[{"type":"image","source":{"path":"no"},"alt":"bad"}]}}),
++        json!({"view":{"type":"markdown","text":"valid"},"placement":"unknown-placement"}),
++        json!({"action":"unknown"}),
++    ] {
++        let error = tool
++            .execute(input, context("applet-invalid-input", "call-invalid"))
++            .await
++            .unwrap_err();
++        assert!(
++            error.downcast_ref::<DeterministicToolInputError>().is_some(),
++            "expected categorized applet input error: {error:#}"
++        );
++    }
++    let schema = tool.parameters_schema();
++    assert_eq!(
++        schema["properties"]["view"]["properties"]["type"]["type"],
++        "string"
++    );
++    assert_eq!(
++        schema["properties"]["view"]["properties"]["type"]["examples"],
++        json!(jcode_applet_types::view::KNOWN_TYPES)
++    );
++    assert_eq!(
++        schema["properties"]["view"]["additionalProperties"],
++        true
++    );
++    let unknown_type_schema = schema["properties"]["view"]["properties"]["type"].clone();
++    assert!(unknown_type_schema.get("enum").is_none());
++    assert!(unknown_type_schema.get("const").is_none());
++    let compatible = jcode_provider_core::openai_schema::openai_compatible_schema(&schema);
++    assert_eq!(compatible["properties"]["view"]["required"], json!(["type"]));
++    assert_eq!(compatible["properties"]["view"]["additionalProperties"], true);
++    assert!(
++        !jcode_provider_core::openai_schema::schema_supports_strict(&compatible),
++        "dynamic nested applet fields must disable strict mode"
++    );
++
++    let output = tool
++        .execute(
++            json!({"view":{"type":"stack","children":[{"type":"markdown","text":"valid"}]}}),
++            context("applet-valid-input", "call-valid"),
++        )
++        .await
++        .unwrap();
++    assert!(output.output.contains("revision 1"));
++}
++
+ #[test]
+ fn action_message_is_compact() {
+     let msg = format_action_message(
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
 index 857869402..9ac99f97c 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
@@ -469,12 +954,397 @@ index 857869402..9ac99f97c 100644
 +        }
 +    }
 +}
+diff --git a/crates/jcode-app-core/src/tool/panel.rs b/crates/jcode-app-core/src/tool/panel.rs
+index 920285ae6..e304ee4f5 100644
+--- a/crates/jcode-app-core/src/tool/panel.rs
++++ b/crates/jcode-app-core/src/tool/panel.rs
+@@ -1,6 +1,6 @@
+ //! First-class desktop panel lifecycle, backed by the legacy shared panel state.
+ use super::{Tool, ToolContext, ToolOutput};
+-use anyhow::{Result, ensure};
++use anyhow::Result;
+ use async_trait::async_trait;
+ use serde::Deserialize;
+ use serde_json::{Value, json};
+@@ -35,7 +35,7 @@ impl Tool for PanelTool {
+         "panel"
+     }
+     fn description(&self) -> &str {
+-        "Open and manage desktop panels from Markdown content or a Markdown/PDF file."
++        "Open and manage desktop panels from Markdown content or a Markdown/PDF file. For static text or compact UI, prefer an applet with a markdown view."
+     }
+     fn parameters_schema(&self) -> Value {
+         json!({
+@@ -43,37 +43,48 @@ impl Tool for PanelTool {
+             "additionalProperties": false,
+             "properties": {
+                 "intent": super::intent_schema_property(),
+-                "action": {"type":"string", "enum":["spawn","update","focus","close","list"], "default":"spawn", "description":"Default spawn. Spawn/update need content or file_path. Focus/close need panel_id."},
+-                "panel_id": {"type":"string", "description":"Same-session panel ID for update/focus/close. Omit for spawn."},
+-                "title": {"type":"string", "description":"Panel title for spawn/update."},
+-                "content": {"type":"string", "description":"Markdown for spawn/update, mutually exclusive with file_path."},
+-                "file_path": {"type":"string", "description":"Markdown/PDF path for spawn/update, relative to cwd. Exclusive with content."},
+-                "focus": {"type":"boolean", "description":"Focus after spawn/update. Defaults true for spawn and false for update."}
++                    "action": {"type":"string", "enum":["spawn","update","focus","close","list"], "default":"spawn", "description":"Default spawn. Spawn/update need exactly one of content or file_path. Focus/close need panel_id."},
++                    "panel_id": {"type":"string", "description":"Same-session panel ID for update/focus/close. Omit for spawn."},
++                    "title": {"type":"string", "description":"Panel title for spawn/update."},
++                    "content": {"type":"string", "description":"Markdown for spawn/update, mutually exclusive with file_path. Example: {\"action\":\"spawn\",\"title\":\"Notes\",\"content\":\"# Notes\\nHello\"}."},
++                    "file_path": {"type":"string", "description":"Markdown/PDF path for spawn/update, relative to cwd. Exclusive with content."},
++                    "focus": {"type":"boolean", "description":"Focus after spawn/update. Defaults true for spawn and false for update."}
+             }
+         })
+     }
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+-        let mut params: PanelInput = serde_json::from_value(input)?;
++        let mut params: PanelInput = serde_json::from_value(input).map_err(|error| {
++            super::retry_guard::DeterministicToolInputError::new_categorized(
++                format!("Invalid panel input: {error}"),
++                "panel.input",
++            )
++        })?;
+         let action = params.action.as_deref().unwrap_or("spawn");
+         let mut legacy = json!({});
+         let panel_id =
+             match action {
+                 "spawn" | "update" => {
+-                    ensure!(
+-                        params.content.is_some() != params.file_path.is_some(),
+-                        "spawn/update requires exactly one of content or file_path"
+-                    );
++                    if params.content.is_some() == params.file_path.is_some() {
++                        return Err(super::retry_guard::DeterministicToolInputError::new_categorized(
++                            "spawn/update requires exactly one of content or file_path; provide one non-null field and omit the other. Example: {\"action\":\"spawn\",\"title\":\"Notes\",\"content\":\"# Notes\\nHello\"}.",
++                            "panel.content_source",
++                        ).into());
++                    }
+                     let id = if action == "spawn" {
+-                        ensure!(
+-                            params.panel_id.is_none(),
+-                            "spawn generates panel_id; do not supply one"
+-                        );
++                        if params.panel_id.is_some() {
++                            return Err(super::retry_guard::DeterministicToolInputError::new_categorized(
++                                "spawn generates panel_id; omit panel_id",
++                                "panel.spawn_id",
++                            ).into());
++                        }
+                         format!("panel-{}", uuid::Uuid::new_v4())
+                     } else {
+-                        let id = params
+-                            .panel_id
+-                            .as_deref()
+-                            .ok_or_else(|| anyhow::anyhow!("panel_id is required for update"))?;
++                        let id = params.panel_id.as_deref().ok_or_else(|| {
++                            super::retry_guard::DeterministicToolInputError::new_categorized(
++                                "panel_id is required for update",
++                                "panel.update_id",
++                            )
++                        })?;
+                         let snapshot = crate::side_panel::snapshot_for_session(&ctx.session_id)?;
+                         let existing =
+                             snapshot.pages.iter().find(|p| p.id == id).ok_or_else(|| {
+@@ -96,28 +107,42 @@ impl Tool for PanelTool {
+                     Some(id)
+                 }
+                 "focus" | "close" | "list" => {
+-                    ensure!(
+-                        params.content.is_none()
+-                            && params.file_path.is_none()
+-                            && params.title.is_none()
+-                            && params.focus.is_none(),
+-                        "content, file_path, title and focus are only valid for spawn/update"
+-                    );
++                    if params.content.is_some()
++                        || params.file_path.is_some()
++                        || params.title.is_some()
++                        || params.focus.is_some()
++                    {
++                        return Err(super::retry_guard::DeterministicToolInputError::new_categorized(
++                            "content, file_path, title, and focus are only valid for spawn/update; omit these fields for focus/close/list",
++                            "panel.action_fields",
++                        ).into());
++                    }
+                     legacy["action"] = json!(match action {
+                         "focus" => "focus",
+                         "close" => "delete",
+                         _ => "status",
+                     });
+                     if action == "list" {
+-                        ensure!(params.panel_id.is_none(), "list does not accept panel_id");
++                        if params.panel_id.is_some() {
++                            return Err(super::retry_guard::DeterministicToolInputError::new_categorized(
++                                "list does not accept panel_id; omit panel_id",
++                                "panel.list_id",
++                            ).into());
++                        }
+                         None
+                     } else {
+                         Some(params.panel_id.ok_or_else(|| {
+-                            anyhow::anyhow!("panel_id is required for focus/close")
++                            super::retry_guard::DeterministicToolInputError::new_categorized(
++                                "panel_id is required for focus/close",
++                                "panel.panel_id",
++                            )
+                         })?)
+                     }
+                 }
+-                other => anyhow::bail!("unknown panel action: {other}"),
++                other => return Err(super::retry_guard::DeterministicToolInputError::new_categorized(
++                    format!("unknown panel action: {other}; use spawn, update, focus, close, or list"),
++                    "panel.action",
++                ).into()),
+             };
+         legacy["page_id"] = json!(panel_id);
+         let session_id = ctx.session_id.clone();
+diff --git a/crates/jcode-app-core/src/tool/panel_tests.rs b/crates/jcode-app-core/src/tool/panel_tests.rs
+index a0bd9d64c..e761b099f 100644
+--- a/crates/jcode-app-core/src/tool/panel_tests.rs
++++ b/crates/jcode-app-core/src/tool/panel_tests.rs
+@@ -1,5 +1,6 @@
+ #![cfg_attr(test, allow(clippy::await_holding_lock))]
+ use super::*;
++use crate::tool::Registry;
+ use crate::side_panel::SidePanelSnapshot;
+
+ fn context(dir: &std::path::Path, session: &str) -> ToolContext {
+@@ -205,3 +206,231 @@ async fn panel_registered_lifecycle_and_validation() {
+             .expect("framework-injected fields must be accepted");
+     }
+ }
++
++#[tokio::test]
++async fn panel_provider_input_errors_are_categorized_and_success_accepts_nulls() {
++    use super::super::retry_guard::DeterministicToolInputError;
++
++    let _guard = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().unwrap();
++    let old = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", temp.path());
++    struct Restore(Option<std::ffi::OsString>);
++    impl Drop for Restore {
++        fn drop(&mut self) {
++            if let Some(v) = &self.0 {
++                crate::env::set_var("JCODE_HOME", v);
++            } else {
++                crate::env::remove_var("JCODE_HOME");
++            }
++        }
++    }
++    let _restore = Restore(old);
++    let tool = PanelTool::new();
++    let xor_error = tool
++        .execute(
++            json!({"action":"spawn","content":"hello","file_path":"notes.md"}),
++            context(temp.path(), "panel-input-errors"),
++        )
++        .await
++        .unwrap_err();
++    assert!(
++        xor_error
++            .downcast_ref::<DeterministicToolInputError>()
++            .is_some(),
++        "expected typed panel input error: {xor_error:#}"
++    );
++    assert!(
++        xor_error
++            .to_string()
++            .contains("exactly one of content or file_path"),
++        "panel error should state the XOR requirement: {xor_error:#}"
++    );
++    assert!(
++        xor_error.to_string().contains("omit the other"),
++        "panel error should say how to satisfy the XOR requirement: {xor_error:#}"
++    );
++    assert!(
++        xor_error.to_string().contains(
++            r##"Example: {"action":"spawn","title":"Notes","content":"# Notes\nHello"}."##
++        ),
++        "panel error should include the valid spawn example: {xor_error:#}"
++    );
++    for input in [
++        json!({"content":"a","file_path":"b"}),
++        json!({"action":"spawn"}),
++        json!({"action":"spawn","content":null}),
++        json!({"action":"focus"}),
++        json!({"action":"not-real"}),
++    ] {
++        let error = tool
++            .execute(input, context(temp.path(), "panel-input-errors"))
++            .await
++            .unwrap_err();
++        assert!(
++            error.downcast_ref::<DeterministicToolInputError>().is_some(),
++            "expected deterministic input error: {error:#}"
++        );
++    }
++
++    let registry = super::super::Registry::empty();
++    registry
++        .register("panel".into(), std::sync::Arc::new(PanelTool::new()))
++        .await;
++    registry
++        .register(
++            "applet".into(),
++            std::sync::Arc::new(super::super::applet::AppletTool::new()),
++        )
++        .await;
++    for (title, intent) in [("one", "show first"), ("two", "show second"), ("three", "show third")] {
++        let result = registry
++            .execute(
++                "panel",
++                json!({"action":"spawn","title":title,"intent":intent}),
++                context(temp.path(), "panel-repeat-input"),
++            )
++            .await;
++        assert!(result.is_err());
++    }
++    assert!(registry.retry_guard_handle().terminal_error().is_some());
++
++    registry.retry_guard_handle().reset();
++    for (title, intent) in [("one", "mount first"), ("two", "mount second"), ("three", "mount third")] {
++        let result = registry
++            .execute(
++                "applet",
++                json!({
++                    "title":title,
++                    "intent":intent,
++                    "view":{"type":"image","source":{"path":"no"},"alt":"bad"}
++                }),
++                context(temp.path(), "applet-repeat-input"),
++            )
++            .await;
++        assert!(result.is_err());
++    }
++    assert!(registry.retry_guard_handle().terminal_error().is_some());
++
++    registry.retry_guard_handle().reset();
++    for panel_id in ["missing-one", "missing-two", "missing-three"] {
++        let error = registry
++            .execute(
++                "panel",
++                json!({"action":"focus","panel_id":panel_id}),
++                context(temp.path(), "panel-runtime-failure"),
++            )
++            .await
++            .unwrap_err();
++        assert!(
++            error.downcast_ref::<DeterministicToolInputError>().is_none(),
++            "missing panel runtime lookup must stay untyped: {error:#}"
++        );
++    }
++    assert!(registry.retry_guard_handle().terminal_error().is_none());
++
++    let registry = Registry::empty();
++    registry
++        .register("panel".into(), std::sync::Arc::new(super::super::panel::PanelTool::new()))
++        .await;
++    for panel_id in ["missing-one", "missing-two", "missing-three"] {
++        let error = registry
++            .execute(
++                "panel",
++                json!({"action":"focus","panel_id":panel_id}),
++                context(std::path::Path::new("/nonexistent"), "panel-runtime-failure"),
++            )
++            .await
++            .unwrap_err();
++        assert!(
++            error.downcast_ref::<DeterministicToolInputError>().is_none(),
++            "missing panel runtime lookup must stay untyped: {error:#}"
++        );
++    }
++    assert!(registry.retry_guard_handle().terminal_error().is_none());
++
++    let definition = tool.parameters_schema();
++    assert!(definition["properties"]["content"]["description"]
++        .as_str()
++        .unwrap()
++        .contains("Example:"));
++    let compatible = jcode_provider_core::openai_schema::openai_compatible_schema(&definition);
++    assert!(jcode_provider_core::openai_schema::schema_supports_strict(&compatible));
++    let strict_schema = jcode_provider_core::openai_schema::strict_normalize_schema(&compatible);
++    for field in ["action", "panel_id", "title", "content", "file_path", "focus", "intent"] {
++        assert!(
++            strict_schema["required"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|required| required == field),
++            "strict panel schema makes every optional field required: {field}"
++        );
++        assert!(
++            strict_schema["properties"][field]["type"]
++                .as_array()
++                .is_some_and(|types| types.iter().any(|ty| ty == "null")),
++            "optional panel field must be nullable: {field}"
++        );
++    }
++    assert!(tool.description().contains("prefer an applet"));
++
++    let category_registry = Registry::empty();
++    category_registry
++        .register("panel".into(), std::sync::Arc::new(PanelTool::new()))
++        .await;
++    category_registry
++        .register(
++            "applet".into(),
++            std::sync::Arc::new(super::super::applet::AppletTool::new()),
++        )
++        .await;
++    for title in ["first", "second"] {
++        assert!(category_registry
++            .execute(
++                "panel",
++                json!({"action":"spawn","title":title}),
++                context(temp.path(), "separate-ui-categories"),
++            )
++            .await
++            .is_err());
++        assert!(category_registry
++            .execute(
++                "applet",
++                json!({"view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
++                context(temp.path(), "separate-ui-categories"),
++            )
++            .await
++            .is_err());
++    }
++    assert!(category_registry.retry_guard_handle().terminal_error().is_none());
++    assert!(category_registry
++        .execute(
++            "panel",
++            json!({"action":"spawn","title":"third"}),
++            context(temp.path(), "separate-ui-categories"),
++        )
++        .await
++        .is_err());
++    assert!(category_registry.retry_guard_handle().terminal_error().is_some());
++
++    let runtime_registry = Registry::empty();
++    runtime_registry
++        .register("panel".into(), std::sync::Arc::new(PanelTool::new()))
++        .await;
++    for panel_id in ["missing-one", "missing-two", "missing-three"] {
++        let error = runtime_registry
++            .execute(
++                "panel",
++                json!({"action":"focus","panel_id":panel_id}),
++                context(std::path::Path::new("/nonexistent"), "panel-runtime-failure"),
++            )
++            .await
++            .unwrap_err();
++        assert!(
++            error.downcast_ref::<DeterministicToolInputError>().is_none(),
++            "missing panel runtime lookup must stay untyped: {error:#}"
++        );
++    }
++    assert!(runtime_registry.retry_guard_handle().terminal_error().is_none());
++}
 diff --git a/crates/jcode-app-core/src/tool/retry_guard.rs b/crates/jcode-app-core/src/tool/retry_guard.rs
 new file mode 100644
-index 000000000..81bb8b4e0
+index 000000000..a880b1e07
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/retry_guard.rs
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,381 @@
 +use anyhow::Result;
 +use serde_json::Value;
 +use std::collections::VecDeque;
@@ -488,12 +1358,24 @@ index 000000000..81bb8b4e0
 +#[derive(Debug)]
 +pub(crate) struct DeterministicToolInputError {
 +    message: String,
++    category: Option<String>,
 +}
 +
 +impl DeterministicToolInputError {
 +    pub(crate) fn new(message: impl Into<String>) -> Self {
 +        Self {
 +            message: message.into(),
++            category: None,
++        }
++    }
++
++    pub(crate) fn new_categorized(
++        message: impl Into<String>,
++        category: impl Into<String>,
++    ) -> Self {
++        Self {
++            message: message.into(),
++            category: Some(category.into()),
 +        }
 +    }
 +}
@@ -507,10 +1389,15 @@ index 000000000..81bb8b4e0
 +impl Error for DeterministicToolInputError {}
 +
 +#[derive(Clone, Debug, PartialEq, Eq)]
++enum FailureKind {
++    Exact { arguments: String, error: String },
++    Category(String),
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
 +struct Signature {
 +    tool_name: String,
-+    arguments: String,
-+    error: String,
++    kind: FailureKind,
 +}
 +
 +struct Dispatch {
@@ -543,15 +1430,24 @@ index 000000000..81bb8b4e0
 +        let failure = result.as_ref().err().and_then(|error| {
 +            error
 +                .downcast_ref::<DeterministicToolInputError>()
-+                .map(|_| Signature {
++                .map(|input_error| Signature {
 +                    tool_name: tool_name.to_string(),
-+                    arguments: arguments.clone(),
-+                    error: error.to_string(),
++                    kind: match &input_error.category {
++                        Some(category) => FailureKind::Category(category.clone()),
++                        None => FailureKind::Exact {
++                            arguments: arguments.clone(),
++                            error: error.to_string(),
++                        },
++                    },
 +                })
 +        });
 +        if result.is_ok() {
 +            for dispatch in &mut state.recent {
-+                if dispatch.tool_name == tool_name && dispatch.arguments == arguments {
++                if dispatch.tool_name == tool_name
++                    && (dispatch.failure.as_ref().is_some_and(|failure| {
++                        matches!(failure.kind, FailureKind::Category(_))
++                    }) || dispatch.arguments == arguments)
++                {
 +                    dispatch.failure = None;
 +                }
 +            }
@@ -664,6 +1560,15 @@ index 000000000..81bb8b4e0
 +    }
 +
 +    #[test]
++    fn changed_error_text_does_not_match_uncategorized_failures() {
++        let guard = RepeatGuard::default();
++        guard.record("edit", &json!({"path":"a"}), &typed_error("first message"));
++        guard.record("edit", &json!({"path":"a"}), &typed_error("second message"));
++        guard.record("edit", &json!({"path":"a"}), &typed_error("third message"));
++        assert!(guard.terminal_error().is_none());
++    }
++
++    #[test]
 +    fn registry_clones_have_independent_repeat_counters() {
 +        let registry = crate::tool::Registry::empty();
 +        let guard = registry.retry_guard_handle();
@@ -721,6 +1626,81 @@ index 000000000..81bb8b4e0
 +        guard.record("edit", &json!({"path":"a"}), &Ok(()));
 +        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
 +        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
++        assert!(guard.terminal_error().is_none());
++    }
++
++    #[test]
++    fn categorized_failures_ignore_arguments_and_error_text_but_not_category() {
++        let guard = RepeatGuard::default();
++        for (arguments, message, category) in [
++            (&json!({"content":"a"}), "missing content", "panel.content"),
++            (&json!({"content":"b"}), "different explanation", "panel.content"),
++        ] {
++            let error = DeterministicToolInputError::new_categorized(message, category);
++            guard.record("panel", arguments, &Err::<(), _>(error.into()));
++        }
++        assert!(guard.terminal_error().is_none());
++        let distinct = DeterministicToolInputError::new_categorized("still invalid", "panel.action");
++        guard.record("panel", &json!({"action":"bad"}), &Err::<(), _>(distinct.into()));
++        assert!(guard.terminal_error().is_none());
++        let repeated = DeterministicToolInputError::new_categorized("another message", "panel.content");
++        guard.record("panel", &json!({"content":"c"}), &Err::<(), _>(repeated.into()));
++        assert!(guard.terminal_error().is_some());
++    }
++
++    #[test]
++    fn categorized_success_clears_all_categories_for_tool() {
++        let guard = RepeatGuard::default();
++        for category in ["applet.view", "applet.placement"] {
++            for _ in 0..2 {
++                let error = DeterministicToolInputError::new_categorized("bad", category);
++                guard.record(
++                    "applet",
++                    &json!({"view":{}}),
++                    &Err::<(), _>(error.into()),
++                );
++            }
++        }
++        guard.record("applet", &json!({"view":{"type":"markdown"}}), &Ok(()));
++        for category in ["applet.view", "applet.placement"] {
++            for _ in 0..2 {
++                let error = DeterministicToolInputError::new_categorized("bad again", category);
++                guard.record(
++                    "applet",
++                    &json!({"view":{"type":"text"}}),
++                    &Err::<(), _>(error.into()),
++                );
++            }
++        }
++        assert!(guard.terminal_error().is_none());
++        let error = DeterministicToolInputError::new_categorized("bad", "applet.view");
++        guard.record("applet", &json!({}), &Err::<(), _>(error.into()));
++        assert!(guard.terminal_error().is_some());
++    }
++
++    #[test]
++    fn categorized_failures_remain_scoped_to_window_and_runtime_errors_are_untyped() {
++        let guard = RepeatGuard::default();
++        for _ in 0..2 {
++            let error = DeterministicToolInputError::new_categorized("bad", "panel.content");
++            guard.record("panel", &json!({}), &Err::<(), _>(error.into()));
++        }
++        for index in 0..30 {
++            guard.record("other", &json!({"n":index}), &untyped_error("filesystem failure"));
++        }
++        let error = DeterministicToolInputError::new_categorized("different tool", "panel.content");
++        guard.record("applet", &json!({}), &Err::<(), _>(error.into()));
++        assert!(guard.terminal_error().is_none());
++        let error = DeterministicToolInputError::new_categorized("bad", "panel.content");
++        guard.record("panel", &json!({}), &Err::<(), _>(error.into()));
++        assert!(guard.terminal_error().is_none());
++        for index in 0..32 {
++            guard.record("other", &json!({"n":index}), &untyped_error("I/O failure"));
++        }
++        let runtime = untyped_error("missing panel id");
++        for _ in 0..4 {
++            guard.record("panel", &json!({}), &runtime);
++        }
 +        assert!(guard.terminal_error().is_none());
 +    }
 +

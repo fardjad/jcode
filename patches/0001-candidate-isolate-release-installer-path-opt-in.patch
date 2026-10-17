@@ -1,4 +1,4 @@
-From b6072893c0452b6899a4b8e0dd72893a9640b0a0 Mon Sep 17 00:00:00 2001
+From 4e8166dbe4b32030fcffc3b9ac847ae691dc5006 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] fix: isolate release installer PATH opt-in

@@ -1,4 +1,4 @@
-From 39172f701e48c669d2d023256dc1dee8c83d0948 Mon Sep 17 00:00:00 2001
+From fa918658f909c2d9988fa2bb77128a2491cb0e40 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:49 +0200
 Subject: [PATCH] feat: add provider family execution allowlist

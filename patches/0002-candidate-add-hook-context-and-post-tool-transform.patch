@@ -1,4 +1,4 @@
-From c04ada0f1b65a2fb6ed415801e9350fa1c3e501c Mon Sep 17 00:00:00 2001
+From b666cc82fa528eb628dc39403fd6da17d048ebff Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add hook context and post-tool transform

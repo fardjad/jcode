@@ -1,4 +1,4 @@
-From d7eb82fd8d6524b9b7958b6b0af5d53123e686c5 Mon Sep 17 00:00:00 2001
+From 86231f72f5adbe7e704e948529d42680fc424bd4 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: delete sessions from picker with Ctrl+D
