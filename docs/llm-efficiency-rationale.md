@@ -76,8 +76,7 @@ adds context-aware hook integration. Hooks receive whether swarm is enabled and
 the process role (`coordinator`, `worker`, or `internal`). It also adds:
 
 - a synchronous `post_tool_transform` hook that can replace the
-  model-visible tool result;
-- a detached `post_tool_record` hook for observability; and
+  model-visible tool result; and
 - temporary-file spilling for large hook payloads, with runtime-managed TTL
   cleanup.
 
@@ -159,6 +158,7 @@ failure rate is not automatically an efficiency improvement.
 - `1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
 - `1004-personal-feature-completion-quality-gates-respect-review.patch`
 - `1005-personal-feature-keep-web-search-engine-selection-in-configuration.patch`
+- `1006-personal-feature-configure-session-picker-sort-order.patch`
 - `0002-candidate-add-hook-context-and-post-tool-transform.patch`
 - upstream `pre_tool_transform` hook (formerly
   `0001-candidate-pre-tool-input-transformers.patch`)

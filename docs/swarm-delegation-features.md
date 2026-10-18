@@ -32,15 +32,13 @@ swarm = true
 swarm_model = "openrouter-eu:gpt-4.1"
 ```
 
-## Swarm context, post-tool transform, and record hooks
+## Swarm context and post-tool transform hook
 
 Patch `0002-candidate-add-hook-context-and-post-tool-transform.patch`
-exposes swarm state and process role to all hooks via environment variables and
-structured JSON, and adds synchronous post-tool transform and detached
-post-tool record hooks. The transform hook lets plugins replace oversized
-tool results before they enter model context. The record hook logs tool
-invocations for historical lookups. Large tool I/O overflows to temp files
-with TTL cleanup.
+exposes swarm state and process role to hooks via environment variables and
+structured JSON, and adds a synchronous post-tool transform hook. The hook lets
+plugins replace oversized tool results before they enter model context. Large
+hook payloads spill to temp files with TTL cleanup.
 
 Hooks can check `JCODE_HOOK_SWARM_ENABLED` and `JCODE_HOOK_PROCESS_ROLE` to
 behave differently for coordinators versus workers.

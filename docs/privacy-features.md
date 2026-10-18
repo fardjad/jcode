@@ -1,40 +1,40 @@
-# Privacy and cleanup features
+# Privacy and hosted-feature controls
 
-Patch `1007-personal-feature-remove-hosted-services-and-telemetry.patch`
-removes hosted subscription, telemetry, promotional, sponsored-discovery,
-and onboarding functionality from jcode. It is a personal patch that strips
-cloud-dependent and promotional surfaces so jcode runs as a local-only tool.
+Patch `1007-personal-feature-keep-hosted-services-and-telemetry-inactive.patch`
+keeps hosted services and telemetry present in the code but inactive. It gates
+cloud-dependent and promotional surfaces so jcode runs without contacting
+hosted services unless a provider is explicitly allowed.
 
-## Telemetry removal
+## Telemetry inactive
 
-Disables all telemetry delivery at its shared boundary and removes telemetry
-CLI commands and controls. No telemetry events are collected or sent.
+Telemetry code remains present but is forced off. No telemetry is collected,
+shown, or sent, including when `JCODE_NO_TELEMETRY=0` is set.
 
-## Hosted subscription removal
+## Hosted subscription and account surfaces
 
-Removes hosted subscription and account functionality:
+Hosted account and subscription paths remain in the code but are hidden and
+rejected:
 
-- Removes standalone hosted subscription commands, sales pitches, rate-limit
-  upsells, and promotional UI surfaces.
-- Removes hosted subscription promotions, sales pitches, and upgrade nudges
-  from onboarding flows.
-- Removes hosted account management and device authorization from the CLI.
-- Removes hosted account status, billing, and management commands from the
-  TUI.
-- Removes unused hosted account, billing, and activation API code.
-- Removes obsolete hosted account, billing, and cloud documentation.
+- Account, subscription, billing, upgrade, and marketing surfaces are hidden
+  and rejected.
+- The jcode hosted provider is denied unless listed in
+  `allowed_providers`, and is never the default or automatically selected.
+- Jev continues to work with the user's own providers and never routes through
+  the jcode gateway.
 
-## Sponsored discovery removal
+## Sponsored discovery inactive
 
-Removes remote sponsored integration discovery and partner tracking, along
-with obsolete sponsored discovery and attribution documentation.
+The `compile_remote` and sponsored integration tools are not registered, and
+sponsors are forced off.
 
-## Automatic onboarding removal
+## Automatic onboarding inactive
 
-Makes local jcode sessions start without an automatic onboarding flow.
+Automatic onboarding never starts. Manual onboarding rehearsal remains
+available, and login import requires an explicit Continue.
 
 ## Direct endpoint routing
 
-Routes the jcode provider choice through the generic OpenAI-compatible profile
-instead of the managed subscription wrapper, so configured endpoints and API
-keys are the only credentials used.
+Jev uses the user's own providers, never the jcode gateway. Jade cloud sessions
+and the Jade relay are hidden, rejected, and never started. The `/remote` cloud
+sales link is hidden, while local `/remote`, `/cloud`, and `/local` remain
+available.

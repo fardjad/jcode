@@ -290,7 +290,7 @@ index 0c5601aef..4f0820439 100644
      async fn valid_tool_calls_reset_the_malformed_round_bound() {
          let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
 diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
-index e7be2d4fb..d9fc6cf86 100644
+index 7eeea3e3f..6eb5f4728 100644
 --- a/crates/jcode-app-core/src/agent/turn_loops.rs
 +++ b/crates/jcode-app-core/src/agent/turn_loops.rs
 @@ -53,6 +53,8 @@ impl Agent {
@@ -302,7 +302,7 @@ index e7be2d4fb..d9fc6cf86 100644
          self.set_log_context();
          let usage_turn_id = self.model_usage_turn_id();
          crate::session_metrics::record_turn(&self.session.id);
-@@ -1203,7 +1205,15 @@ impl Agent {
+@@ -1219,7 +1221,15 @@ impl Agent {
                      model: Some(self.provider.model()),
                  }));
 
@@ -319,7 +319,7 @@ index e7be2d4fb..d9fc6cf86 100644
                  crate::telemetry::record_tool_call();
                  self.unlock_tools_if_needed(&tc.name);
                  let tool_elapsed = tool_start.elapsed();
-@@ -1307,6 +1317,13 @@ impl Agent {
+@@ -1323,6 +1333,13 @@ impl Agent {
                  &tools,
              )?;
 
@@ -334,10 +334,10 @@ index e7be2d4fb..d9fc6cf86 100644
                  println!();
              }
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index 1acb77274..9068b0087 100644
+index 0ce8aa842..760903421 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-@@ -129,6 +129,8 @@ impl Agent {
+@@ -60,6 +60,8 @@ impl Agent {
          event_tx: mpsc::UnboundedSender<ServerEvent>,
      ) -> Result<()> {
          self.ensure_session_lease()?;
@@ -346,7 +346,7 @@ index 1acb77274..9068b0087 100644
          self.set_log_context();
          let usage_turn_id = self.model_usage_turn_id();
          // Mark this session as actively streaming for presence UIs (e.g. the
-@@ -1702,14 +1704,19 @@ impl Agent {
+@@ -1669,14 +1671,19 @@ impl Agent {
 
                  // Spawn tool in its own task so we can detach it to background on Alt+B
                  let registry_clone = self.registry.clone();
@@ -368,7 +368,7 @@ index 1acb77274..9068b0087 100644
                      )
                      .await
                  });
-@@ -1950,6 +1957,15 @@ impl Agent {
+@@ -1917,6 +1924,15 @@ impl Agent {
                  &tools,
              )?;
 
@@ -739,10 +739,10 @@ index 99914722b..f9cd4fc74 100644
  fn action_message_is_compact() {
      let msg = format_action_message(
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 857869402..9ac99f97c 100644
+index e81a4c58b..da478d412 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -40,6 +40,7 @@ mod panel;
+@@ -44,6 +44,7 @@ mod panel;
  mod patch;
  mod read;
  mod replace;
@@ -750,7 +750,7 @@ index 857869402..9ac99f97c 100644
  pub(crate) mod sdk;
  pub mod selfdev;
  pub(crate) mod serde_coerce;
-@@ -60,6 +61,7 @@ use jcode_message_types::ToolDefinition;
+@@ -65,6 +66,7 @@ use jcode_message_types::ToolDefinition;
  use serde_json::Value;
  use std::collections::{HashMap, HashSet};
  use std::sync::Arc;
@@ -758,7 +758,7 @@ index 857869402..9ac99f97c 100644
  use std::sync::atomic::{AtomicU64, Ordering};
 
  pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
-@@ -288,6 +290,19 @@ pub struct Registry {
+@@ -293,6 +295,19 @@ pub struct Registry {
      compaction: Arc<RwLock<CompactionManager>>,
  }
 
@@ -778,10 +778,10 @@ index 857869402..9ac99f97c 100644
  /// Non-owning handle used by tools stored inside a registry.
  ///
  /// A tool cannot strongly own the registry containing it without creating an
-@@ -324,6 +339,24 @@ impl Clone for Registry {
- }
+@@ -344,6 +359,24 @@ impl Registry {
+         }
+     }
 
- impl Registry {
 +    fn retry_guard(&self) -> Arc<retry_guard::RepeatGuard> {
 +        let key = Arc::as_ptr(&self.compaction) as usize;
 +        let mut guards = RETRY_GUARDS.lock().unwrap_or_else(|e| e.into_inner());
@@ -803,7 +803,7 @@ index 857869402..9ac99f97c 100644
      fn downgrade(&self) -> WeakRegistry {
          WeakRegistry {
              tools: Arc::downgrade(&self.tools),
-@@ -1027,8 +1060,49 @@ impl Registry {
+@@ -1008,8 +1041,49 @@ impl Registry {
          }
      }
 
@@ -854,7 +854,7 @@ index 857869402..9ac99f97c 100644
          // Mark this call in-flight for the whole execution so the missing
          // tool-output repair paths do not mistake a slow tool for an
          // interrupted one and inject a duplicate synthetic result. See
-@@ -1036,6 +1110,10 @@ impl Registry {
+@@ -1017,6 +1091,10 @@ impl Registry {
          let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
          let tools = self.tools.read().await;
          let resolved_name = Self::resolve_tool_name_for_session(&ctx.session_id, name);
@@ -865,7 +865,7 @@ index 857869402..9ac99f97c 100644
          let is_custom = sdk::custom(&ctx.session_id, resolved_name);
          if is_custom && let Some(config) = sdk::config(&ctx.session_id) {
              let disabled = config.disabled.into_iter().collect();
-@@ -1099,7 +1177,7 @@ impl Registry {
+@@ -1080,7 +1158,7 @@ impl Registry {
                          msg.push_str(&format!(" Did you mean: {}?", suggestions.join(", ")));
                      }
                      msg.push_str(&format!(" Available tools: {}.", available.join(", ")));
@@ -874,7 +874,7 @@ index 857869402..9ac99f97c 100644
                  }
              }
          };
-@@ -1118,6 +1196,9 @@ impl Registry {
+@@ -1099,6 +1177,9 @@ impl Registry {
              input,
          )
          .await;
@@ -884,7 +884,7 @@ index 857869402..9ac99f97c 100644
 
          // User-configured pre_tool gate: external policy hook that can block
          // this call (exit 2). Skipped entirely when not configured.
-@@ -1927,3 +2008,70 @@ mod mcp_allow_list_tests {
+@@ -1890,3 +1971,70 @@ mod mcp_allow_list_tests {
 
  #[cfg(test)]
  mod tests;

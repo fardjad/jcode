@@ -48,7 +48,9 @@ endpoint-cache namespaces. Standard OpenRouter uses `OPENROUTER_API_KEY`.
 
 Set `[provider].allowed_providers` to restrict model selection, model cycling,
 fallback, and completion requests to listed families. An absent or empty list
-keeps normal unrestricted behavior.
+keeps normal unrestricted behavior for other families. The jcode hosted family
+is denied unless it is explicitly listed in `allowed_providers`, and it is
+never the default or automatically selected (patch 1007).
 
 ```toml
 [provider]
@@ -79,7 +81,8 @@ Important distinctions:
 - `openrouter` permits only standard OpenRouter.
 - `openrouter-eu` permits only OpenRouter EU.
 - `openai-compatible` permits named OpenAI-compatible profiles.
-- `jcode` permits jcode subscription routes.
+- `jcode` permits jcode hosted routes only when explicitly listed in
+  `allowed_providers`; otherwise the family is denied.
 - `grok-build` permits Grok Build routes.
 
 For example, standard OpenRouter without EU:

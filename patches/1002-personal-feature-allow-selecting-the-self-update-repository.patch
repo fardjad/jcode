@@ -32,22 +32,26 @@ expected platform assets and optional SHA256SUMS asset.
 Validation:
 cargo test -p jcode-app-core update_repository --lib
 cargo test -p jcode-app-core github_comparison_uses_selected_update_repository --lib
+cargo test -p jcode-app-core default_update_urls_never_target_upstream_repo --lib
 cargo check -p jcode-app-core
 ---
- README.md                                     |  36 +++-
- crates/jcode-app-core/src/update.rs           | 159 +++++++++++++-----
+ README.md                                     |   7 +
+ crates/jcode-app-core/src/tool/selfdev/mod.rs |   4 +-
+ .../jcode-app-core/src/tool/selfdev/setup.rs  |   4 +-
+ crates/jcode-app-core/src/update.rs           | 163 +++++++++++++-----
  crates/jcode-app-core/src/update_dev_guard.rs |  35 +++-
- crates/jcode-app-core/src/update_tests.rs     |  51 ++++++
+ crates/jcode-app-core/src/update_tests.rs     |  89 ++++++++++
  crates/jcode-update-core/src/lib.rs           |   1 +
- 5 files changed, 231 insertions(+), 51 deletions(-)
+ src/cli/selfdev.rs                            |  12 +-
+ 8 files changed, 259 insertions(+), 56 deletions(-)
 
 diff --git a/README.md b/README.md
-index a4080d046..f10559802 100644
+index 81e5401f6..1b3260480 100644
 --- a/README.md
 +++ b/README.md
-@@ -51,6 +51,13 @@ Run `/update` in the TUI to download the latest stable release in the background
- and reload with your session preserved. From a terminal, use `jcode update`, then
- restart the client. Both commands use the same update policy, including for dev builds.
+@@ -56,6 +56,13 @@
+
+ </div>
 
 +Set `JCODE_UPDATE_REPO=OWNER/REPOSITORY` to use releases and main-channel
 +source updates published by a GitHub fork. Fork releases must retain jcode's
@@ -56,59 +60,48 @@ index a4080d046..f10559802 100644
 +checkout remotes. Source checkouts continue to update from their configured
 +tracking upstream.
 +
- Older or equal release versions are skipped. For a development build, Jcode also
- compares the running binary's Git commit with the release tag. Builds ahead of,
- identical to, or diverged from the release are preserved. If ancestry cannot be
-@@ -333,16 +340,14 @@ Memories are automatically consolidated every so often via the ambient mode. Thi
+ ```bash
+ # macOS & Linux
+ curl -fsSL https://jcode.sh/install | bash
+diff --git a/crates/jcode-app-core/src/tool/selfdev/mod.rs b/crates/jcode-app-core/src/tool/selfdev/mod.rs
+index 0243b2c45..80ddd4a4e 100644
+--- a/crates/jcode-app-core/src/tool/selfdev/mod.rs
++++ b/crates/jcode-app-core/src/tool/selfdev/mod.rs
+@@ -33,7 +33,9 @@ pub use reload::{ReloadRecoveryDirective, persisted_background_tasks_note};
+ pub use status::selfdev_status_output;
 
- ## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
+ /// Public GitHub source used when cloning the jcode repository for self-dev.
+-pub const JCODE_REPO_URL: &str = "https://github.com/1jehuang/jcode.git";
++pub fn jcode_repo_url() -> Result<String> {
++    crate::update::selected_update_repository()
++}
 
--The `panel` tool opens a new desktop panel from Markdown content or a linked Markdown/PDF file, and supports update, focus, close, and list actions. See [Desktop panels](docs/PANELS.md) for the API, PDF limits, and compatibility details.
--
--The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline. 
-+The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline.
- <img width="2877" height="1762" alt="image" src="https://github.com/user-attachments/assets/6c7bec81-ef3f-434d-8a7b-d55f8a54e5cf" />
+ #[derive(Debug, Deserialize)]
+ struct SelfDevInput {
+diff --git a/crates/jcode-app-core/src/tool/selfdev/setup.rs b/crates/jcode-app-core/src/tool/selfdev/setup.rs
+index 47413b7bc..a791150e1 100644
+--- a/crates/jcode-app-core/src/tool/selfdev/setup.rs
++++ b/crates/jcode-app-core/src/tool/selfdev/setup.rs
+@@ -126,7 +126,7 @@ impl SelfDevTool {
+                     "no local jcode checkout found",
+                     format!(
+                         "Clone the source manually: `git clone {} {}`.",
+-                        super::JCODE_REPO_URL,
++                        super::jcode_repo_url()?,
+                         target
+                     ),
+                 ));
+@@ -336,7 +336,7 @@ impl SelfDevTool {
 
- To make this possible, I created a new mermaid rendering library to render diagrams 1800x faster. It has no browser or Typescript dependency. See https://github.com/1jehuang/mermaid-rs-renderer
-
--To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any. 
-+To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any.
-
--Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems. 
-+Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems.
-
- The custom scrollback implementation of jcode allows it to do much more than a native scrollback. However, it is a terminal-level limitation that I cannot have smooth, partial line scrolling with a custom scrollback. To fix this, I made my own terminal. Handterm https://github.com/1jehuang/handterm implements a native scroll api, and also happens to be very efficient. This is a work in progress. Scrolling is still well implemented for normal terminals.
-
-@@ -370,6 +375,27 @@ Agents are also able to spawn their own swarms autonomously. They have a swarm t
-
- ---
-
-+## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
-+
-+The `panel` tool opens a new desktop panel from Markdown content or a linked Markdown/PDF file, and supports update, focus, close, and list actions. See [Desktop panels](docs/PANELS.md) for the API, PDF limits, and compatibility details.
-+
-+The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline.
-+<img width="2877" height="1762" alt="image" src="https://github.com/user-attachments/assets/6c7bec81-ef3f-434d-8a7b-d55f8a54e5cf" />
-+
-+To make this possible, I created a new mermaid rendering library to render diagrams 1800x faster. It has no browser or Typescript dependency. See https://github.com/1jehuang/mermaid-rs-renderer
-+
-+To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any.
-+
-+Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems.
-+
-+The custom scrollback implementation of jcode allows it to do much more than a native scrollback. However, it is a terminal-level limitation that I cannot have smooth, partial line scrolling with a custom scrollback. To fix this, I made my own terminal. Handterm https://github.com/1jehuang/handterm implements a native scroll api, and also happens to be very efficient. This is a work in progress. Scrolling is still well implemented for normal terminals.
-+
-+Jcode is left-aligned by default. You can switch to centered mode with the `Alt+C` hotkey, with the `/alignment` command, or in the config.
-+
-+To disable emoji globally in TUI and CLI output, set `emoji = false` under `[display]` in `~/.jcode/config.toml`, or launch with `JCODE_NO_EMOJI=1`. Jcode replaces emoji with compact ASCII markers while preserving other Unicode text.
-+
-+---
-+
- Swarm modes keep root reasoning separate from worker effort. Configure each mode
- in `~/.jcode/config.toml`:
-
+         let status = Command::new("git")
+             .arg("clone")
+-            .arg(super::JCODE_REPO_URL)
++            .arg(super::jcode_repo_url()?)
+             .arg(&repo_dir)
+             .status()
+             .map_err(|e| anyhow::anyhow!("failed to run git clone: {e}"))?;
 diff --git a/crates/jcode-app-core/src/update.rs b/crates/jcode-app-core/src/update.rs
-index 740145b40..1bb26f1b6 100644
+index 62db80d59..bf2bbd849 100644
 --- a/crates/jcode-app-core/src/update.rs
 +++ b/crates/jcode-app-core/src/update.rs
 @@ -1,6 +1,8 @@
@@ -129,7 +122,7 @@ index 740145b40..1bb26f1b6 100644
  #[path = "update_metadata.rs"]
  mod update_metadata;
  #[path = "update_rate_limit.rs"]
-@@ -28,7 +28,75 @@ use update_metadata::{record_release_update_duration, record_source_update_durat
+@@ -28,7 +28,79 @@ use update_metadata::{record_release_update_duration, record_source_update_durat
  pub use update_rate_limit::{RATE_LIMIT_ERROR_PREFIX, is_rate_limit_error};
  use update_rate_limit::{clear_rate_limit_backoff, rate_limit_error};
 
@@ -194,6 +187,10 @@ index 740145b40..1bb26f1b6 100644
 +    UpdateRepository::parse(override_slug.unwrap_or(DEFAULT_UPDATE_REPOSITORY))
 +}
 +
++pub fn selected_update_repository() -> Result<String> {
++    Ok(update_repository()?.clone_url())
++}
++
 +fn update_repository() -> Result<UpdateRepository> {
 +    match std::env::var(UPDATE_REPOSITORY_ENV) {
 +        Ok(slug) => resolve_update_repository(Some(&slug)),
@@ -206,7 +203,7 @@ index 740145b40..1bb26f1b6 100644
  /// Minimum gap between *automatic* update checks.
  ///
  /// Every automatic check costs one or two unauthenticated `api.github.com`
-@@ -105,12 +173,12 @@ fn current_update_semver() -> &'static str {
+@@ -70,12 +142,12 @@ fn current_update_semver() -> &'static str {
  /// Dev display versions include a commit-count offset, not release precedence.
  /// Use the base version to reject older releases, then verify that installing
  /// a newer release would not discard commits from the running development build.
@@ -221,7 +218,7 @@ index 740145b40..1bb26f1b6 100644
      )
  }
 
-@@ -236,13 +304,15 @@ fn release_url_override_with(value: Option<String>, sandboxed_home: bool) -> Opt
+@@ -201,13 +273,15 @@ fn release_url_override_with(value: Option<String>, sandboxed_home: bool) -> Opt
  }
 
  pub fn fetch_latest_release_blocking() -> Result<GitHubRelease> {
@@ -243,7 +240,7 @@ index 740145b40..1bb26f1b6 100644
 
      let client = reqwest::blocking::Client::builder()
          .timeout(UPDATE_CHECK_TIMEOUT)
-@@ -294,8 +364,8 @@ fn github_api_request(
+@@ -259,8 +333,8 @@ fn github_api_request(
      }
  }
 
@@ -254,7 +251,7 @@ index 740145b40..1bb26f1b6 100644
      let client = reqwest::blocking::Client::builder()
          .timeout(UPDATE_CHECK_TIMEOUT)
          .user_agent("jcode-updater")
-@@ -360,19 +430,22 @@ fn verify_asset_checksum_if_available(
+@@ -325,19 +399,22 @@ fn verify_asset_checksum_if_available(
      Ok(())
  }
 
@@ -281,7 +278,7 @@ index 740145b40..1bb26f1b6 100644
      crate::logging::info(&format!(
          "Main channel: built successfully at {}",
          path.display()
-@@ -403,11 +476,11 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
+@@ -368,11 +445,11 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
      Ok(path)
  }
 
@@ -296,7 +293,7 @@ index 740145b40..1bb26f1b6 100644
          return Ok(PreparedUpdate::None {
              current: current_version.to_string(),
          });
-@@ -440,7 +513,7 @@ fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
+@@ -405,7 +482,7 @@ fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
      })
  }
 
@@ -305,7 +302,7 @@ index 740145b40..1bb26f1b6 100644
      let current_hash = jcode_build_meta::git_hash();
      if current_hash.is_empty() || current_hash == "unknown" {
          crate::logging::info("Main channel: no git hash in binary, skipping update check");
-@@ -449,7 +522,7 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+@@ -414,7 +491,7 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
          });
      }
 
@@ -314,7 +311,7 @@ index 740145b40..1bb26f1b6 100644
      if latest_sha.is_empty() {
          return Ok(PreparedUpdate::None {
              current: current_hash.to_string(),
-@@ -502,19 +575,21 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+@@ -467,19 +544,21 @@ fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
          );
          return Ok(PreparedUpdate::MainSource {
              latest_sha,
@@ -339,7 +336,7 @@ index 740145b40..1bb26f1b6 100644
      }
  }
 
-@@ -584,6 +659,7 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -549,6 +628,7 @@ pub fn spawn_background_session_update(session_id: String) {
              }
              Ok(PreparedUpdate::MainSource {
                  latest_sha,
@@ -347,7 +344,7 @@ index 740145b40..1bb26f1b6 100644
                  estimate,
              }) => {
                  publish(SessionUpdateStatus::Status {
-@@ -600,7 +676,9 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -565,7 +645,9 @@ pub fn spawn_background_session_update(session_id: String) {
                          format_duration_estimate(estimate.duration)
                      ),
                  });
@@ -358,7 +355,7 @@ index 740145b40..1bb26f1b6 100644
                      Ok(_) => publish(SessionUpdateStatus::ReadyToReload {
                          session_id,
                          action,
-@@ -623,17 +701,20 @@ pub fn spawn_background_session_update(session_id: String) {
+@@ -588,17 +670,20 @@ pub fn spawn_background_session_update(session_id: String) {
  }
 
  pub fn check_for_update_blocking() -> Result<Option<GitHubRelease>> {
@@ -384,7 +381,7 @@ index 740145b40..1bb26f1b6 100644
          let asset_name = get_asset_name();
          let has_asset = release
              .assets
-@@ -653,14 +734,14 @@ fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -618,14 +703,14 @@ fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
  /// If a new commit is found:
  ///   - Tries to build from source if cargo is available
  ///   - Falls back to latest GitHub Release if not
@@ -401,7 +398,7 @@ index 740145b40..1bb26f1b6 100644
 
      if latest_sha.is_empty() {
          return Ok(None);
-@@ -686,9 +767,9 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -651,9 +736,9 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
      // Try to build from source
      if has_cargo() {
          crate::logging::info("Main channel: cargo found, attempting build from source");
@@ -413,7 +410,7 @@ index 740145b40..1bb26f1b6 100644
              }
              Err(e) => {
                  crate::logging::error(&format!("Main channel: build failed: {}", e));
-@@ -700,13 +781,13 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+@@ -665,13 +750,13 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
      }
 
      // Fallback: use latest stable release if available
@@ -429,7 +426,7 @@ index 740145b40..1bb26f1b6 100644
              return Ok(Some(release));
          }
      }
-@@ -724,7 +805,7 @@ fn has_cargo() -> bool {
+@@ -689,7 +774,7 @@ fn has_cargo() -> bool {
  }
 
  /// Build jcode from source by cloning/pulling the repo and running cargo build
@@ -438,7 +435,7 @@ index 740145b40..1bb26f1b6 100644
      let started = Instant::now();
      let build_dir = source_build_root()?;
      fs::create_dir_all(&build_dir)?;
-@@ -770,7 +851,7 @@ fn build_from_source() -> Result<PathBuf> {
+@@ -735,7 +820,7 @@ fn build_from_source() -> Result<PathBuf> {
      } else {
          // Clone
          crate::logging::info("Main channel: cloning repository...");
@@ -448,7 +445,7 @@ index 740145b40..1bb26f1b6 100644
              .args([
                  "clone", "--depth", "1", "--branch", "main", &clone_url, "jcode",
 diff --git a/crates/jcode-app-core/src/update_dev_guard.rs b/crates/jcode-app-core/src/update_dev_guard.rs
-index c83a52661..b0b7b2e13 100644
+index c83a52661..eb98b1c92 100644
 --- a/crates/jcode-app-core/src/update_dev_guard.rs
 +++ b/crates/jcode-app-core/src/update_dev_guard.rs
 @@ -7,12 +7,15 @@ use std::process::Command;
@@ -478,7 +475,7 @@ index c83a52661..b0b7b2e13 100644
 -        "https://api.github.com/repos/{}/compare/{release_tag}...{current_hash}",
 -        super::GITHUB_REPO
 -    );
-+fn github_comparison_url(
++pub(crate) fn github_comparison_url(
 +    repository: &super::UpdateRepository,
 +    release_tag: &str,
 +    current_hash: &str,
@@ -512,19 +509,57 @@ index c83a52661..b0b7b2e13 100644
      fn local_ahead_retains_dev_build() {
          let repo = Repo::new();
 diff --git a/crates/jcode-app-core/src/update_tests.rs b/crates/jcode-app-core/src/update_tests.rs
-index bc281ed44..f4991e4d1 100644
+index bc281ed44..27d759908 100644
 --- a/crates/jcode-app-core/src/update_tests.rs
 +++ b/crates/jcode-app-core/src/update_tests.rs
-@@ -2,6 +2,57 @@ use super::*;
+@@ -2,6 +2,95 @@ use super::*;
  use jcode_update_core::parse_sha256sums;
  use sha2::{Digest, Sha256};
 
++struct UpdateRepositoryEnvGuard {
++    previous: Option<std::ffi::OsString>,
++}
++
++impl UpdateRepositoryEnvGuard {
++    fn unset() -> Self {
++        let previous = std::env::var_os("JCODE_UPDATE_REPO");
++        crate::env::remove_var("JCODE_UPDATE_REPO");
++        Self { previous }
++    }
++}
++
++impl Drop for UpdateRepositoryEnvGuard {
++    fn drop(&mut self) {
++        if let Some(value) = self.previous.take() {
++            crate::env::set_var("JCODE_UPDATE_REPO", value);
++        } else {
++            crate::env::remove_var("JCODE_UPDATE_REPO");
++        }
++    }
++}
++
 +#[test]
-+fn update_repository_defaults_to_fork() {
-+    assert_eq!(
-+        resolve_update_repository(None).unwrap().slug(),
-+        "fardjad/jcode"
-+    );
++fn default_update_urls_never_target_upstream_repo() {
++    let _env_lock = crate::storage::lock_test_env();
++    let _update_repo = UpdateRepositoryEnvGuard::unset();
++    let repository = update_repository().expect("default update repository");
++    let mut urls = vec![
++        repository.github_api_url("releases/latest"),
++        repository.github_api_url("commits/main"),
++        repository.github_web_url("commit/abcdef123"),
++        repository.clone_url(),
++        update_dev_guard::github_comparison_url(&repository, "v1.0.0", "abcdef123"),
++    ];
++    if let Some(url) = release_url_override_with(None, false) {
++        urls.push(url);
++    }
++
++    for url in urls {
++        assert!(
++            !url.contains("1jehuang/jcode"),
++            "default update URL targets upstream repository: {url}"
++        );
++    }
 +}
 +
 +#[test]
@@ -585,3 +620,56 @@ index 5cc735095..a87f94856 100644
          estimate: UpdateEstimate,
      },
  }
+diff --git a/src/cli/selfdev.rs b/src/cli/selfdev.rs
+index 5c3fc43c9..658decea3 100644
+--- a/src/cli/selfdev.rs
++++ b/src/cli/selfdev.rs
+@@ -4,7 +4,7 @@ use anyhow::Result;
+ use std::path::PathBuf;
+ use std::process::Command;
+
+-use crate::{build, logging, session, startup_profile};
++use crate::{build, logging, session, startup_profile, update};
+
+ use super::output;
+ use super::provider_init::ProviderChoice;
+@@ -12,8 +12,6 @@ use super::provider_init::ProviderChoice;
+ pub use jcode_selfdev_types::CLIENT_SELFDEV_ENV;
+ pub use jcode_selfdev_types::client_selfdev_requested;
+
+-const JCODE_REPO_URL: &str = "https://github.com/1jehuang/jcode.git";
+-
+ fn selfdev_clone_dir() -> Result<PathBuf> {
+     Ok(crate::storage::jcode_dir()?.join("source").join("jcode"))
+ }
+@@ -33,7 +31,7 @@ fn resolve_or_clone_repo_dir() -> Result<PathBuf> {
+             "Self-dev source directory exists but is not a jcode repository: {}\n\
+              Move it aside or clone {} there, then retry.",
+             repo_dir.display(),
+-            JCODE_REPO_URL
++            update::selected_update_repository()?
+         );
+     }
+
+@@ -49,7 +47,7 @@ fn resolve_or_clone_repo_dir() -> Result<PathBuf> {
+
+     let status = Command::new("git")
+         .arg("clone")
+-        .arg(JCODE_REPO_URL)
++        .arg(update::selected_update_repository()?)
+         .arg(&repo_dir)
+         .status()
+         .map_err(|e| anyhow::anyhow!("Failed to run git clone for self-dev source: {e}"))?;
+@@ -58,10 +56,10 @@ fn resolve_or_clone_repo_dir() -> Result<PathBuf> {
+         anyhow::bail!(
+             "Failed to clone self-dev source from {} into {} (git exited with {}).\n\
+              Clone it manually with: git clone {} {}",
+-            JCODE_REPO_URL,
++            update::selected_update_repository()?,
+             repo_dir.display(),
+             status,
+-            JCODE_REPO_URL,
++            update::selected_update_repository()?,
+             repo_dir.display()
+         );
+     }

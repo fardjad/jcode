@@ -193,6 +193,7 @@ cargo test -p jcode-app-core persisted_headless_session_is_registered_with_its_w
  .../jcode-app-core/src/server/debug_tests.rs  |    1 +
  crates/jcode-app-core/src/server/headless.rs  |    1 +
  .../jcode-app-core/src/server/reload_tests.rs |    1 +
+ .../src/server/session_connections.rs         |    1 +
  crates/jcode-app-core/src/server/state.rs     |    8 +
  crates/jcode-app-core/src/server/swarm.rs     |    3 +
  .../src/server/swarm_cascade_tests.rs         |    1 +
@@ -218,16 +219,16 @@ cargo test -p jcode-app-core persisted_headless_session_is_registered_with_its_w
  crates/jcode-protocol/src/wire.rs             |    7 +
  crates/jcode-swarm-core/src/lib.rs            |    9 +-
  docs/HOOKS.md                                 |    2 +
- 51 files changed, 4776 insertions(+), 54 deletions(-)
+ 52 files changed, 4777 insertions(+), 54 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 1e1e860d0..08dc07acf 100644
+index df2343a5e..1e3da9528 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -72,6 +72,76 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
+@@ -73,6 +73,76 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
      LazyLock::new(|| StdMutex::new(HashMap::new()));
  const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
 
@@ -304,7 +305,7 @@ index 1e1e860d0..08dc07acf 100644
  fn stable_hash_str(value: &str) -> u64 {
      let mut hasher = std::collections::hash_map::DefaultHasher::new();
      value.hash(&mut hasher);
-@@ -347,8 +417,13 @@ pub struct Agent {
+@@ -353,8 +423,13 @@ pub struct Agent {
      announced_skills_scan_index: usize,
      /// Whether memory features are enabled for this session
      memory_enabled: bool,
@@ -319,7 +320,7 @@ index 1e1e860d0..08dc07acf 100644
      /// One-step undo snapshot captured before the most recent rewind.
      rewind_undo_snapshot: Option<RewindUndoSnapshot>,
      /// Channel for tools to request stdin input from the user
-@@ -468,6 +543,7 @@ impl Agent {
+@@ -474,6 +549,7 @@ impl Agent {
              announced_skills_scan_index: 0,
              memory_enabled: crate::config::config().features.memory,
              swarm_enabled: crate::config::config().features.swarm,
@@ -327,7 +328,7 @@ index 1e1e860d0..08dc07acf 100644
              rewind_undo_snapshot: None,
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
-@@ -550,6 +626,18 @@ impl Agent {
+@@ -556,6 +632,18 @@ impl Agent {
      ) -> Self {
          let start = Instant::now();
          let tool_selection = crate::config::config().tools.selection();
@@ -346,7 +347,7 @@ index 1e1e860d0..08dc07acf 100644
          let mut session = Session::create(parent_id, None);
          if let Some(working_dir) = working_dir {
              session.working_dir = Some(working_dir.to_string());
-@@ -558,10 +646,14 @@ impl Agent {
+@@ -564,10 +652,14 @@ impl Agent {
              provider,
              registry,
              session,
@@ -363,10 +364,10 @@ index 1e1e860d0..08dc07acf 100644
          agent.session.provider_key = agent.provider_key_for_new_session();
          agent.reconcile_explicit_provider_pin_route();
 diff --git a/crates/jcode-app-core/src/agent/prompting.rs b/crates/jcode-app-core/src/agent/prompting.rs
-index f0a445b78..284eaa3d8 100644
+index 179472611..49a82275b 100644
 --- a/crates/jcode-app-core/src/agent/prompting.rs
 +++ b/crates/jcode-app-core/src/agent/prompting.rs
-@@ -120,9 +120,16 @@ impl Agent {
+@@ -151,9 +151,16 @@ impl Agent {
          &self,
          memory_prompt: Option<&str>,
      ) -> crate::prompt::SplitSystemPrompt {
@@ -384,7 +385,7 @@ index f0a445b78..284eaa3d8 100644
                  dynamic_part: String::new(),
              };
          }
-@@ -152,6 +159,16 @@ impl Agent {
+@@ -183,6 +190,16 @@ impl Agent {
              self.agents_md_snapshot.clone(),
          );
 
@@ -402,10 +403,10 @@ index f0a445b78..284eaa3d8 100644
          crate::prompt::append_swarm_effort_directive(
              &mut split,
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index b442f71ff..91ee776fa 100644
+index 652870b2d..605c48ce9 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
-@@ -161,6 +161,8 @@ impl Agent {
+@@ -196,6 +196,8 @@ impl Agent {
                  crate::hooks::ProcessRole::Coordinator
              },
              worker_id: None,
@@ -414,7 +415,7 @@ index b442f71ff..91ee776fa 100644
          }
      }
 
-@@ -440,9 +442,34 @@ impl Agent {
+@@ -376,9 +378,34 @@ impl Agent {
          }
      }
 
@@ -450,7 +451,7 @@ index b442f71ff..91ee776fa 100644
      }
 
      /// Mark this session as an inline swarm worker. When enabled, the streaming
-@@ -679,6 +706,9 @@ impl Agent {
+@@ -615,6 +642,9 @@ impl Agent {
              .map(|names| names.iter().cloned().collect());
          let allowed = enabled.as_ref().or(self.allowed_tools.as_ref());
          let mut tools = self.registry.definitions(allowed).await;
@@ -460,7 +461,7 @@ index b442f71ff..91ee776fa 100644
          if enabled.is_none() && !self.disabled_tools.is_empty() {
              tools.retain(|tool| {
                  !self
-@@ -1154,6 +1184,12 @@ impl Agent {
+@@ -1103,6 +1133,12 @@ impl Agent {
                  "Tool 'jcode_docs' is disabled in self-development mode. Read the working tree documentation instead."
              ));
          }
@@ -474,10 +475,10 @@ index b442f71ff..91ee776fa 100644
              return Ok(());
          }
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 6feef4ee6..44ce72146 100644
+index 057b0faeb..baf582aa8 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -332,6 +332,8 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
+@@ -494,6 +494,8 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
          mode: Some("inline".to_string()),
          role: crate::hooks::ProcessRole::Worker,
          worker_id: Some("worker-session".to_string()),
@@ -486,7 +487,7 @@ index 6feef4ee6..44ce72146 100644
      };
 
      crate::hooks::with_swarm_context(worker.clone(), async {
-@@ -1335,6 +1337,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
+@@ -1497,6 +1499,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
      crate::config::Config::invalidate_cache();
  }
 
@@ -923,10 +924,10 @@ index d6e8921ef..455483942 100644
          )])));
          let sessions = Arc::new(RwLock::new(HashMap::from([(id.clone(), agent.clone())])));
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index 6318b0dc2..a1c68adb2 100644
+index 2e462d924..cef3f5998 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
-@@ -2759,6 +2759,7 @@ pub(super) async fn handle_client(
+@@ -2722,6 +2722,7 @@ pub(super) async fn handle_client(
                  model,
                  effort,
                  label,
@@ -934,7 +935,7 @@ index 6318b0dc2..a1c68adb2 100644
              } => {
                  let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                      Some(spawn_mode) => spawn_mode,
-@@ -2774,6 +2775,7 @@ pub(super) async fn handle_client(
+@@ -2737,6 +2738,7 @@ pub(super) async fn handle_client(
                      model,
                      effort,
                      label,
@@ -943,10 +944,10 @@ index 6318b0dc2..a1c68adb2 100644
                      &sessions,
                      &global_session_id,
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-index 46599be64..26510aa75 100644
+index f760e28fb..85fe32740 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-@@ -1120,6 +1120,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
+@@ -1083,6 +1083,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -955,7 +956,7 @@ index 46599be64..26510aa75 100644
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
 diff --git a/crates/jcode-app-core/src/server/client_lightweight_control.rs b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-index 7679b66d8..967c5039d 100644
+index c320f6cd1..b62eb3440 100644
 --- a/crates/jcode-app-core/src/server/client_lightweight_control.rs
 +++ b/crates/jcode-app-core/src/server/client_lightweight_control.rs
 @@ -187,6 +187,7 @@ async fn ensure_lightweight_swarm_member(
@@ -966,7 +967,7 @@ index 7679b66d8..967c5039d 100644
              swarm_id: swarm_id.clone(),
              swarm_enabled: true,
              status: "ready".to_string(),
-@@ -711,6 +712,7 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -709,6 +710,7 @@ pub(super) async fn handle_lightweight_control_request(
              model,
              effort,
              label,
@@ -974,7 +975,7 @@ index 7679b66d8..967c5039d 100644
          } => {
              let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                  Some(spawn_mode) => spawn_mode,
-@@ -726,6 +728,7 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -724,6 +726,7 @@ pub(super) async fn handle_lightweight_control_request(
                  model,
                  effort,
                  label,
@@ -982,7 +983,7 @@ index 7679b66d8..967c5039d 100644
                  &client_event_tx,
                  sessions,
                  global_session_id,
-@@ -1168,6 +1171,7 @@ mod lightweight_swarm_member_tests {
+@@ -1166,6 +1169,7 @@ mod lightweight_swarm_member_tests {
              member.working_dir.as_deref(),
              Some(std::path::Path::new("/tmp/project-a"))
          );
@@ -991,7 +992,7 @@ index 7679b66d8..967c5039d 100644
          assert!(
              swarms
 diff --git a/crates/jcode-app-core/src/server/client_session.rs b/crates/jcode-app-core/src/server/client_session.rs
-index 9e426dc7e..58ceef8cf 100644
+index 6732307f5..2af1c9806 100644
 --- a/crates/jcode-app-core/src/server/client_session.rs
 +++ b/crates/jcode-app-core/src/server/client_session.rs
 @@ -406,6 +406,7 @@ async fn ensure_client_swarm_member(
@@ -1003,10 +1004,10 @@ index 9e426dc7e..58ceef8cf 100644
              );
              inserted = true;
 diff --git a/crates/jcode-app-core/src/server/client_session_tests.rs b/crates/jcode-app-core/src/server/client_session_tests.rs
-index 54cce7228..742c706bd 100644
+index 4f76a0b72..df364f165 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_session_tests.rs
-@@ -120,6 +120,7 @@ fn test_swarm_member(session_id: &str, status: &str) -> SwarmMember {
+@@ -168,6 +168,7 @@ fn test_swarm_member(session_id: &str, status: &str) -> SwarmMember {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1047,10 +1048,10 @@ index dffccba76..5b6250b8d 100644
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
 diff --git a/crates/jcode-app-core/src/server/client_target_attach_tests.rs b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
-index d0a4897fa..5e88cc5e0 100644
+index e40ea98f0..4dbe8474e 100644
 --- a/crates/jcode-app-core/src/server/client_target_attach_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
-@@ -172,6 +172,7 @@ async fn target_subscribe_busy_live_agent_uses_member_root_without_waiting() {
+@@ -173,6 +173,7 @@ async fn target_subscribe_busy_live_agent_uses_member_root_without_waiting() {
              todo_progress: None,
              todo_items: vec![],
              runtime: Default::default(),
@@ -1370,10 +1371,10 @@ index 2adde36f6..b826dd60f 100644
              &Arc::new(RwLock::new(String::new())),
              &provider,
 diff --git a/crates/jcode-app-core/src/server/debug_tests.rs b/crates/jcode-app-core/src/server/debug_tests.rs
-index ac4390717..c1d249dc5 100644
+index 6ee5d53e0..cc680fb05 100644
 --- a/crates/jcode-app-core/src/server/debug_tests.rs
 +++ b/crates/jcode-app-core/src/server/debug_tests.rs
-@@ -134,6 +134,7 @@ mod transcript_routing_tests {
+@@ -132,6 +132,7 @@ mod transcript_routing_tests {
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1405,8 +1406,20 @@ index 72d5f5459..1aabe496c 100644
      }
  }
 
+diff --git a/crates/jcode-app-core/src/server/session_connections.rs b/crates/jcode-app-core/src/server/session_connections.rs
+index fa09ecd8a..a50fd9bdb 100644
+--- a/crates/jcode-app-core/src/server/session_connections.rs
++++ b/crates/jcode-app-core/src/server/session_connections.rs
+@@ -71,6 +71,7 @@ mod tests {
+             todo_progress: None,
+             todo_items: Vec::new(),
+             runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
+             task_label: None,
+         }
+     }
 diff --git a/crates/jcode-app-core/src/server/state.rs b/crates/jcode-app-core/src/server/state.rs
-index f03371f40..03d9c3502 100644
+index 3fc37c65d..e35814081 100644
 --- a/crates/jcode-app-core/src/server/state.rs
 +++ b/crates/jcode-app-core/src/server/state.rs
 @@ -237,6 +237,13 @@ pub struct SwarmMember {
@@ -3177,7 +3190,7 @@ index 000000000..edb520a7d
 +    );
 +}
 diff --git a/crates/jcode-app-core/src/tool/communicate.rs b/crates/jcode-app-core/src/tool/communicate.rs
-index f8683e2bf..927c85239 100644
+index a872bf758..5b4c94d79 100644
 --- a/crates/jcode-app-core/src/tool/communicate.rs
 +++ b/crates/jcode-app-core/src/tool/communicate.rs
 @@ -29,7 +29,7 @@ const REQUEST_ID: u64 = 1;
@@ -3237,7 +3250,7 @@ index 8df0245fc..566e172e2 100644
      timeout: Option<std::time::Duration>,
  ) -> Result<ServerEvent> {
 diff --git a/crates/jcode-app-core/src/tool/communicate_tests.rs b/crates/jcode-app-core/src/tool/communicate_tests.rs
-index 9ce5ff174..b1d01d7b7 100644
+index 350b9a6f7..0bfd08250 100644
 --- a/crates/jcode-app-core/src/tool/communicate_tests.rs
 +++ b/crates/jcode-app-core/src/tool/communicate_tests.rs
 @@ -13,7 +13,7 @@ use crate::protocol::{
@@ -3382,7 +3395,7 @@ index 127babbbe..92aa30b48 100644
  async fn communicate_await_members_background_returns_immediately_and_notifies() {
      let _env_lock = crate::storage::lock_test_env();
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 511cdb980..6da1af30e 100644
+index 89620bf16..478a0da45 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,4 +1,7 @@
@@ -3393,7 +3406,7 @@ index 511cdb980..6da1af30e 100644
  pub mod ambient;
  mod apply_patch;
  mod bash;
-@@ -72,6 +75,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
+@@ -74,6 +77,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
      disabled.contains(name) || (disabled.contains("mcp") && is_mcp_tool_name(name))
  }
 
@@ -3404,7 +3417,7 @@ index 511cdb980..6da1af30e 100644
  fn is_fixed_mcp_tool(name: &str) -> bool {
      matches!(name, "mcp_search" | "mcp_call")
  }
-@@ -550,16 +557,25 @@ impl Registry {
+@@ -567,16 +574,25 @@ impl Registry {
          }
          let session_tools_ms = session_tools_start.elapsed().as_millis();
 
@@ -3431,7 +3444,7 @@ index 511cdb980..6da1af30e 100644
              write_ms,
              start.elapsed().as_millis()
          ));
-@@ -576,6 +592,7 @@ impl Registry {
+@@ -593,6 +609,7 @@ impl Registry {
              .iter()
              .filter(|(name, _)| allowed_tools.is_none_or(|set| self.tool_is_allowed(set, name)))
              .map(|(name, tool)| {
@@ -3439,7 +3452,7 @@ index 511cdb980..6da1af30e 100644
                  let mut def = tool.to_definition();
                  // Use registry key as the tool name (important for MCP tools where
                  // the registry key is "mcp__server__tool" but Tool::name() returns
-@@ -592,6 +609,44 @@ impl Registry {
+@@ -609,6 +626,44 @@ impl Registry {
          defs
      }
 
@@ -3484,7 +3497,7 @@ index 511cdb980..6da1af30e 100644
      pub async fn tool_names(&self) -> Vec<String> {
          let tools = self.tools.read().await;
          tools.keys().cloned().collect()
-@@ -612,6 +667,11 @@ impl Registry {
+@@ -629,6 +684,11 @@ impl Registry {
          defs
      }
 
@@ -3497,10 +3510,10 @@ index 511cdb980..6da1af30e 100644
      /// Called when session is marked as debug
      pub async fn enable_memory_test_mode(&self) {
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 5599b75a4..ab1d3598d 100644
+index 23f2a1411..3eb4f3717 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
-@@ -982,6 +982,18 @@ async fn tool_descriptions_stay_under_token_cap() {
+@@ -796,6 +796,18 @@ async fn tool_descriptions_stay_under_token_cap() {
          .definitions(None)
          .await
          .into_iter()
@@ -3508,7 +3521,7 @@ index 5599b75a4..ab1d3598d 100644
 +        // separately from the existing exemption list.
 +        .filter(|def| {
 +            ![
-+                "compile_remote",
++                "bash",
 +                "jcode_docs",
 +                "macos_computer_use",
 +                "side_panel",
@@ -3520,7 +3533,7 @@ index 5599b75a4..ab1d3598d 100644
          .filter(|def| def.description_token_estimate() > DESCRIPTION_TOKEN_CAP)
          .map(|def| {
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index 7c384c247..ea70e3621 100644
+index 45ce92e07..a2c2973b1 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
 @@ -3,6 +3,7 @@
@@ -3530,7 +3543,7 @@ index 7c384c247..ea70e3621 100644
 +pub use jcode_config_types::WorkerBlueprintOverride;
  pub use jcode_config_types::{
      AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
-     CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
+     CompactionMode, CrossProviderFailoverMode, CustomWebSearchConfig, CustomWebSearchMethod,
 diff --git a/crates/jcode-base/src/config/display_summary.rs b/crates/jcode-base/src/config/display_summary.rs
 index 8856eb574..44c647354 100644
 --- a/crates/jcode-base/src/config/display_summary.rs
@@ -3658,7 +3671,7 @@ index d5d5035b7..c4cd89efe 100644
  fn mermaid_feature_defaults_on_and_parses_false() {
      assert!(Config::default().features.mermaid);
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index fcd3bcb39..670ad4ab9 100644
+index ca42c904c..a80d63aea 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -119,6 +119,8 @@ pub struct SwarmContext {
@@ -3710,7 +3723,7 @@ index fcd3bcb39..670ad4ab9 100644
      }
  }
 
-@@ -1120,12 +1134,16 @@ mod tests {
+@@ -939,12 +953,16 @@ mod tests {
              mode: Some("background".to_string()),
              role: ProcessRole::Worker,
              worker_id: Some("worker-1".to_string()),
@@ -3727,7 +3740,7 @@ index fcd3bcb39..670ad4ab9 100644
      }
 
      #[test]
-@@ -1135,6 +1153,8 @@ mod tests {
+@@ -954,6 +972,8 @@ mod tests {
              mode: Some("foreground".to_string()),
              role: ProcessRole::Coordinator,
              worker_id: Some("worker-2".to_string()),
@@ -3736,7 +3749,7 @@ index fcd3bcb39..670ad4ab9 100644
          };
          let mut command = std::process::Command::new("true");
          context.apply_env(&mut command);
-@@ -1165,6 +1185,8 @@ mod tests {
+@@ -984,6 +1004,8 @@ mod tests {
              env.get("JCODE_HOOK_WORKER_ID").map(String::as_str),
              Some("worker-2")
          );
@@ -3745,7 +3758,7 @@ index fcd3bcb39..670ad4ab9 100644
          assert!(!env.contains_key("JCODE_HOOK_UNKNOWN"));
      }
 
-@@ -1181,6 +1203,8 @@ mod tests {
+@@ -1000,6 +1022,8 @@ mod tests {
              mode: Some("test".to_string()),
              role: ProcessRole::Worker,
              worker_id: Some("worker".to_string()),
@@ -3754,7 +3767,7 @@ index fcd3bcb39..670ad4ab9 100644
          };
          with_swarm_context(context.clone(), async move {
              assert_eq!(current_swarm_context().role, ProcessRole::Worker);
-@@ -1201,6 +1225,8 @@ mod tests {
+@@ -1020,6 +1044,8 @@ mod tests {
              mode: None,
              role: ProcessRole::Coordinator,
              worker_id: None,
@@ -3763,7 +3776,7 @@ index fcd3bcb39..670ad4ab9 100644
          };
          let captured = context.clone();
          let handle = tokio::spawn(async move {
-@@ -1227,6 +1253,8 @@ mod tests {
+@@ -1046,6 +1072,8 @@ mod tests {
              mode: None,
              role: ProcessRole::Coordinator,
              worker_id: None,
@@ -3773,12 +3786,12 @@ index fcd3bcb39..670ad4ab9 100644
          with_swarm_context(context, async {
              let handle = tokio::spawn(async move {
 diff --git a/crates/jcode-base/src/lib.rs b/crates/jcode-base/src/lib.rs
-index f71def3ff..e7e5ec145 100644
+index e49f75f05..4867fbf84 100644
 --- a/crates/jcode-base/src/lib.rs
 +++ b/crates/jcode-base/src/lib.rs
-@@ -112,6 +112,7 @@ pub mod usage;
+@@ -109,6 +109,7 @@ pub mod transport;
+ pub mod usage;
  pub mod util;
- pub mod voice;
  pub mod voice_intent;
 +pub mod worker_blueprint;
  #[cfg(not(feature = "embeddings"))]
@@ -6013,7 +6026,7 @@ index 000000000..cfb3fd02b
 +    }
 +}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 176508026..1550d45ec 100644
+index 4c4f84d85..064d70581 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -12,6 +12,43 @@ pub use keybindings::{
@@ -6109,10 +6122,10 @@ index f8a11933f..0c809ec6f 100644
      let json = serde_json::to_string(&req)?;
      assert!(json.contains("\"type\":\"comm_spawn\""));
 diff --git a/crates/jcode-protocol/src/wire.rs b/crates/jcode-protocol/src/wire.rs
-index 72f2f8b11..e299090da 100644
+index 413ca86cf..30a6bb080 100644
 --- a/crates/jcode-protocol/src/wire.rs
 +++ b/crates/jcode-protocol/src/wire.rs
-@@ -703,6 +703,13 @@ pub enum Request {
+@@ -718,6 +718,13 @@ pub enum Request {
          /// otherwise derived from the first line of `initial_message`.
          #[serde(default, skip_serializing_if = "Option::is_none")]
          label: Option<String>,
@@ -6154,15 +6167,15 @@ index c6a25f627..311bc9ab0 100644
              append_swarm_completion_report_instructions(&with_instructions),
              with_instructions
 diff --git a/docs/HOOKS.md b/docs/HOOKS.md
-index 26a6792f8..c443629e8 100644
+index a81302b8e..65a6506e2 100644
 --- a/docs/HOOKS.md
 +++ b/docs/HOOKS.md
-@@ -60,6 +60,8 @@ Every hook also receives process role and swarm metadata:
+@@ -76,6 +76,8 @@ Every hook also receives process role and swarm metadata:
  | `JCODE_HOOK_SWARM_ENABLED` | `1` when swarm execution is enabled, otherwise `0` |
  | `JCODE_HOOK_SWARM_MODE` | Configured swarm mode, when known |
  | `JCODE_HOOK_WORKER_ID` | Worker identity, when known |
 +| `JCODE_HOOK_WORKER_BLUEPRINT_ID` | Worker blueprint identity, when known |
 +| `JCODE_HOOK_WORKER_BLUEPRINT_NAME` | Worker blueprint name, when known |
 
- Transformer and recorder stdin envelopes include a `swarm` object with the same
- fields. Unknown optional values are explicit JSON `null`.
+ The `post_tool_transform` stdin envelope includes a `swarm` object with the
+ same fields. Unknown optional values are explicit JSON `null`.

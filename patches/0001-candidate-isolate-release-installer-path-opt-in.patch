@@ -1,4 +1,4 @@
-From a69aa3201e8cd05df722ec281b98be6637986397 Mon Sep 17 00:00:00 2001
+From cc7e93a8f4520a5f540a85406efd28233d786c8e Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] fix: isolate release installer PATH opt-in
@@ -50,12 +50,12 @@ bash scripts/test_install_release_metadata.sh
  create mode 100755 scripts/test_install_release_policy.sh
 
 diff --git a/README.md b/README.md
-index 979a1f54e..a4080d046 100644
+index 36043d470..81e5401f6 100644
 --- a/README.md
 +++ b/README.md
-@@ -983,6 +983,13 @@ Then symlink to your PATH:
- scripts/install_release.sh
- ```
+@@ -63,6 +63,13 @@ curl -fsSL https://jcode.sh/install | bash
+
+ [Windows installation instructions](https://jcode.sh/docs#install).
 
 +Source release installs do not modify shell startup files by default. Pass
 +`--configure-path` to persist the launcher directory in `PATH`. Automation may
@@ -64,9 +64,9 @@ index 979a1f54e..a4080d046 100644
 +does not. Either opt-in enables configuration. `--fast` and `--configure-path`
 +may be supplied in either order.
 +
- ### Uninstall
+ <div align="center">
 
- Removes installed binaries and the launcher but keeps your config, auth, and
+ ## Performance & Resource Efficiency
 diff --git a/scripts/install_release.sh b/scripts/install_release.sh
 index 074874a51..bdab7011a 100755
 --- a/scripts/install_release.sh

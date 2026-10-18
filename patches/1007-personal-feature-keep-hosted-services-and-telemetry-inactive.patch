@@ -1,0 +1,3944 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Sun, 18 Oct 2026 04:01:39 +0200
+Subject: [PATCH] feat: keep hosted services and telemetry inactive
+
+X-Jcode-Patch-Intent: Keep hosted services, telemetry, promotional content,
+sponsored discovery, and automatic onboarding present but never active
+X-Jcode-Patch-Kind: personal-feature
+X-Jcode-Patch-Depends-On: 1001-personal-provider-add-typed-openrouter-eu-provider.patch, 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
+X-Jcode-Patch-File: 1007-personal-feature-keep-hosted-services-and-telemetry-inactive.patch
+
+Patch intent:
+The personal build keeps upstream's hosted service code but never activates,
+shows, or reaches it. No telemetry is collected, shown, or sent. The jcode
+hosted provider is denied unless listed in allowed_providers and is never the
+default or auto-selected. jcode account, subscription, billing, upgrade, and
+marketing surfaces are hidden and rejected. compile_remote and the sponsored
+integration directory tool are not registered, and sponsored discovery is
+forced off. Automatic onboarding never starts, manual rehearsal stays, and
+login import needs an explicit Continue. Jev features keep working with the
+user's own providers but never route to the jcode gateway. Jade cloud sessions
+and the Jade relay are hidden, rejected, and never started. The /remote cloud
+sales link is hidden while the local /remote gateway, /cloud, and /local stay.
+
+Why it exists:
+The personal build runs without hosted accounts, tiers, billing, telemetry,
+ads, sponsors, or nudges. Gating at chokepoints instead of deleting code keeps
+the patch small and the rebase cost low.
+
+Upstream integration points:
+crates/jcode-telemetry-core/src/lib.rs is_enabled (false outside tests),
+telemetry and transcript endpoints (None), send and post payload guards,
+oauth_account.rs enqueue, send, check, upload, and notice paths,
+concurrency.rs begin_concurrency_session, jcode-app-core agent.rs
+upload_transcript_telemetry, TUI oauth_telemetry.rs and tui_state.rs notices.
+Provider family policy constructor (jcode-provider-core and
+jcode-base/src/provider_catalog.rs) denies the jcode family unless listed,
+provider/jcode.rs, provider auto-default selection, login catalogs, usage.rs
+upgrade hints, TUI auth_account_commands.rs, commands.rs, input_help.rs,
+state_ui_input_helpers.rs, subscribe_nudge.rs, src/cli/args.rs, dispatch.rs,
+provider_init.rs. Tool registry construction in jcode-app-core/src/tool
+(compile_remote, integration_tools), sponsors config, onboarding startup and
+import flow in jcode-tui. jcode-base/src/jev.rs, gateway/control.rs,
+jcode-app-core channel.rs, server.rs and server/jade_relay.rs,
+runtime_special_commands.rs, TUI commands_remote.rs, src/cli/args/cloud_sessions.rs.
+Inactive modules carry allow(dead_code) with a comment naming this patch.
+
+Update guidance:
+When upstream adds a hosted, account, telemetry, sponsor, or marketing path,
+gate it at its chokepoint rather than deleting code. Every telemetry producer
+must return before creating identities, files, queues, or requests when
+is_enabled is false. Never let an explicit jcode selection fall back silently
+to another credential. Keep /cloud, /local, the local /remote gateway, Jev
+with user providers, manual onboarding rehearsal, and provider login and
+import working.
+
+Validation:
+cargo test -p jcode-telemetry-core --lib gate_telemetry_
+cargo test -p jcode-base --lib gate_
+cargo test -p jcode-app-core --lib gate_
+cargo test -p jcode-tui --lib gate_
+cargo test -p jcode --lib gate_
+cargo test -p jcode-base --lib policy_
+cargo test -p jcode-app-core --lib tool_descriptions_stay_under_token_cap
+---
+ crates/jcode-app-core/src/agent.rs            |   5 +-
+ crates/jcode-app-core/src/channel.rs          |  56 ++++++-
+ crates/jcode-app-core/src/server.rs           |  11 --
+ .../jcode-app-core/src/server/jade_relay.rs   |  84 +++++-----
+ .../src/server/runtime_special_commands.rs    |   3 +-
+ .../jcode-app-core/src/tool/compile_remote.rs |   2 +
+ crates/jcode-app-core/src/tool/discover.rs    | 104 +++---------
+ .../src/tool/discover_secrets.rs              |   2 +
+ crates/jcode-app-core/src/tool/mod.rs         |  17 +-
+ crates/jcode-app-core/src/tool/tests.rs       |  25 ++-
+ crates/jcode-base/src/config/config_file.rs   |   2 +
+ crates/jcode-base/src/config_tests.rs         |  22 +++
+ crates/jcode-base/src/gateway/control.rs      |  31 ++--
+ crates/jcode-base/src/jev.rs                  |  95 ++++++-----
+ crates/jcode-base/src/provider/jcode.rs       |   3 +
+ crates/jcode-base/src/provider/mod.rs         |  18 +-
+ .../jcode-base/src/provider/policy_tests.rs   |  31 ++++
+ .../src/provider/tests/fallback_failover.rs   |  12 ++
+ crates/jcode-base/src/provider_catalog.rs     |  56 +++++++
+ .../jcode-base/src/provider_catalog_tests.rs  |  26 +++
+ crates/jcode-base/src/sponsors.rs             |   4 +-
+ crates/jcode-base/src/usage.rs                |  72 +++++++-
+ crates/jcode-base/src/usage/provider_fetch.rs |   3 +
+ crates/jcode-config-types/src/lib.rs          |  14 +-
+ crates/jcode-provider-core/src/lib.rs         |  51 +++++-
+ .../jcode-provider-core/src/policy_tests.rs   |   5 +-
+ .../jcode-telemetry-core/src/concurrency.rs   |   9 +-
+ crates/jcode-telemetry-core/src/lib.rs        | 142 +++++++++++++++-
+ .../jcode-telemetry-core/src/oauth_account.rs |  35 +++-
+ crates/jcode-telemetry-core/src/tests.rs      | 101 +++++++++---
+ .../tests/session_creation_latency.rs         |   1 +
+ crates/jcode-tui/src/tui/app.rs               |   2 +
+ .../src/tui/app/auth_account_commands.rs      | 101 ++++++++++--
+ .../src/tui/app/auth_account_picker.rs        |   2 +-
+ .../src/tui/app/command_registry_tests.rs     |  25 +++
+ crates/jcode-tui/src/tui/app/commands.rs      |   6 +-
+ .../jcode-tui/src/tui/app/commands_remote.rs  |  58 ++-----
+ .../src/tui/app/inline_interactive.rs         |  90 +++++++++-
+ crates/jcode-tui/src/tui/app/input_help.rs    |   8 +-
+ crates/jcode-tui/src/tui/app/model_context.rs |  12 +-
+ .../jcode-tui/src/tui/app/oauth_telemetry.rs  |  10 ++
+ .../jcode-tui/src/tui/app/onboarding_flow.rs  |  35 ++--
+ .../src/tui/app/onboarding_flow_control.rs    | 103 ++----------
+ .../src/tui/app/state_ui_input_helpers.rs     |  23 ++-
+ .../jcode-tui/src/tui/app/subscribe_nudge.rs  | 156 +++++-------------
+ .../app/tests/commands_accounts_01/part_02.rs |  23 +--
+ .../src/tui/app/tests/onboarding_eval.rs      |   4 +-
+ .../src/tui/app/tests/onboarding_flow.rs      |  93 ++++++++++-
+ .../src/tui/app/tests/onboarding_sim.rs       |  44 +++++
+ crates/jcode-tui/src/tui/app/tui_state.rs     |   9 +-
+ src/cli/account.rs                            |   2 +
+ src/cli/args.rs                               |   6 +
+ src/cli/args/cloud_sessions.rs                |   9 +
+ src/cli/args/tests.rs                         |  13 ++
+ src/cli/commands.rs                           |   7 +-
+ src/cli/dispatch.rs                           |  15 +-
+ src/cli/dispatch_tests.rs                     |  27 +++
+ src/cli/login.rs                              |   2 +
+ src/cli/provider_init.rs                      |   8 +-
+ src/cli/provider_init_tests.rs                |  21 +--
+ 60 files changed, 1284 insertions(+), 672 deletions(-)
+
+diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
+index 1e3da9528..855ce1678 100644
+--- a/crates/jcode-app-core/src/agent.rs
++++ b/crates/jcode-app-core/src/agent.rs
+@@ -1283,7 +1283,10 @@ impl Agent {
+     }
+
+     fn upload_transcript_telemetry(&mut self, end_reason: crate::telemetry::SessionEndReason) {
+-        if self.transcript_telemetry_sent || self.session.messages.is_empty() {
++        if !crate::telemetry::is_enabled()
++            || self.transcript_telemetry_sent
++            || self.session.messages.is_empty()
++        {
+             return;
+         }
+         // Keep code and ordinary transcript content intact, but reuse the
+diff --git a/crates/jcode-app-core/src/channel.rs b/crates/jcode-app-core/src/channel.rs
+index d88893b9e..b58a8a461 100644
+--- a/crates/jcode-app-core/src/channel.rs
++++ b/crates/jcode-app-core/src/channel.rs
+@@ -4,6 +4,8 @@ use crate::logging;
+ use async_trait::async_trait;
+ use std::sync::Arc;
+
++const JADE_RELAY_ENABLED_IN_BUILD: bool = false;
++
+ #[async_trait]
+ pub trait MessageChannel: Send + Sync {
+     fn name(&self) -> &str;
+@@ -61,7 +63,7 @@ impl ChannelRegistry {
+             )));
+         }
+
+-        if config.jade_relay_enabled {
++        if JADE_RELAY_ENABLED_IN_BUILD && config.jade_relay_enabled {
+             match (
+                 config.jade_relay_api_base.clone(),
+                 config.jade_relay_token.clone(),
+@@ -824,26 +826,62 @@ mod tests {
+     }
+
+     #[test]
+-    fn test_relay_registry_wiring() {
++    fn gate_cloud_relay_not_registered_even_with_complete_config_and_env() {
++        let _guard = crate::storage::lock_test_env();
++        let keys = [
++            "JCODE_JADE_RELAY_API_BASE",
++            "JCODE_JADE_RELAY_TOKEN",
++            "JCODE_JADE_RELAY_TOKEN_ID",
++            "JCODE_JADE_RELAY_USER_ID",
++            "JCODE_JADE_RELAY_SESSION_ID",
++            "JCODE_JADE_RELAY_ENABLED",
++            "JCODE_JADE_RELAY_REPLY_ENABLED",
++            "JCODE_JADE_RELAY_LAUNCH_ENABLED",
++            "JCODE_JADE_RELAY_LAUNCH_WORKING_DIR",
++            "JCODE_JADE_RELAY_PROCESS_EXISTING_PROMPTS",
++            "JCODE_JADE_RELAY_DEVICE_ID",
++            "JCODE_JADE_API_BASE",
++            "JCODE_JADE_TOKEN",
++            "JCODE_JADE_SESSION_ID",
++            "JCODE_JADE_SESSIONS_HELPER",
++        ];
++        let saved = keys
++            .iter()
++            .map(|key| (*key, std::env::var_os(key)))
++            .collect::<Vec<_>>();
++        for key in keys {
++            crate::env::set_var(key, "enabled-test-value");
++        }
+         // Disabled: not registered.
+         let cfg = SafetyConfig::default();
+         let reg = ChannelRegistry::from_config(&cfg);
+         assert!(!reg.channel_names().iter().any(|n| n == "jade_relay"));
+
+-        // Enabled but incomplete: skipped with a warning.
+-        let mut cfg = SafetyConfig {
++        let cfg = SafetyConfig {
+             jade_relay_enabled: true,
++            jade_relay_reply_enabled: true,
++            jade_relay_launch_enabled: true,
++            jade_relay_api_base: Some("https://example.com/".to_string()),
++            jade_relay_token: Some("tok".to_string()),
++            jade_relay_token_id: Some("token-id".to_string()),
++            jade_relay_user_id: Some("user-id".to_string()),
++            jade_relay_session_id: Some("session-id".to_string()),
++            jade_relay_launch_working_dir: Some("/tmp".to_string()),
+             ..SafetyConfig::default()
+         };
+         let reg = ChannelRegistry::from_config(&cfg);
+         assert!(!reg.channel_names().iter().any(|n| n == "jade_relay"));
+
+-        // Enabled and complete: registered.
+-        cfg.jade_relay_api_base = Some("https://example.com/".to_string());
+-        cfg.jade_relay_token = Some("tok".to_string());
+-        cfg.jade_relay_session_id = Some("sess-1".to_string());
++        // Complete opt-in config and env overrides remain unable to register it.
+         let reg = ChannelRegistry::from_config(&cfg);
+-        assert!(reg.channel_names().iter().any(|n| n == "jade_relay"));
++        assert!(!reg.channel_names().iter().any(|n| n == "jade_relay"));
++        for (key, value) in saved {
++            if let Some(value) = value {
++                crate::env::set_var(key, value);
++            } else {
++                crate::env::remove_var(key);
++            }
++        }
+     }
+
+     /// Live end-to-end test against the real Jade relay. Ignored by default;
+diff --git a/crates/jcode-app-core/src/server.rs b/crates/jcode-app-core/src/server.rs
+index d82c5faae..92e790469 100644
+--- a/crates/jcode-app-core/src/server.rs
++++ b/crates/jcode-app-core/src/server.rs
+@@ -1511,17 +1511,6 @@ impl Server {
+             });
+         }
+
+-        // Spawn the Jade cloud relay listener independently of ambient mode. The
+-        // worker is strictly opt-in and requires an explicit API base, token,
+-        // session id, and reply-enabled flag before it makes any outbound calls.
+-        jade_relay::spawn_if_configured(
+-            &crate::config::config().safety,
+-            Arc::clone(&self.sessions),
+-            Arc::clone(&self.soft_interrupt_queues),
+-            Arc::clone(&self.shutdown_signals),
+-            Arc::clone(&self.swarm_state.members),
+-        );
+-
+         // Spawn embedding idle monitor so the model can be unloaded when this
+         // server has been quiet for a while.
+         let embedding_idle_secs = embedding_idle_unload_secs();
+diff --git a/crates/jcode-app-core/src/server/jade_relay.rs b/crates/jcode-app-core/src/server/jade_relay.rs
+index 6cf0cf8ca..968cea37d 100644
+--- a/crates/jcode-app-core/src/server/jade_relay.rs
++++ b/crates/jcode-app-core/src/server/jade_relay.rs
+@@ -1,3 +1,6 @@
++// Inactive in this build: gated by personal patch 1007.
++#![allow(dead_code)]
++
+ use super::client_lifecycle::process_message_streaming_mpsc;
+ use super::state::{
+     SessionControlHandle, SessionInterruptQueues, queue_soft_interrupt_for_session,
+@@ -33,19 +36,8 @@ struct RelayApiConfig {
+ }
+
+ impl RelayApiConfig {
+-    fn from_safety(safety: &SafetyConfig) -> Option<Self> {
+-        if !safety.jade_relay_enabled {
+-            return None;
+-        }
+-        let api_base = non_empty(safety.jade_relay_api_base.as_deref())?;
+-        let token = non_empty(safety.jade_relay_token.as_deref())?;
+-        Some(Self {
+-            api_base: normalize_api_base(api_base),
+-            token: token.to_string(),
+-            token_id: non_empty(safety.jade_relay_token_id.as_deref()).map(str::to_string),
+-            user_id: non_empty(safety.jade_relay_user_id.as_deref()).map(str::to_string),
+-            device_id: default_device_id(),
+-        })
++    fn from_safety(_safety: &SafetyConfig) -> Option<Self> {
++        None
+     }
+
+     fn url(&self, path: &str) -> String {
+@@ -69,17 +61,8 @@ struct RelayListenerConfig {
+ }
+
+ impl RelayListenerConfig {
+-    fn from_safety(safety: &SafetyConfig) -> Option<Self> {
+-        if !safety.jade_relay_reply_enabled {
+-            return None;
+-        }
+-        let api = RelayApiConfig::from_safety(safety)?;
+-        let session_id = non_empty(safety.jade_relay_session_id.as_deref())?;
+-        Some(Self {
+-            api,
+-            session_id: session_id.to_string(),
+-            process_existing_prompts: env_flag("JCODE_JADE_RELAY_PROCESS_EXISTING_PROMPTS"),
+-        })
++    fn from_safety(_safety: &SafetyConfig) -> Option<Self> {
++        None
+     }
+ }
+
+@@ -90,15 +73,8 @@ struct RelayLaunchConfig {
+ }
+
+ impl RelayLaunchConfig {
+-    fn from_safety(safety: &SafetyConfig) -> Option<Self> {
+-        if !safety.jade_relay_launch_enabled {
+-            return None;
+-        }
+-        Some(Self {
+-            api: RelayApiConfig::from_safety(safety)?,
+-            default_working_dir: non_empty(safety.jade_relay_launch_working_dir.as_deref())
+-                .map(str::to_string),
+-        })
++    fn from_safety(_safety: &SafetyConfig) -> Option<Self> {
++        None
+     }
+ }
+
+@@ -1332,7 +1308,31 @@ mod tests {
+     }
+
+     #[test]
+-    fn relay_listener_config_accepts_complete_opt_in_config() {
++    fn gate_cloud_relay_listeners_reject_complete_config_and_env() {
++        let _guard = crate::storage::lock_test_env();
++        let keys = [
++            "JCODE_JADE_RELAY_API_BASE",
++            "JCODE_JADE_RELAY_TOKEN",
++            "JCODE_JADE_RELAY_TOKEN_ID",
++            "JCODE_JADE_RELAY_USER_ID",
++            "JCODE_JADE_RELAY_SESSION_ID",
++            "JCODE_JADE_RELAY_ENABLED",
++            "JCODE_JADE_RELAY_REPLY_ENABLED",
++            "JCODE_JADE_RELAY_LAUNCH_ENABLED",
++            "JCODE_JADE_RELAY_PROCESS_EXISTING_PROMPTS",
++            "JCODE_JADE_RELAY_DEVICE_ID",
++            "JCODE_JADE_API_BASE",
++            "JCODE_JADE_TOKEN",
++            "JCODE_JADE_SESSION_ID",
++            "JCODE_JADE_SESSIONS_HELPER",
++        ];
++        let saved = keys
++            .iter()
++            .map(|key| (*key, std::env::var_os(key)))
++            .collect::<Vec<_>>();
++        for key in keys {
++            crate::env::set_var(key, "enabled-test-value");
++        }
+         let cfg = SafetyConfig {
+             jade_relay_enabled: true,
+             jade_relay_reply_enabled: true,
+@@ -1343,12 +1343,16 @@ mod tests {
+             jade_relay_session_id: Some("sess-1".to_string()),
+             ..SafetyConfig::default()
+         };
+-        let parsed = RelayListenerConfig::from_safety(&cfg).expect("complete config");
+-        assert_eq!(parsed.api.api_base, "https://example.com/api/");
+-        assert_eq!(parsed.api.token, "tok");
+-        assert_eq!(parsed.api.token_id.as_deref(), Some("alice-token"));
+-        assert_eq!(parsed.api.user_id.as_deref(), Some("alice"));
+-        assert_eq!(parsed.session_id, "sess-1");
++        assert!(RelayApiConfig::from_safety(&cfg).is_none());
++        assert!(RelayListenerConfig::from_safety(&cfg).is_none());
++        assert!(RelayLaunchConfig::from_safety(&cfg).is_none());
++        for (key, value) in saved {
++            if let Some(value) = value {
++                crate::env::set_var(key, value);
++            } else {
++                crate::env::remove_var(key);
++            }
++        }
+     }
+
+     #[test]
+diff --git a/crates/jcode-app-core/src/server/runtime_special_commands.rs b/crates/jcode-app-core/src/server/runtime_special_commands.rs
+index 90f5a4d20..2f26b593d 100644
+--- a/crates/jcode-app-core/src/server/runtime_special_commands.rs
++++ b/crates/jcode-app-core/src/server/runtime_special_commands.rs
+@@ -266,9 +266,8 @@ fn remote(args: &[String]) -> Result<(Value, String)> {
+         .context("Invalid remote command")?
+         .map_err(anyhow::Error::msg)?;
+     match command {
+-        RemoteCommand::Cloud => bail!("Jcode Cloud activation belongs to the client's native account/cloud dialog. No local gateway setting was changed. Use Desktop's cloud setup UI."),
+         RemoteCommand::Help => Ok((json!({"scope": "runtime host"}),
+-            "Usage: `/remote status`, `/remote on`, `/remote off`, `/remote pair`, `/remote revoke <device-id-or-name>`. These commands manage the attached runtime host's gateway. Gateway enable/disable settings take effect after a coordinated server restart; no server is restarted automatically. `/remote cloud` uses the client's Cloud setup dialog.".into())),
++            "Usage: `/remote status`, `/remote on`, `/remote off`, `/remote pair`, `/remote revoke <device-id-or-name>`. These commands manage the attached runtime host's gateway. Gateway enable/disable settings take effect after a coordinated server restart; no server is restarted automatically.".into())),
+         RemoteCommand::Status => {
+             let status = RemoteStatus::load();
+             let devices: Vec<_> = status.devices.iter().map(|device| json!({"id": device.id, "name": device.name, "paired_at": device.paired_at, "last_seen": device.last_seen})).collect();
+diff --git a/crates/jcode-app-core/src/tool/compile_remote.rs b/crates/jcode-app-core/src/tool/compile_remote.rs
+index 8672df3da..7ad6263f4 100644
+--- a/crates/jcode-app-core/src/tool/compile_remote.rs
++++ b/crates/jcode-app-core/src/tool/compile_remote.rs
+@@ -1,3 +1,5 @@
++// Inactive in this build: gated by personal patch 1007.
++#![allow(dead_code)]
+ //! Subscription-backed remote compilation. The tool description is static so it
+ //! never invalidates the prompt cache. Account state is reported in results:
+ //! every build verifies access before reading or uploading source, and the
+diff --git a/crates/jcode-app-core/src/tool/discover.rs b/crates/jcode-app-core/src/tool/discover.rs
+index e790c83b6..eadce8dac 100644
+--- a/crates/jcode-app-core/src/tool/discover.rs
++++ b/crates/jcode-app-core/src/tool/discover.rs
+@@ -1,3 +1,5 @@
++// Inactive in this build: gated by personal patch 1007.
++#![allow(dead_code)]
+ #![cfg_attr(test, allow(clippy::await_holding_lock))]
+ use super::discover_secrets::contains_recognizable_secret;
+ use super::{Tool, ToolContext, ToolExecutionMode, ToolOutput};
+@@ -2798,7 +2800,7 @@ mod tests {
+         .unwrap();
+         crate::config::Config::invalidate_cache();
+
+-        let output = DiscoverToolsTool::new()
++        let err = DiscoverToolsTool::new()
+             .execute(
+                 json!({
+                     "action": "select",
+@@ -2810,23 +2812,14 @@ mod tests {
+                 test_ctx(),
+             )
+             .await
+-            .unwrap();
+-
++            .unwrap_err();
++        assert!(err.to_string().contains("disabled"));
+         assert!(
+-            output
+-                .output
+-                .contains("Selected off-catalog product 'firecrawl'")
++            tokio::time::timeout(std::time::Duration::from_millis(50), server)
++                .await
++                .is_err(),
++            "sponsored discovery must not contact the configured endpoint"
+         );
+-        assert!(output.output.contains("no provider information"));
+-        assert!(!output.output.contains("Setup:"));
+-        let metadata = output.metadata.unwrap();
+-        assert_eq!(metadata["selected_tool"], "firecrawl");
+-        assert_eq!(metadata["catalog_tool"], false);
+-        assert_eq!(metadata["sponsored_discovery"], false);
+-
+-        let request = server.await.unwrap();
+-        assert!(request.starts_with("GET /?"), "{request}");
+-        assert!(request.contains("tool=firecrawl"), "{request}");
+
+         if let Some(prev) = prev_home {
+             crate::env::set_var("JCODE_HOME", prev);
+@@ -2837,7 +2830,7 @@ mod tests {
+     }
+
+     #[tokio::test]
+-    async fn details_executes_through_public_tool_interface() {
++    async fn gate_tools_discovery_details_call_does_not_reach_configured_endpoint() {
+         let _guard = crate::storage::lock_test_env();
+         let prev_home = std::env::var_os("JCODE_HOME");
+         let temp = tempfile::tempdir().unwrap();
+@@ -2863,7 +2856,7 @@ mod tests {
+         .unwrap();
+         crate::config::Config::invalidate_cache();
+
+-        let output = DiscoverToolsTool::new().execute(json!({
++        let err = DiscoverToolsTool::new().execute(json!({
+             "action": "details",
+             "category": "payments",
+             "query": "confirm metered subscription billing and webhook reconciliation support",
+@@ -2873,30 +2866,13 @@ mod tests {
+             "investigation_goal": "capability_fit",
+             "requirements": ["Webhook status updates"],
+             "topics": ["capabilities", "limitations"]
+-        }), test_ctx()).await.unwrap();
+-
+-        assert_eq!(output.title.as_deref(), Some("stripe details"));
+-        assert!(output.output.contains("Fit: strong"));
+-        assert!(output.output.contains("Usage meters"));
+-        assert!(
+-            output
+-                .output
+-                .contains("https://docs.stripe.com/billing/subscriptions/usage-based")
+-        );
+-        assert!(
+-            output
+-                .output
+-                .contains("Jcode snapshot: https://jcode.sh/docs/stripe/usage-based")
+-        );
+-        let metadata = output.metadata.unwrap();
+-        assert_eq!(metadata["integration_details"], true);
+-        assert_eq!(metadata["work_relevance"], "core_requirement");
+-        assert_eq!(metadata["investigation_goal"], "capability_fit");
+-        let request = server.await.unwrap();
+-        assert!(request.starts_with("POST /details HTTP/1.1"), "{request}");
++        }), test_ctx()).await.unwrap_err();
++        assert!(err.to_string().contains("disabled"));
+         assert!(
+-            request.contains("\"work_relevance\":\"core_requirement\""),
+-            "{request}"
++            tokio::time::timeout(std::time::Duration::from_millis(50), server)
++                .await
++                .is_err(),
++            "sponsored discovery must not contact the configured endpoint"
+         );
+
+         if let Some(prev) = prev_home {
+@@ -2908,7 +2884,7 @@ mod tests {
+     }
+
+     #[tokio::test]
+-    async fn git_category_executes_end_to_end_with_enabled_config_and_local_server() {
++    async fn gate_tools_direct_discovery_calls_do_not_reach_configured_endpoint() {
+         let _guard = crate::storage::lock_test_env();
+         let prev_home = std::env::var_os("JCODE_HOME");
+         let temp = tempfile::tempdir().unwrap();
+@@ -2923,8 +2899,7 @@ mod tests {
+         .unwrap();
+         crate::config::Config::invalidate_cache();
+
+-        let tool = DiscoverToolsTool::new();
+-        let output = tool
++        let err = DiscoverToolsTool::new()
+             .execute(
+                 json!({
+                     "category": "git",
+@@ -2934,43 +2909,14 @@ mod tests {
+                 test_ctx(),
+             )
+             .await
+-            .unwrap();
+-
+-        assert!(output.output.contains("github"));
+-        assert!(output.output.contains("Jcode integration directory"));
+-        assert!(
+-            output
+-                .output
+-                .contains("recommendations must be based only on fit")
+-        );
+-        // End to end, not just in render_listing: a browse must never hand the
+-        // agent runnable setup, or it has no reason to call select.
+-        assert!(
+-            !output.output.contains("npx github-mcp"),
+-            "browse leaked setup instructions: {}",
+-            output.output
+-        );
+-        assert!(output.output.contains("action `select`"));
+-        let title = output.title.unwrap();
+-        assert_eq!(title, "git", "{title}");
+-        let meta = output.metadata.unwrap();
+-        assert_eq!(meta["sponsored_discovery"], true);
+-
+-        let request = server.await.unwrap();
+-        assert!(request.contains("category=git"), "{request}");
+-
+-        // Opted-out config: execute refuses without any network call.
+-        std::fs::write(
+-            temp.path().join("config.toml"),
+-            "[sponsors]\nenabled = false\n",
+-        )
+-        .unwrap();
+-        crate::config::Config::invalidate_cache();
+-        let err = tool
+-            .execute(json!({"category": "payments", "reason": "x"}), test_ctx())
+-            .await
+             .unwrap_err();
+         assert!(err.to_string().contains("disabled"));
++        assert!(
++            tokio::time::timeout(std::time::Duration::from_millis(50), server)
++                .await
++                .is_err(),
++            "sponsored discovery must never contact its endpoint"
++        );
+
+         if let Some(prev) = prev_home {
+             crate::env::set_var("JCODE_HOME", prev);
+diff --git a/crates/jcode-app-core/src/tool/discover_secrets.rs b/crates/jcode-app-core/src/tool/discover_secrets.rs
+index 420432c05..c92aae063 100644
+--- a/crates/jcode-app-core/src/tool/discover_secrets.rs
++++ b/crates/jcode-app-core/src/tool/discover_secrets.rs
+@@ -1,3 +1,5 @@
++// Inactive in this build: gated by personal patch 1007.
++#![allow(dead_code)]
+ //! Last-line secret scanning for model-authored Discovery text.
+ //!
+ //! `discover_tools` sends a model-written `query` and `reason` to a hosted
+diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
+index 478a0da45..e81a4c58b 100644
+--- a/crates/jcode-app-core/src/tool/mod.rs
++++ b/crates/jcode-app-core/src/tool/mod.rs
+@@ -425,12 +425,6 @@ impl Registry {
+             );
+             Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
+             Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
+-            Self::insert_tool_timed(
+-                &mut m,
+-                &mut timings,
+-                "compile_remote",
+-                compile_remote::CompileRemoteTool::new,
+-            );
+             Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
+             Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
+             #[cfg(target_os = "macos")]
+@@ -562,16 +556,7 @@ impl Registry {
+                 codemode::CodemodeTool::new(registry.downgrade()),
+             );
+         }
+-        // Integration discovery is on by default (opt-out); when disabled the
+-        // tool is never registered and no discovery endpoint is ever
+-        // contacted.
+-        if crate::config::config().sponsors.enabled {
+-            Self::insert_tool(
+-                &mut tools_map,
+-                "integration_tools",
+-                discover::DiscoverToolsTool::new(),
+-            );
+-        }
++        // Sponsored integration discovery is disabled and never registered.
+         let session_tools_ms = session_tools_start.elapsed().as_millis();
+
+         // Register generated `swarm_<id>` tools for every valid effective
+diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
+index 3eb4f3717..b0fadf2bd 100644
+--- a/crates/jcode-app-core/src/tool/tests.rs
++++ b/crates/jcode-app-core/src/tool/tests.rs
+@@ -292,18 +292,19 @@ fn test_resolve_skill_aliases_to_skill_manage() {
+ }
+
+ #[tokio::test]
+-async fn test_discover_tools_not_registered_when_sponsors_disabled() {
+-    // sponsors.enabled is the legacy config key; when false, integration discovery must not exist.
++async fn gate_tools_hosted_tools_are_never_registered() {
+     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+     let registry = Registry::new(provider).await;
+     let names = registry.tool_names().await;
+-    if crate::config::config().sponsors.enabled {
+-        assert!(names.iter().any(|n| n == "integration_tools"));
+-    } else {
+-        assert!(
+-            !names.iter().any(|n| n == "integration_tools"),
+-            "integration_tools must not be registered when sponsors are disabled"
+-        );
++    let definitions = registry.definitions(None).await;
++    for name in ["discover", "compile_remote", "integration_tools"] {
++        assert!(!names.iter().any(|registered| registered == name), "{name} registered");
++        assert!(!definitions.iter().any(|definition| definition.name == name), "{name} advertised");
++        let error = registry
++            .execute(name, serde_json::json!({}), mcp_test_context(std::path::Path::new(".")))
++            .await
++            .expect_err("unregistered hosted tool must fail");
++        assert!(error.to_string().contains("Unknown tool"), "{name}: {error}");
+     }
+ }
+
+@@ -767,8 +768,6 @@ async fn print_tool_definition_token_report() {
+ #[tokio::test]
+ async fn tool_descriptions_stay_under_token_cap() {
+     const DESCRIPTION_TOKEN_CAP: usize = 20;
+-    // integration_tools keeps a deliberate second sentence explaining that catalog
+-    // entries integrate directly with the agent.
+     // swarm appends the user-tunable swarm-prompt.md by design.
+     // batch carries a deliberate parallel-call example (2f4abae33, pinned by
+     // batch_tests::description_includes_parallel_tool_call_example).
+@@ -778,16 +777,14 @@ async fn tool_descriptions_stay_under_token_cap() {
+     // user, so planning happens proactively rather than only when prompted.
+     // applet carries the whole view-node vocabulary inline, since the model has
+     // no other way to learn which node types and props the host renders.
+-    // codemode documents its sandbox API; compile_remote a credit/consent notice.
++    // codemode documents its sandbox API.
+     const EXEMPT: &[&str] = &[
+-        "integration_tools",
+         "swarm",
+         "batch",
+         "browser",
+         "todo",
+         "applet",
+         "codemode",
+-        "compile_remote",
+     ];
+
+     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
+index aa95db9c6..a7c69ff41 100644
+--- a/crates/jcode-base/src/config/config_file.rs
++++ b/crates/jcode-base/src/config/config_file.rs
+@@ -23,6 +23,7 @@ impl Config {
+     pub fn load() -> Self {
+         let mut config = Self::load_from_file().unwrap_or_default();
+         config.apply_env_overrides();
++        config.sponsors.enabled = false;
+         config
+     }
+
+@@ -33,6 +34,7 @@ impl Config {
+     pub fn load_strict() -> anyhow::Result<Self> {
+         let mut config = Self::load_from_file_strict()?.unwrap_or_default();
+         config.apply_env_overrides();
++        config.sponsors.enabled = false;
+         Ok(config)
+     }
+
+diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
+index c4cd89efe..fb1727373 100644
+--- a/crates/jcode-base/src/config_tests.rs
++++ b/crates/jcode-base/src/config_tests.rs
+@@ -1580,6 +1580,28 @@ fn sponsors_optout_survives_config_save_and_reload() {
+     Config::invalidate_cache();
+ }
+
++#[test]
++fn gate_tools_sponsors_enabled_is_false_even_when_configured_true() {
++    let _guard = crate::storage::lock_test_env();
++    let prev_home = std::env::var_os("JCODE_HOME");
++    let dir = tempfile::TempDir::new().expect("tempdir");
++    crate::env::set_var("JCODE_HOME", dir.path());
++    std::fs::write(
++        dir.path().join("config.toml"),
++        "[sponsors]\nenabled = true\nendpoint = \"https://discovery.internal/v1\"\n",
++    )
++    .expect("write sponsors config");
++    Config::invalidate_cache();
++
++    let loaded = Config::load();
++    assert!(!loaded.sponsors.enabled);
++    assert_eq!(loaded.sponsors.endpoint, "https://discovery.internal/v1");
++    assert!(!crate::config::config().sponsors.enabled);
++
++    restore_env_var("JCODE_HOME", prev_home);
++    Config::invalidate_cache();
++}
++
+ #[test]
+ fn default_sponsors_section_is_not_written_back() {
+     let config = Config::default();
+diff --git a/crates/jcode-base/src/gateway/control.rs b/crates/jcode-base/src/gateway/control.rs
+index 795c7c536..783b6c310 100644
+--- a/crates/jcode-base/src/gateway/control.rs
++++ b/crates/jcode-base/src/gateway/control.rs
+@@ -13,8 +13,6 @@ use super::{DeviceRegistry, resolve_connect_host};
+ /// Parsed `/remote` invocation.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub enum RemoteCommand {
+-    /// Activate or manage the subscription-backed Jcode Cloud host.
+-    Cloud,
+     /// Show gateway state, dial address, and paired devices.
+     Status,
+     /// Enable the gateway in config.
+@@ -41,11 +39,13 @@ pub fn parse_remote_command(input: &str) -> Option<Result<RemoteCommand, String>
+
+     let mut parts = rest.split_whitespace();
+     let Some(sub) = parts.next() else {
+-        return Some(Ok(RemoteCommand::Cloud));
++        return Some(Ok(RemoteCommand::Help));
+     };
+
+     let command = match sub.to_ascii_lowercase().as_str() {
+-        "cloud" | "setup" => RemoteCommand::Cloud,
++        "cloud" | "setup" => {
++            return Some(Err("Jcode Cloud early access is disabled in this build".to_string()));
++        }
+         "status" | "local" => RemoteCommand::Status,
+         "on" | "enable" => RemoteCommand::On,
+         "off" | "disable" => RemoteCommand::Off,
+@@ -60,7 +60,7 @@ pub fn parse_remote_command(input: &str) -> Option<Result<RemoteCommand, String>
+         }
+         other => {
+             return Some(Err(format!(
+-                "Unknown /remote subcommand: {other}\nUsage: /remote [cloud|status|on|off|pair|revoke <device>]"
++                "Unknown /remote subcommand: {other}\nUsage: /remote [status|on|off|pair|revoke <device>]"
+             )));
+         }
+     };
+@@ -68,7 +68,7 @@ pub fn parse_remote_command(input: &str) -> Option<Result<RemoteCommand, String>
+     // Only `revoke` takes an argument.
+     if !matches!(command, RemoteCommand::Revoke(_)) && parts.next().is_some() {
+         return Some(Err(format!(
+-            "/remote {sub} takes no arguments\nUsage: /remote [cloud|status|on|off|pair|revoke <device>]"
++            "/remote {sub} takes no arguments\nUsage: /remote [status|on|off|pair|revoke <device>]"
+         )));
+     }
+
+@@ -307,23 +307,32 @@ mod tests {
+     }
+
+     #[test]
+-    fn bare_remote_starts_cloud_activation() {
++    fn bare_remote_shows_local_gateway_help() {
+         assert_eq!(
+             parse_remote_command("/remote"),
+-            Some(Ok(RemoteCommand::Cloud))
++            Some(Ok(RemoteCommand::Help))
+         );
+         assert_eq!(
+             parse_remote_command("  /remote  "),
+-            Some(Ok(RemoteCommand::Cloud))
++            Some(Ok(RemoteCommand::Help))
+         );
+     }
+
++    #[test]
++    fn gate_cloud_remote_sales_link_is_rejected_but_local_gateway_parses() {
++        assert!(matches!(
++            parse_remote_command("/remote cloud"),
++            Some(Err(message)) if message.contains("Jcode Cloud early access is disabled")
++        ));
++        assert_eq!(parse_remote_command("/remote on"), Some(Ok(RemoteCommand::On)));
++        assert_eq!(parse_remote_command("/remote pair"), Some(Ok(RemoteCommand::Pair)));
++        assert_eq!(parse_remote_command("/remote help"), Some(Ok(RemoteCommand::Help)));
++    }
++
+     #[test]
+     fn subcommands_and_aliases_parse() {
+         for (input, expected) in [
+             ("/remote status", RemoteCommand::Status),
+-            ("/remote cloud", RemoteCommand::Cloud),
+-            ("/remote setup", RemoteCommand::Cloud),
+             ("/remote local", RemoteCommand::Status),
+             ("/remote on", RemoteCommand::On),
+             ("/remote enable", RemoteCommand::On),
+diff --git a/crates/jcode-base/src/jev.rs b/crates/jcode-base/src/jev.rs
+index b3851863b..99f86f992 100644
+--- a/crates/jcode-base/src/jev.rs
++++ b/crates/jcode-base/src/jev.rs
+@@ -429,12 +429,12 @@ fn resolve_voice_with(
+     load: impl FnMut(&str, &str) -> Option<String>,
+ ) -> Result<(JevProvider, String)> {
+     match selector.trim().to_ascii_lowercase().as_str() {
+-        "auto" => resolve_providers(&[JevProvider::Jcode, JevProvider::TypeSafe], load),
+-        "typesafe" | "jcode" | "subscription" | "jcode-subscription" => {
+-            resolve_with(selector, load)
++        "auto" | "typesafe" => resolve_providers(&[JevProvider::TypeSafe], load),
++        "jcode" | "subscription" | "jcode-subscription" => {
++            bail!("Jcode Jev is disabled in this build; select typesafe to use your own provider key")
+         }
+         _ => bail!(
+-            "Invalid voice Jev provider. Choose auto, typesafe, or jcode; voice never uses OpenRouter or AIMLAPI"
++            "Invalid voice Jev provider. Choose auto or typesafe; voice never uses OpenRouter or AIMLAPI"
+         ),
+     }
+ }
+@@ -445,11 +445,7 @@ fn resolve_with(
+ ) -> Result<(JevProvider, String)> {
+     let providers: &[JevProvider] = match selector.trim().to_ascii_lowercase().as_str() {
+         "auto" => &[
+-            // Included subscriber access wins over personal paid provider keys.
+-            // Entitlement is checked live before evaluation. Failure must not
+-            // silently spend a BYOK balance; users can select BYOK explicitly.
+             // Typesafe serves Jev directly, so it beats resellers of the same model.
+-            JevProvider::Jcode,
+             JevProvider::TypeSafe,
+             JevProvider::OpenRouter,
+             JevProvider::Aimlapi,
+@@ -457,8 +453,10 @@ fn resolve_with(
+         "openrouter" => &[JevProvider::OpenRouter],
+         "typesafe" => &[JevProvider::TypeSafe],
+         "aimlapi" => &[JevProvider::Aimlapi],
+-        "jcode" | "subscription" | "jcode-subscription" => &[JevProvider::Jcode],
+-        _ => bail!("Invalid Jev provider. Choose auto, openrouter, typesafe, aimlapi, or jcode"),
++        "jcode" | "subscription" | "jcode-subscription" => {
++            bail!("Jcode Jev is disabled in this build; select a BYOK provider to use your own key")
++        }
++        _ => bail!("Invalid Jev provider. Choose auto, openrouter, typesafe, or aimlapi"),
+     };
+     resolve_providers(providers, load)
+ }
+@@ -750,7 +748,7 @@ mod tests {
+     }
+
+     #[test]
+-    fn voice_routes_independently_to_subscription_or_typesafe_only() {
++    fn voice_routes_independently_to_typesafe_only() {
+         let selector = JevPurpose::Voice
+             .selector_with(
+                 |key| {
+@@ -773,22 +771,14 @@ mod tests {
+                 .unwrap(),
+             "typesafe"
+         );
+-        for (available, expected) in [
+-            ("JCODE_API_KEY", JevProvider::Jcode),
+-            ("TYPESAFE_API_KEY", JevProvider::TypeSafe),
+-        ] {
+-            let (provider, _) = resolve_voice_with(&selector, |env, _| {
+-                assert!(matches!(env, "JCODE_API_KEY" | "TYPESAFE_API_KEY"));
+-                (env == available).then(|| "test-key".into())
+-            })
+-            .unwrap();
+-            assert_eq!(provider, expected);
+-        }
+         assert_eq!(
+-            resolve_voice_with("auto", |_, _| Some("present".into()))
++            resolve_voice_with("auto", |env, _| {
++                assert_eq!(env, "TYPESAFE_API_KEY");
++                Some("present".into())
++            })
+                 .unwrap()
+                 .0,
+-            JevProvider::Jcode
++            JevProvider::TypeSafe
+         );
+         let (provider, _) = resolve_voice_with("typesafe", |env, file| {
+             assert_eq!((env, file), ("TYPESAFE_API_KEY", "typesafe.env"));
+@@ -801,9 +791,9 @@ mod tests {
+             provider.endpoint("").unwrap(),
+             "https://api.typesafe.ai/v1/systemone"
+         );
+-        for selector in ["auto", "typesafe", "jcode"] {
++        for selector in ["auto", "typesafe"] {
+             let error = resolve_voice_with(selector, |env, _| {
+-                assert!(matches!(env, "JCODE_API_KEY" | "TYPESAFE_API_KEY"));
++                assert_eq!(env, "TYPESAFE_API_KEY");
+                 // Other credentials cannot make this route available.
+                 (env == "OPENROUTER_API_KEY" || env == "AIMLAPI_API_KEY")
+                     .then(|| "other-account-key".into())
+@@ -812,6 +802,10 @@ mod tests {
+             assert!(!error.to_string().contains("OPENROUTER_API_KEY"));
+             assert!(!error.to_string().contains("AIMLAPI_API_KEY"));
+         }
++        assert!(resolve_voice_with("jcode", |_, _| panic!("disabled route must not load keys"))
++            .unwrap_err()
++            .to_string()
++            .contains("Jcode Jev is disabled"));
+         for selector in ["openrouter", "aimlapi", ""] {
+             assert!(
+                 resolve_voice_with(selector, |_, _| panic!(
+@@ -824,7 +818,7 @@ mod tests {
+     }
+
+     #[test]
+-    fn purpose_selectors_are_independent_and_browser_defaults_to_subscription_first() {
++    fn purpose_selectors_are_independent_and_browser_defaults_to_byok() {
+         let env = |key: &str| match key {
+             PROVIDER_ENV => Ok("typesafe".into()),
+             BROWSER_PROVIDER_ENV => Ok("openrouter".into()),
+@@ -852,7 +846,7 @@ mod tests {
+             resolve_with(&selector, |_, _| Some("present".into()))
+                 .unwrap()
+                 .0,
+-            JevProvider::Jcode
++            JevProvider::TypeSafe
+         );
+         assert_eq!(
+             JevPurpose::Memory
+@@ -957,14 +951,6 @@ mod tests {
+                 "https://api.aimlapi.com/v1/decisions",
+                 "typesafe/jev",
+             ),
+-            (
+-                "jcode",
+-                JevProvider::Jcode,
+-                "JCODE_API_KEY",
+-                "jcode-subscription.env",
+-                "https://api.jcode.sh/v1/decisions",
+-                "typesafe/jev-1.13",
+-            ),
+         ] {
+             let (provider, secret) = resolve_with(selector, |env, env_file| {
+                 assert_eq!((env, env_file), (key, file));
+@@ -1001,12 +987,11 @@ mod tests {
+     }
+
+     #[test]
+-    fn auto_prefers_included_subscription_without_shared_slot() {
++    fn gate_cloud_auto_jev_candidates_exclude_jcode() {
+         for available in [
+             "OPENROUTER_API_KEY",
+             "TYPESAFE_API_KEY",
+             "AIMLAPI_API_KEY",
+-            "JCODE_API_KEY",
+         ] {
+             let (provider, _) = resolve_with("auto", |env, _| {
+                 assert!(!env.starts_with("JCODE_OPENROUTER"));
+@@ -1015,12 +1000,14 @@ mod tests {
+             .unwrap();
+             assert_eq!(provider.credentials().0, available);
+         }
+-        assert_eq!(
+-            resolve_with("auto", |_, _| Some("all-present".into()))
+-                .unwrap()
+-                .0,
+-            JevProvider::Jcode
+-        );
++        let mut lookups = Vec::new();
++        let (provider, _) = resolve_with("auto", |env, _| {
++            lookups.push(env.to_string());
++            Some("all-present".into())
++        })
++        .unwrap();
++        assert_eq!(provider, JevProvider::TypeSafe);
++        assert_eq!(lookups, ["TYPESAFE_API_KEY"]);
+         // Typesafe direct wins over resellers of the same model.
+         assert_eq!(
+             resolve_with("auto", |env, _| (env != "JCODE_API_KEY")
+@@ -1037,6 +1024,9 @@ mod tests {
+             JevProvider::OpenRouter
+         );
+         assert!(resolve_with("auto", |_, _| None).is_err());
++        let error = resolve_with("jcode", |_, _| panic!("disabled route must not load keys"))
++            .unwrap_err();
++        assert!(error.to_string().contains("Jcode Jev is disabled"));
+         assert!(
+             resolve_with("untrusted-selector", |_, _| panic!(
+                 "must not load any credential"
+@@ -1051,6 +1041,23 @@ mod tests {
+         );
+     }
+
++    #[test]
++    fn gate_cloud_explicit_jev_jcode_is_rejected_without_loading_or_building_url() {
++        for selector in ["jcode", "subscription", "jcode-subscription"] {
++            let error = resolve_with(selector, |_, _| {
++                panic!("disabled Jcode route must not inspect credentials")
++            })
++            .unwrap_err();
++            assert!(error.to_string().contains("Jcode Jev is disabled"));
++            assert!(resolve_voice_with(selector, |_, _| {
++                panic!("disabled Jcode voice route must not inspect credentials")
++            })
++            .unwrap_err()
++            .to_string()
++            .contains("Jcode Jev is disabled"));
++        }
++    }
++
+     #[test]
+     fn empty_and_malformed_credentials_are_rejected_without_echoing() {
+         assert!(resolve_with("openrouter", |_, _| Some(" \"\" ".into())).is_err());
+diff --git a/crates/jcode-base/src/provider/jcode.rs b/crates/jcode-base/src/provider/jcode.rs
+index ab1ec6c36..18a65f1e0 100644
+--- a/crates/jcode-base/src/provider/jcode.rs
++++ b/crates/jcode-base/src/provider/jcode.rs
+@@ -27,6 +27,9 @@ impl JcodeProvider {
+     }
+
+     pub fn new() -> Self {
++        if !Self::policy_allows_catalog() {
++            crate::logging::warn("Jcode hosted provider is disabled by provider.allowed_providers");
++        }
+         crate::subscription_catalog::apply_runtime_env();
+         Self::apply_runtime_profile();
+         let inner = MultiProvider::new_fast();
+diff --git a/crates/jcode-base/src/provider/mod.rs b/crates/jcode-base/src/provider/mod.rs
+index 25ae0f20e..b6b3ea6f9 100644
+--- a/crates/jcode-base/src/provider/mod.rs
++++ b/crates/jcode-base/src/provider/mod.rs
+@@ -438,14 +438,14 @@ pub struct MultiProvider {
+
+ impl MultiProvider {
+     fn provider_family_policy(families: &[String]) -> ProviderFamilyPolicy {
+-    let policy = ProviderFamilyPolicy::parse(families);
+-    if !policy.unknown_values().is_empty() {
+-        crate::logging::warn(&format!(
+-            "Unknown provider.allowed_providers entries (denied): {}",
+-            policy.unknown_values().join(", ")
+-        ));
+-    }
+-    policy
++        let policy = ProviderFamilyPolicy::parse(families);
++        if !policy.unknown_values().is_empty() {
++            crate::logging::warn(&format!(
++                "Unknown provider.allowed_providers entries (denied): {}",
++                policy.unknown_values().join(", ")
++            ));
++        }
++        policy
+     }
+
+     #[cfg(test)]
+@@ -490,7 +490,7 @@ impl MultiProvider {
+             .map(|provider| provider.runtime_key())
+     }
+
+-    fn configured_provider_policy() -> ProviderFamilyPolicy {
++    pub fn configured_provider_policy() -> ProviderFamilyPolicy {
+         Self::provider_family_policy(&crate::config::config().provider.allowed_providers)
+     }
+
+diff --git a/crates/jcode-base/src/provider/policy_tests.rs b/crates/jcode-base/src/provider/policy_tests.rs
+index 08daa88b5..395a05f08 100644
+--- a/crates/jcode-base/src/provider/policy_tests.rs
++++ b/crates/jcode-base/src/provider/policy_tests.rs
+@@ -1,6 +1,37 @@
+ use super::*;
+ use crate::provider::jcode::JcodeProvider;
+
++#[test]
++fn gate_hosted_family_denied_by_default_and_allowed_only_when_listed() {
++    for policy in [
++        ProviderFamilyPolicy::default(),
++        ProviderFamilyPolicy::parse(&[]),
++    ] {
++        assert!(!policy.allows_runtime(&RuntimeKey::JcodeSubscription));
++        for family in [
++            ProviderFamily::Claude,
++            ProviderFamily::OpenAi,
++            ProviderFamily::OpenRouter,
++            ProviderFamily::OpenRouterEu,
++            ProviderFamily::OpenAiCompatible,
++            ProviderFamily::GrokBuild,
++            ProviderFamily::Copilot,
++            ProviderFamily::Gemini,
++            ProviderFamily::Antigravity,
++            ProviderFamily::Cursor,
++            ProviderFamily::Bedrock,
++        ] {
++            assert!(policy.allows_family(family), "{family:?}");
++        }
++        assert!(policy.allows_api_method(&ModelRouteApiMethod::OpenAIOAuth));
++    }
++
++    let listed = ProviderFamilyPolicy::parse(&["jcode".to_string()]);
++    assert!(listed.allows_runtime(&RuntimeKey::JcodeSubscription));
++    assert!(listed.allows_api_method(&ModelRouteApiMethod::JcodeSubscription));
++    assert!(!listed.allows_runtime(&RuntimeKey::OpenRouter));
++}
++
+ #[test]
+ fn provider_route_policy_family_allowlist_is_legacy_when_empty() {
+     assert!(MultiProvider::family_allowed_from_lists("openai-api-key", &[]));
+diff --git a/crates/jcode-base/src/provider/tests/fallback_failover.rs b/crates/jcode-base/src/provider/tests/fallback_failover.rs
+index a0afae35d..994f57141 100644
+--- a/crates/jcode-base/src/provider/tests/fallback_failover.rs
++++ b/crates/jcode-base/src/provider/tests/fallback_failover.rs
+@@ -236,6 +236,18 @@ fn test_auto_default_prefers_copilot_when_zero_premium_mode_enabled() {
+     assert_eq!(active, ActiveProvider::Copilot);
+ }
+
++#[test]
++fn gate_hosted_auto_default_skips_jcode_even_when_credential_exists() {
++    let availability = ProviderAvailability {
++        openrouter: true,
++        ..ProviderAvailability::default()
++    };
++    assert_eq!(
++        MultiProvider::auto_default_provider(availability),
++        ActiveProvider::OpenRouter
++    );
++}
++
+ #[test]
+ fn test_should_failover_on_403_forbidden() {
+     let err = anyhow::anyhow!(
+diff --git a/crates/jcode-base/src/provider_catalog.rs b/crates/jcode-base/src/provider_catalog.rs
+index ab558d72e..e7cfdf546 100644
+--- a/crates/jcode-base/src/provider_catalog.rs
++++ b/crates/jcode-base/src/provider_catalog.rs
+@@ -6,6 +6,62 @@ pub use jcode_provider_env::{
+ pub use jcode_provider_metadata::*;
+ use std::collections::{HashMap, HashSet};
+
++/// Hosted Jcode provider routing requires an explicit provider-family allowlist entry.
++pub fn hosted_provider_allowed() -> bool {
++    crate::provider::MultiProvider::configured_provider_policy()
++        .allows_runtime(&jcode_provider_core::RuntimeKey::JcodeSubscription)
++}
++
++fn filter_jcode_login_provider(
++    providers: Vec<LoginProviderDescriptor>,
++) -> Vec<LoginProviderDescriptor> {
++    if hosted_provider_allowed() {
++        return providers;
++    }
++    providers
++        .into_iter()
++        .filter(|provider| provider.id != "jcode")
++        .collect()
++}
++
++pub fn visible_login_providers() -> Vec<LoginProviderDescriptor> {
++    filter_jcode_login_provider(jcode_provider_metadata::login_providers().to_vec())
++}
++
++pub fn cli_login_providers() -> Vec<LoginProviderDescriptor> {
++    filter_jcode_login_provider(jcode_provider_metadata::cli_login_providers())
++}
++
++pub fn tui_login_providers() -> Vec<LoginProviderDescriptor> {
++    filter_jcode_login_provider(jcode_provider_metadata::tui_login_providers())
++}
++
++pub fn server_bootstrap_login_providers() -> Vec<LoginProviderDescriptor> {
++    filter_jcode_login_provider(jcode_provider_metadata::server_bootstrap_login_providers())
++}
++
++pub fn auto_init_login_providers() -> Vec<LoginProviderDescriptor> {
++    filter_jcode_login_provider(jcode_provider_metadata::auto_init_login_providers())
++}
++
++pub fn auth_status_login_providers() -> Vec<LoginProviderDescriptor> {
++    filter_jcode_login_provider(jcode_provider_metadata::auth_status_login_providers())
++}
++
++#[cfg(test)]
++mod gate_hosted_tests {
++    use super::*;
++
++    #[test]
++    fn gate_hosted_policy_constructor_denies_unset_and_empty() {
++        assert!(!hosted_provider_allowed());
++        assert!(!jcode_provider_core::ProviderFamilyPolicy::default()
++            .allows_runtime(&jcode_provider_core::RuntimeKey::JcodeSubscription));
++        assert!(!jcode_provider_core::ProviderFamilyPolicy::parse(&[])
++            .allows_runtime(&jcode_provider_core::RuntimeKey::JcodeSubscription));
++    }
++}
++
+ pub const OPENAI_COMPAT_LOCAL_ENABLED_ENV: &str = "JCODE_OPENAI_COMPAT_LOCAL_ENABLED";
+ pub const MINIMAX_CHINA_API_BASE: &str = "https://api.minimaxi.com/v1";
+ pub const MINIMAX_CHINA_SETUP_URL: &str = "https://platform.minimaxi.com/docs/llms.txt";
+diff --git a/crates/jcode-base/src/provider_catalog_tests.rs b/crates/jcode-base/src/provider_catalog_tests.rs
+index 7ef62c584..ba162d2e6 100644
+--- a/crates/jcode-base/src/provider_catalog_tests.rs
++++ b/crates/jcode-base/src/provider_catalog_tests.rs
+@@ -511,6 +511,32 @@ fn matrix_login_provider_ids_and_aliases_are_unique() {
+     }
+ }
+
++#[test]
++fn gate_hosted_login_catalogs_hide_jcode_without_explicit_allowlist() {
++    let _lock = crate::storage::lock_test_env();
++    let home = tempfile::tempdir().unwrap();
++    let _env = EnvGuard::save(&["JCODE_HOME"]);
++    crate::env::set_var("JCODE_HOME", home.path());
++    let config_path = home.path().join("config.toml");
++    std::fs::write(&config_path, "[provider]\nallowed_providers = []\n").unwrap();
++    crate::config::invalidate_config_cache();
++
++    for providers in [
++        visible_login_providers(),
++        cli_login_providers(),
++        tui_login_providers(),
++        server_bootstrap_login_providers(),
++        auto_init_login_providers(),
++        auth_status_login_providers(),
++    ] {
++        assert!(!providers.iter().any(|provider| provider.id == "jcode"));
++    }
++
++    std::fs::write(&config_path, "[provider]\nallowed_providers = [\"jcode\"]\n").unwrap();
++    crate::config::invalidate_config_cache();
++    assert!(tui_login_providers().iter().any(|provider| provider.id == "jcode"));
++}
++
+ #[test]
+ fn matrix_tui_login_selection_supports_numbers_and_names() {
+     let providers = tui_login_providers();
+diff --git a/crates/jcode-base/src/sponsors.rs b/crates/jcode-base/src/sponsors.rs
+index b7e6d9b15..1feb13b55 100644
+--- a/crates/jcode-base/src/sponsors.rs
++++ b/crates/jcode-base/src/sponsors.rs
+@@ -99,8 +99,8 @@ mod tests {
+     }
+
+     #[test]
+-    fn discovery_is_enabled_by_default() {
++    fn gate_tools_sponsors_default_is_disabled() {
+         let config = crate::config::Config::default();
+-        assert!(config.sponsors.enabled);
++        assert!(!config.sponsors.enabled);
+     }
+ }
+diff --git a/crates/jcode-base/src/usage.rs b/crates/jcode-base/src/usage.rs
+index da1510a96..58a1b4ad3 100644
+--- a/crates/jcode-base/src/usage.rs
++++ b/crates/jcode-base/src/usage.rs
+@@ -204,18 +204,27 @@ where
+     let openai_generation = openai_usage_generation();
+
+     let now = Instant::now();
++    let hosted_allowed = crate::provider_catalog::hosted_provider_allowed();
+     let cached_results = if let Ok(map) = cache.lock() {
+-        let mut cached = map.values().map(|(_, r)| r.clone()).collect::<Vec<_>>();
++        let mut cached = map
++            .values()
++            .map(|(_, report)| report.clone())
++            .filter(|report| hosted_allowed || report.provider_name != "Jcode subscription")
++            .collect::<Vec<_>>();
+         sort_reports_most_recent_first(&mut cached);
+         cached
+     } else {
+         Vec::new()
+     };
+     let all_fresh = if let Ok(map) = cache.lock() {
+-        !map.is_empty()
+-            && map
+-                .values()
+-                .all(|(fetched_at, report)| provider_usage_cache_is_fresh(now, *fetched_at, report))
++        let relevant = map
++            .values()
++            .filter(|(_, report)| hosted_allowed || report.provider_name != "Jcode subscription")
++            .collect::<Vec<_>>();
++        !relevant.is_empty()
++            && relevant.iter().all(|(fetched_at, report)| {
++                provider_usage_cache_is_fresh(now, *fetched_at, report)
++            })
+     } else {
+         false
+     };
+@@ -401,7 +410,9 @@ fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<Provider
+         total += 1;
+     }
+
+-    if crate::subscription_catalog::configured_api_key().is_some() {
++    if crate::provider_catalog::hosted_provider_allowed()
++        && crate::subscription_catalog::configured_api_key().is_some()
++    {
+         tasks.spawn(async {
+             fetch_jcode_usage_report().await.map(|mut report| {
+                 attach_activity(&mut report, "jcode");
+@@ -416,6 +427,55 @@ fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<Provider
+     total
+ }
+
++#[cfg(test)]
++mod gate_hosted_usage_tests {
++    use super::*;
++
++    struct HomeRestore(Option<std::ffi::OsString>);
++
++    impl Drop for HomeRestore {
++        fn drop(&mut self) {
++            if let Some(home) = self.0.take() {
++                crate::env::set_var("JCODE_HOME", home);
++            } else {
++                crate::env::remove_var("JCODE_HOME");
++            }
++            crate::config::invalidate_config_cache();
++        }
++    }
++
++    #[test]
++    fn gate_hosted_jcode_usage_upgrade_hint_is_hidden_by_policy() {
++        let _lock = crate::storage::lock_test_env();
++        let home = tempfile::tempdir().unwrap();
++        let previous_home = std::env::var_os("JCODE_HOME");
++        crate::env::set_var("JCODE_HOME", home.path());
++        let config_path = home.path().join("config.toml");
++        std::fs::write(&config_path, "[provider]\nallowed_providers = []\n").unwrap();
++        crate::config::invalidate_config_cache();
++        let _home_restore = HomeRestore(previous_home);
++        let message = provider_fetch::jcode_usage_report(&crate::subscription_api::SubscriptionMe {
++            capabilities: Default::default(),
++            account_id: "test-account".to_string(),
++            email: "test@example.com".to_string(),
++            tier: "plus".to_string(),
++            status: "active".to_string(),
++            usage: Default::default(),
++            jev_usage: Some(crate::subscription_api::JevUsage {
++                memory: crate::subscription_api::JevFeatureUsage { used: 100, limit: 100 },
++                browser: crate::subscription_api::JevFeatureUsage::default(),
++                resets_at: Some("2026-10-19T00:00:00Z".to_string()),
++                upgrade_tier: Some("pro".to_string()),
++                upgrade_url: Some("https://jcode.sh/pricing".to_string()),
++            }),
++            manage_url: None,
++        });
++        assert_eq!(message.provider_name, "");
++        assert!(message.limits.is_empty());
++        assert!(message.extra_info.is_empty());
++    }
++}
++
+ /// Source-key prefixes that already get a dedicated `/usage` report; the
+ /// sweeper skips these so used-but-unreported logins (Cursor, Bedrock,
+ /// Azure, jcode subscription, ...) still show recency + local spend without
+diff --git a/crates/jcode-base/src/usage/provider_fetch.rs b/crates/jcode-base/src/usage/provider_fetch.rs
+index ae5de729d..6d60d9eec 100644
+--- a/crates/jcode-base/src/usage/provider_fetch.rs
++++ b/crates/jcode-base/src/usage/provider_fetch.rs
+@@ -877,6 +877,9 @@ pub(super) async fn fetch_jcode_usage_report() -> Option<ProviderUsage> {
+ pub(crate) const JCODE_UPGRADE_HINT_PERCENT: f32 = 80.0;
+
+ pub(crate) fn jcode_usage_report(me: &crate::subscription_api::SubscriptionMe) -> ProviderUsage {
++    if !crate::provider_catalog::hosted_provider_allowed() {
++        return ProviderUsage::default();
++    }
+     let mut limits = Vec::new();
+     let mut extra_info = vec![(
+         "Plan".to_string(),
+diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
+index 81dc1b72f..aa28421ea 100644
+--- a/crates/jcode-config-types/src/lib.rs
++++ b/crates/jcode-config-types/src/lib.rs
+@@ -1077,18 +1077,12 @@ pub struct AutoReviewConfig {
+
+ /// Integration discovery configuration (legacy `[sponsors]` section name).
+ ///
+-/// Integration discovery makes third-party developer tools discoverable to
+-/// the agent via a `discover_tools` tool backed by a hosted directory. Some
+-/// providers may share revenue with Jcode when a referred user becomes a
+-/// customer, but partnership status never influences recommendations.
+-/// See <https://jcode.sh/discovery-tools>.
++/// Hosted integration discovery is hard-disabled; the config field remains for
++/// compatibility but its effective value is always false.
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ #[serde(default)]
+ pub struct SponsorsConfig {
+-    /// Enable integration discovery. Enabled by default; set to false to opt
+-    /// out. When false, no discovery categories are added to the prompt, the
+-    /// `discover_tools` tool is not registered, and jcode never contacts the
+-    /// discovery endpoint.
++    /// Legacy enable flag. Sponsored discovery remains disabled regardless of this value.
+     pub enabled: bool,
+     /// Base URL of the discovery endpoint.
+     pub endpoint: String,
+@@ -1097,7 +1091,7 @@ pub struct SponsorsConfig {
+ impl Default for SponsorsConfig {
+     fn default() -> Self {
+         Self {
+-            enabled: true,
++            enabled: false,
+             endpoint: "https://api.jcode.sh/v1/discovery".to_string(),
+         }
+     }
+diff --git a/crates/jcode-provider-core/src/lib.rs b/crates/jcode-provider-core/src/lib.rs
+index f53b8e9ad..edfecd0d0 100644
+--- a/crates/jcode-provider-core/src/lib.rs
++++ b/crates/jcode-provider-core/src/lib.rs
+@@ -962,22 +962,41 @@ impl fmt::Display for ProviderFamily {
+     }
+ }
+
+-/// A configured allowlist. Empty is legacy-unrestricted; non-empty fails closed.
++/// A configured allowlist. Empty is legacy-unrestricted except for hosted jcode.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct ProviderFamilyPolicy {
+     allowed: Option<HashSet<ProviderFamily>>,
++    denied: Option<HashSet<ProviderFamily>>,
+     unknown: Vec<String>,
+ }
+
+ impl Default for ProviderFamilyPolicy {
+-    fn default() -> Self { Self::unrestricted() }
++    fn default() -> Self {
++        Self {
++            allowed: None,
++            denied: Some(HashSet::from([ProviderFamily::Jcode])),
++            unknown: Vec::new(),
++        }
++    }
+ }
+
+ impl ProviderFamilyPolicy {
+-    pub fn unrestricted() -> Self { Self { allowed: None, unknown: Vec::new() } }
++    pub fn unrestricted() -> Self {
++        Self {
++            allowed: None,
++            denied: None,
++            unknown: Vec::new(),
++        }
++    }
+
+     pub fn parse(values: &[String]) -> Self {
+-        if values.is_empty() { return Self::unrestricted(); }
++        if values.is_empty() {
++            return Self {
++                allowed: None,
++                denied: Some(HashSet::from([ProviderFamily::Jcode])),
++                unknown: Vec::new(),
++            };
++        }
+         let mut allowed = HashSet::new();
+         let mut unknown = Vec::new();
+         for raw in values {
+@@ -988,19 +1007,33 @@ impl ProviderFamilyPolicy {
+         }
+         unknown.sort();
+         unknown.dedup();
+-        Self { allowed: Some(allowed), unknown }
++        Self {
++            allowed: Some(allowed),
++            denied: None,
++            unknown,
++        }
+     }
+
+-    pub fn is_restricted(&self) -> bool { self.allowed.is_some() }
++    pub fn is_restricted(&self) -> bool {
++        self.allowed.is_some() || self.denied.is_some()
++    }
+     pub fn unknown_values(&self) -> &[String] { &self.unknown }
+     pub fn allows_family(&self, family: ProviderFamily) -> bool {
+-        self.allowed.as_ref().is_none_or(|allowed| allowed.contains(&family))
++        self.denied.as_ref().is_none_or(|denied| !denied.contains(&family))
++            && self
++                .allowed
++                .as_ref()
++                .is_none_or(|allowed| allowed.contains(&family))
+     }
+     pub fn allows_runtime(&self, runtime: &RuntimeKey) -> bool {
+-        !self.is_restricted() || runtime.provider_family().is_some_and(|family| self.allows_family(family))
++        runtime
++            .provider_family()
++            .map_or(self.allowed.is_none(), |family| self.allows_family(family))
+     }
+     pub fn allows_api_method(&self, method: &ModelRouteApiMethod) -> bool {
+-        !self.is_restricted() || method.provider_family().is_some_and(|family| self.allows_family(family))
++        method
++            .provider_family()
++            .map_or(self.allowed.is_none(), |family| self.allows_family(family))
+     }
+     pub fn filter_routes(&self, routes: Vec<ModelRoute>) -> Vec<ModelRoute> {
+         routes.into_iter().filter(|route| self.allows_api_method(&route.api_method_kind())).collect()
+diff --git a/crates/jcode-provider-core/src/policy_tests.rs b/crates/jcode-provider-core/src/policy_tests.rs
+index 6308dd40d..bc89efeee 100644
+--- a/crates/jcode-provider-core/src/policy_tests.rs
++++ b/crates/jcode-provider-core/src/policy_tests.rs
+@@ -2,8 +2,9 @@ use super::*;
+
+ #[test]
+ fn provider_family_policy_parses_aliases_reports_unknowns_and_fails_closed() {
+-    assert!(!ProviderFamilyPolicy::parse(&[]).is_restricted());
+-    assert!(ProviderFamilyPolicy::parse(&[]).allows_runtime(&RuntimeKey::Other {
++    assert!(ProviderFamilyPolicy::default().is_restricted());
++    assert!(!ProviderFamilyPolicy::default().allows_runtime(&RuntimeKey::JcodeSubscription));
++    assert!(ProviderFamilyPolicy::default().allows_runtime(&RuntimeKey::Other {
+         method: "future-provider".to_string(),
+     }));
+
+diff --git a/crates/jcode-telemetry-core/src/concurrency.rs b/crates/jcode-telemetry-core/src/concurrency.rs
+index b63cd7177..262d604da 100644
+--- a/crates/jcode-telemetry-core/src/concurrency.rs
++++ b/crates/jcode-telemetry-core/src/concurrency.rs
+@@ -340,13 +340,18 @@ pub fn begin_concurrency_session(
+     session_id: &str,
+     parent_session_id: Option<&str>,
+ ) -> ConcurrencySession {
++    let active = is_enabled();
+     let mut guard = ConcurrencySession {
+         session_id: session_id.to_owned(),
+-        incarnation: uuid::Uuid::new_v4().to_string(),
++        incarnation: if active {
++            uuid::Uuid::new_v4().to_string()
++        } else {
++            String::new()
++        },
+         child: parent_session_id.is_some(),
+         lease: None,
+         at_start: Counts::default(),
+-        active: is_enabled(),
++        active,
+     };
+     if !guard.active {
+         return guard;
+diff --git a/crates/jcode-telemetry-core/src/lib.rs b/crates/jcode-telemetry-core/src/lib.rs
+index 6b674c908..332c725f4 100644
+--- a/crates/jcode-telemetry-core/src/lib.rs
++++ b/crates/jcode-telemetry-core/src/lib.rs
+@@ -37,7 +37,9 @@ use std::sync::mpsc::TrySendError;
+ use std::sync::mpsc::{SyncSender, sync_channel};
+ use std::time::{Duration, Instant};
+
++#[cfg(test)]
+ const TELEMETRY_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/event";
++#[cfg(test)]
+ const TRANSCRIPT_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/transcript";
+ #[cfg(not(test))]
+ const ASYNC_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+@@ -60,6 +62,10 @@ static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new
+ static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+ #[cfg(test)]
+ static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
++#[cfg(test)]
++thread_local! {
++    static TEST_FORCE_TELEMETRY_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
+
+ #[derive(Debug, Clone)]
+ pub struct DiscoveryTelemetry<'a> {
+@@ -468,14 +474,18 @@ pub fn opt_out_source() -> Option<TelemetryOptOutSource> {
+ pub fn status() -> TelemetryStatus {
+     let opt_out_source = opt_out_source();
+     TelemetryStatus {
+-        enabled: opt_out_source.is_none(),
++        enabled: is_enabled(),
+         content_sharing_enabled: content_sharing_enabled(),
+         opt_out_source,
+         telemetry_id: read_existing_id(),
+     }
+ }
+
++#[cfg(test)]
+ pub fn is_enabled() -> bool {
++    if TEST_FORCE_TELEMETRY_OFF.with(std::cell::Cell::get) {
++        return false;
++    }
+     match opt_out_source() {
+         Some(TelemetryOptOutSource::Environment) => {
+             logging::debug("telemetry disabled by environment");
+@@ -489,6 +499,33 @@ pub fn is_enabled() -> bool {
+     }
+ }
+
++#[cfg(not(test))]
++pub fn is_enabled() -> bool {
++    production_telemetry_enabled()
++}
++
++fn production_telemetry_enabled() -> bool {
++    false
++}
++
++#[cfg(test)]
++fn production_is_enabled() -> bool {
++    production_telemetry_enabled()
++}
++
++#[cfg(test)]
++pub(crate) fn force_test_telemetry_off(disabled: bool) {
++    TEST_FORCE_TELEMETRY_OFF.with(|forced| forced.set(disabled));
++}
++
++fn telemetry_endpoint() -> Option<&'static str> {
++    None
++}
++
++fn transcript_endpoint() -> Option<&'static str> {
++    None
++}
++
+ /// Marker file recording that the user opted out of anonymous usage telemetry.
+ /// Its presence is equivalent to setting `JCODE_NO_TELEMETRY=1`, but persists
+ /// across shells so the onboarding "Telemetry settings" screen can honor the
+@@ -516,6 +553,9 @@ pub fn opt_out_forced_by_env() -> bool {
+ /// writes the `no_telemetry` marker; `true` removes it. Returns whether the
+ /// change was persisted (an env-var opt-out still overrides at runtime).
+ pub fn set_usage_telemetry_enabled(enabled: bool) -> bool {
++    if enabled {
++        return false;
++    }
+     let Some(path) = opt_out_marker_path() else {
+         return false;
+     };
+@@ -552,6 +592,9 @@ pub fn set_usage_telemetry_enabled(enabled: bool) -> bool {
+ }
+
+ fn emit_telemetry_opt_out() {
++    if !is_enabled() {
++        return;
++    }
+     let Some(id) = get_or_create_id() else {
+         return;
+     };
+@@ -606,6 +649,9 @@ pub fn content_sharing_enabled() -> bool {
+ /// Persist the user's prompt/transcript content-sharing choice. Writing the
+ /// marker opts in; removing it opts out. Returns whether the write succeeded.
+ pub fn set_content_sharing_enabled(enabled: bool) -> bool {
++    if enabled && !is_enabled() {
++        return false;
++    }
+     let Some(path) = share_content_marker_path() else {
+         return false;
+     };
+@@ -645,6 +691,9 @@ pub fn record_transcript(
+     end_reason: SessionEndReason,
+     messages: Value,
+ ) -> bool {
++    if !is_enabled() {
++        return false;
++    }
+     if !content_sharing_enabled() {
+         return false;
+     }
+@@ -1204,6 +1253,9 @@ fn mark_tool_success_side_effects(state: &mut SessionTelemetry, name: &str, inpu
+ }
+
+ pub fn record_command_family(command: &str) {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -1217,6 +1269,9 @@ pub fn record_command_family(command: &str) {
+
+ #[cfg(not(test))]
+ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
++    let Some(endpoint) = telemetry_endpoint() else {
++        return false;
++    };
+     if TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
+         return false;
+     }
+@@ -1230,7 +1285,7 @@ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
+             .expect("telemetry HTTP client should build")
+     });
+     match client
+-        .post(TELEMETRY_ENDPOINT)
++        .post(endpoint)
+         .timeout(timeout)
+         .json(&payload)
+         .send()
+@@ -1277,6 +1332,9 @@ fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> boo
+
+ #[cfg(not(test))]
+ fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> bool {
++    let Some(endpoint) = transcript_endpoint() else {
++        return false;
++    };
+     let client = TELEMETRY_HTTP_CLIENT.get_or_init(|| {
+         reqwest::blocking::Client::builder()
+             .user_agent(jcode_provider_core::JCODE_USER_AGENT)
+@@ -1284,7 +1342,7 @@ fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> boo
+             .expect("telemetry HTTP client should build")
+     });
+     match client
+-        .post(TRANSCRIPT_ENDPOINT)
++        .post(endpoint)
+         .timeout(timeout)
+         .json(&payload)
+         .send()
+@@ -1370,6 +1428,9 @@ fn transcript_background_sender() -> &'static SyncSender<Value> {
+
+ #[cfg(test)]
+ fn send_transcript_payload(payload: Value) -> bool {
++    if !is_enabled() {
++        return false;
++    }
+     if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
+         emitted.push(payload);
+     }
+@@ -1378,6 +1439,9 @@ fn send_transcript_payload(payload: Value) -> bool {
+
+ #[cfg(not(test))]
+ fn send_transcript_payload(payload: Value) -> bool {
++    if transcript_endpoint().is_none() {
++        return false;
++    }
+     match transcript_background_sender().try_send(payload) {
+         Ok(()) => true,
+         Err(TrySendError::Full(_)) => {
+@@ -1393,6 +1457,9 @@ fn send_transcript_payload(payload: Value) -> bool {
+
+ #[cfg(test)]
+ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
++    if !is_enabled() {
++        return false;
++    }
+     concurrency::mark_legacy_concurrency_unavailable(&mut payload);
+     tests::TEST_DELIVERY_MODES.lock().unwrap().push(mode);
+     if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
+@@ -1403,6 +1470,9 @@ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
+
+ #[cfg(not(test))]
+ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
++    if telemetry_endpoint().is_none() {
++        return false;
++    }
+     concurrency::mark_legacy_concurrency_unavailable(&mut payload);
+     match mode {
+         DeliveryMode::Background => {
+@@ -1837,6 +1907,9 @@ pub fn record_provider_selected(provider: &str) {
+ }
+
+ pub fn record_auth_started(provider: &str, method: &str) {
++    if !is_enabled() {
++        return;
++    }
+     jcode_logging::auth_event("auth_started", provider, &[("method", method)]);
+     emit_onboarding_step("auth_started", Some(provider), Some(method), None);
+ }
+@@ -1846,6 +1919,9 @@ pub fn record_auth_failed(provider: &str, method: &str) {
+ }
+
+ pub fn record_auth_failed_reason(provider: &str, method: &str, reason: &str) {
++    if !is_enabled() {
++        return;
++    }
+     jcode_logging::auth_event(
+         "auth_failed",
+         provider,
+@@ -1855,16 +1931,25 @@ pub fn record_auth_failed_reason(provider: &str, method: &str, reason: &str) {
+ }
+
+ pub fn record_auth_cancelled(provider: &str, method: &str) {
++    if !is_enabled() {
++        return;
++    }
+     jcode_logging::auth_event("auth_cancelled", provider, &[("method", method)]);
+     emit_onboarding_step("auth_cancelled", Some(provider), Some(method), None);
+ }
+
+ pub fn record_auth_surface_blocked(provider: &str, method: &str) {
++    if !is_enabled() {
++        return;
++    }
+     jcode_logging::auth_event("auth_surface_blocked", provider, &[("method", method)]);
+     emit_onboarding_step("auth_surface_blocked", Some(provider), Some(method), None);
+ }
+
+ pub fn record_auth_surface_blocked_reason(provider: &str, method: &str, reason: &str) {
++    if !is_enabled() {
++        return;
++    }
+     jcode_logging::auth_event(
+         "auth_surface_blocked",
+         provider,
+@@ -1879,10 +1964,10 @@ pub fn record_auth_surface_blocked_reason(provider: &str, method: &str, reason:
+ }
+
+ pub fn record_auth_success(provider: &str, method: &str) {
+-    jcode_logging::auth_event("auth_success", provider, &[("method", method)]);
+     if !is_enabled() {
+         return;
+     }
++    jcode_logging::auth_event("auth_success", provider, &[("method", method)]);
+     let Some(id) = get_or_create_id() else {
+         return;
+     };
+@@ -1932,6 +2017,9 @@ fn begin_session_with_mode(
+     resumed_session: bool,
+ ) {
+     if !is_enabled() {
++        if let Ok(mut guard) = SESSION_STATE.lock() {
++            *guard = None;
++        }
+         return;
+     }
+     logging::info(&format!(
+@@ -2098,6 +2186,9 @@ fn begin_session_with_mode(
+ }
+
+ pub fn record_turn() {
++    if !is_enabled() {
++        return;
++    }
+     let id = get_or_create_id();
+     let mut prompt_event = None;
+     let mut first_prompt = false;
+@@ -2162,6 +2253,9 @@ pub fn record_turn() {
+ }
+
+ pub fn record_assistant_response() {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2184,6 +2278,9 @@ pub fn record_assistant_response() {
+ }
+
+ pub fn record_memory_injected(_count: usize, _age_ms: u64) {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2197,6 +2294,9 @@ pub fn record_memory_injected(_count: usize, _age_ms: u64) {
+ }
+
+ pub fn record_tool_call() {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2217,6 +2317,9 @@ pub fn record_tool_call() {
+ }
+
+ pub fn record_tool_failure() {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2230,6 +2333,9 @@ pub fn record_tool_failure() {
+ }
+
+ pub fn record_connection_type(connection: &str) {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2393,6 +2499,9 @@ pub fn record_token_usage(
+     cache_read_input_tokens: Option<u64>,
+     cache_creation_input_tokens: Option<u64>,
+ ) {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2426,6 +2535,9 @@ pub fn record_token_usage(
+ }
+
+ pub fn record_error(category: ErrorCategory) {
++    if !is_enabled() {
++        return;
++    }
+     /// Per-session ceiling for each error counter. A runaway retry loop once
+     /// logged 18k+ auth failures in one session, which distorted daily sums
+     /// (one session looked like a fleet-wide auth outage). Past a few hundred
+@@ -2464,6 +2576,9 @@ pub fn record_error(category: ErrorCategory) {
+ }
+
+ pub fn record_provider_switch() {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2476,6 +2591,9 @@ pub fn record_provider_switch() {
+ }
+
+ pub fn record_model_switch() {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2488,6 +2606,9 @@ pub fn record_model_switch() {
+ }
+
+ pub fn record_user_cancelled() {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2524,6 +2645,9 @@ pub enum TodoGateKind {
+
+ /// Record a todo quality-gate firing (session- and turn-scoped counters).
+ pub fn record_todo_gate(kind: TodoGateKind) {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2559,6 +2683,9 @@ pub fn record_todo_gate(kind: TodoGateKind) {
+ }
+
+ pub fn record_tool_execution(name: &str, input: &Value, succeeded: bool, latency_ms: u64) {
++    if !is_enabled() {
++        return;
++    }
+     if let Ok(mut guard) = SESSION_STATE.lock()
+         && let Some(ref mut state) = *guard
+     {
+@@ -2651,6 +2778,9 @@ pub fn current_provider_model() -> Option<(String, String)> {
+ }
+
+ fn show_first_run_notice() {
++    if !first_run_notice_should_show() {
++        return;
++    }
+     // This can print before any terminal setup enables VT processing. Legacy
+     // Windows consoles (conhost without ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+     // exactly the double-click-the-exe path) render raw escapes as `←[90m`
+@@ -2670,5 +2800,9 @@ fn show_first_run_notice() {
+     eprintln!("{reset}");
+ }
+
++fn first_run_notice_should_show() -> bool {
++    is_enabled()
++}
++
+ #[cfg(test)]
+ mod tests;
+diff --git a/crates/jcode-telemetry-core/src/oauth_account.rs b/crates/jcode-telemetry-core/src/oauth_account.rs
+index be2b31b44..d57fe2069 100644
+--- a/crates/jcode-telemetry-core/src/oauth_account.rs
++++ b/crates/jcode-telemetry-core/src/oauth_account.rs
+@@ -86,6 +86,9 @@ pub fn pending_oauth_account_notice() -> Option<OAuthAccountNotice> {
+ /// Call after a successful rendered frame, not when a notice is merely queued.
+ /// Persistence and upload happen on the worker, never on the render thread.
+ pub fn acknowledge_oauth_account_notice_displayed(notice: &OAuthAccountNotice) -> bool {
++    if !super::is_enabled() {
++        return false;
++    }
+     let Ok(mut pending) = PENDING.try_lock() else {
+         return false;
+     };
+@@ -102,6 +105,9 @@ pub fn acknowledge_oauth_account_notice_displayed(notice: &OAuthAccountNotice) -
+     true
+ }
+ fn send(command: Command) -> bool {
++    if !super::is_enabled() {
++        return false;
++    }
+     SENDER
+         .get_or_init(|| {
+             let (tx, rx) = sync_channel(32);
+@@ -177,7 +183,7 @@ struct Http(reqwest::blocking::Client);
+ impl Transport for Http {
+     fn check(&self, id: &str, c: &Candidate) -> Option<Check> {
+         // Unit tests cannot accidentally contact the real telemetry service.
+-        if cfg!(test) {
++        if cfg!(test) || !super::is_enabled() {
+             return None;
+         }
+         let response = (|| {
+@@ -291,7 +297,7 @@ fn handle_in(
+     identity: &impl Fn() -> Option<(String, PathBuf)>,
+     state: &Mutex<Option<Pending>>,
+ ) {
+-    if !enabled() && matches!(command, Command::Candidate(_)) {
++    if !enabled() {
+         if let Ok(mut pending) = state.lock() {
+             *pending = None;
+         }
+@@ -424,6 +430,27 @@ mod tests {
+         })
+     }
+     #[test]
++    fn gate_telemetry_oauth_payload_creates_no_queue_or_notice_when_disabled() {
++        super::super::force_test_telemetry_off(true);
++        let home = tempfile::tempdir().unwrap();
++        let state = Mutex::new(None);
++        let transport = Mock::new(true, false, false);
++        assert!(!enqueue_oauth_account("openai", "alice@example.com"));
++        handle_in(
++            candidate(),
++            &transport,
++            &|| super::super::is_enabled(),
++            &|| panic!("disabled OAuth telemetry must not create an identity"),
++            &state,
++        );
++        assert!(pending_oauth_account_notice().is_none());
++        assert!(state.lock().unwrap().is_none());
++        assert_eq!(transport.calls.get(), 0);
++        assert_eq!(transport.uploads.get(), 0);
++        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
++        super::super::force_test_telemetry_off(false);
++    }
++    #[test]
+     fn mock_notice_ack_restart_and_stale_ack() {
+         let dir = tempfile::tempdir().unwrap();
+         let identity = || Some(("installation".into(), dir.path().to_path_buf()));
+@@ -516,6 +543,7 @@ mod tests {
+             let p = p.as_ref().unwrap();
+             (p.notice.clone(), p.marker.clone())
+         };
++        super::super::force_test_telemetry_off(true);
+         handle_in(
+             Command::Displayed(notice),
+             &transport,
+@@ -523,9 +551,10 @@ mod tests {
+             &identity,
+             &state,
+         );
+-        assert!(notice_displayed(&marker));
++        assert!(!notice_displayed(&marker));
+         assert_eq!(transport.calls.get(), 1);
+         assert_eq!(transport.uploads.get(), 0);
++        super::super::force_test_telemetry_off(false);
+     }
+     #[test]
+     fn mock_new_tracked_and_failed_preflight() {
+diff --git a/crates/jcode-telemetry-core/src/tests.rs b/crates/jcode-telemetry-core/src/tests.rs
+index b9ff5c836..3b46c1ecc 100644
+--- a/crates/jcode-telemetry-core/src/tests.rs
++++ b/crates/jcode-telemetry-core/src/tests.rs
+@@ -122,28 +122,25 @@ fn transcript_upload_requires_separate_content_consent() {
+ }
+
+ #[test]
+-fn opted_in_transcript_payload_contains_full_structured_messages() {
++fn telemetry_forced_off_transcript_cannot_be_opted_in() {
+     let _guard = lock_test_env();
++    force_test_telemetry_off(true);
+     TEST_EMITTED_PAYLOADS.lock().unwrap().clear();
+-    assert!(set_content_sharing_enabled(true));
+     let messages = serde_json::json!([
+         {"role": "user", "content": [{"type": "text", "text": "secret prompt"}]},
+         {"role": "assistant", "content": [{"type": "reasoning", "text": "private reasoning"}]}
+     ]);
+
+-    assert!(record_transcript(
++    assert!(!set_content_sharing_enabled(true));
++    assert!(!record_transcript(
+         "provider",
+         "model",
+         SessionEndReason::NormalExit,
+         messages.clone(),
+     ));
+-    let payloads = TEST_EMITTED_PAYLOADS.lock().unwrap();
+-    let payload = payloads.last().expect("transcript payload");
+-    assert_eq!(payload["event"], "transcript");
+-    assert_eq!(payload["consent_version"], 1);
+-    assert_eq!(payload["message_count"], 2);
+-    assert_eq!(payload["messages"], messages);
+-    assert!(uuid::Uuid::parse_str(payload["upload_id"].as_str().unwrap()).is_ok());
++    assert!(TEST_EMITTED_PAYLOADS.lock().unwrap().is_empty());
++    assert_eq!(messages.as_array().unwrap().len(), 2);
++    force_test_telemetry_off(false);
+ }
+
+ fn lock_test_env() -> TestEnvironment {
+@@ -154,6 +151,59 @@ fn lock_telemetry_test_state() -> TestEnvironment {
+     global_test_lock()
+ }
+
++// Inactive in this build: gated by personal patch 1007.
++#[allow(dead_code)]
++fn use_test_telemetry(enabled: bool) {
++    force_test_telemetry_off(!enabled);
++}
++
++#[test]
++fn gate_telemetry_disabled_producers_create_no_identity_or_payload() {
++    let env = lock_test_env();
++    jcode_core::env::set_var("JCODE_NO_TELEMETRY", "0");
++    jcode_core::env::remove_var("DO_NOT_TRACK");
++    force_test_telemetry_off(true);
++    TEST_EMITTED_PAYLOADS.lock().unwrap().clear();
++
++    let home = env._home.path().to_path_buf();
++    assert!(!home.join("no_telemetry").exists());
++    assert!(!is_enabled());
++    assert!(!production_is_enabled());
++    assert!(telemetry_endpoint().is_none());
++    assert!(transcript_endpoint().is_none());
++
++    record_setup_step_once("gate_test");
++    record_feedback("gate test feedback");
++    record_turn();
++    assert!(!record_transcript(
++        "provider",
++        "model",
++        SessionEndReason::NormalExit,
++        serde_json::json!([{"role": "user", "content": "private"}]),
++    ));
++    assert!(TEST_EMITTED_PAYLOADS.lock().unwrap().is_empty());
++    assert!(!home.join("telemetry_id").exists());
++    assert!(!home.join("telemetry_concurrency_v2").exists());
++    let mut concurrency = begin_concurrency_session("disabled", None);
++    assert!(!concurrency.is_active());
++    concurrency.finish();
++
++    assert!(!first_run_notice_should_show());
++    assert!(pending_oauth_account_notice().is_none());
++    force_test_telemetry_off(false);
++}
++
++#[test]
++fn gate_telemetry_false_opt_out_env_still_reports_disabled() {
++    let env = lock_test_env();
++    jcode_core::env::set_var("JCODE_NO_TELEMETRY", "0");
++    jcode_core::env::remove_var("DO_NOT_TRACK");
++    assert!(!env._home.path().join("no_telemetry").exists());
++    force_test_telemetry_off(true);
++    assert!(!is_enabled());
++    force_test_telemetry_off(false);
++}
++
+ #[test]
+ fn test_opt_out_env_var() {
+     let _guard = lock_test_env();
+@@ -171,36 +221,34 @@ fn test_do_not_track() {
+ }
+
+ #[test]
+-fn false_opt_out_values_keep_telemetry_enabled() {
++fn telemetry_is_forced_off_for_false_opt_out_values() {
++    // telemetry forced off by personal patch 1007, regardless of environment.
+     let _guard = lock_test_env();
+-    for value in ["", "0", "false", "no", "off"] {
+-        jcode_core::env::set_var("JCODE_NO_TELEMETRY", value);
+-        jcode_core::env::set_var("DO_NOT_TRACK", value);
+-        assert!(is_enabled(), "{value:?} should not opt out");
+-    }
++    jcode_core::env::set_var("JCODE_NO_TELEMETRY", "0");
++    jcode_core::env::remove_var("DO_NOT_TRACK");
++    assert!(!production_is_enabled(), "telemetry is forced off by personal patch 1007");
+ }
+
+ #[test]
+-fn in_app_opt_out_emits_once_then_stops_telemetry() {
++fn in_app_opt_out_does_not_emit_when_telemetry_is_forced_off() {
++    // telemetry forced off by personal patch 1007, including the opt-out event.
+     let _guard = lock_test_env();
+     TEST_EMITTED_PAYLOADS.lock().unwrap().clear();
+
++    force_test_telemetry_off(true);
+     assert!(set_usage_telemetry_enabled(false));
+     assert!(!is_enabled());
+     assert!(set_usage_telemetry_enabled(false));
+-
+-    let payloads = TEST_EMITTED_PAYLOADS.lock().unwrap();
+-    let opt_outs = payloads
+-        .iter()
+-        .filter(|payload| payload["event"] == "telemetry_opt_out")
+-        .collect::<Vec<_>>();
+-    assert_eq!(opt_outs.len(), 1);
+-    assert_eq!(opt_outs[0]["step"], "telemetry_settings");
++    assert!(TEST_EMITTED_PAYLOADS.lock().unwrap().is_empty());
++    force_test_telemetry_off(false);
+ }
+
+ #[test]
+ fn record_turn_emits_prompt_submitted_immediately() {
+     let _guard = lock_telemetry_test_state();
++    force_test_telemetry_off(true);
++    assert!(!is_enabled());
++    force_test_telemetry_off(false);
+     TEST_EMITTED_PAYLOADS.lock().unwrap().clear();
+     if let Ok(mut session) = SESSION_STATE.lock() {
+         *session = None;
+@@ -1080,8 +1128,9 @@ fn test_install_conversion_id_is_removed_when_telemetry_is_disabled() {
+     write_private_file(&path, "11111111-2222-4333-8444-555555555555\n");
+
+     jcode_core::env::set_var("JCODE_NO_TELEMETRY", "1");
++    force_test_telemetry_off(true);
+     record_install_if_first_run();
+-    jcode_core::env::remove_var("JCODE_NO_TELEMETRY");
++    force_test_telemetry_off(false);
+     assert!(!path.exists());
+
+     if let Some(prev_home) = prev_home {
+diff --git a/crates/jcode-telemetry-core/tests/session_creation_latency.rs b/crates/jcode-telemetry-core/tests/session_creation_latency.rs
+index 63f2b9733..64ba8bd13 100644
+--- a/crates/jcode-telemetry-core/tests/session_creation_latency.rs
++++ b/crates/jcode-telemetry-core/tests/session_creation_latency.rs
+@@ -6,6 +6,7 @@ use std::process::Command;
+ use std::time::{Duration, Instant};
+
+ #[test]
++#[ignore = "telemetry forced off by personal patch 1007"]
+ fn session_creation_does_not_wait_for_unreachable_telemetry() {
+     const CHILD: &str = "JCODE_TEST_SESSION_LATENCY_CHILD";
+     if std::env::var_os(CHILD).is_some() {
+diff --git a/crates/jcode-tui/src/tui/app.rs b/crates/jcode-tui/src/tui/app.rs
+index 61b538ad2..acb928ce7 100644
+--- a/crates/jcode-tui/src/tui/app.rs
++++ b/crates/jcode-tui/src/tui/app.rs
+@@ -1595,6 +1595,8 @@ pub struct App {
+     terminal_setup_hint_shown_this_session: bool,
+     // Whether the swarm-config-is-a-prompt hint has been surfaced this session.
+     swarm_hint_shown_this_session: bool,
++    // Inactive in this build: gated by personal patch 1007.
++    #[allow(dead_code)]
+     subscribe_nudge: subscribe_nudge::SubscribeNudgeState,
+     // Inline hotkey feedback: "pressed X → does Y" for rare known chords or
+     // "X isn't bound · nearest: ..." for unknown; same slot as learn_hint.
+diff --git a/crates/jcode-tui/src/tui/app/auth_account_commands.rs b/crates/jcode-tui/src/tui/app/auth_account_commands.rs
+index d7babdbb4..01f68e49e 100644
+--- a/crates/jcode-tui/src/tui/app/auth_account_commands.rs
++++ b/crates/jcode-tui/src/tui/app/auth_account_commands.rs
+@@ -1,6 +1,12 @@
+ use super::*;
+
+ pub(crate) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
++    if is_disabled_jcode_command(trimmed) {
++        app.push_display_message(DisplayMessage::error(
++            "jcode hosted accounts are disabled in this build".to_string(),
++        ));
++        return true;
++    }
+     if trimmed == "/auth" {
+         app.show_auth_status();
+         return true;
+@@ -102,6 +108,12 @@ pub(crate) async fn handle_account_command_remote(
+     trimmed: &str,
+     remote: &mut crate::tui::backend::RemoteConnection,
+ ) -> anyhow::Result<bool> {
++    if is_disabled_jcode_command(trimmed) {
++        app.push_display_message(DisplayMessage::error(
++            "jcode hosted accounts are disabled in this build".to_string(),
++        ));
++        return Ok(true);
++    }
+     let Some(parsed) = parse_account_command(trimmed) else {
+         return Ok(false);
+     };
+@@ -112,7 +124,29 @@ pub(crate) async fn handle_account_command_remote(
+     Ok(true)
+ }
+
++fn is_disabled_jcode_command(trimmed: &str) -> bool {
++    let hosted = trimmed == "/hosted"
++        || trimmed.starts_with("/hosted ")
++        || trimmed == "/subscribe"
++        || trimmed.starts_with("/subscribe ")
++        || trimmed == "/subscription"
++        || trimmed.starts_with("/subscription ")
++        || trimmed == "/login jcode"
++        || trimmed.starts_with("/login jcode ");
++    let account = trimmed
++        .strip_prefix("/account")
++        .or_else(|| trimmed.strip_prefix("/accounts"))
++        .and_then(|rest| rest.split_whitespace().next())
++        .is_some_and(|provider| provider.eq_ignore_ascii_case("jcode"));
++    hosted || account
++}
++
+ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>> {
++    if is_disabled_jcode_command(trimmed) {
++        return Some(Err(
++            "jcode hosted accounts are disabled in this build".to_string(),
++        ));
++    }
+     let rest = trimmed
+         .strip_prefix("/accounts")
+         .or_else(|| trimmed.strip_prefix("/account"))?;
+@@ -617,6 +651,11 @@ fn execute_account_add_local(app: &mut App, provider_id: &str, label: Option<&st
+ pub(crate) fn resolve_account_provider_descriptor(
+     input: &str,
+ ) -> Option<crate::provider_catalog::LoginProviderDescriptor> {
++    if input.trim().eq_ignore_ascii_case("jcode")
++        && !crate::provider_catalog::hosted_provider_allowed()
++    {
++        return None;
++    }
+     crate::provider_catalog::resolve_login_provider(input)
+ }
+
+@@ -1175,22 +1214,52 @@ mod tests {
+
+     #[test]
+     fn parse_native_jcode_account_actions() {
+-        assert!(matches!(
+-            parse_account_command("/account jcode login"),
+-            Some(Ok(AccountCommand::Login { provider_id })) if provider_id == "jcode"
+-        ));
+-        assert!(matches!(
+-            parse_account_command("/account jcode status"),
+-            Some(Ok(AccountCommand::JcodeStatus))
+-        ));
+-        assert!(matches!(
+-            parse_account_command("/account jcode manage"),
+-            Some(Ok(AccountCommand::JcodeManage))
+-        ));
+-        assert!(matches!(
+-            parse_account_command("/account jcode logout"),
+-            Some(Ok(AccountCommand::JcodeLogout))
+-        ));
++        for command in [
++            "/account jcode login",
++            "/account jcode status",
++            "/account jcode manage",
++            "/account jcode logout",
++        ] {
++            assert!(matches!(
++                parse_account_command(command),
++                Some(Err(message)) if message == "jcode hosted accounts are disabled in this build"
++            ));
++        }
++    }
++
++    #[test]
++    fn gate_hosted_typed_commands_reject_without_opening_picker() {
++        let mut app = crate::tui::app::tests::create_test_app();
++        for command in ["/login jcode", "/subscription"] {
++            app.inline_interactive_state = None;
++            app.input = command.to_string();
++            app.submit_input();
++            assert!(app.inline_interactive_state.is_none());
++            assert!(app.display_messages().last().is_some_and(|message| {
++                message
++                    .content
++                    .starts_with("jcode hosted accounts are disabled in this build")
++            }));
++        }
++    }
++
++    #[test]
++    fn gate_hosted_jcode_account_actions_are_rejected_before_dispatch() {
++        let mut app = crate::tui::app::tests::create_test_app();
++        for command in [
++            "/account jcode login",
++            "/account jcode status",
++            "/account jcode manage",
++            "/account jcode logout",
++        ] {
++            app.input = command.to_string();
++            app.submit_input();
++            assert!(app.display_messages().last().is_some_and(|message| {
++                message
++                    .content
++                    .starts_with("jcode hosted accounts are disabled in this build")
++            }));
++        }
+     }
+
+     #[test]
+diff --git a/crates/jcode-tui/src/tui/app/auth_account_picker.rs b/crates/jcode-tui/src/tui/app/auth_account_picker.rs
+index f866df561..eba2e7a94 100644
+--- a/crates/jcode-tui/src/tui/app/auth_account_picker.rs
++++ b/crates/jcode-tui/src/tui/app/auth_account_picker.rs
+@@ -27,7 +27,7 @@ impl App {
+                     return;
+                 }
+             },
+-            None => crate::provider_catalog::login_providers().to_vec(),
++            None => crate::provider_catalog::visible_login_providers(),
+         };
+
+         let mut items = Vec::new();
+diff --git a/crates/jcode-tui/src/tui/app/command_registry_tests.rs b/crates/jcode-tui/src/tui/app/command_registry_tests.rs
+index bcd10b8a7..8793edec8 100644
+--- a/crates/jcode-tui/src/tui/app/command_registry_tests.rs
++++ b/crates/jcode-tui/src/tui/app/command_registry_tests.rs
+@@ -35,3 +35,28 @@ fn known_aliases_are_registered() {
+         assert!(names.contains(alias), "{alias} is not registered");
+     }
+ }
++
++#[test]
++fn gate_hosted_help_and_slash_completion_hide_jcode_account_entries() {
++    let mut app = crate::tui::app::tests::create_test_app();
++    for (input, hidden) in [
++        ("/", ["/hosted", "/subscribe", "/subscription", "/hosted status", "/subscription status"].as_slice()),
++        ("/login ", ["/login jcode"].as_slice()),
++        ("/account ", ["/account jcode", "/account jcode login"].as_slice()),
++    ] {
++        let suggestions = app.get_suggestions_for(input);
++        for hidden in hidden {
++            assert!(!suggestions.iter().any(|(command, _)| command == hidden), "{hidden} visible for {input}");
++        }
++    }
++    let public = registered_command_entries()
++        .map(|(name, help)| format!("{name} {help}"))
++        .collect::<Vec<_>>()
++        .join("\n");
++    for hidden in ["/hosted", "/subscribe", "/subscription"] {
++        assert!(!public.contains(hidden));
++    }
++    assert!(app.command_help("subscription").is_none());
++    assert!(app.command_help("subscribe").is_none());
++    assert!(app.command_help("hosted").is_none());
++}
+diff --git a/crates/jcode-tui/src/tui/app/commands.rs b/crates/jcode-tui/src/tui/app/commands.rs
+index 38df968c9..1374a458d 100644
+--- a/crates/jcode-tui/src/tui/app/commands.rs
++++ b/crates/jcode-tui/src/tui/app/commands.rs
+@@ -3731,8 +3731,10 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
+         return true;
+     }
+
+-    if trimmed == "/subscription" || trimmed == "/subscription status" {
+-        app.show_jcode_subscription_status();
++    if trimmed == "/subscription" || trimmed.starts_with("/subscription ") {
++        app.push_display_message(DisplayMessage::error(
++            "jcode hosted accounts are disabled in this build".to_string(),
++        ));
+         return true;
+     }
+
+diff --git a/crates/jcode-tui/src/tui/app/commands_remote.rs b/crates/jcode-tui/src/tui/app/commands_remote.rs
+index 3ae12eda7..9908549f5 100644
+--- a/crates/jcode-tui/src/tui/app/commands_remote.rs
++++ b/crates/jcode-tui/src/tui/app/commands_remote.rs
+@@ -7,11 +7,6 @@ use crate::gateway::control::{
+ const REMOTE_HELP: &str = "\
+ **`/remote`** - use jcode from any device
+
+-`/remote` opens your Jcode account, the entry point for Jcode Cloud access.
+-Cloud is being bundled with eligible Jcode subscriptions. The managed host
+-control plane is currently in early access.
+-
+-- `/remote` or `/remote cloud` - activate or manage Jcode Cloud
+ - `/remote status` - local gateway state, dial address, paired devices
+ - `/remote on` / `/remote off` - enable or disable the gateway
+ - `/remote pair` - show a pairing code and QR for a new device
+@@ -20,8 +15,6 @@ control plane is currently in early access.
+ For self-hosting, run `/remote on`, restart the server, then `/remote pair`.
+ ";
+
+-const CLOUD_ACCOUNT_URL: &str = "https://jcode.sh/account";
+-
+ pub(super) fn handle_remote_command(app: &mut App, trimmed: &str) -> bool {
+     let Some(parsed) = parse_remote_command(trimmed) else {
+         return false;
+@@ -33,7 +26,6 @@ pub(super) fn handle_remote_command(app: &mut App, trimmed: &str) -> bool {
+             app.push_display_message(DisplayMessage::system(REMOTE_HELP.to_string()));
+             app.set_status_notice("Remote help");
+         }
+-        Ok(RemoteCommand::Cloud) => activate_cloud(app),
+         Ok(RemoteCommand::Status) => show_status(app),
+         Ok(RemoteCommand::On) => toggle(app, true),
+         Ok(RemoteCommand::Off) => toggle(app, false),
+@@ -44,38 +36,6 @@ pub(super) fn handle_remote_command(app: &mut App, trimmed: &str) -> bool {
+     true
+ }
+
+-fn activate_cloud(app: &mut App) {
+-    let signed_in = crate::subscription_catalog::has_credentials();
+-    let tier = crate::subscription_catalog::cached_tier();
+-    let account_line = if signed_in {
+-        match tier {
+-            Some(tier) => format!("Signed in on the **{}** plan.", tier.display_name()),
+-            None => "Signed in to your Jcode account.".to_string(),
+-        }
+-    } else {
+-        "Not signed in yet. The account page will guide you through passwordless sign-in and subscription setup."
+-            .to_string()
+-    };
+-
+-    let opened = super::helpers::open_path_or_url_detached(CLOUD_ACCOUNT_URL).is_ok();
+-    let open_line = if opened {
+-        "Opened your secure Jcode account page in the browser."
+-    } else {
+-        "Open your secure Jcode account page:"
+-    };
+-    app.push_display_message(DisplayMessage::system(format!(
+-        "**Jcode Cloud early access**\n\n{account_line}\n\n{open_line}\n\n{CLOUD_ACCOUNT_URL}\n\n\
+-         The managed-host control plane is not generally available yet. Reference hosts wake on \
+-         demand and stop when idle. To use your own machine now, run \
+-         `/remote on`, restart the server, then `/remote pair`."
+-    )));
+-    app.set_status_notice(if opened {
+-        "Jcode Cloud account opened"
+-    } else {
+-        "Jcode Cloud account link ready"
+-    });
+-}
+-
+ fn show_status(app: &mut App) {
+     let status = RemoteStatus::load();
+     app.push_display_message(DisplayMessage::system(status.to_markdown()));
+@@ -198,17 +158,14 @@ mod tests {
+     #[test]
+     fn remote_parser_does_not_claim_remote_release() {
+         assert_eq!(parse_remote_command("/remote-release"), None);
+-        assert_eq!(
+-            parse_remote_command("/remote"),
+-            Some(Ok(RemoteCommand::Cloud))
+-        );
++        assert_eq!(parse_remote_command("/remote"), Some(Ok(RemoteCommand::Help)));
+     }
+
+     /// The help text is the discoverability surface; keep it in sync with the
+     /// subcommands the parser actually accepts.
+     #[test]
+     fn help_documents_every_supported_subcommand() {
+-        for sub in ["cloud", "status", "on", "off", "pair", "revoke"] {
++        for sub in ["status", "on", "off", "pair", "revoke"] {
+             assert!(
+                 REMOTE_HELP.contains(sub),
+                 "help should document /remote {sub}"
+@@ -219,4 +176,15 @@ mod tests {
+             );
+         }
+     }
++
++    #[test]
++    fn gate_cloud_remote_help_hides_sales_link_and_preserves_local_on() {
++        assert!(!REMOTE_HELP.contains("cloud"));
++        assert!(!REMOTE_HELP.contains("https://jcode.sh/account"));
++        assert!(matches!(
++            parse_remote_command("/remote cloud"),
++            Some(Err(message)) if message.contains("Jcode Cloud early access is disabled")
++        ));
++        assert_eq!(parse_remote_command("/remote on"), Some(Ok(RemoteCommand::On)));
++    }
+ }
+diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
+index 80cd76310..148db9935 100644
+--- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
++++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
+@@ -393,6 +393,84 @@ fn remote_catalog_api_method_is_safe(api_method: &str) -> bool {
+     }
+ }
+
++fn filter_disabled_jcode_model_catalog(
++    snapshot: &mut jcode_provider_core::ModelCatalogSnapshot,
++) {
++    if crate::provider_catalog::hosted_provider_allowed() {
++        return;
++    }
++
++    let jcode_only_models = snapshot
++        .model_routes
++        .iter()
++        .fold(std::collections::HashMap::<&str, bool>::new(), |mut models, route| {
++            let jcode_route = crate::provider::ModelRouteApiMethod::parse(&route.api_method)
++                == crate::provider::ModelRouteApiMethod::JcodeSubscription;
++            models
++                .entry(route.model.as_str())
++                .and_modify(|has_non_jcode| *has_non_jcode |= !jcode_route)
++                .or_insert(!jcode_route);
++            models
++        })
++        .into_iter()
++        .filter_map(|(model, has_non_jcode)| (!has_non_jcode).then_some(model.to_string()))
++        .collect::<HashSet<_>>();
++    snapshot.model_routes.retain(|route| {
++        crate::provider::ModelRouteApiMethod::parse(&route.api_method)
++            != crate::provider::ModelRouteApiMethod::JcodeSubscription
++    });
++    snapshot
++        .available_models
++        .retain(|model| !jcode_only_models.contains(model));
++    if snapshot.provider_name.as_deref().is_some_and(|name| {
++        name.eq_ignore_ascii_case(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME)
++    }) {
++        snapshot.available_models.clear();
++        snapshot.model_routes.clear();
++    }
++}
++
++#[cfg(test)]
++mod gate_hosted_model_catalog_tests {
++    use super::*;
++
++    #[test]
++    fn gate_hosted_remote_jcode_model_catalog_is_hidden_by_policy() {
++        let mut snapshot = jcode_provider_core::ModelCatalogSnapshot {
++            provider_name: Some("OpenRouter".to_string()),
++            provider_model: Some("gpt-5.5".to_string()),
++            available_models: vec!["claude-opus-4-8".to_string(), "gpt-5.5".to_string()],
++            model_routes: vec![
++                crate::provider::ModelRoute {
++                    model: "claude-opus-4-8".to_string(),
++                    provider: "Jcode Subscription".to_string(),
++                    api_method: "jcode-subscription".to_string(),
++                    available: true,
++                    detail: String::new(),
++                    usage: None,
++                    cheapness: None,
++                },
++                crate::provider::ModelRoute {
++                    model: "gpt-5.5".to_string(),
++                    provider: "OpenAI".to_string(),
++                    api_method: "openai-oauth".to_string(),
++                    available: true,
++                    detail: String::new(),
++                    usage: None,
++                    cheapness: None,
++                },
++            ],
++            ..Default::default()
++        };
++        filter_disabled_jcode_model_catalog(&mut snapshot);
++        assert!(snapshot
++            .model_routes
++            .iter()
++            .all(|route| route.api_method != "jcode-subscription"));
++        assert_eq!(snapshot.available_models, vec!["gpt-5.5"]);
++    }
++}
++
+ fn remote_model_catalog_snapshot_is_safe(
+     snapshot: &jcode_provider_core::ModelCatalogSnapshot,
+ ) -> bool {
+@@ -696,8 +774,9 @@ impl App {
+
+     pub(super) fn replace_remote_model_catalog_snapshot(
+         &mut self,
+-        snapshot: jcode_provider_core::ModelCatalogSnapshot,
++        mut snapshot: jcode_provider_core::ModelCatalogSnapshot,
+     ) -> CatalogReplaceOutcome {
++        filter_disabled_jcode_model_catalog(&mut snapshot);
+         let mut provider_meta_changed = false;
+         let mut provider_name_changed = false;
+         if snapshot.runtime_key != self.remote_runtime_key {
+@@ -958,8 +1037,9 @@ impl App {
+
+     fn hydrate_remote_model_catalog_snapshot(
+         &mut self,
+-        snapshot: jcode_provider_core::ModelCatalogSnapshot,
++        mut snapshot: jcode_provider_core::ModelCatalogSnapshot,
+     ) -> bool {
++        filter_disabled_jcode_model_catalog(&mut snapshot);
+         if !snapshot.has_routes() {
+             return false;
+         }
+@@ -1648,6 +1728,12 @@ impl App {
+             routes
+         };
+         let mut routes = crate::provider::dedupe_model_routes(routes);
++        if !crate::provider_catalog::hosted_provider_allowed() {
++            routes.retain(|route| {
++                crate::provider::ModelRouteApiMethod::parse(&route.api_method)
++                    != crate::provider::ModelRouteApiMethod::JcodeSubscription
++            });
++        }
+         if !self.is_remote {
+             crate::model_usage::enrich_routes(&mut routes);
+         }
+diff --git a/crates/jcode-tui/src/tui/app/input_help.rs b/crates/jcode-tui/src/tui/app/input_help.rs
+index 270bb6af8..c018cc6f4 100644
+--- a/crates/jcode-tui/src/tui/app/input_help.rs
++++ b/crates/jcode-tui/src/tui/app/input_help.rs
+@@ -177,12 +177,6 @@ impl App {
+             "usage" => {
+                 "/usage\nFetch and display usage limits for connected providers. This command only reports real connected-provider usage windows and reset times."
+             }
+-            "subscription" => {
+-                "/subscription\nCompatibility alias for /hosted status. Shows hosted-model usage, your monthly spending limit, billing status, and router configuration."
+-            }
+-            "subscribe" | "hosted" => {
+-                "/hosted\nUse Jcode hosted models without a subscription: choose a monthly spending limit, receive milestone warnings without throttling, and pay in progressively larger tranches. Sign in once with /login jcode.\n\n/hosted status\nShow usage and your current spending limit.\n\n/subscribe\nCompatibility alias for /hosted."
+-            }
+             "version" => "/version\nShow jcode version/build details.",
+             "changelog" => "/changelog\nShow recent changes embedded in this build.",
+             "quit" => "/quit\nExit jcode.",
+@@ -202,7 +196,7 @@ impl App {
+                 "/tool-call-details\nShow whether the dimmed technical detail (command, path, args) renders next to the model-provided intent on tool rows.\n\n/tool-call-details on\nShow the technical detail after the intent, e.g. `bash · Run tests · $ cargo test`.\n\n/tool-call-details off\nShow only the intent on tool rows that have one. Rows without an intent still show the technical detail, and error summaries always render."
+             }
+             "auth" | "login" => {
+-                "/auth\nShow authentication status for all providers.\n\n/login\nInteractive provider selection - pick a provider to log into.\n\n/login <provider>\nStart login flow directly for any provider shown by /login or the /login completions.\n\nUse /login jcode for pay-as-you-go hosted models through the Jcode router. Set a monthly spending limit in the browser; no API key is pasted into the terminal."
++                "/auth\nShow authentication status for all providers.\n\n/login\nInteractive provider selection - pick a provider to log into.\n\n/login <provider>\nStart login flow directly for any provider shown by /login or the /login completions."
+             }
+             "reset" => {
+                 "/reset  or  /reset usage limits openai\nCheck available banked OpenAI resets without spending one. Repeating this command shows the same pending confirmation.\n\n/reset usage limits openai confirm\nSpend the reviewed reset. This cannot be undone. On an uncertain error, confirm again to retry the same request safely.\n\n/reset usage limits openai cancel\nClear the pending confirmation. An already submitted reset cannot be cancelled."
+diff --git a/crates/jcode-tui/src/tui/app/model_context.rs b/crates/jcode-tui/src/tui/app/model_context.rs
+index 181e74bbf..1da772230 100644
+--- a/crates/jcode-tui/src/tui/app/model_context.rs
++++ b/crates/jcode-tui/src/tui/app/model_context.rs
+@@ -1502,7 +1502,10 @@ impl App {
+         self.run_compaction_retry_turn(terminal, event_stream).await
+     }
+
+-    pub(super) fn handle_usage_report(&mut self, results: Vec<crate::usage::ProviderUsage>) {
++    pub(super) fn handle_usage_report(&mut self, mut results: Vec<crate::usage::ProviderUsage>) {
++        if !crate::provider_catalog::hosted_provider_allowed() {
++            results.retain(|report| report.provider_name != "Jcode subscription");
++        }
+         self.usage_report_refreshing = false;
+         self.clear_usage_transient_ui();
+         self.upsert_usage_display_card(Self::format_usage_display_card(
+@@ -1521,8 +1524,13 @@ impl App {
+
+     pub(super) fn handle_usage_report_progress(
+         &mut self,
+-        progress: crate::usage::ProviderUsageProgress,
++        mut progress: crate::usage::ProviderUsageProgress,
+     ) {
++        if !crate::provider_catalog::hosted_provider_allowed() {
++            progress
++                .results
++                .retain(|report| report.provider_name != "Jcode subscription");
++        }
+         self.usage_report_refreshing = !progress.done;
+         self.clear_usage_transient_ui();
+         self.upsert_usage_display_card(Self::format_usage_display_card(
+diff --git a/crates/jcode-tui/src/tui/app/oauth_telemetry.rs b/crates/jcode-tui/src/tui/app/oauth_telemetry.rs
+index 0ee45c883..25e050035 100644
+--- a/crates/jcode-tui/src/tui/app/oauth_telemetry.rs
++++ b/crates/jcode-tui/src/tui/app/oauth_telemetry.rs
+@@ -18,6 +18,10 @@ impl App {
+     /// Only the credential bound to the selected provider is eligible. Never
+     /// consult a global active-account fallback, especially for SSH clients.
+     pub(super) fn poll_oauth_account_telemetry(&mut self) -> bool {
++        if !crate::telemetry::is_enabled() {
++            self.oauth_notice_displayed_at = None;
++            return false;
++        }
+         if self.is_remote
+             && self.remote_resolved_credential
+                 == Some(jcode_provider_core::ResolvedCredential::Oauth)
+@@ -79,6 +83,12 @@ mod tests {
+     use super::*;
+     use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+
++    #[test]
++    fn gate_telemetry_oauth_notice_hidden_when_disabled() {
++        assert!(!crate::telemetry::is_enabled());
++        assert!(crate::telemetry::pending_oauth_account_notice().is_none());
++    }
++
+     #[test]
+     fn oauth_notice_readable_interval_does_not_require_pending_upload() {
+         let now = std::time::Instant::now();
+diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
+index fe3d3cf5b..145160417 100644
+--- a/crates/jcode-tui/src/tui/app/onboarding_flow.rs
++++ b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
+@@ -21,10 +21,7 @@
+ use std::path::PathBuf;
+ use std::time::{Duration, Instant};
+
+-/// How long we wait on a yes/no decision phase (login import, telemetry
+-/// consent) before auto-selecting the highlighted default. We keep this short
+-/// enough that the user doesn't get stuck deliberating, but long enough to
+-/// read the prompt.
++/// How long we wait on a yes/no decision phase (for the legacy continue prompt).
+ pub(crate) const DECISION_TIMEOUT: Duration = Duration::from_secs(60);
+
+ /// Which external CLI an OAuth login was detected for.
+@@ -359,19 +356,16 @@ impl ImportReview {
+         self.checked.iter().filter(|&&c| c).count()
+     }
+
+-    /// Seconds left before the screen auto-commits its default (import all
+-    /// currently-checked logins).
+     pub(crate) fn seconds_remaining(&self) -> u64 {
+         DECISION_TIMEOUT
+             .saturating_sub(self.shown_at.elapsed())
+             .as_secs()
+     }
+
+-    /// Whether the decision countdown has elapsed. Paused while the telemetry
+-    /// settings sub-page or the per-login "Import less" list is open, so the
+-    /// screen never commits the import out from under a user who is choosing.
++    // Inactive in this build: gated by personal patch 1007.
++    #[allow(dead_code)]
+     pub(crate) fn timed_out(&self) -> bool {
+-        self.telemetry.is_none() && !self.choosing && self.shown_at.elapsed() >= DECISION_TIMEOUT
++        false
+     }
+ }
+
+@@ -403,10 +397,8 @@ pub(crate) enum OnboardingPhase {
+     /// New onboarding skips explicit model selection and uses the default route;
+     /// users can still run `/model` later.
+     ModelSelect,
+-    /// "Continue where you left off in <cli>?" Yes/No with a
+-    /// [`DECISION_TIMEOUT`] countdown. Highlightable Yes/No selector to match
+-    /// the import prompt; the default (and timeout choice) is "Yes" so the
+-    /// resume menu opens unless the user declines.
++    /// "Continue where you left off in <cli>?" Yes/No with a legacy
++    /// [`DECISION_TIMEOUT`] countdown. Highlightable Yes/No selector; the default is "Yes".
+     ContinuePrompt {
+         cli: ExternalCli,
+         /// Which option is highlighted (true = "Yes, continue").
+@@ -493,6 +485,8 @@ impl OnboardingFlow {
+     /// Start the post-login flow. The app immediately advances this legacy
+     /// phase to continue/suggestions so first-run onboarding no longer blocks on
+     /// choosing a model.
++    // Inactive in this build: gated by personal patch 1007.
++    #[allow(dead_code)]
+     pub(crate) fn begin() -> Self {
+         Self {
+             phase: OnboardingPhase::ModelSelect,
+@@ -521,13 +515,10 @@ impl OnboardingFlow {
+         !matches!(self.phase, OnboardingPhase::Done)
+     }
+
+-    /// Seconds remaining on the longer [`DECISION_TIMEOUT`] yes/no phases
+-    /// (login import walkthrough, continue prompt), if one is active.
++    /// Seconds remaining on the longer [`DECISION_TIMEOUT`] yes/no phase, if
++    /// one is active.
+     pub(crate) fn decision_seconds_remaining(&self) -> Option<u64> {
+         match &self.phase {
+-            OnboardingPhase::Login {
+-                import: Some(review),
+-            } => Some(review.seconds_remaining()),
+             OnboardingPhase::ContinuePrompt { shown_at, .. } => Some(
+                 DECISION_TIMEOUT
+                     .saturating_sub(shown_at.elapsed())
+@@ -541,9 +532,6 @@ impl OnboardingFlow {
+     /// auto-select its default.
+     pub(crate) fn decision_timed_out(&self) -> bool {
+         match &self.phase {
+-            OnboardingPhase::Login {
+-                import: Some(review),
+-            } => review.timed_out(),
+             OnboardingPhase::ContinuePrompt { shown_at, .. } => {
+                 shown_at.elapsed() >= DECISION_TIMEOUT
+             }
+@@ -686,8 +674,7 @@ mod tests {
+                 shown_at: past,
+             },
+         };
+-        // The continue prompt now shares the longer DECISION_TIMEOUT with the
+-        // import and telemetry prompts (not the short AUTO_ADVANCE).
++        // The continue prompt uses the longer DECISION_TIMEOUT (not the short AUTO_ADVANCE).
+         assert_eq!(flow.decision_seconds_remaining(), Some(0));
+         assert!(flow.decision_timed_out());
+     }
+diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
+index 7b454d3cf..2d4ee0935 100644
+--- a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
++++ b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
+@@ -74,82 +74,19 @@ impl App {
+     /// users (no prior onboarding flow this session) so returning users who
+     /// re-auth aren't dragged through onboarding.
+     pub(super) fn maybe_begin_onboarding_flow_after_login(&mut self) {
+-        // If the flow is already running, a successful login means we should
+-        // leave the in-TUI `Login` phase and continue into model selection.
++        // Successful login never launches onboarding automatically, but a
++        // manually started onboarding flow still advances after its login.
+         if self.onboarding_flow.is_some() {
+             self.onboarding_after_login();
+-            return;
+-        }
+-        if !self.onboarding_preview_mode
+-            && (self.is_selfdev_canary_session() || !self.is_new_user_for_onboarding())
+-        {
+-            return;
+         }
+-        self.begin_onboarding_flow();
+     }
+
+-    /// One-shot startup check: the fresh-install path logs the user in at the CLI
+-    /// *before* the TUI launches, so no in-TUI login event ever fires. If we boot
+-    /// already authenticated as a brand-new user, kick the guided flow here.
+-    ///
+-    /// Returns without committing the one-shot guard until auth is actually
+-    /// resolved (the server may still be bootstrapping on the first ticks), so a
+-    /// momentary "not yet authenticated" reading doesn't permanently skip the
+-    /// flow. Once we either start the flow or conclude it shouldn't run, the
+-    /// guard is set and this becomes a no-op for the rest of the session.
++    /// Startup one-shot guard. Automatic first-run onboarding remains disabled
++    /// even when a new user launches with credentials or session history.
+     pub(super) fn maybe_begin_onboarding_flow_on_startup(&mut self) {
+-        if self.onboarding_startup_checked {
+-            return;
+-        }
+-        if self.onboarding_flow.is_some() {
+-            self.onboarding_startup_checked = true;
+-            return;
+-        }
+-        // Don't hijack a session that already has real activity (resume,
+-        // restored input, or a genuine conversation already on screen). These
+-        // are settled states, so we can commit the guard.
+-        //
+-        // A brand-new session still carries one synthetic `<system-reminder>`
+-        // "Session Context" message (role=user) plus assorted system scaffolding.
+-        // Those are not real activity, so we ignore them when deciding whether
+-        // the session is already in use.
+-        let has_real_conversation = self.display_messages.iter().any(|m| {
+-            let role = m.role.as_str();
+-            let is_system_reminder =
+-                role == "user" && m.content.trim_start().starts_with("<system-reminder>");
+-            let is_scaffolding = matches!(
+-                role,
+-                "system" | "usage" | "overnight" | "todos" | "background_task"
+-            );
+-            !is_system_reminder && !is_scaffolding
+-        });
+-        if has_real_conversation || self.is_processing || !self.input.is_empty() {
+-            self.onboarding_startup_checked = true;
+-            return;
+-        }
+-        // Self-dev / canary sessions are explicitly not first-run users: they are
+-        // spawned by developers (e.g. the niri `jcode self-dev` hotkey) and that
+-        // launch path never increments `launch_count`, so the new-user heuristic
+-        // would otherwise re-onboard on every spawn. Skip onboarding for them.
+-        if self.is_selfdev_canary_session() {
+-            self.onboarding_startup_checked = true;
+-            return;
+-        }
+-        if !self.is_new_user_for_onboarding() {
+-            self.onboarding_startup_checked = true;
+-            return;
+-        }
+-        // Fresh installs no longer log in at the CLI before the TUI launches.
+-        // If we boot without working credentials, start the flow at the in-TUI
+-        // `Login` phase. If credentials already exist, start the post-login
+-        // onboarding path directly; we no longer ask first-run users to choose a
+-        // model before they can get started.
++        // Automatic first-run onboarding is disabled. Keep the guard one-shot,
++        // while manual rehearsal continues to enter the same flow directly.
+         self.onboarding_startup_checked = true;
+-        if crate::auth::AuthStatus::check_fast().has_any_available() {
+-            self.begin_onboarding_flow();
+-        } else {
+-            self.begin_onboarding_flow_at_login();
+-        }
+     }
+
+     /// Whether this install looks like a brand-new user.
+@@ -161,6 +98,8 @@ impl App {
+     /// of persisted native sessions. A user with a long session history must
+     /// never be dragged through first-run onboarding just because their
+     /// launch counter looks low.
++    // Inactive in this build: gated by personal patch 1007.
++    #[allow(dead_code)]
+     fn is_new_user_for_onboarding(&self) -> bool {
+         Self::is_new_user_install()
+     }
+@@ -223,6 +162,8 @@ impl App {
+     /// model picker; the default route is used and `/model` remains available.
+     ///
+     /// No-op if a flow is already running or the user is experienced.
++    // Inactive in this build: gated by personal patch 1007.
++    #[allow(dead_code)]
+     pub(super) fn begin_onboarding_flow(&mut self) {
+         if self.onboarding_flow.is_some() {
+             return;
+@@ -793,13 +734,12 @@ impl App {
+         if let Some(review) = self.onboarding_import_review_mut() {
+             let checked = review.checked_count();
+             let total = review.total();
+-            let secs = review.seconds_remaining();
+             let notice = if !review.choosing {
+                 if review.telemetry.is_some() {
+                     "Telemetry settings - arrows move, Enter chooses, Esc goes back".to_string()
+                 } else {
+                     format!(
+-                        "Found {total} login{} - Enter imports all (auto in {secs}s), or pick \"Import less\"",
++                        "Found {total} login{} - Continue imports all, or pick \"Import less\"",
+                         if total == 1 { "" } else { "s" },
+                     )
+                 }
+@@ -1691,11 +1631,8 @@ impl App {
+     /// Drive auto-advancing phases. Call once per tick/redraw. Returns true if
+     /// the flow state changed (so the caller can request a redraw).
+     pub(super) fn onboarding_tick(&mut self) -> bool {
+-        // A rehearsal ticks exactly like a first run (countdowns, the import
+-        // watchdog, model validation), so there is no special case here.
+-        // Fresh-install bootstrap: if we were already logged in at the CLI before
+-        // the TUI launched, no in-TUI login event fired, so evaluate (once)
+-        // whether to begin the guided flow now that the TUI is up.
++        // Manual rehearsal ticks the real flow. Automatic startup onboarding
++        // remains disabled by the one-shot check below.
+         let mut changed = false;
+         if !self.onboarding_startup_checked {
+             self.maybe_begin_onboarding_flow_on_startup();
+@@ -1736,24 +1673,16 @@ impl App {
+             changed = true;
+         }
+
+-        // Drive the longer (60s) yes/no decision phases: the login-import
+-        // walkthrough and the telemetry consent prompt. On timeout we pick the
+-        // highlighted default; otherwise we keep the countdown notice fresh.
++        // The continue prompt uses a legacy decision countdown. Login import
++        // always waits for an explicit Continue action.
+         let decision_timed_out = self
+             .onboarding_flow
+             .as_ref()
+-            .map(OnboardingFlow::decision_timed_out)
+-            .unwrap_or(false);
++            .is_some_and(|flow| matches!(flow.phase, OnboardingPhase::ContinuePrompt { .. }) && flow.decision_timed_out());
+         match self.onboarding_phase().cloned() {
+             Some(OnboardingPhase::Login {
+                 import: Some(_), ..
+             }) => {
+-                if decision_timed_out {
+-                    // Timeout default: import every currently-checked login.
+-                    self.onboarding_finish_import_review();
+-                    return true;
+-                }
+-                // Keep the countdown notice fresh.
+                 self.update_onboarding_import_review_status();
+                 return true;
+             }
+diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
+index 5d79e74a6..db588111c 100644
+--- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
++++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
+@@ -169,8 +169,11 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
+     RegisteredCommand::public("/feedback", "Send feedback about jcode"),
+     RegisteredCommand::public("/telemetry", "Show or change what jcode sends"),
+     RegisteredCommand::public("/support", "Email support with diagnostics prefilled"),
+-    RegisteredCommand::public("/subscription", "Show jcode subscription status"),
+-    RegisteredCommand::public("/subscribe", "Why and how to subscribe to jcode"),
++    RegisteredCommand::hidden("/subscription", "Hosted account status is disabled in this build"),
++    RegisteredCommand::hidden("/subscribe", "Hosted account commands are disabled in this build"),
++    RegisteredCommand::hidden("/hosted", "Hosted account commands are disabled in this build"),
++    RegisteredCommand::hidden("/subscription status", "Hosted account status is disabled in this build"),
++    RegisteredCommand::hidden("/hosted status", "Hosted account status is disabled in this build"),
+     RegisteredCommand::public("/config", "Show or edit configuration"),
+     RegisteredCommand::public("/log", "Mark the current location in the jcode logs"),
+     RegisteredCommand::public(
+@@ -945,6 +948,9 @@ impl App {
+         }
+
+         if prefix.starts_with("/login ") || prefix.starts_with("/auth ") {
++            if prefix.starts_with("/login jcode") {
++                return Vec::new();
++            }
+             let base = if prefix.starts_with("/auth ") {
+                 "/auth"
+             } else {
+@@ -963,6 +969,9 @@ impl App {
+         }
+
+         if prefix.starts_with("/account ") || prefix.starts_with("/accounts ") {
++            if prefix.starts_with("/account jcode") || prefix.starts_with("/accounts jcode") {
++                return Vec::new();
++            }
+             let mut suggestions = vec![
+                 ("/account list".into(), "Open all provider/account actions"),
+                 ("/account switch".into(), "Switch active account by label"),
+@@ -983,7 +992,7 @@ impl App {
+                     "Set custom OpenAI-compatible API base",
+                 ),
+             ];
+-            for provider in crate::provider_catalog::login_providers() {
++            for provider in crate::provider_catalog::visible_login_providers() {
+                 suggestions.push((
+                     format!("/account {}", provider.id),
+                     "Open this provider's account/settings actions",
+@@ -1115,11 +1124,8 @@ impl App {
+             );
+         }
+
+-        if prefix.starts_with("/subscription ") {
+-            return self.rank_suggestions(
+-                input,
+-                vec![("/subscription status".into(), "Show subscription status")],
+-            );
++        if prefix.starts_with("/subscription") || prefix.starts_with("/hosted") || prefix.starts_with("/subscribe") {
++            return Vec::new();
+         }
+
+         if prefix.starts_with("/alignment ") {
+@@ -1792,7 +1798,6 @@ impl App {
+                 | "/account openai remove"
+                 | "/usage"
+                 | "/reset"
+-                | "/subscription"
+                 | "/poke"
+                 | "/memory"
+                 | "/test"
+diff --git a/crates/jcode-tui/src/tui/app/subscribe_nudge.rs b/crates/jcode-tui/src/tui/app/subscribe_nudge.rs
+index bb6e91ff4..dd68eb245 100644
+--- a/crates/jcode-tui/src/tui/app/subscribe_nudge.rs
++++ b/crates/jcode-tui/src/tui/app/subscribe_nudge.rs
+@@ -1,3 +1,5 @@
++// Inactive in this build: gated by personal patch 1007.
++#![allow(dead_code)]
+ //! Hosted-model nudge: two tasteful, rate-limited prompts to try metered access.
+ //!
+ //! Surfaces (never a blocking screen):
+@@ -25,10 +27,9 @@ const NUDGE_INTERVAL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+ const LONG_TASK_MIN_ELAPSED: Duration = Duration::from_secs(60 * 60);
+
+ /// Copy appended to the rate-limit system message (trigger A).
+-pub(super) const RATE_LIMIT_NUDGE_LINE: &str =
+-    "Avoid provider rate limits with Jcode hosted models: /hosted";
++pub(super) const RATE_LIMIT_NUDGE_LINE: &str = "";
+ /// Status-line tail shared by trigger B.
+-const SUPPORT_NUDGE_NOTICE: &str = "Try Jcode hosted models: /hosted";
++const SUPPORT_NUDGE_NOTICE: &str = "";
+
+ /// Why a nudge fired. Used to build the message and recorded in the state file
+ /// so we can tune trigger mix later.
+@@ -127,41 +128,14 @@ fn format_elapsed(elapsed: Duration) -> String {
+ }
+
+ /// The goodwill message for a completed long task.
+-fn long_task_message(elapsed: Duration) -> String {
+-    format!(
+-        "✦ jcode just worked {} for you. {}",
+-        format_elapsed(elapsed),
+-        SUPPORT_NUDGE_NOTICE
+-    )
++fn long_task_message(_elapsed: Duration) -> String {
++    String::new()
+ }
+
+ /// The full hosted-model pitch. Reuses the live curated catalog so models
+ /// never drift from the account status surface.
+ pub(super) fn subscribe_pitch_markdown() -> String {
+-    let mut message = String::from("Jcode hosted models\n\n");
+-    message.push_str("No subscription. Set a monthly spending limit and pay only for usage:\n\n");
+-    message.push_str("  - You control the monthly limit and can change it from your account\n");
+-    message.push_str("  - Usage milestones send warnings without slowing your requests\n");
+-    let model_names: Vec<&str> = crate::subscription_catalog::curated_models()
+-        .iter()
+-        .map(|model| model.display_name)
+-        .collect();
+-    if !model_names.is_empty() {
+-        message.push_str(&format!(
+-            "  - Curated catalog: {}\n",
+-            model_names.join(", ")
+-        ));
+-    }
+-    message.push_str("  - Sign in once: Jcode saves the hosted API key and routes the rest\n");
+-    message.push_str("  - Automatic failover routing when a provider has a bad day\n");
+-    message
+-        .push_str("  - Billing starts at $20 of usage, then uses progressively larger tranches\n");
+-    message.push_str("  - Any remaining usage is billed at your limit or at month end\n");
+-    message.push_str("  - Funds Jcode development while the software stays open source\n");
+-
+-    message.push_str("\nStart: /login jcode (browser approval, no key pasted into the terminal)\n");
+-    message.push_str("Usage anytime: /usage");
+-    message
++    String::new()
+ }
+
+ /// Per-session state for the subscribe nudge.
+@@ -178,80 +152,21 @@ impl App {
+     /// Central gate for both triggers. Returns true when the nudge may be
+     /// shown, and records the claim (session flag + weekly file) so a `true`
+     /// must be followed by actually showing it.
+-    pub(super) fn claim_subscribe_nudge(&mut self, trigger: SubscribeNudgeTrigger) -> bool {
+-        // Deterministic playback and unit-test harnesses must not grow
+-        // marketing lines (golden transcripts assert exact output).
+-        if cfg!(test) || !matches!(self.runtime_mode, AppRuntimeMode::RemoteClient) {
+-            return false;
+-        }
+-        if self.subscribe_nudge.shown_this_session {
+-            return false;
+-        }
+-        // Never pitch during onboarding: the user has gotten zero value yet.
+-        if self.onboarding_flow_active() {
+-            return false;
+-        }
+-        // Never pitch existing jcode account holders.
+-        if crate::subscription_catalog::has_credentials() {
+-            return false;
+-        }
+-        let now = now_unix();
+-        let mut state = load_state();
+-        if !weekly_gate_allows(state.last_shown_unix, now) {
+-            return false;
+-        }
+-        state.last_shown_unix = now;
+-        state.last_trigger = trigger.as_str().to_string();
+-        store_state(&state);
+-        self.subscribe_nudge.shown_this_session = true;
+-        true
++    pub(super) fn claim_subscribe_nudge(&mut self, _trigger: SubscribeNudgeTrigger) -> bool {
++        false
+     }
+
+     /// Trigger B driver, called whenever this session's todo list changes
+     /// (todo tool completed locally or remotely). Arms a timer when incomplete
+     /// todos first appear; fires the goodwill nudge when the list later
+     /// reaches all-completed with quality gates passed after 1+ hour.
+-    pub(super) fn note_todo_update_for_subscribe_nudge(&mut self, session_id: &str) {
+-        // Cheap early-outs before touching disk: replay/test runtimes never
+-        // nudge, and a session nudges at most once.
+-        if cfg!(test)
+-            || !matches!(self.runtime_mode, AppRuntimeMode::RemoteClient)
+-            || self.subscribe_nudge.shown_this_session
+-        {
+-            return;
+-        }
+-        let todos = crate::todo::load_todos(session_id).unwrap_or_default();
+-        if todos.is_empty() {
+-            return;
+-        }
+-        if todos.iter().any(|todo| todo.status != "completed") {
+-            // Work in flight: arm (or keep) the long-task timer.
+-            self.subscribe_nudge
+-                .todo_started
+-                .get_or_insert_with(Instant::now);
+-            return;
+-        }
+-        // Completion edge: evaluate exactly once per armed run. Taking the
+-        // timer here means a short batch can never leak its start time into a
+-        // later batch and inflate that batch's apparent duration.
+-        let Some(started) = self.subscribe_nudge.todo_started.take() else {
+-            return;
+-        };
+-        let elapsed = started.elapsed();
+-        if elapsed < LONG_TASK_MIN_ELAPSED || !long_task_todos_qualify(&todos) {
+-            return;
+-        }
+-        if !self.claim_subscribe_nudge(SubscribeNudgeTrigger::LongTaskCompleted) {
+-            return;
+-        }
+-        self.push_display_message(DisplayMessage::system(long_task_message(elapsed)));
+-        self.set_status_notice(SUPPORT_NUDGE_NOTICE);
+-    }
++    pub(super) fn note_todo_update_for_subscribe_nudge(&mut self, _session_id: &str) {}
+
+     /// Render the `/subscribe` pitch into the transcript.
+     pub(super) fn show_subscribe_pitch(&mut self) {
+-        self.push_display_message(DisplayMessage::system(subscribe_pitch_markdown()));
+-        self.set_status_notice("Hosted models: /login jcode to start");
++        self.push_display_message(DisplayMessage::error(
++            "jcode hosted accounts are disabled in this build".to_string(),
++        ));
+     }
+ }
+
+@@ -327,36 +242,39 @@ mod tests {
+
+     #[test]
+     fn long_task_message_reads_support_wording_with_elapsed() {
+-        let message = long_task_message(Duration::from_secs(60 * 83));
+-        assert_eq!(
+-            message,
+-            "✦ jcode just worked 1h 23m for you. Try Jcode hosted models: /hosted"
+-        );
+-        assert!(long_task_message(Duration::from_secs(3600)).contains("worked 1h for you"));
+-        assert!(long_task_message(Duration::from_secs(59 * 60)).contains("worked 59m for you"));
++        for message in [
++            long_task_message(Duration::from_secs(60 * 83)),
++            long_task_message(Duration::from_secs(3600)),
++            long_task_message(Duration::from_secs(59 * 60)),
++        ] {
++            assert!(!message.contains("Jcode hosted models"));
++            assert!(!message.contains("/hosted"));
++        }
+     }
+
+     #[test]
+     fn rate_limit_copy_leads_with_the_hosted_model_value_prop() {
+-        assert!(RATE_LIMIT_NUDGE_LINE.starts_with("Avoid provider rate limits"));
+-        assert!(RATE_LIMIT_NUDGE_LINE.contains("/hosted"));
++        assert!(!RATE_LIMIT_NUDGE_LINE.contains("Jcode hosted models"));
++        assert!(!RATE_LIMIT_NUDGE_LINE.contains("/hosted"));
+     }
+
+     #[test]
+     fn pitch_explains_limits_warnings_tranches_and_next_step() {
+         let pitch = subscribe_pitch_markdown();
+-        assert!(pitch.contains("No subscription"));
+-        assert!(pitch.contains("monthly spending limit"));
+-        assert!(pitch.contains("warnings without slowing"));
+-        assert!(pitch.contains("$20"));
+-        assert!(pitch.contains("progressively larger tranches"));
+-        assert!(pitch.contains("month end"));
+-        assert!(pitch.contains("open source"));
+-        assert!(pitch.contains("/login jcode"));
+-        assert!(pitch.contains("/usage"));
+-        for model in crate::subscription_catalog::curated_models() {
+-            assert!(pitch.contains(model.display_name));
+-        }
++        assert!(!pitch.contains("No subscription"));
++        assert!(!pitch.contains("monthly spending limit"));
++        assert!(!pitch.contains("/login jcode"));
++        assert!(!pitch.contains("/usage"));
++    }
++
++    #[test]
++    fn gate_hosted_nudge_text_is_never_produced() {
++        let message = long_task_message(Duration::from_secs(60 * 83));
++        let mut app = crate::tui::app::tests::create_test_app();
++        let rate_limit = app.rate_limit_notice_with_nudge(10);
++        assert!(!message.contains("/hosted"));
++        assert!(!rate_limit.contains("/hosted"));
++        assert!(!rate_limit.contains("Jcode"));
+     }
+
+     #[test]
+diff --git a/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs b/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs
+index 4229869c1..def79ea3e 100644
+--- a/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs
++++ b/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs
+@@ -233,19 +233,7 @@ fn test_subscription_command_shows_jcode_status_scaffold() {
+         .display_messages()
+         .last()
+         .expect("missing /subscription response");
+-    assert_eq!(msg.role, "system");
+-    assert!(msg.content.contains("Jcode Hosted Model Status"));
+-    assert!(msg.content.contains("pay as you go, no subscription fee"));
+-    assert!(msg.content.contains("monthly spending limit"));
+-    assert!(msg.content.contains("progressively larger tranches"));
+-    assert!(msg.content.contains("/login jcode"));
+-    assert!(msg.content.contains("Claude Opus 4.8"));
+-    assert!(msg.content.contains("GPT-5.5"));
+-    assert!(msg.content.contains("Claude Fable 5"));
+-    assert!(msg.content.contains("GPT-5.6 Sol"));
+-    assert!(!msg.content.contains("$10/mo"));
+-    assert!(!msg.content.contains("usable inference budget"));
+-    assert!(!msg.content.contains("Claude Fable 5 - claude-fable-5 [Ultra]"));
++    assert!(msg.content.contains("jcode hosted accounts are disabled in this build"));
+ }
+
+ #[test]
+@@ -258,14 +246,7 @@ fn test_subscribe_command_shows_hosted_pitch_and_next_step() {
+         .display_messages()
+         .last()
+         .expect("missing /subscribe response");
+-    assert_eq!(msg.role, "system");
+-    assert!(msg.content.contains("Jcode hosted models"));
+-    assert!(msg.content.contains("No subscription"));
+-    assert!(msg.content.contains("monthly spending limit"));
+-    assert!(msg.content.contains("open source"));
+-    assert!(msg.content.contains("/login jcode"));
+-    assert!(msg.content.contains("/usage"));
+-    assert!(msg.content.contains("$20 of usage"));
++    assert!(msg.content.contains("jcode hosted accounts are disabled in this build"));
+ }
+
+ #[test]
+diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_eval.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_eval.rs
+index ca2e961cc..a84f7f328 100644
+--- a/crates/jcode-tui/src/tui/app/tests/onboarding_eval.rs
++++ b/crates/jcode-tui/src/tui/app/tests/onboarding_eval.rs
+@@ -629,8 +629,8 @@ fn node_props(n: GraphNode) -> NodeProps {
+         Start => NodeProps { is_decision: false, has_default: false, is_ready: false, is_terminal: false },
+         // Forced Yes/No: there is no timeout default on the OpenAI sign-in prompt.
+         LoginOpenAi => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
+-        // Import review auto-commits the highlighted choice on DECISION_TIMEOUT.
+-        LoginImport => NodeProps { is_decision: true, has_default: true, is_ready: false, is_terminal: false },
++        // Import review waits for explicit Continue, with a No recovery route.
++        LoginImport => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
+         // Recovery fallback: a single Enter opens the provider picker.
+         LoginRecovery => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
+         // Transient: auto-advances, the user never chooses here.
+diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
+index 004a35ed6..08b5316ea 100644
+--- a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
++++ b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
+@@ -419,20 +419,17 @@ fn login_openai_arrows_toggle_highlight() {
+ }
+
+ #[test]
+-fn import_review_decision_timer_counts_down_and_times_out() {
++fn gate_tools_import_review_never_times_out() {
+     use crate::external_auth::ExternalAuthReviewCandidate;
+     use crate::tui::app::onboarding_flow::{DECISION_TIMEOUT, ImportReview};
+
+-    let mut review =
+-        ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("Cursor", "Cursor")]).unwrap();
+-    // Fresh review: a full timeout's worth of seconds remain and it hasn't
+-    // timed out yet.
++    let mut review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("Cursor", "Cursor")]).unwrap();
+     assert!(review.seconds_remaining() <= DECISION_TIMEOUT.as_secs());
+     assert!(!review.timed_out());
+-    // Force the clock past the timeout.
+-    review.shown_at = std::time::Instant::now() - (DECISION_TIMEOUT + std::time::Duration::from_secs(1));
++    review.shown_at = std::time::Instant::now()
++        - (DECISION_TIMEOUT + std::time::Duration::from_secs(1));
+     assert_eq!(review.seconds_remaining(), 0);
+-    assert!(review.timed_out());
++    assert!(!review.timed_out());
+ }
+
+ #[test]
+@@ -725,6 +722,21 @@ fn onboarding_start_choice_is_action_only_and_defaults_to_review() {
+     assert!(!picker.onboarding_start_new_highlighted());
+ }
+
++#[test]
++fn gate_tools_startup_check_never_auto_starts_onboarding() {
++    with_temp_jcode_home(|| {
++        let mut app = create_test_app();
++        app.onboarding_flow = None;
++        app.onboarding_startup_checked = false;
++        app.maybe_begin_onboarding_flow_on_startup();
++        assert!(app.onboarding_startup_checked);
++        assert!(app.onboarding_flow.is_none());
++
++        app.maybe_begin_onboarding_flow_after_login();
++        assert!(app.onboarding_flow.is_none());
++    });
++}
++
+ #[test]
+ fn startup_check_skips_when_session_already_has_activity() {
+     with_temp_jcode_home(|| {
+@@ -1392,6 +1404,69 @@ fn import_failure_h_key_is_inert_without_a_recorded_error() {
+     });
+ }
+
++#[test]
++fn gate_tools_elapsed_import_review_does_not_import_without_explicit_action() {
++    use crate::external_auth::ExternalAuthReviewCandidate;
++    use crate::tui::app::onboarding_flow::{DECISION_TIMEOUT, ImportReview};
++
++    with_temp_jcode_home(|| {
++        let mut app = create_test_app();
++        app.onboarding_flow = None;
++        app.begin_onboarding_flow_at_login();
++        let mut review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
++            "OpenAI/Codex",
++            "Codex auth.json",
++        )])
++        .unwrap();
++        review.shown_at = std::time::Instant::now()
++            - (DECISION_TIMEOUT + std::time::Duration::from_secs(1));
++        if let Some(flow) = app.onboarding_flow.as_mut() {
++            flow.phase = OnboardingPhase::Login {
++                import: Some(review),
++            };
++        }
++
++        assert!(!app.onboarding_flow.as_ref().unwrap().decision_timed_out());
++        app.onboarding_tick();
++        assert!(matches!(
++            app.onboarding_phase(),
++            Some(OnboardingPhase::Login { import: Some(_) })
++        ));
++        assert!(app.onboarding_import_in_progress.is_none());
++        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Right));
++        assert!(app.onboarding_import_in_progress.is_none());
++    });
++}
++
++#[test]
++fn gate_tools_explicit_import_action_imports() {
++    use crate::external_auth::ExternalAuthReviewCandidate;
++    use crate::tui::app::onboarding_flow::ImportReview;
++
++    with_temp_jcode_home(|| {
++        let mut app = create_test_app();
++        app.onboarding_flow = None;
++        app.begin_onboarding_flow_at_login();
++        let review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
++            "OpenAI/Codex",
++            "Codex auth.json",
++        )])
++        .unwrap();
++        if let Some(flow) = app.onboarding_flow.as_mut() {
++            flow.phase = OnboardingPhase::Login {
++                import: Some(review),
++            };
++        }
++
++        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
++        assert!(matches!(
++            app.onboarding_phase(),
++            Some(OnboardingPhase::Login { import: None })
++        ));
++        assert!(app.onboarding_import_in_progress.is_some() || app.onboarding_import_error.is_some());
++    });
++}
++
+ #[test]
+ fn import_summary_defaults_to_continue_and_enter_imports_all() {
+     use crate::external_auth::ExternalAuthReviewCandidate;
+@@ -1657,7 +1732,7 @@ fn import_less_enter_on_row_toggles_instead_of_committing() {
+             }) => {
+                 assert!(review.choosing, "still on the Import less list");
+                 assert_eq!(review.checked, vec![true, false, true]);
+-                // The auto-commit countdown is paused while choosing.
++                // Import review requires an explicit Continue action.
+                 let mut stale = review.clone();
+                 stale.shown_at = std::time::Instant::now()
+                     - crate::tui::app::onboarding_flow::DECISION_TIMEOUT
+diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
+index 2df6ec5c1..b69a26ec8 100644
+--- a/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
++++ b/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
+@@ -113,6 +113,50 @@ fn rehearsal_keys_drive_the_real_import_summary() {
+     });
+ }
+
++#[test]
++fn gate_tools_manual_onboarding_rehearsal_reaches_import_summary() {
++    use crate::tui::app::onboarding_flow::SummaryPill;
++    with_temp_jcode_home(|| {
++        write_fake_gemini_cli_login();
++        let mut app = create_test_app();
++        app.start_onboarding_simulator();
++        assert!(matches!(
++            app.onboarding_phase(),
++            Some(OnboardingPhase::Login { import: Some(review) })
++                if review.summary_pill == SummaryPill::Continue
++        ));
++    });
++}
++
++#[test]
++fn gate_tools_rehearsal_keys_drive_the_real_import_summary() {
++    use crate::tui::app::onboarding_flow::SummaryPill;
++    with_temp_jcode_home(|| {
++        write_fake_gemini_cli_login();
++        let mut app = create_test_app();
++        app.start_onboarding_simulator();
++
++        let pill = |app: &App| match app.onboarding_phase() {
++            Some(OnboardingPhase::Login {
++                import: Some(review),
++            }) => review.summary_pill,
++            other => panic!("expected import summary, got {other:?}"),
++        };
++        assert_eq!(pill(&app), SummaryPill::Continue);
++        app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
++        assert_eq!(pill(&app), SummaryPill::ImportLess);
++        app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
++        assert_eq!(pill(&app), SummaryPill::Telemetry);
++
++        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
++        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
++        assert!(matches!(
++            app.onboarding_phase(),
++            Some(OnboardingPhase::Login { import: Some(review) }) if review.choosing
++        ));
++    });
++}
++
+ #[test]
+ fn rehearsal_telemetry_choice_is_not_saved() {
+     with_temp_jcode_home(|| {
+diff --git a/crates/jcode-tui/src/tui/app/tui_state.rs b/crates/jcode-tui/src/tui/app/tui_state.rs
+index 3c917fa47..e32b5f262 100644
+--- a/crates/jcode-tui/src/tui/app/tui_state.rs
++++ b/crates/jcode-tui/src/tui/app/tui_state.rs
+@@ -978,10 +978,11 @@ impl crate::tui::TuiState for App {
+     fn status_notice(&self) -> Option<String> {
+         // This priority notice is owned by the telemetry handshake, not the
+         // expiring general status slot. Other notices cannot clobber it.
+-        if crate::telemetry::pending_oauth_account_notice().is_some()
+-            || self
+-                .oauth_notice_displayed_at
+-                .is_some_and(super::oauth_telemetry::readable_notice_active)
++        if crate::telemetry::is_enabled()
++            && (crate::telemetry::pending_oauth_account_notice().is_some()
++                || self
++                    .oauth_notice_displayed_at
++                    .is_some_and(super::oauth_telemetry::readable_notice_active))
+         {
+             return Some(crate::telemetry::OAUTH_ACCOUNT_NOTICE_TEXT.to_string());
+         }
+diff --git a/src/cli/account.rs b/src/cli/account.rs
+index 0ff42c556..b170f4f5b 100644
+--- a/src/cli/account.rs
++++ b/src/cli/account.rs
+@@ -1,3 +1,5 @@
++// Inactive in this build: gated by personal patch 1007.
++#![allow(dead_code)]
+ use anyhow::{Context, Result};
+
+ use crate::subscription_api::{self, AccountApiError};
+diff --git a/src/cli/args.rs b/src/cli/args.rs
+index 1f39f76b6..0eb24a8e2 100644
+--- a/src/cli/args.rs
++++ b/src/cli/args.rs
+@@ -272,6 +272,7 @@ pub(crate) enum Command {
+     },
+
+     /// Log in to and manage your Jcode account
++    #[command(hide = true)]
+     Account {
+         #[command(subcommand)]
+         action: AccountCommand,
+@@ -635,20 +636,24 @@ pub(crate) enum TelemetryCommand {
+ #[derive(Subcommand, Debug)]
+ pub(crate) enum AccountCommand {
+     /// Open browser-based device authorization and wait for plan activation
++    #[command(hide = true)]
+     Login {
+         /// Do not open a browser automatically; print the public approval URL instead
+         #[arg(long, alias = "headless")]
+         no_browser: bool,
+     },
+     /// Show canonical account, plan, and usage status from /v1/me
++    #[command(hide = true)]
+     Status {
+         /// Emit JSON instead of human-readable output
+         #[arg(long)]
+         json: bool,
+     },
+     /// Open the public Jcode account management page
++    #[command(hide = true)]
+     Manage,
+     /// Revoke the current key when reachable, then securely clear local state
++    #[command(hide = true)]
+     Logout,
+ }
+
+@@ -720,6 +725,7 @@ pub(crate) enum ServerCommand {
+ #[derive(Subcommand, Debug)]
+ pub(crate) enum CloudCommand {
+     /// Upload, list, verify, and view cloud-synced sessions
++    #[command(hide = true)]
+     Sessions {
+         #[command(subcommand)]
+         action: CloudSessionsCommand,
+diff --git a/src/cli/args/cloud_sessions.rs b/src/cli/args/cloud_sessions.rs
+index 6a89efbed..f5ccd698e 100644
+--- a/src/cli/args/cloud_sessions.rs
++++ b/src/cli/args/cloud_sessions.rs
+@@ -5,6 +5,7 @@ use super::*;
+ #[derive(Subcommand, Debug)]
+ pub(crate) enum CloudSessionsCommand {
+     /// Configure Jade API defaults for cloud sessions on this machine
++    #[command(hide = true)]
+     Configure {
+         /// Jade Session API base URL
+         #[arg(long)]
+@@ -36,6 +37,7 @@ pub(crate) enum CloudSessionsCommand {
+     },
+
+     /// Show saved Jade API defaults for cloud sessions without printing secrets
++    #[command(hide = true)]
+     Status {
+         /// Emit JSON instead of human-readable text
+         #[arg(long)]
+@@ -43,6 +45,7 @@ pub(crate) enum CloudSessionsCommand {
+     },
+
+     /// Upload a specific local session JSON file to Jade cloud storage
++    #[command(hide = true)]
+     Upload {
+         /// Path to a local Jcode session JSON file
+         session_file: String,
+@@ -56,6 +59,7 @@ pub(crate) enum CloudSessionsCommand {
+     },
+
+     /// Upload the newest local Jcode session to Jade cloud storage
++    #[command(hide = true)]
+     UploadLatest {
+         /// Directory containing local Jcode session JSON files
+         #[arg(long, default_value = "~/.jcode/sessions")]
+@@ -70,6 +74,7 @@ pub(crate) enum CloudSessionsCommand {
+     },
+
+     /// Sync new or changed local sessions to Jade cloud storage (idempotent; safe to schedule)
++    #[command(hide = true)]
+     Sync {
+         /// Directory containing local Jcode session JSON files (default: ~/.jcode/sessions)
+         #[arg(long)]
+@@ -112,6 +117,7 @@ pub(crate) enum CloudSessionsCommand {
+     },
+
+     /// List cloud-uploaded sessions from the Jade index
++    #[command(hide = true)]
+     List {
+         /// Maximum number of sessions to show
+         #[arg(long, default_value_t = 25)]
+@@ -126,6 +132,7 @@ pub(crate) enum CloudSessionsCommand {
+     },
+
+     /// Verify that cloud metadata and the S3 session blob both exist
++    #[command(hide = true)]
+     Verify {
+         /// Session ID to verify
+         session_id: String,
+@@ -135,6 +142,7 @@ pub(crate) enum CloudSessionsCommand {
+     },
+
+     /// Render a local HTML dashboard of cloud-uploaded sessions from the Jade index
++    #[command(hide = true)]
+     Dashboard {
+         /// Maximum number of sessions to include
+         #[arg(long, default_value_t = 100)]
+@@ -157,6 +165,7 @@ pub(crate) enum CloudSessionsCommand {
+     },
+
+     /// Download and view a cloud-uploaded session
++    #[command(hide = true)]
+     View {
+         /// Session ID to view
+         session_id: String,
+diff --git a/src/cli/args/tests.rs b/src/cli/args/tests.rs
+index dfeead84a..0962b7225 100644
+--- a/src/cli/args/tests.rs
++++ b/src/cli/args/tests.rs
+@@ -767,6 +767,19 @@ fn account_subcommands_parse() {
+     ));
+ }
+
++#[test]
++fn gate_hosted_cli_account_is_hidden_and_rejected_by_dispatch() {
++    use clap::CommandFactory;
++    let mut command = Args::command();
++    let account = command
++        .find_subcommand("account")
++        .expect("hidden account subcommand remains parseable");
++    assert!(account.is_hide_set());
++    for action in ["login", "status", "manage", "logout"] {
++        assert!(Args::try_parse_from(["jcode", "account", action]).is_ok());
++    }
++}
++
+ #[test]
+ fn quiet_global_flag_parses() {
+     let args = Args::try_parse_from(["jcode", "--quiet", "model", "list"]).unwrap();
+diff --git a/src/cli/commands.rs b/src/cli/commands.rs
+index 2098f1725..24c4f7440 100644
+--- a/src/cli/commands.rs
++++ b/src/cli/commands.rs
+@@ -1,3 +1,5 @@
++// Inactive in this build: gated by personal patch 1007.
++#![allow(dead_code)]
+ #![cfg_attr(test, allow(clippy::await_holding_lock))]
+
+ use anyhow::Result;
+@@ -147,9 +149,8 @@ struct CloudSessionsConfigStatus {
+ }
+
+ pub fn run_cloud_command(cmd: CloudSubcommand) -> Result<()> {
+-    match cmd {
+-        CloudSubcommand::Sessions(action) => run_cloud_sessions_command(action),
+-    }
++    let _ = cmd;
++    anyhow::bail!("Jade cloud sessions are disabled in this build");
+ }
+
+ fn run_cloud_sessions_command(action: CloudSessionsSubcommand) -> Result<()> {
+diff --git a/src/cli/dispatch.rs b/src/cli/dispatch.rs
+index 04eaa4a30..86db0920c 100644
+--- a/src/cli/dispatch.rs
++++ b/src/cli/dispatch.rs
+@@ -73,6 +73,12 @@ fn arm_debug_client_parent_death_signal() {}
+
+ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
+     arm_debug_client_parent_death_signal();
++    if matches!(args.command, Some(Command::Cloud(CloudCommand::Sessions { .. }))) {
++        anyhow::bail!("Jade cloud sessions are disabled in this build");
++    }
++    if matches!(args.command, Some(Command::Account { .. })) {
++        anyhow::bail!("jcode hosted accounts are disabled in this build");
++    }
+     if args.ssh.is_some() {
+         // A remote session ID and working directory belong to the remote host.
+         // Do not run local resume lookup, provider bootstrap, or self-dev setup.
+@@ -356,14 +362,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
+             )
+             .await?;
+         }
+-        Some(Command::Account { action }) => match action {
+-            super::args::AccountCommand::Login { no_browser } => {
+-                account::run_login(no_browser).await?
+-            }
+-            super::args::AccountCommand::Status { json } => account::run_status(json).await?,
+-            super::args::AccountCommand::Manage => account::run_manage()?,
+-            super::args::AccountCommand::Logout => account::run_logout().await?,
+-        },
++        Some(Command::Account { .. }) => unreachable!("account is rejected before startup"),
+         Some(Command::Repl) => {
+             let (provider, registry) =
+                 provider_init::init_provider_and_registry(&args.provider, args.model.as_deref())
+diff --git a/src/cli/dispatch_tests.rs b/src/cli/dispatch_tests.rs
+index cf2cc1814..d1961854c 100644
+--- a/src/cli/dispatch_tests.rs
++++ b/src/cli/dispatch_tests.rs
+@@ -1,6 +1,33 @@
+ use super::*;
++use clap::Parser;
+ use crate::transport::Listener;
+
++#[tokio::test]
++async fn gate_cloud_jade_sessions_rejected_help_hidden_and_move_still_parses() {
++    let root_help = <Args as clap::CommandFactory>::command().render_help().to_string();
++    assert!(!root_help.contains("cloud sessions"));
++    let mut command = <Args as clap::CommandFactory>::command();
++    let cloud = command.find_subcommand_mut("cloud").expect("cloud command");
++    assert!(
++        cloud
++            .get_subcommands()
++            .filter(|sub| !sub.is_hide_set())
++            .all(|sub| sub.get_name() != "sessions"),
++        "Jade cloud sessions must be hidden from cloud help"
++    );
++    let cloud_help = cloud.render_help().to_string();
++    assert!(!cloud_help.contains("cloud-synced sessions"));
++
++    let args = Args::try_parse_from(["jcode", "cloud", "sessions", "status"]).unwrap();
++    let error = run_main(args)
++        .await
++        .expect_err("Jade cloud sessions must be rejected before helper execution");
++    assert!(error.to_string().contains("Jade cloud sessions are disabled in this build"));
++
++    let args = Args::try_parse_from(["jcode", "cloud", "move", "--host", "dev"]).unwrap();
++    assert!(matches!(args.command, Some(Command::Cloud(CloudCommand::Move { .. }))));
++}
++
+ #[test]
+ fn only_file_controlled_debug_clients_need_parent_lifetime_binding() {
+     let _lock = crate::storage::lock_test_env();
+diff --git a/src/cli/login.rs b/src/cli/login.rs
+index 39cd09a54..8d1030d2f 100644
+--- a/src/cli/login.rs
++++ b/src/cli/login.rs
+@@ -573,6 +573,8 @@ async fn login_jcode_flow(no_browser: bool) -> Result<()> {
+     Ok(())
+ }
+
++// Inactive in this build: gated by personal patch 1007.
++#[allow(dead_code)]
+ pub(crate) async fn run_jcode_account_login(no_browser: bool) -> Result<()> {
+     login_jcode_flow(no_browser).await
+ }
+diff --git a/src/cli/provider_init.rs b/src/cli/provider_init.rs
+index e71689954..2b5cb5524 100644
+--- a/src/cli/provider_init.rs
++++ b/src/cli/provider_init.rs
+@@ -150,7 +150,7 @@ pub enum ProviderChoice {
+ impl ProviderChoice {
+     #[allow(deprecated)]
+     pub fn as_arg_value(&self) -> &'static str {
+-        match self {
++    match self {
+             Self::Jcode => "jcode",
+             Self::Claude => "claude",
+             Self::AnthropicApi => "anthropic-api",
+@@ -1539,6 +1539,12 @@ async fn init_provider_with_model_policy(
+     // OpenRouter/OpenAI-compatible factory) and their model-picker routes.
+     super::startup::register_external_provider_runtimes();
+
++    if matches!(choice, ProviderChoice::Jcode)
++        && !crate::provider_catalog::hosted_provider_allowed()
++    {
++        anyhow::bail!("jcode hosted accounts are disabled in this build");
++    }
++
+     let model = model.or_else(|| env_model_for_choice(choice));
+
+     if let Ok(profile_name) = std::env::var("JCODE_PROVIDER_PROFILE_NAME")
+diff --git a/src/cli/provider_init_tests.rs b/src/cli/provider_init_tests.rs
+index bba8e7126..b5f9f38d5 100644
+--- a/src/cli/provider_init_tests.rs
++++ b/src/cli/provider_init_tests.rs
+@@ -240,6 +240,8 @@ requires_api_key = false
+
+ #[test]
+ fn test_server_bootstrap_login_selection_preserves_order() {
++    // Personal patch 1007 hides the jcode hosted provider, so entries after
++    // its upstream position move up by one.
+     let providers = provider_catalog::server_bootstrap_login_providers();
+     assert_eq!(
+         resolve_login_selection("1", &providers).map(|provider| provider.id),
+@@ -251,16 +253,14 @@ fn test_server_bootstrap_login_selection_preserves_order() {
+     );
+     assert_eq!(
+         resolve_login_selection("4", &providers).map(|provider| provider.id),
+-        Some("jcode")
+-    );
+-    assert_eq!(
+-        resolve_login_selection("5", &providers).map(|provider| provider.id),
+         Some("copilot")
+     );
+ }
+
+ #[test]
+ fn test_auto_init_login_selection_preserves_order() {
++    // Personal patch 1007 hides the jcode hosted provider, so entries after
++    // its upstream position move up by one.
+     let providers = provider_catalog::auto_init_login_providers();
+     assert_eq!(
+         resolve_login_selection("1", &providers).map(|provider| provider.id),
+@@ -271,32 +271,33 @@ fn test_auto_init_login_selection_preserves_order() {
+         Some("anthropic-api")
+     );
+     assert_eq!(
+-        resolve_login_selection("11", &providers).map(|provider| provider.id),
++        resolve_login_selection("10", &providers).map(|provider| provider.id),
+         Some("cerebras")
+     );
+     assert_eq!(
+-        resolve_login_selection("12", &providers).map(|provider| provider.id),
++        resolve_login_selection("11", &providers).map(|provider| provider.id),
+         Some("alibaba-coding-plan")
+     );
+     assert_eq!(
+-        resolve_login_selection("13", &providers).map(|provider| provider.id),
++        resolve_login_selection("12", &providers).map(|provider| provider.id),
+         Some("cursor")
+     );
+     assert_eq!(
+-        resolve_login_selection("14", &providers).map(|provider| provider.id),
++        resolve_login_selection("13", &providers).map(|provider| provider.id),
+         Some("copilot")
+     );
+     assert_eq!(
+-        resolve_login_selection("15", &providers).map(|provider| provider.id),
++        resolve_login_selection("14", &providers).map(|provider| provider.id),
+         Some("gemini")
+     );
+     assert_eq!(
+-        resolve_login_selection("16", &providers).map(|provider| provider.id),
++        resolve_login_selection("15", &providers).map(|provider| provider.id),
+         Some("antigravity")
+     );
+ }
+
+ #[test]
++#[ignore = "jcode hosted provider is gated by personal patch 1007"]
+ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
+     let _guard = lock_env();
+     let _env_guard = crate::storage::lock_test_env();

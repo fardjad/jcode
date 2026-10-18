@@ -1,7 +1,7 @@
 # Session picker features
 
 These settings require catalog patches
-`1006-personal-feature-configure-session-picker-sort-and-filter.patch`
+`1006-personal-feature-configure-session-picker-sort-order.patch`
 and
 `0003-candidate-delete-sessions-from-picker-with-ctrl-d.patch`
 to be applied.
@@ -15,32 +15,19 @@ Control how the session picker orders sessions with
 
 ```toml
 [display]
-session_picker_sort = "created"
+session_picker_sort = "recent"
 ```
 
 Supported values:
 
 ```text
-created     Sort by session creation time (default).
-updated     Sort by last activity time.
+recent   Sort by last activity time (default).
+created  Sort by session creation time.
+name     Sort alphabetically.
 ```
 
-## Session picker default filter
-
-Control the initial filter shown when opening the resume picker with
-`[display].session_picker_default_filter`.
-
-```toml
-[display]
-session_picker_default_filter = "current-dir"
-```
-
-Supported values:
-
-```text
-current-dir   Only sessions from the current working directory.
-all           All sessions.
-```
+To open the picker scoped to the current project, use upstream's
+`resume_project_scope = true` setting.
 
 ## Delete sessions from the picker
 

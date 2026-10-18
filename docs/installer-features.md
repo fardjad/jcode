@@ -11,13 +11,12 @@ shell profile unless explicitly requested.
 ## Self-update repository selection
 
 Patch `1002-personal-feature-allow-selecting-the-self-update-repository.patch`
-lets fork builds check and install updates from a selected GitHub repository
-instead of the upstream default. Configure the update repository in
-`~/.jcode/config.toml`:
+lets fork builds check and install updates from a selected GitHub repository.
+The default repository is `fardjad/jcode`; set `JCODE_UPDATE_REPO` to override it.
+For example, configure the update repository in the environment:
 
-```toml
-[updates]
-repository = "fardjad/jcode"
+```bash
+export JCODE_UPDATE_REPO="OWNER/REPOSITORY"
 ```
 
-When unset, the default upstream repository is used.
+When `JCODE_UPDATE_REPO` is unset, `fardjad/jcode` is used.

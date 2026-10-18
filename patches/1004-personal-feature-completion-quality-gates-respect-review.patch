@@ -33,16 +33,17 @@ cargo test -p jcode-tui --lib -- ownership_gate
 cargo test -p jcode-tui --lib -- confidence
 ---
  crates/jcode-tui/src/tui/app/input.rs         | 15 ++++++
+ .../src/tui/app/tests/auto_poke_cycles.rs     |  8 ++++
  .../tests/remote_events_reload_01/part_02.rs  |  6 +++
- .../tui/app/tests/remote_events_reload_05.rs  | 54 +++++++++++++++++++
+ .../tui/app/tests/remote_events_reload_05.rs  | 46 +++++++++++++++++++
  .../src/tui/app/tests/state_model_poke_03.rs  |  6 +++
- 4 files changed, 81 insertions(+)
+ 5 files changed, 81 insertions(+)
 
 diff --git a/crates/jcode-tui/src/tui/app/input.rs b/crates/jcode-tui/src/tui/app/input.rs
-index 043ad4960..b6b1a6cac 100644
+index 2fbf43917..4911e6556 100644
 --- a/crates/jcode-tui/src/tui/app/input.rs
 +++ b/crates/jcode-tui/src/tui/app/input.rs
-@@ -1776,6 +1776,21 @@ impl App {
+@@ -1687,6 +1687,21 @@ impl App {
                  self.last_todo_ownership_fingerprint = None;
                  return false;
              }
@@ -64,8 +65,41 @@ index 043ad4960..b6b1a6cac 100644
              // Deferred quality checks land here, once, instead of interrupting
              // every todo write during the turn. Every point recorded during the
              // turn is raised, including ones whose score later climbed: work
+diff --git a/crates/jcode-tui/src/tui/app/tests/auto_poke_cycles.rs b/crates/jcode-tui/src/tui/app/tests/auto_poke_cycles.rs
+index b19ff184d..e22450e13 100644
+--- a/crates/jcode-tui/src/tui/app/tests/auto_poke_cycles.rs
++++ b/crates/jcode-tui/src/tui/app/tests/auto_poke_cycles.rs
+@@ -98,6 +98,10 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
+         };
+
+         let mut app = create_test_app();
++
++        // Completion gates run only with review or judging enabled.
++
++        app.autojudge_enabled = true;
+         app.auto_poke_incomplete_todos = true;
+         app.auto_poke_default_on = true;
+         crate::todo::save_todos(&app.session.id, &[completed("todo-1")]).expect("save");
+@@ -132,6 +136,8 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
+         let restored = App::restore_input_for_reload(&app.session.id)
+             .expect("final handoff should survive reload");
+         let mut reloaded = create_test_app();
++        // Completion gates run only with review or judging enabled.
++        reloaded.autojudge_enabled = true;
+         reloaded.session.id = app.session.id.clone();
+         reloaded.auto_poke_incomplete_todos = true;
+         reloaded.auto_poke_default_on = true;
+@@ -207,6 +213,8 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
+
+         // An explicit /poke off must stick.
+         let mut app = create_test_app();
++        // Completion gates run only with review or judging enabled.
++        app.autojudge_enabled = true;
+         app.auto_poke_incomplete_todos = true;
+         app.auto_poke_default_on = true;
+         crate::tui::app::commands::disable_auto_poke(&mut app);
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_02.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_02.rs
-index 0a01df535..d57d6d010 100644
+index ef50675ca..adc34c713 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_02.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_02.rs
 @@ -130,6 +130,8 @@ fn test_remote_auto_poke_followup_preserves_visible_timer_and_stays_hidden() {
@@ -86,7 +120,7 @@ index 0a01df535..d57d6d010 100644
          let rt = tokio::runtime::Runtime::new().unwrap();
          let _guard = rt.enter();
          let mut remote = crate::tui::backend::RemoteConnection::dummy();
-@@ -442,6 +446,8 @@ fn test_remote_done_does_not_challenge_moderate_or_unrecorded_confidence_jumps()
+@@ -443,6 +447,8 @@ fn test_remote_done_does_not_challenge_moderate_or_unrecorded_confidence_jumps()
              ),
          ] {
              let mut app = create_test_app();
@@ -96,7 +130,7 @@ index 0a01df535..d57d6d010 100644
              app.auto_poke_incomplete_todos = true;
              app.auto_poke_default_on = false;
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
-index 3bedbeb91..a4d6c99ad 100644
+index d46f56029..bd3f053e4 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_05.rs
 @@ -222,6 +222,8 @@ fn test_save_input_for_reload_persists_inflight_queued_continuation() {
@@ -246,40 +280,11 @@ index 3bedbeb91..a4d6c99ad 100644
          app.auto_poke_incomplete_todos = true;
 
          // Completed work with validated confidence, so the completion gate is
-@@ -1067,6 +1113,10 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
-         };
-
-         let mut app = create_test_app();
-+
-+        // Completion gates run only with review or judging enabled.
-+
-+        app.autojudge_enabled = true;
-         app.auto_poke_incomplete_todos = true;
-         app.auto_poke_default_on = true;
-         crate::todo::save_todos(&app.session.id, &[completed("todo-1")]).expect("save");
-@@ -1101,6 +1151,8 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
-         let restored = App::restore_input_for_reload(&app.session.id)
-             .expect("final handoff should survive reload");
-         let mut reloaded = create_test_app();
-+        // Completion gates run only with review or judging enabled.
-+        reloaded.autojudge_enabled = true;
-         reloaded.session.id = app.session.id.clone();
-         reloaded.auto_poke_incomplete_todos = true;
-         reloaded.auto_poke_default_on = true;
-@@ -1176,6 +1228,8 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
-
-         // An explicit /poke off must stick.
-         let mut app = create_test_app();
-+        // Completion gates run only with review or judging enabled.
-+        app.autojudge_enabled = true;
-         app.auto_poke_incomplete_todos = true;
-         app.auto_poke_default_on = true;
-         crate::tui::app::commands::disable_auto_poke(&mut app);
 diff --git a/crates/jcode-tui/src/tui/app/tests/state_model_poke_03.rs b/crates/jcode-tui/src/tui/app/tests/state_model_poke_03.rs
-index 0c14ce0d1..2eb3958ba 100644
+index d1def738b..6adbba7ad 100644
 --- a/crates/jcode-tui/src/tui/app/tests/state_model_poke_03.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/state_model_poke_03.rs
-@@ -2611,6 +2611,8 @@ fn test_finish_turn_auto_pokes_again_when_todos_remain() {
+@@ -2541,6 +2541,8 @@ fn test_finish_turn_auto_pokes_again_when_todos_remain() {
  fn test_finish_turn_auto_poke_queues_confidence_summary_when_todos_done() {
      with_temp_jcode_home(|| {
          let mut app = create_test_app();
@@ -288,7 +293,7 @@ index 0c14ce0d1..2eb3958ba 100644
          crate::todo::save_todos(
              &app.session.id,
              &[
-@@ -2793,6 +2795,8 @@ fn test_todo_completion_gate_allows_evidence_backed_confidence_steps() {
+@@ -2723,6 +2725,8 @@ fn test_todo_completion_gate_allows_evidence_backed_confidence_steps() {
  fn test_finish_turn_challenges_confidence_spike_once() {
      with_temp_jcode_home(|| {
          let mut app = create_test_app();
@@ -297,7 +302,7 @@ index 0c14ce0d1..2eb3958ba 100644
          crate::todo::save_todos(
              &app.session.id,
              &[crate::todo::TodoItem {
-@@ -3101,6 +3105,8 @@ fn test_finish_turn_does_not_challenge_moderate_or_unrecorded_confidence_jumps()
+@@ -3031,6 +3035,8 @@ fn test_finish_turn_does_not_challenge_moderate_or_unrecorded_confidence_jumps()
              ),
          ] {
              let mut app = create_test_app();

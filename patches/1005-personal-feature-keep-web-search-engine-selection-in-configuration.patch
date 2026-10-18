@@ -26,6 +26,8 @@ crates/jcode-app-core/src/tool/websearch.rs WebSearchInput,
 parameters_schema, execute, and local_engine_order. The tool description
 must stay LOCAL_WEBSEARCH_DESCRIPTION because provider runtimes match it to
 swap in native search.
+Tests live in crates/jcode-app-core/src/tool/websearch_tests.rs. Upstream's
+custom engine is selectable only through configuration.
 
 Update guidance:
 Keep engine selection out of the schema and out of dispatch. Any new
@@ -34,11 +36,12 @@ dispatch path must derive engines only from [websearch] configuration.
 Validation:
 cargo test -p jcode-app-core tool::websearch::tests --lib
 ---
- crates/jcode-app-core/src/tool/websearch.rs | 37 +++++++++++++++------
- 1 file changed, 26 insertions(+), 11 deletions(-)
+ crates/jcode-app-core/src/tool/websearch.rs   | 15 +++-------
+ .../src/tool/websearch_tests.rs               | 30 +++++++++++++++++++
+ 2 files changed, 34 insertions(+), 11 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/tool/websearch.rs b/crates/jcode-app-core/src/tool/websearch.rs
-index 5b112694b..3cdd4a493 100644
+index 147e58bcc..6e7630913 100644
 --- a/crates/jcode-app-core/src/tool/websearch.rs
 +++ b/crates/jcode-app-core/src/tool/websearch.rs
 @@ -24,8 +24,6 @@ struct WebSearchInput {
@@ -56,8 +59,8 @@ index 5b112694b..3cdd4a493 100644
                  },
 -                "engine": {
 -                    "type": "string",
--                    "enum": ["duckduckgo", "bing", "searxng"],
--                    "description": "Engine. Defaults to duckduckgo; searxng uses JCODE_SEARXNG_URL."
+-                    "enum": ["duckduckgo", "bing", "searxng", "custom"],
+-                    "description": "Engine. Defaults to configured engine; custom uses websearch.custom."
 -                },
                  "bing_market": {
                      "type": "string",
@@ -77,32 +80,44 @@ index 5b112694b..3cdd4a493 100644
 
          let market = params
              .bing_market
-@@ -688,6 +681,28 @@ mod tests {
+diff --git a/crates/jcode-app-core/src/tool/websearch_tests.rs b/crates/jcode-app-core/src/tool/websearch_tests.rs
+index c0eab7b69..8ddc651b5 100644
+--- a/crates/jcode-app-core/src/tool/websearch_tests.rs
++++ b/crates/jcode-app-core/src/tool/websearch_tests.rs
+@@ -243,6 +243,36 @@ fn native_engine_falls_back_to_local_engines() {
+     );
+ }
 
-     use super::*;
++#[test]
++fn schema_does_not_expose_engine_selection() {
++    let schema = WebSearchTool::new().parameters_schema();
++    assert!(schema["properties"].get("engine").is_none());
++}
++
++#[test]
++fn request_engine_field_is_ignored() {
++    let params: WebSearchInput =
++        serde_json::from_value(json!({"query": "q", "engine": "duckduckgo"}))
++            .expect("legacy engine field must not fail decoding");
++    assert_eq!(params.query, "q");
++}
++
++#[test]
++fn searxng_without_fallbacks_runs_only_searxng() {
++    assert_eq!(
++        local_engine_order(WebSearchEngine::Searxng, &[]),
++        vec![WebSearchEngine::Searxng]
++    );
++}
++
++#[test]
++fn configured_custom_engine_is_dispatched_from_config() {
++    assert_eq!(
++        local_engine_order(WebSearchEngine::Custom, &[]),
++        vec![WebSearchEngine::Custom]
++    );
++}
++
+ use super::*;
 
-+    #[test]
-+    fn schema_does_not_expose_engine_selection() {
-+        let schema = WebSearchTool::new().parameters_schema();
-+        assert!(schema["properties"].get("engine").is_none());
-+    }
-+
-+    #[test]
-+    fn request_engine_field_is_ignored() {
-+        let params: WebSearchInput =
-+            serde_json::from_value(json!({"query": "q", "engine": "duckduckgo"}))
-+                .expect("legacy engine field must not fail decoding");
-+        assert_eq!(params.query, "q");
-+    }
-+
-+    #[test]
-+    fn searxng_without_fallbacks_runs_only_searxng() {
-+        assert_eq!(
-+            local_engine_order(WebSearchEngine::Searxng, &[]),
-+            vec![WebSearchEngine::Searxng]
-+        );
-+    }
-+
-     #[test]
-     fn parses_bing_html_results() {
-         let html = r#"
+ #[test]

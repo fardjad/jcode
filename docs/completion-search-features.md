@@ -13,10 +13,11 @@ settings. When review is disabled, the quality gates do not run automatically.
 
 Patch `1005-personal-feature-keep-web-search-engine-selection-in-configuration.patch`
 removes the per-call `engine` parameter from the local `websearch` tool, so the
-model can no longer pick an engine. The tool always runs upstream's configured
-`[websearch].engine` followed by `fallback_engines`. Upstream config semantics
-are otherwise unchanged, including provider-native search (`prefer_native`,
-default on). To use only SearXNG:
+model cannot choose an engine. The tool runs only configured engines, beginning
+with upstream's `[websearch].engine`, then trying `fallback_engines` in order.
+Upstream's custom engine is available only when chosen through configuration.
+Upstream config semantics are otherwise unchanged, including provider-native
+search (`prefer_native`, default on). To use only SearXNG:
 
 ```toml
 [websearch]
