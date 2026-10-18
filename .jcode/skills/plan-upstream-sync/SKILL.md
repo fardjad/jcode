@@ -7,9 +7,10 @@ description: Review a chosen canonical jcode stable release against the patch ca
 
 Invoke from a jcode session whose workspace is this catalog, for example
 `/plan-upstream-sync v0.98.1`. This project-local skill needs no global install.
-Follow `AGENTS.md`, especially Decision-first upstream review, Configuration
-isolation, and the commit-first workflow. That file governs repository policy;
-this skill is its operational procedure, not an alternate patch-intent source.
+Follow `AGENTS.md`, especially Upstream syncs, Patch design, Configuration
+isolation, Delegating patch work, and the commit-first workflow. That file holds
+the rules; this skill is the step-by-step procedure, not an alternate
+patch-intent source.
 
 ## Scope and approval
 
@@ -47,12 +48,10 @@ instructions, and independently verify consequential findings.
    tag/hash, and ordered patch filenames/content hashes. These identify reviewed
    inputs, not a second definition of intent.
 
-All validation/test commands must use disposable HOME, XDG_CONFIG_HOME,
-JCODE_HOME, and other XDG directories via `scripts/isolate_config.py` or existing
-isolated recipes. Never inspect personal configuration or weaken isolation.
-Apply the same isolation to any new workflow command that can load jcode
-configuration. Inspect commands before running them; do not incur meaningful
-cost or consequential effects beyond the approved scope.
+All validation and test commands run through `scripts/isolate_config.py` or the
+existing isolated recipes (see Configuration isolation in `AGENTS.md`). Inspect
+commands before running them; do not incur meaningful cost or consequential
+effects beyond the approved scope.
 
 ## 1. Prepare scratch and collect upstream context
 
@@ -127,8 +126,9 @@ Write `sync-scratch/4-sync-plan.md` referencing reports 1 through 3. Include:
   each will be updated or removed.
 - For candidate patches upstream adopted: the `upstream-candidate/*` branch and
   any open upstream PR to retire.
-- Expected cost of `just learn-upstream-exclusions` and
-  `just validate-patched-copy`, which build and test full workspaces.
+- Expected cost of `just learn-upstream-exclusions`, `just test-all-patches`,
+  and `just validate-patched-copy`, which build and test full workspaces.
+- For each gating patch, the crates whose full test suites it must pass.
 - A sequence for approved commit-first source changes and catalog regeneration.
   Intent changes belong in source commit metadata and derived patches, not in
   a maintained report-only definition. Never edit mail patches directly.
@@ -176,12 +176,11 @@ Start only after the user explicitly approves execution of this plan.
    decided, amending the owning commit and its metadata. Renumber
    `X-Jcode-Patch-File` and `Depends-On` headers as planned. Keep one end-user
    feature or fix per patch. Before continuing past a patch, `cargo check
-   --workspace --tests` and its Validation commands must pass. A patch that
-   hides or gates behavior must also pass the full test suites of every crate
-   it touches, compared with clean upstream, because gating breaks upstream
-   tests of the gated surface. A patch rewritten from scratch can be skipped
-   during `git am` (save its message first), then added at its position with
-   an interactive rebase `break` once the rest of the stack applies.
+   --workspace --tests` and its Validation commands must pass, plus the full
+   crate suites for gating patches (see Patch design in `AGENTS.md`). A patch
+   rewritten from scratch can be skipped during `git am` (save its message
+   first), then added at its position with an interactive rebase `break` once
+   the rest of the stack applies.
 6. `just snapshot-patches` (add `--prune` when the plan removes or renames
    files; renamed files need `git add` before validation), `just list-patches`
    to confirm the mapping, `just validate-patch-files`, and
@@ -213,17 +212,12 @@ Do not rebase `.patched-jcode` while a background run builds from it.
 
 ### Delegating execution
 
-- Give each worker one objective, the allowed files, one acceptance command,
-  and an attempt cap. Open-ended "adapt this patch" tasks stall. A small
-  acceptance script that runs `cargo check --workspace --tests` plus the
-  patch's Validation lines (from the in-progress commit message, not the old
-  catalog file) and requires at least one test per line works well.
-- Name new tests with a shared prefix per objective so one filter runs them.
-- Workers write progress notes to a scratch file, never reset or discard work,
-  and leave the `git am` or rebase state alone unless told otherwise. A crashed
-  worker's uncommitted work is then cheap to resume: save `git diff` first.
-- Resolve trivial conflicts yourself (both sides add tests or methods, a test
-  moved to a split module) instead of spawning a worker.
+Follow Delegating patch work in `AGENTS.md`. For sync carry-forward, a small
+acceptance script works well as the one acceptance command: it runs `cargo
+check --workspace --tests` plus the patch's Validation lines, read from the
+in-progress commit message rather than the old catalog file, and fails when a
+line runs zero tests. Name new tests with a shared prefix per objective so one
+filter runs them all.
 
 ## 7. Disposable outputs
 
