@@ -1,74 +1,99 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <public@fardjad.com>
 Date: Thu, 15 Oct 2026 05:12:49 +0200
-Subject: [PATCH] fix: stop repeated deterministic tool input failures
+Subject: [PATCH] fix: nudge repeated deterministic tool input failures
 
-X-Jcode-Patch-Intent: Stop repeated deterministic panel and applet input errors
+X-Jcode-Patch-Intent: Nudge repeated deterministic tool failures without stopping turns
 X-Jcode-Patch-Kind: personal-fix
 X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch
 X-Jcode-Patch-File: 1010-personal-fix-stop-repeated-deterministic-tool-input-failures.patch
 
 Patch intent:
-Stop a turn after three matching typed deterministic tool-input failures,
-including unknown tool names and nested batch dispatches, in both turn loops.
-Preserve exact matching for uncategorized errors and use stable panel and applet
-input categories so revised arguments can reach correction without extra
-provider retries.
+After three matching typed deterministic failures, return feedback in the tool
+result rather than ending the turn. Before reexecution, suppress only effective
+inputs observed failing as part of a repeated signature. Corrected inputs and
+alternative tools remain executable. Keep a 32-dispatch window and reset it for
+each turn. Match categorized panel/applet failures by category and uncategorized
+failures by exact effective input and error. Serialize calls by effective tool
+and input; nested batches share guard evidence without serializing different
+siblings. Cancellation releases the permit. Unknown tools use exact matching.
+Neither turn loop has a repeat-guard-specific abort.
 
 Why it exists:
-Repeated invalid inputs can otherwise trigger repeated provider requests without
-progress. Classification is explicit through a typed error, not inferred from
-error text. Panel and applet deterministic input failures are categorized;
-unknown tool names are typed but uncategorized. Runtime and other untyped tool
-errors remain unclassified.
+Repeated invalid inputs can otherwise consume provider requests without
+progress. The third matching typed failure gives the model actionable tool
+feedback; later attempts of an observed failing input receive tool feedback
+without reexecution, while corrected arguments and other tools can continue.
+Classification remains explicit through typed errors, not inferred from error
+text. Panel and applet deterministic input failures are categorized; unknown
+tool names are typed but uncategorized. Runtime and other untyped tool errors
+remain unclassified. This adds no global provider-loop cap.
 
 Upstream integration points:
 The change extends tool::retry_guard and wraps Registry::execute dispatches,
-including nested BatchTool calls. Agent::run_turn and
-Agent::run_turn_streaming_mpsc reset and check the shared per-turn guard.
-PanelTool and AppletTool expose UI schemas and validate their inputs; OpenAI
-strict-schema normalization requires nullable panel fields while dynamic applet
-node fields remain non-strict. Registry also types unknown tool names. The retry
-guard depends on hook context established by patch 0002.
+including nested BatchTool calls. Per-effective-input async permits serialize
+matching dispatches, release on cancellation, and retain concurrency for
+independent batch siblings. Agent::run_turn and
+Agent::run_turn_streaming_mpsc reset the shared per-turn guard and deliver
+repeat feedback as tool results without a guard-specific abort. PanelTool and
+AppletTool expose UI schemas and validate their inputs; OpenAI strict-schema
+normalization requires nullable panel fields while dynamic applet node fields
+remain non-strict. Panel and applet deterministic input errors use stable
+categories; Registry types unknown tool names for exact matching. Runtime
+failures remain untyped. The guard depends on hook context established by
+patch 0002.
 
 Update guidance:
 Keep failure classification limited to explicit typed input errors and unknown
-tool names. Preserve exact matching for uncategorized errors, stable categories
-for panel and applet input failures, tool/category separation, and clearing
-matching prior failures after a successful call. Keep runtime failures untyped.
-Preserve cloned-registry guard state, nested batch dispatch tracking, the
-bounded repeat window, and terminal checks in both turn loops. Keep the UI tool
-schemas aligned with their deserializers and preserve permissive nested applet
-fields.
+tool names. Preserve exact effective-input-and-error matching for uncategorized
+failures and stable categories for panel/applet input failures. Suppress only
+an effective input observed failing in a repeated signature; corrected and
+unseen inputs must remain executable. Keep tool/category separation, the
+32-dispatch window, per-turn reset, cloned-registry guard state, nested batch
+dispatch sharing, and cancellation-safe per-input serialization. Preserve
+concurrency for distinct inputs and release permits when calls are canceled.
+Keep both turn loops free of repeat-guard-specific aborts. Do not add a global
+provider-loop cap or classify runtime failures. Keep the UI tool schemas aligned
+with their deserializers, nullable panel fields accepted, and dynamic applet
+fields permissive. The focused guard tests include
+three_matching_typed_failures_nudge_and_block_only_observed_input and
+categorized_failures_ignore_arguments_and_error_text_but_not_category. The batch
+suite includes batch_retry_guard_suppresses_repeated_subcall_and_keeps_siblings
+for same-input serialization and independent sibling progress, and
+retry_guard_releases_same_input_permit_after_cancelled_dispatch to verify
+cancellation releases the permit for a matching input. The recovery tests
+ui_errors_nudge_both_turn_loops_across_changed_inputs_and_suppress_only_repeats
+and repeated_deterministic_input_errors_nudge_without_stopping_both_turn_loops
+cover both loop implementations, corrected inputs, and suppression feedback.
 
 Validation:
-cargo test -p jcode-app-core panel --lib
-cargo test -p jcode-app-core applet --lib
-cargo test -p jcode-app-core retry_guard --lib
-cargo test -p jcode-app-core malformed_tool_call_recovery_tests --lib
-cargo test -p jcode-app-core tool::batch_tests --lib
+scripts/cargo_exec.sh test -p jcode-app-core panel --lib
+scripts/cargo_exec.sh test -p jcode-app-core applet --lib
+scripts/cargo_exec.sh test -p jcode-app-core retry_guard --lib
+scripts/cargo_exec.sh test -p jcode-app-core response_recovery --lib
+scripts/cargo_exec.sh test -p jcode-app-core tool::batch_tests --lib
 ---
- .../src/agent/response_recovery.rs            | 197 +++++++++
- crates/jcode-app-core/src/agent/turn_loops.rs |  19 +-
- .../src/agent/turn_streaming_mpsc.rs          |  20 +-
- crates/jcode-app-core/src/tool/applet.rs      | 104 +++--
- .../jcode-app-core/src/tool/applet_tests.rs   | 116 ++++++
- crates/jcode-app-core/src/tool/mod.rs         | 152 ++++++-
- crates/jcode-app-core/src/tool/panel.rs       |  87 ++--
- crates/jcode-app-core/src/tool/panel_tests.rs | 229 +++++++++++
- crates/jcode-app-core/src/tool/retry_guard.rs | 381 ++++++++++++++++++
- 9 files changed, 1240 insertions(+), 65 deletions(-)
+ .../src/agent/response_recovery.rs            | 252 ++++++++
+ crates/jcode-app-core/src/agent/turn_loops.rs |  12 +-
+ .../src/agent/turn_streaming_mpsc.rs          |  11 +-
+ crates/jcode-app-core/src/tool/applet.rs      | 104 +++-
+ .../jcode-app-core/src/tool/applet_tests.rs   | 116 ++++
+ crates/jcode-app-core/src/tool/mod.rs         | 417 ++++++++++++-
+ crates/jcode-app-core/src/tool/panel.rs       |  87 ++-
+ crates/jcode-app-core/src/tool/panel_tests.rs | 229 +++++++
+ crates/jcode-app-core/src/tool/retry_guard.rs | 580 ++++++++++++++++++
+ 9 files changed, 1726 insertions(+), 82 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/retry_guard.rs
 
 diff --git a/crates/jcode-app-core/src/agent/response_recovery.rs b/crates/jcode-app-core/src/agent/response_recovery.rs
-index 0c5601aef..4f0820439 100644
+index 0c5601aef..d8fb1788d 100644
 --- a/crates/jcode-app-core/src/agent/response_recovery.rs
 +++ b/crates/jcode-app-core/src/agent/response_recovery.rs
-@@ -882,6 +882,30 @@ mod malformed_tool_call_recovery_tests {
+@@ -882,6 +882,35 @@ mod malformed_tool_call_recovery_tests {
          }
      }
 
-+    struct RejectTool;
++    struct RejectTool(ExecLog);
 +    #[async_trait]
 +    impl crate::tool::Tool for RejectTool {
 +        fn name(&self) -> &str {
@@ -82,20 +107,25 @@ index 0c5601aef..4f0820439 100644
 +        }
 +        async fn execute(
 +            &self,
-+            _: Value,
++            input: Value,
 +            _: crate::tool::ToolContext,
 +        ) -> Result<crate::tool::ToolOutput> {
-+            Err(crate::tool::retry_guard::DeterministicToolInputError::new(
-+                "fixture input rejected",
-+            )
-+            .into())
++            self.0.lock().unwrap().push(input.clone());
++            if input.get("value").and_then(Value::as_str) == Some("same") {
++                Err(crate::tool::retry_guard::DeterministicToolInputError::new(
++                    "fixture input rejected",
++                )
++                .into())
++            } else {
++                Ok(crate::tool::ToolOutput::new("corrected input accepted"))
++            }
 +        }
 +    }
 +
      /// A round whose single tool call has null arguments: the streamed
      /// fragments fail JSON parsing, which is exactly how the reported
      /// GLM-5.3 null-argument `write`/`bash` calls reach the agent.
-@@ -927,6 +951,40 @@ mod malformed_tool_call_recovery_tests {
+@@ -927,6 +956,40 @@ mod malformed_tool_call_recovery_tests {
          events
      }
 
@@ -136,7 +166,7 @@ index 0c5601aef..4f0820439 100644
      /// One malformed plus one valid capture call in a single round.
      fn mixed_round(bad_id: &str, good_id: &str) -> Vec<StreamEvent> {
          vec![
-@@ -988,6 +1046,43 @@ mod malformed_tool_call_recovery_tests {
+@@ -988,6 +1051,46 @@ mod malformed_tool_call_recovery_tests {
          (agent, session_ids, exec_log)
      }
 
@@ -158,14 +188,17 @@ index 0c5601aef..4f0820439 100644
 +        (agent, session_ids)
 +    }
 +
-+    async fn scripted_rejecting_agent(rounds: Vec<Vec<StreamEvent>>) -> (Agent, SessionLog) {
++    async fn scripted_rejecting_agent(rounds: Vec<Vec<StreamEvent>>) -> (Agent, SessionLog, ExecLog) {
 +        let session_ids: SessionLog = Arc::new(Mutex::new(Vec::new()));
++        let exec_log: ExecLog = Arc::new(Mutex::new(Vec::new()));
 +        let provider: Arc<dyn Provider> = Arc::new(MalformedScriptProvider {
 +            rounds: Arc::new(Mutex::new(rounds)),
 +            session_ids: Arc::clone(&session_ids),
 +        });
 +        let registry = Registry::empty();
-+        registry.register("reject".into(), Arc::new(RejectTool)).await;
++        registry
++            .register("reject".into(), Arc::new(RejectTool(Arc::clone(&exec_log))))
++            .await;
 +        let mut agent = Agent::new(provider, registry);
 +        agent.add_message(
 +            Role::User,
@@ -174,28 +207,30 @@ index 0c5601aef..4f0820439 100644
 +                cache_control: None,
 +            }],
 +        );
-+        (agent, session_ids)
++        (agent, session_ids, exec_log)
 +    }
 +
      fn correction_reminders(agent: &Agent) -> Vec<String> {
          agent
              .session
-@@ -1201,6 +1296,108 @@ mod malformed_tool_call_recovery_tests {
+@@ -1201,6 +1304,155 @@ mod malformed_tool_call_recovery_tests {
          }
      }
 
 +    #[tokio::test]
-+    async fn ui_errors_stop_both_turn_loops_across_changed_inputs_and_batch_dispatch() {
++    async fn ui_errors_nudge_both_turn_loops_across_changed_inputs_and_suppress_only_repeats() {
 +        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
 +        for streaming in [false, true] {
-+            for (tool, args) in [
++            for (tool, invalid_args, valid_args) in [
 +                (
 +                    "panel",
 +                    vec![
 +                        json!({"action":"spawn","title":"first","intent":"first notes"}),
 +                        json!({"action":"spawn","title":"second","intent":"different notes"}),
 +                        json!({"action":"spawn","title":"third","intent":"latest notes"}),
++                        json!({"action":"spawn","title":"second","intent":"different notes"}),
 +                    ],
++                    json!({"action":"spawn","title":"fixed","intent":"fixed","content":"# Good"}),
 +                ),
 +                (
 +                    "applet",
@@ -203,25 +238,55 @@ index 0c5601aef..4f0820439 100644
 +                        json!({"title":"first","intent":"first view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
 +                        json!({"title":"second","intent":"second view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
 +                        json!({"title":"third","intent":"third view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
++                        json!({"title":"second","intent":"second view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
 +                    ],
++                    json!({"title":"fixed","intent":"fixed","view":{"type":"markdown","text":"Good"}}),
 +                ),
 +            ] {
-+                let rounds = args
++                let rounds = invalid_args
 +                    .into_iter()
 +                    .enumerate()
 +                    .map(|(index, input)| tool_round(&format!("{tool}-{index}"), tool, input))
++                    .chain(std::iter::once(tool_round("corrected", tool, valid_args)))
 +                    .chain(std::iter::once(final_text_round()))
 +                    .collect();
 +                let (mut agent, session_ids) = scripted_ui_agent(rounds).await;
-+                let error = run_scripted_turn(&mut agent, streaming)
-+                    .await
-+                    .expect_err("third same-category UI validation failure ends turn");
-+                assert!(error
-+                    .to_string()
-+                    .contains("Repeated identical deterministic tool input error"));
-+                assert_eq!(session_ids.lock().unwrap().len(), 3, "{tool}, streaming={streaming}");
++                let result = if streaming {
++                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
++                    let result = agent.run_turn_streaming_mpsc(tx).await;
++                    while let Ok(event) = rx.try_recv() {
++                        assert!(
++                            !matches!(
++                                event,
++                                ServerEvent::TurnStopped {
++                                    reason: crate::protocol::TurnStopReason::Failure,
++                                    ..
++                                }
++                            ),
++                            "repeat recovery must not emit a terminal failure"
++                        );
++                    }
++                    result
++                } else {
++                    agent.run_turn(false).await.map(|_| ())
++                };
++                result.expect("repeated UI errors should not end the turn");
++            assert_eq!(session_ids.lock().unwrap().len(), 6, "{tool}, streaming={streaming}");
++            assert_eq!(
++                agent
++                    .session
++                    .messages
++                    .iter()
++                    .flat_map(|message| &message.content)
++                    .filter(|block| matches!(block, ContentBlock::ToolResult { content, .. } if content.contains("Do not retry this input")))
++                    .count(),
++                2,
++                "threshold feedback and the later exact-input suppression are both actionable (tool={tool}, streaming={streaming})"
++            );
 +            }
++        }
 +
++        for streaming in [false, true] {
 +            let batch_args = ["one", "two", "three"].into_iter().enumerate().map(|(index, title)| {
 +                json!({
 +                    "tool_calls":[{
@@ -234,16 +299,21 @@ index 0c5601aef..4f0820439 100644
 +            let rounds = batch_args
 +                .enumerate()
 +                .map(|(index, input)| tool_round(&format!("batch-{index}"), "batch", input))
++                .chain(std::iter::once(tool_round(
++                    "batch-repeat",
++                    "batch",
++                    json!({"tool_calls":[{"tool":"panel","intent":"batch panel 1","parameters":{"action":"spawn","title":"two","intent":"panel 1"}}]}),
++                )))
 +                .chain(std::iter::once(final_text_round()))
 +                .collect();
 +            let (mut agent, session_ids) = scripted_ui_agent(rounds).await;
-+            let error = run_scripted_turn(&mut agent, streaming)
++            run_scripted_turn(&mut agent, streaming)
 +                .await
-+                .expect_err("third nested panel input failure ends turn");
-+            assert!(error
-+                .to_string()
-+                .contains("Repeated identical deterministic tool input error"));
-+            assert_eq!(session_ids.lock().unwrap().len(), 3, "batch, streaming={streaming}");
++                .expect("nested batch deterministic errors stay in ordinary tool results");
++            assert_eq!(session_ids.lock().unwrap().len(), 5, "batch, streaming={streaming}");
++            assert!(agent.session.messages.iter().flat_map(|message| &message.content).any(
++                |block| matches!(block, ContentBlock::ToolResult { content, .. } if content.contains("Do not retry this input"))
++            ));
 +        }
 +    }
 +
@@ -266,7 +336,7 @@ index 0c5601aef..4f0820439 100644
 +    }
 +
 +    #[tokio::test]
-+    async fn repeated_deterministic_input_errors_stop_both_turn_loops() {
++    async fn repeated_deterministic_input_errors_nudge_without_stopping_both_turn_loops() {
 +        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
 +        for streaming in [false, true] {
 +            let rounds = vec![
@@ -274,15 +344,25 @@ index 0c5601aef..4f0820439 100644
 +                repeated_rejected_round("r2"),
 +                repeated_rejected_round("r3"),
 +                repeated_rejected_round("r4"),
++                tool_round("r5", "reject", json!({"value":"corrected"})),
++                final_text_round(),
 +            ];
-+            let (mut agent, session_ids) = scripted_rejecting_agent(rounds).await;
-+            let error = run_scripted_turn(&mut agent, streaming)
++            let (mut agent, session_ids, exec_log) = scripted_rejecting_agent(rounds).await;
++            run_scripted_turn(&mut agent, streaming)
 +                .await
-+                .expect_err("third matching deterministic error ends the turn");
-+            assert!(error
-+                .to_string()
-+                .contains("Repeated identical deterministic tool input error"));
-+            assert_eq!(session_ids.lock().unwrap().len(), 3, "streaming={streaming}");
++                .expect("repeat guard provides feedback without ending the turn");
++            assert_eq!(session_ids.lock().unwrap().len(), 6, "streaming={streaming}");
++            assert_eq!(
++                *exec_log.lock().unwrap(),
++                vec![json!({"value":"same"}); 3]
++                    .into_iter()
++                    .chain(std::iter::once(json!({"value":"corrected"})))
++                    .collect::<Vec<_>>(),
++                "blocked fourth call is never invoked; corrected input runs (streaming={streaming})"
++            );
++            assert!(agent.session.messages.iter().flat_map(|message| &message.content).any(
++                |block| matches!(block, ContentBlock::ToolResult { content, .. } if content.contains("Do not retry this input"))
++            ));
 +        }
 +    }
 +
@@ -290,7 +370,7 @@ index 0c5601aef..4f0820439 100644
      async fn valid_tool_calls_reset_the_malformed_round_bound() {
          let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
 diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
-index 7eeea3e3f..6eb5f4728 100644
+index 7eeea3e3f..4366751ee 100644
 --- a/crates/jcode-app-core/src/agent/turn_loops.rs
 +++ b/crates/jcode-app-core/src/agent/turn_loops.rs
 @@ -53,6 +53,8 @@ impl Agent {
@@ -319,22 +399,8 @@ index 7eeea3e3f..6eb5f4728 100644
                  crate::telemetry::record_tool_call();
                  self.unlock_tools_if_needed(&tc.name);
                  let tool_elapsed = tool_start.elapsed();
-@@ -1323,6 +1333,13 @@ impl Agent {
-                 &tools,
-             )?;
-
-+            if let Some(message) = retry_guard.terminal_error() {
-+                if print_output {
-+                    println!("\n{}", message);
-+                }
-+                return Err(anyhow::anyhow!(message));
-+            }
-+
-             if print_output {
-                 println!();
-             }
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index 0ce8aa842..760903421 100644
+index 0ce8aa842..03ec562d6 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 @@ -60,6 +60,8 @@ impl Agent {
@@ -368,22 +434,6 @@ index 0ce8aa842..760903421 100644
                      )
                      .await
                  });
-@@ -1917,6 +1924,15 @@ impl Agent {
-                 &tools,
-             )?;
-
-+            if let Some(message) = retry_guard.terminal_error() {
-+                let _ = event_tx.send(ServerEvent::TurnStopped {
-+                    reason: crate::protocol::TurnStopReason::Failure,
-+                    message: message.clone(),
-+                    provider_stop_reason: None,
-+                });
-+                return Err(anyhow::anyhow!(message));
-+            }
-+
-             // === INJECTION POINT D: All tools done, before next API call ===
-             // This is the safest point for non-urgent injection since all tool_results
-             // have been added and the conversation is in a valid state.
 diff --git a/crates/jcode-app-core/src/tool/applet.rs b/crates/jcode-app-core/src/tool/applet.rs
 index 52dfe6e30..54e9234c3 100644
 --- a/crates/jcode-app-core/src/tool/applet.rs
@@ -739,7 +789,7 @@ index 99914722b..f9cd4fc74 100644
  fn action_message_is_compact() {
      let msg = format_action_message(
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index e81a4c58b..da478d412 100644
+index e81a4c58b..128a66bee 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -44,6 +44,7 @@ mod panel;
@@ -758,7 +808,7 @@ index e81a4c58b..da478d412 100644
  use std::sync::atomic::{AtomicU64, Ordering};
 
  pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
-@@ -293,6 +295,19 @@ pub struct Registry {
+@@ -293,6 +295,20 @@ pub struct Registry {
      compaction: Arc<RwLock<CompactionManager>>,
  }
 
@@ -766,6 +816,7 @@ index e81a4c58b..da478d412 100644
 +    guard: Arc<retry_guard::RepeatGuard>,
 +    tool_name: StdMutex<String>,
 +    arguments: StdMutex<Value>,
++    input_lock: StdMutex<Option<tokio::sync::OwnedMutexGuard<()>>>,
 +}
 +
 +tokio::task_local! {
@@ -778,7 +829,7 @@ index e81a4c58b..da478d412 100644
  /// Non-owning handle used by tools stored inside a registry.
  ///
  /// A tool cannot strongly own the registry containing it without creating an
-@@ -344,6 +359,24 @@ impl Registry {
+@@ -344,6 +360,24 @@ impl Registry {
          }
      }
 
@@ -803,7 +854,7 @@ index e81a4c58b..da478d412 100644
      fn downgrade(&self) -> WeakRegistry {
          WeakRegistry {
              tools: Arc::downgrade(&self.tools),
-@@ -1008,8 +1041,49 @@ impl Registry {
+@@ -1008,8 +1042,56 @@ impl Registry {
          }
      }
 
@@ -828,6 +879,7 @@ index e81a4c58b..da478d412 100644
 +            guard: Arc::clone(&guard),
 +            tool_name: StdMutex::new(name.to_string()),
 +            arguments: StdMutex::new(input.clone()),
++            input_lock: StdMutex::new(None),
 +        });
 +        let result = ACTIVE_RETRY_DISPATCH
 +            .scope(Arc::clone(&dispatch), self.execute_inner(name, input, ctx))
@@ -842,19 +894,25 @@ index e81a4c58b..da478d412 100644
 +            .lock()
 +            .unwrap_or_else(|e| e.into_inner())
 +            .clone();
-+        let result = match (result, guard.terminal_error()) {
-+            (Ok(_), Some(message)) if tool_name == "batch" => Err(anyhow::anyhow!(message)),
++        let feedback = guard.record(&tool_name, &arguments, &result);
++        dispatch
++            .input_lock
++            .lock()
++            .unwrap_or_else(|e| e.into_inner())
++            .take();
++        match (result, feedback) {
++            (Err(error), Some(feedback)) => {
++                Err(anyhow::anyhow!("{error}\n\n{feedback}"))
++            }
 +            (result, _) => result,
-+        };
-+        guard.record(&tool_name, &arguments, &result);
-+        result
++        }
 +    }
 +
 +    async fn execute_inner(&self, name: &str, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
          // Mark this call in-flight for the whole execution so the missing
          // tool-output repair paths do not mistake a slow tool for an
          // interrupted one and inject a duplicate synthetic result. See
-@@ -1017,6 +1091,10 @@ impl Registry {
+@@ -1017,6 +1099,10 @@ impl Registry {
          let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
          let tools = self.tools.read().await;
          let resolved_name = Self::resolve_tool_name_for_session(&ctx.session_id, name);
@@ -865,26 +923,85 @@ index e81a4c58b..da478d412 100644
          let is_custom = sdk::custom(&ctx.session_id, resolved_name);
          if is_custom && let Some(config) = sdk::config(&ctx.session_id) {
              let disabled = config.disabled.into_iter().collect();
-@@ -1080,7 +1158,7 @@ impl Registry {
-                         msg.push_str(&format!(" Did you mean: {}?", suggestions.join(", ")));
-                     }
-                     msg.push_str(&format!(" Available tools: {}.", available.join(", ")));
--                    return Err(anyhow::anyhow!(msg));
-+                    return Err(retry_guard::DeterministicToolInputError::new(msg).into());
-                 }
+@@ -1064,25 +1150,10 @@ impl Registry {
+                 return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
              }
+         }
+-        let tool: Arc<dyn Tool> = if is_custom {
+-            Arc::new(sdk::CallbackTool(resolved_name.into()))
++        let tool: Option<Arc<dyn Tool>> = if is_custom {
++            Some(Arc::new(sdk::CallbackTool(resolved_name.into())))
+         } else {
+-            match tools.get(resolved_name) {
+-                Some(tool) => tool.clone(),
+-                None => {
+-                    // List available tools so the model can recover instead of
+-                    // spiraling through hallucinated names like "ToolSearch" (#104).
+-                    let mut available: Vec<&str> = tools.keys().map(|k| k.as_str()).collect();
+-                    available.sort_unstable();
+-                    let suggestions = Self::closest_tool_names(name, &available);
+-                    let mut msg = format!("Unknown tool: {name}.");
+-                    if !suggestions.is_empty() {
+-                        msg.push_str(&format!(" Did you mean: {}?", suggestions.join(", ")));
+-                    }
+-                    msg.push_str(&format!(" Available tools: {}.", available.join(", ")));
+-                    return Err(anyhow::anyhow!(msg));
+-                }
+-            }
++            tools.get(resolved_name).cloned()
          };
-@@ -1099,6 +1177,9 @@ impl Registry {
+
+         // Drop the lock before executing
+@@ -1099,6 +1170,48 @@ impl Registry {
              input,
          )
          .await;
 +        let _ = ACTIVE_RETRY_DISPATCH.try_with(|dispatch| {
 +            *dispatch.arguments.lock().unwrap_or_else(|e| e.into_inner()) = input.clone();
 +        });
++        if let Ok(lock) = ACTIVE_RETRY_DISPATCH.try_with(|dispatch| {
++            Arc::clone(&dispatch.guard).input_lock(resolved_name, &input)
++        }) {
++            let permit = lock.lock_owned().await;
++            let _ = ACTIVE_RETRY_DISPATCH.try_with(|dispatch| {
++                *dispatch.input_lock.lock().unwrap_or_else(|e| e.into_inner()) = Some(permit);
++            });
++        }
++        if let Some(message) = ACTIVE_RETRY_DISPATCH
++            .try_with(|dispatch| dispatch.guard.blocked_input(resolved_name, &input))
++            .ok()
++            .flatten()
++        {
++            return Err(retry_guard::SuppressedToolInputError::new(message).into());
++        }
++
++        let tool = match tool {
++            Some(tool) => tool,
++            None => {
++                // List available tools so the model can recover instead of
++                // spiraling through hallucinated names like "ToolSearch" (#104).
++                let mut available: Vec<String> = self
++                    .tools
++                    .read()
++                    .await
++                    .keys()
++                    .cloned()
++                    .collect();
++                available.sort_unstable();
++                let available_refs = available.iter().map(String::as_str).collect::<Vec<_>>();
++                let suggestions = Self::closest_tool_names(name, &available_refs);
++                let mut msg = format!("Unknown tool: {name}.");
++                if !suggestions.is_empty() {
++                    msg.push_str(&format!(" Did you mean: {}?", suggestions.join(", ")));
++                }
++                msg.push_str(&format!(" Available tools: {}.", available.join(", ")));
++                return Err(retry_guard::DeterministicToolInputError::new(msg).into());
++            }
++        };
 
          // User-configured pre_tool gate: external policy hook that can block
          // this call (exit 2). Skipped entirely when not configured.
-@@ -1890,3 +1971,70 @@ mod mcp_allow_list_tests {
+@@ -1890,3 +2003,269 @@ mod mcp_allow_list_tests {
 
  #[cfg(test)]
  mod tests;
@@ -895,8 +1012,17 @@ index e81a4c58b..da478d412 100644
 +    use async_trait::async_trait;
 +    use serde_json::{Value, json};
 +    use std::sync::Arc;
++    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
++    use tokio::sync::{Notify, Semaphore};
 +
-+    struct RejectedInputTool;
++    struct DelayedExecution {
++        enabled: AtomicBool,
++        started: AtomicUsize,
++        started_notify: Notify,
++        release: Semaphore,
++    }
++
++    struct RejectedInputTool(Arc<StdMutex<usize>>, Arc<DelayedExecution>);
 +
 +    #[async_trait]
 +    impl Tool for RejectedInputTool {
@@ -912,16 +1038,64 @@ index e81a4c58b..da478d412 100644
 +            json!({"type":"object"})
 +        }
 +
-+        async fn execute(&self, _: Value, _: ToolContext) -> Result<ToolOutput> {
++        async fn execute(&self, input: Value, _: ToolContext) -> Result<ToolOutput> {
++            *self.0.lock().unwrap() += 1;
++            let _ = input;
++            if self.1.enabled.load(Ordering::SeqCst) {
++                self.1.started.fetch_add(1, Ordering::SeqCst);
++                self.1.started_notify.notify_one();
++                self.1.release.acquire().await.unwrap().forget();
++            }
 +            Err(retry_guard::DeterministicToolInputError::new("fixture rejection").into())
 +        }
 +    }
 +
++    struct CountingSuccessTool(Arc<StdMutex<usize>>);
++
++    #[async_trait]
++    impl Tool for CountingSuccessTool {
++        fn name(&self) -> &str {
++            "counting_success"
++        }
++
++        fn description(&self) -> &str {
++            "Count successful sibling calls"
++        }
++
++        fn parameters_schema(&self) -> Value {
++            json!({"type":"object"})
++        }
++
++        async fn execute(&self, _: Value, _: ToolContext) -> Result<ToolOutput> {
++            *self.0.lock().unwrap() += 1;
++            Ok(ToolOutput::new("sibling ran"))
++        }
++    }
++
 +    #[tokio::test]
-+    async fn batch_subcall_failures_reach_registry_repeat_guard() {
++    async fn batch_retry_guard_suppresses_repeated_subcall_and_keeps_siblings() {
++        let _env_lock = crate::storage::lock_test_env();
 +        let registry = Registry::empty();
++        let rejected_calls = Arc::new(StdMutex::new(0));
++        let delayed_execution = Arc::new(DelayedExecution {
++            enabled: AtomicBool::new(false),
++            started: AtomicUsize::new(0),
++            started_notify: Notify::new(),
++            release: Semaphore::new(0),
++        });
++        let sibling_calls = Arc::new(StdMutex::new(0));
 +        let mut tools = registry.tools.write().await;
-+        tools.insert("rejected_input".into(), Arc::new(RejectedInputTool));
++        tools.insert(
++            "rejected_input".into(),
++            Arc::new(RejectedInputTool(
++                Arc::clone(&rejected_calls),
++                Arc::clone(&delayed_execution),
++            )),
++        );
++        tools.insert(
++            "counting_success".into(),
++            Arc::new(CountingSuccessTool(Arc::clone(&sibling_calls))),
++        );
 +        tools.insert(
 +            "batch".into(),
 +            Arc::new(batch::BatchTool::new(registry.downgrade())),
@@ -937,22 +1111,164 @@ index e81a4c58b..da478d412 100644
 +            execution_mode: ToolExecutionMode::Direct,
 +        };
 +
-+        for attempt in 0..3 {
++        for attempt in 0..2 {
 +            let result = registry
 +                .execute(
 +                    "batch",
-+                    json!({"tool_calls":[{"tool":"rejected_input","parameters":{"value":"same"}}]}),
++                    json!({"tool_calls":[
++                        {"tool":"rejected_input","parameters":{"value":"same"}},
++                        {"tool":"counting_success","parameters":{"value":attempt}}
++                    ]}),
 +                    context(),
 +                )
-+                .await;
-+            if attempt < 2 {
-+                assert!(result.unwrap().output.contains("1 failed"));
-+            } else {
-+                let error = result.unwrap_err().to_string();
-+                assert!(error.contains("Repeated identical deterministic tool input error"));
-+                assert!(!error.contains("same"));
-+            }
++                .await
++                .unwrap();
++            assert!(result.output.contains("sibling ran"));
++            assert!(result.output.contains("Completed: 1 succeeded, 1 failed"));
++            assert!(!result.output.contains("Do not retry this input"));
 +        }
++        delayed_execution.enabled.store(true, Ordering::SeqCst);
++        let first_started = async {
++            loop {
++                let notified = delayed_execution.started_notify.notified();
++                if delayed_execution.started.load(Ordering::SeqCst) >= 1 {
++                    break;
++                }
++                notified.await;
++            }
++        };
++        let execution = {
++            let retry_guard = registry.retry_guard_handle();
++            let registry = registry.clone();
++            tokio::spawn(async move {
++                registry
++                    .execute_with_retry_guard(
++                        "batch",
++                        json!({"tool_calls":[
++                            {"tool":"rejected_input","parameters":{"value":"same"}},
++                            {"tool":"rejected_input","parameters":{"value":"same"}},
++                            {"tool":"counting_success","parameters":{"value":3}}
++                        ]}),
++                        context(),
++                        retry_guard,
++                    )
++                    .await
++            })
++        };
++        first_started.await;
++        let duplicate_started = tokio::time::timeout(std::time::Duration::from_millis(100), async {
++            loop {
++                let notified = delayed_execution.started_notify.notified();
++                if delayed_execution.started.load(Ordering::SeqCst) >= 2 {
++                    break;
++                }
++                notified.await;
++            }
++        })
++        .await
++        .is_ok();
++        delayed_execution.release.add_permits(2);
++        let result = execution.await.unwrap().unwrap();
++        assert!(!duplicate_started, "the fourth matching child must wait and be suppressed");
++        assert!(result.output.contains("sibling ran"));
++        assert!(
++            registry
++                .retry_guard_handle()
++                .blocked_input("rejected_input", &json!({"value":"same"}))
++                .is_some(),
++            "repeat evidence was not shared across batch children"
++        );
++        assert!(
++            result.output.contains("Do not retry this input"),
++            "batch subcall feedback missing from output: {}",
++            result.output
++        );
++        assert!(result.output.contains("Completed: 1 succeeded, 2 failed"));
++        assert_eq!(*rejected_calls.lock().unwrap(), 3, "same-batch third child gets feedback, fourth is short-circuited");
++        assert_eq!(*sibling_calls.lock().unwrap(), 3, "unrelated batch siblings continue to execute");
++        assert!(registry
++            .retry_guard_handle()
++            .blocked_input("rejected_input", &json!({"value":"same"}))
++            .is_some());
++    }
++
++    #[tokio::test]
++    async fn retry_guard_releases_same_input_permit_after_cancelled_dispatch() {
++        let _env_lock = crate::storage::lock_test_env();
++        let registry = Registry::empty();
++        let rejected_calls = Arc::new(StdMutex::new(0));
++        let delayed_execution = Arc::new(DelayedExecution {
++            enabled: AtomicBool::new(true),
++            started: AtomicUsize::new(0),
++            started_notify: Notify::new(),
++            release: Semaphore::new(0),
++        });
++        registry
++            .tools
++            .write()
++            .await
++            .insert(
++                "rejected_input".into(),
++                Arc::new(RejectedInputTool(
++                    Arc::clone(&rejected_calls),
++                    Arc::clone(&delayed_execution),
++                )),
++            );
++        let context = || ToolContext {
++            session_id: "retry-guard-cancellation-test".into(),
++            message_id: "message".into(),
++            tool_call_id: "cancelled-dispatch".into(),
++            working_dir: None,
++            stdin_request_tx: None,
++            graceful_shutdown_signal: None,
++            execution_mode: ToolExecutionMode::Direct,
++        };
++        let retry_guard = registry.retry_guard_handle();
++        let dispatch = {
++            let registry = registry.clone();
++            let retry_guard = Arc::clone(&retry_guard);
++            tokio::spawn(async move {
++                registry
++                    .execute_with_retry_guard(
++                        "rejected_input",
++                        json!({"value":"same"}),
++                        context(),
++                        retry_guard,
++                    )
++                    .await
++            })
++        };
++
++        tokio::time::timeout(std::time::Duration::from_secs(1), async {
++            loop {
++                let notified = delayed_execution.started_notify.notified();
++                if delayed_execution.started.load(Ordering::SeqCst) > 0 {
++                    break;
++                }
++                notified.await;
++            }
++        })
++        .await
++        .expect("the dispatch should hold its same-input permit before invocation");
++        dispatch.abort();
++        assert!(dispatch.await.unwrap_err().is_cancelled());
++
++        delayed_execution.enabled.store(false, Ordering::SeqCst);
++        let retry = tokio::time::timeout(
++            std::time::Duration::from_secs(1),
++            registry.execute_with_retry_guard(
++                "rejected_input",
++                json!({"value":"same"}),
++                context(),
++                retry_guard,
++            ),
++        )
++        .await
++        .expect("cancellation must release the same-input permit")
++        .expect_err("the fixture invocation deterministically rejects its input");
++        assert!(retry.to_string().contains("fixture rejection"));
++        assert!(!retry.to_string().contains("Do not retry this input"));
++        assert_eq!(*rejected_calls.lock().unwrap(), 2);
 +    }
 +}
 diff --git a/crates/jcode-app-core/src/tool/panel.rs b/crates/jcode-app-core/src/tool/panel.rs
@@ -1342,19 +1658,21 @@ index a0bd9d64c..e761b099f 100644
 +}
 diff --git a/crates/jcode-app-core/src/tool/retry_guard.rs b/crates/jcode-app-core/src/tool/retry_guard.rs
 new file mode 100644
-index 000000000..a880b1e07
+index 000000000..e954e3c21
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/retry_guard.rs
-@@ -0,0 +1,381 @@
+@@ -0,0 +1,580 @@
 +use anyhow::Result;
 +use serde_json::Value;
-+use std::collections::VecDeque;
++use std::collections::{HashMap, VecDeque};
 +use std::error::Error;
 +use std::fmt;
-+use std::sync::Mutex;
++use std::sync::{Mutex, Weak};
++use tokio::sync::Mutex as AsyncMutex;
 +
 +const WINDOW_SIZE: usize = 32;
-+const TERMINAL_MESSAGE: &str = "Repeated identical deterministic tool input error detected after 3 attempts. Stop retrying this call, correct the tool input, or use a different approach.";
++const REPEAT_THRESHOLD: usize = 3;
++const REPEAT_FEEDBACK: &str = "Repeated deterministic tool input failure detected after 3 matching failures. Do not retry this input. Correct the input or use a different approach.";
 +
 +#[derive(Debug)]
 +pub(crate) struct DeterministicToolInputError {
@@ -1389,6 +1707,25 @@ index 000000000..a880b1e07
 +
 +impl Error for DeterministicToolInputError {}
 +
++#[derive(Debug)]
++pub(crate) struct SuppressedToolInputError {
++    message: String,
++}
++
++impl SuppressedToolInputError {
++    pub(crate) fn new(message: String) -> Self {
++        Self { message }
++    }
++}
++
++impl fmt::Display for SuppressedToolInputError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter.write_str(&self.message)
++    }
++}
++
++impl Error for SuppressedToolInputError {}
++
 +#[derive(Clone, Debug, PartialEq, Eq)]
 +enum FailureKind {
 +    Exact { arguments: String, error: String },
@@ -1410,22 +1747,54 @@ index 000000000..a880b1e07
 +#[derive(Default)]
 +struct State {
 +    recent: VecDeque<Dispatch>,
-+    terminal: bool,
 +}
 +
 +#[derive(Default)]
 +pub(crate) struct RepeatGuard {
 +    state: Mutex<State>,
++    input_locks: Mutex<HashMap<InputKey, Weak<AsyncMutex<()>>>>,
++}
++
++#[derive(Hash, PartialEq, Eq)]
++struct InputKey {
++    tool_name: String,
++    arguments: String,
 +}
 +
 +impl RepeatGuard {
++    /// Return a per-input async lock. The map stores weak references so locks
++    /// disappear after the last caller releases its permit, and stale entries
++    /// are pruned on the next lookup.
++    pub(crate) fn input_lock(
++        &self,
++        tool_name: &str,
++        arguments: &Value,
++    ) -> std::sync::Arc<AsyncMutex<()>> {
++        let key = InputKey {
++            tool_name: tool_name.to_string(),
++            arguments: canonical_json(arguments),
++        };
++        let mut locks = self.input_locks.lock().unwrap_or_else(|e| e.into_inner());
++        locks.retain(|_, lock| lock.strong_count() > 0);
++        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
++            return lock;
++        }
++        let lock = std::sync::Arc::new(AsyncMutex::new(()));
++        locks.insert(key, std::sync::Arc::downgrade(&lock));
++        lock
++    }
++
 +    pub(crate) fn reset(&self) {
 +        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 +        state.recent.clear();
-+        state.terminal = false;
 +    }
 +
-+    pub(crate) fn record(&self, tool_name: &str, arguments: &Value, result: &Result<impl Sized>) {
++    pub(crate) fn record(
++        &self,
++        tool_name: &str,
++        arguments: &Value,
++        result: &Result<impl Sized>,
++    ) -> Option<String> {
 +        let arguments = canonical_json(arguments);
 +        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 +        let failure = result.as_ref().err().and_then(|error| {
@@ -1445,9 +1814,11 @@ index 000000000..a880b1e07
 +        if result.is_ok() {
 +            for dispatch in &mut state.recent {
 +                if dispatch.tool_name == tool_name
-+                    && (dispatch.failure.as_ref().is_some_and(|failure| {
-+                        matches!(failure.kind, FailureKind::Category(_))
-+                    }) || dispatch.arguments == arguments)
++                    && (dispatch.arguments == arguments
++                        || dispatch.failure.as_ref().is_some_and(|failure| {
++                            failure.tool_name == tool_name
++                                && matches!(failure.kind, FailureKind::Category(_))
++                        }))
 +                {
 +                    dispatch.failure = None;
 +                }
@@ -1463,21 +1834,64 @@ index 000000000..a880b1e07
 +            state.recent.pop_front();
 +        }
 +
-+        if let Some(signature) = failure {
++        failure.and_then(|signature| {
 +            let occurrences = state
 +                .recent
 +                .iter()
 +                .filter(|dispatch| dispatch.failure.as_ref() == Some(&signature))
 +                .count();
-+            if occurrences >= 3 {
-+                state.terminal = true;
++            if occurrences >= REPEAT_THRESHOLD {
++                Some(REPEAT_FEEDBACK.to_string())
++            } else {
++                None
 +            }
-+        }
++        })
 +    }
 +
-+    pub(crate) fn terminal_error(&self) -> Option<String> {
++    pub(crate) fn repeated_failure_feedback(&self) -> Option<String> {
 +        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-+        state.terminal.then(|| TERMINAL_MESSAGE.to_string())
++        let repeated = state.recent.iter().filter_map(|dispatch| dispatch.failure.as_ref()).any(
++            |signature| {
++                state
++                    .recent
++                    .iter()
++                    .filter(|dispatch| dispatch.failure.as_ref() == Some(signature))
++                    .count()
++                    >= REPEAT_THRESHOLD
++            },
++        );
++        repeated.then(|| REPEAT_FEEDBACK.to_string())
++    }
++
++    #[cfg(test)]
++    pub(crate) fn terminal_error(&self) -> Option<String> {
++        self.repeated_failure_feedback()
++    }
++
++    /// Return feedback only for the exact effective input that was previously
++    /// observed failing in a group which reached the repeat threshold.
++    pub(crate) fn blocked_input(&self, tool_name: &str, arguments: &Value) -> Option<String> {
++        let arguments = canonical_json(arguments);
++        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
++        let repeated = state
++            .recent
++            .iter()
++            .filter_map(|dispatch| dispatch.failure.as_ref())
++            .filter(|signature| signature.tool_name == tool_name)
++            .any(|signature| {
++                state
++                    .recent
++                    .iter()
++                    .filter(|dispatch| dispatch.failure.as_ref() == Some(signature))
++                    .count()
++                    >= REPEAT_THRESHOLD
++                    && state.recent.iter().any(|dispatch| {
++                        dispatch.tool_name == tool_name
++                            && dispatch.arguments == arguments
++                            && dispatch.failure.as_ref() == Some(signature)
++                    })
++            });
++        repeated.then(|| REPEAT_FEEDBACK.to_string())
 +    }
 +}
 +
@@ -1528,15 +1942,92 @@ index 000000000..a880b1e07
 +    }
 +
 +    #[test]
-+    fn three_matching_typed_failures_are_terminal() {
++    fn three_matching_typed_failures_nudge_and_block_only_observed_input() {
 +        let guard = RepeatGuard::default();
++        let arguments = json!({"path":"a"});
 +        for _ in 0..2 {
-+            guard.record("edit", &json!({"path":"a"}), &typed_error("invalid input"));
-+            assert!(guard.terminal_error().is_none());
++            assert!(guard
++                .record("edit", &arguments, &typed_error("invalid input"))
++                .is_none());
 +        }
-+        guard.record("edit", &json!({"path":"a"}), &typed_error("invalid input"));
-+        assert!(guard.terminal_error().unwrap().contains("3 attempts"));
-+        assert!(!guard.terminal_error().unwrap().contains("path"));
++        let feedback = guard
++            .record("edit", &arguments, &typed_error("invalid input"))
++            .unwrap();
++        assert!(feedback.contains("Do not retry this input"));
++        assert!(guard.blocked_input("edit", &arguments).is_some());
++        assert!(guard
++            .blocked_input("edit", &json!({"path":"corrected"}))
++            .is_none());
++        assert!(guard.blocked_input("replace", &arguments).is_none());
++    }
++
++    #[tokio::test]
++    async fn unknown_tool_is_nudged_on_third_call_and_suppressed_on_fourth_only_for_same_name() {
++        let _env_lock = crate::storage::lock_test_env();
++        let temp = tempfile::TempDir::new().expect("create isolated hook directory");
++        let transform_script = temp.path().join("transform.sh");
++        std::fs::write(
++            &transform_script,
++            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"value\":\"effective\"}'\n",
++        )
++        .expect("write input transformer");
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            std::fs::set_permissions(&transform_script, std::fs::Permissions::from_mode(0o755))
++                .expect("chmod transformer");
++        }
++        struct RestoreTransform(Option<std::ffi::OsString>);
++        impl Drop for RestoreTransform {
++            fn drop(&mut self) {
++                match self.0.take() {
++                    Some(value) => crate::env::set_var("JCODE_HOOK_PRE_TOOL_TRANSFORM", value),
++                    None => crate::env::remove_var("JCODE_HOOK_PRE_TOOL_TRANSFORM"),
++                }
++                crate::config::invalidate_config_cache();
++            }
++        }
++        let _restore_transform =
++            RestoreTransform(std::env::var_os("JCODE_HOOK_PRE_TOOL_TRANSFORM"));
++        crate::env::set_var(
++            "JCODE_HOOK_PRE_TOOL_TRANSFORM",
++            transform_script.to_string_lossy().to_string(),
++        );
++        crate::config::invalidate_config_cache();
++
++        let registry = crate::tool::Registry::empty();
++        let context = || crate::tool::ToolContext {
++            session_id: "retry-guard-unknown-tool-test".into(),
++            message_id: "message".into(),
++            tool_call_id: "unknown-tool".into(),
++            working_dir: None,
++            stdin_request_tx: None,
++            graceful_shutdown_signal: None,
++            execution_mode: crate::tool::ToolExecutionMode::Direct,
++        };
++
++        for attempt in 0..3 {
++            let error = registry
++                .execute("unknown_repeat", serde_json::json!({"q":1}), context())
++                .await
++                .unwrap_err()
++                .to_string();
++            assert_eq!(error.contains("Do not retry this input"), attempt == 2);
++        }
++        let fourth = registry
++            .execute("unknown_repeat", serde_json::json!({"q":2}), context())
++            .await
++            .unwrap_err();
++        assert!(fourth.downcast_ref::<SuppressedToolInputError>().is_some());
++        assert!(fourth.to_string().contains("Do not retry this input"));
++
++        let alternate = registry
++            .execute("unknown_alternate", serde_json::json!({"q":3}), context())
++            .await
++            .unwrap_err()
++            .to_string();
++        assert!(alternate.contains("Unknown tool: unknown_alternate"));
++        assert!(!alternate.contains("Do not retry this input"));
 +    }
 +
 +    #[test]
@@ -1545,7 +2036,9 @@ index 000000000..a880b1e07
 +        guard.record("edit", &json!({"a":1,"b":{"x":true,"y":null}}), &typed_error("bad"));
 +        guard.record("edit", &json!({"b":{"y":null,"x":true},"a":1}), &typed_error("bad"));
 +        guard.record("edit", &json!({"b":{"x":true,"y":null},"a":1}), &typed_error("bad"));
-+        assert!(guard.terminal_error().is_some());
++        assert!(guard
++            .blocked_input("edit", &json!({"b":{"y":null,"x":true},"a":1}))
++            .is_some());
 +    }
 +
 +    #[test]
@@ -1556,8 +2049,8 @@ index 000000000..a880b1e07
 +        first.record("edit", &json!({"path":"b"}), &typed_error("bad"));
 +        first.record("edit", &json!({"path":"a"}), &typed_error("bad"));
 +        second.record("edit", &json!({"path":"a"}), &typed_error("bad"));
-+        assert!(first.terminal_error().is_none());
-+        assert!(second.terminal_error().is_none());
++        assert!(first.blocked_input("edit", &json!({"path":"a"})).is_none());
++        assert!(second.blocked_input("edit", &json!({"path":"a"})).is_none());
 +    }
 +
 +    #[test]
@@ -1566,7 +2059,7 @@ index 000000000..a880b1e07
 +        guard.record("edit", &json!({"path":"a"}), &typed_error("first message"));
 +        guard.record("edit", &json!({"path":"a"}), &typed_error("second message"));
 +        guard.record("edit", &json!({"path":"a"}), &typed_error("third message"));
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("edit", &json!({"path":"a"})).is_none());
 +    }
 +
 +    #[test]
@@ -1580,11 +2073,11 @@ index 000000000..a880b1e07
 +        clone
 +            .retry_guard()
 +            .record("edit", &json!({"path":"a"}), &typed_error("bad"));
-+        assert!(guard.terminal_error().is_none());
-+        assert!(clone.retry_guard_handle().terminal_error().is_none());
++        assert!(guard.blocked_input("edit", &json!({"path":"a"})).is_none());
++        assert!(clone.retry_guard_handle().blocked_input("edit", &json!({"path":"a"})).is_none());
 +        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
-+        assert!(guard.terminal_error().is_some());
-+        assert!(clone.retry_guard_handle().terminal_error().is_none());
++        assert!(guard.blocked_input("edit", &json!({"path":"a"})).is_some());
++        assert!(clone.retry_guard_handle().blocked_input("edit", &json!({"path":"a"})).is_none());
 +    }
 +
 +    #[test]
@@ -1597,13 +2090,13 @@ index 000000000..a880b1e07
 +        for _ in 0..3 {
 +            stale_guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
 +        }
-+        assert!(stale_guard.terminal_error().is_some());
++        assert!(stale_guard.blocked_input("edit", &json!({"path":"a"})).is_some());
 +        drop(registry);
 +
 +        let replacement = crate::tool::Registry::empty();
 +        let replacement_key = Arc::as_ptr(&replacement.compaction) as usize;
 +        let replacement_guard = replacement.retry_guard_handle();
-+        assert!(replacement_guard.terminal_error().is_none());
++        assert!(replacement_guard.blocked_input("edit", &json!({"path":"a"})).is_none());
 +
 +        let guards = crate::tool::RETRY_GUARDS
 +            .lock()
@@ -1627,7 +2120,22 @@ index 000000000..a880b1e07
 +        guard.record("edit", &json!({"path":"a"}), &Ok(()));
 +        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
 +        guard.record("edit", &json!({"path":"a"}), &typed_error("bad"));
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("edit", &json!({"path":"a"})).is_none());
++    }
++
++    #[test]
++    fn reset_isolates_each_turn_from_prior_repeat_evidence() {
++        let guard = RepeatGuard::default();
++        let arguments = json!({"path":"a"});
++        for _ in 0..3 {
++            guard.record("edit", &arguments, &typed_error("bad"));
++        }
++        assert!(guard.blocked_input("edit", &arguments).is_some());
++        guard.reset();
++        assert!(guard.blocked_input("edit", &arguments).is_none());
++        assert!(guard
++            .record("edit", &arguments, &typed_error("bad"))
++            .is_none());
 +    }
 +
 +    #[test]
@@ -1640,13 +2148,20 @@ index 000000000..a880b1e07
 +            let error = DeterministicToolInputError::new_categorized(message, category);
 +            guard.record("panel", arguments, &Err::<(), _>(error.into()));
 +        }
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("panel", &json!({"content":"a"})).is_none());
 +        let distinct = DeterministicToolInputError::new_categorized("still invalid", "panel.action");
 +        guard.record("panel", &json!({"action":"bad"}), &Err::<(), _>(distinct.into()));
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("panel", &json!({"content":"a"})).is_none());
 +        let repeated = DeterministicToolInputError::new_categorized("another message", "panel.content");
 +        guard.record("panel", &json!({"content":"c"}), &Err::<(), _>(repeated.into()));
-+        assert!(guard.terminal_error().is_some());
++        for arguments in ["a", "b", "c"] {
++            assert!(guard
++                .blocked_input("panel", &json!({"content":arguments}))
++                .is_some());
++        }
++        assert!(guard
++            .blocked_input("panel", &json!({"content":"corrected"}))
++            .is_none());
 +    }
 +
 +    #[test]
@@ -1673,10 +2188,10 @@ index 000000000..a880b1e07
 +                );
 +            }
 +        }
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("applet", &json!({})).is_none());
 +        let error = DeterministicToolInputError::new_categorized("bad", "applet.view");
 +        guard.record("applet", &json!({}), &Err::<(), _>(error.into()));
-+        assert!(guard.terminal_error().is_some());
++        assert!(guard.blocked_input("applet", &json!({})).is_some());
 +    }
 +
 +    #[test]
@@ -1691,10 +2206,10 @@ index 000000000..a880b1e07
 +        }
 +        let error = DeterministicToolInputError::new_categorized("different tool", "panel.content");
 +        guard.record("applet", &json!({}), &Err::<(), _>(error.into()));
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("panel", &json!({})).is_none());
 +        let error = DeterministicToolInputError::new_categorized("bad", "panel.content");
 +        guard.record("panel", &json!({}), &Err::<(), _>(error.into()));
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("panel", &json!({})).is_none());
 +        for index in 0..32 {
 +            guard.record("other", &json!({"n":index}), &untyped_error("I/O failure"));
 +        }
@@ -1702,7 +2217,7 @@ index 000000000..a880b1e07
 +        for _ in 0..4 {
 +            guard.record("panel", &json!({}), &runtime);
 +        }
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("panel", &json!({})).is_none());
 +    }
 +
 +    #[test]
@@ -1715,7 +2230,7 @@ index 000000000..a880b1e07
 +            guard.record("other", &json!({"n":index}), &untyped_error("transient"));
 +        }
 +        guard.record("edit", &args, &typed_error("bad"));
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.blocked_input("edit", &args).is_none());
 +    }
 +
 +    #[test]
@@ -1724,6 +2239,6 @@ index 000000000..a880b1e07
 +        for _ in 0..5 {
 +            guard.record("read", &json!({"path":"a"}), &untyped_error("invalid input"));
 +        }
-+        assert!(guard.terminal_error().is_none());
++        assert!(guard.repeated_failure_feedback().is_none());
 +    }
 +}
