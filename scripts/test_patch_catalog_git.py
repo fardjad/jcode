@@ -10,10 +10,70 @@ from unittest.mock import patch
 
 from apply_patches import apply
 from isolate_config import isolated_environment
-from patch_catalog import CatalogError, git
+from patch_catalog import CatalogError, Patch, git
 
 
 class GitDiagnosticsTests(unittest.TestCase):
+    def test_apply_skips_for_commands_with_and_without_delimiter(self):
+        from validate_patch_commands import append_skips
+
+        names = ["one::test_a", "two::test_b"]
+        self.assertEqual(
+            append_skips("cargo test --package one", names),
+            "cargo test --package one -- --skip one::test_a --skip two::test_b",
+        )
+        self.assertEqual(
+            append_skips("cargo test --package one -- --nocapture", names),
+            "cargo test --package one -- --nocapture --skip one::test_a --skip two::test_b",
+        )
+        self.assertEqual(append_skips("cargo test --package one", []), "cargo test --package one")
+
+    def test_failed_test_lines_are_sorted_unique(self):
+        from validate_patch_commands import parse_failed_tests
+
+        output = "test z::last ... FAILED\ntest a::first ... FAILED\ntest z::last ... FAILED\ntest ignored ... ok\n"
+        self.assertEqual(parse_failed_tests(output), ["a::first", "z::last"])
+
+    def test_legacy_exclusions_load_without_validation_key_and_round_trip(self):
+        import json
+        from run_nextest import config_path, load_names, load_validation_names
+        from validate_patch_commands import write_validation_names
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = "abc123"
+            path = config_path(root, base)
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({
+                "nextest_version": "0.9.143", "nextest_pin": "0.9.143",
+                "base_commit": base, "failed_tests": ["compat::fails"],
+            }), encoding="utf-8")
+            self.assertEqual(load_names(root, base), ["compat::fails"])
+            self.assertEqual(load_validation_names(root, base), [])
+            write_validation_names(root, base, ["z::fail", "a::fail", "z::fail"])
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["failed_tests"], ["compat::fails"])
+            self.assertEqual(payload["failed_validation_tests"], ["a::fail", "z::fail"])
+            self.assertEqual(load_names(root, base), ["compat::fails"])
+            self.assertEqual(load_validation_names(root, base), ["a::fail", "z::fail"])
+
+    @patch("apply_patches.subprocess.run")
+    @patch("apply_patches.patches")
+    def test_apply_uses_three_way_git_am(self, catalog_patches, run):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            (worktree / ".git").write_text("gitdir: test\n", encoding="utf-8")
+            patch_path = root / "change.patch"
+            catalog_patches.return_value = {
+                patch_path.name: Patch(patch_path, (), "test patch", "personal-feature"),
+            }
+
+            apply(root, worktree, None)
+
+        self.assertIn("--3way", run.call_args.args[0])
+
     @patch("patch_catalog.subprocess.run")
     def test_quiet_success_captures_stderr_and_strips_stdout(self, run):
         run.return_value = subprocess.CompletedProcess(

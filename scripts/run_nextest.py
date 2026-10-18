@@ -83,8 +83,33 @@ def load_names(root: Path, base: str) -> list[str] | None:
             raise ValueError("failed_tests must contain non-empty strings")
         if names != sorted(set(names)):
             raise ValueError("failed_tests must be sorted and unique")
+        validation_names = payload.get("failed_validation_tests", [])
+        if (not isinstance(validation_names, list) or
+                any(not isinstance(name, str) or not name for name in validation_names)):
+            raise ValueError("failed_validation_tests must contain non-empty strings")
+        if validation_names != sorted(set(validation_names)):
+            raise ValueError("failed_validation_tests must be sorted and unique")
         return names
     except (AttributeError, OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise RuntimeError(f"invalid nextest exclusions {path}: {error}") from error
+
+
+def load_validation_names(root: Path, base: str) -> list[str]:
+    """Load clean-upstream Validation command exclusions for a base."""
+    path = config_path(root, base)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("base_commit") != base or payload.get("nextest_version") != NEXTEST_VERSION:
+            return []
+        names = payload.get("failed_validation_tests", [])
+        if not isinstance(names, list) or any(not isinstance(name, str) or not name for name in names):
+            raise ValueError("failed_validation_tests must contain non-empty strings")
+        if names != sorted(set(names)):
+            raise ValueError("failed_validation_tests must be sorted and unique")
+        return names
+    except (AttributeError, OSError, json.JSONDecodeError, TypeError, ValueError) as error:
         raise RuntimeError(f"invalid nextest exclusions {path}: {error}") from error
 
 

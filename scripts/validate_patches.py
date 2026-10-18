@@ -171,7 +171,7 @@ def main() -> None:
         applied = temporary / "applied"
         git("worktree", "add", "--detach", str(applied), base)
         for patch in ordered:
-            git("am", str(patch.path), cwd=applied, quiet=True)
+            git("am", "--3way", str(patch.path), cwd=applied, quiet=True)
         applied_tree = git("rev-parse", "HEAD^{tree}", cwd=applied)
     except CatalogError:
         raise

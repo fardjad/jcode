@@ -162,36 +162,68 @@ Start only after the user explicitly approves execution of this plan.
    reviewed inputs. If any changed, refresh the affected analysis and ask again.
 2. `just set-version vX.Y.Z <reviewed-target-hash>`. It refuses a tag that moved
    since review. From here on every recipe works on the new release.
-3. `just create-patched-copy`. If a patch fails to apply, the copy stops at that
-   patch. Resolve it in `.patched-jcode`, `git add` the files, and run
+3. `just learn-upstream-exclusions`. It records tests that already fail on clean
+   upstream, for both the compatibility suite and every patch's Validation
+   commands, so later runs do not blame patches for them. Never add a manual
+   `--skip` to patch metadata for an upstream failure.
+4. `just create-patched-copy`. Patches apply with `git am --3way`. If a patch
+   fails to apply, the copy stops at that patch. Resolve it in `.patched-jcode`,
+   `git add` the files, and run
    `python3 scripts/isolate_config.py -- git -C .patched-jcode am --continue`,
    which applies the remaining patches. Recreating the copy later needs
    `just snapshot-patches` first.
-4. Carry each patch forward in plan order: adapt, remove, reorder, or split as
+5. Carry each patch forward in plan order: adapt, remove, reorder, or split as
    decided, amending the owning commit and its metadata. Renumber
    `X-Jcode-Patch-File` and `Depends-On` headers as planned. Keep one end-user
-   feature or fix per patch.
-5. `just snapshot-patches` (add `--prune` when the plan removes or renames
-   files), `just list-patches` to confirm the mapping, `just validate-patch-files`,
-   and `just test-patch-file` for each changed patch.
-6. `just learn-upstream-exclusions`, then `just validate-patched-copy` as the
-   final check. Fix failures in the owning commit and repeat from step 5.
-7. Update or remove the affected feature docs. Retire adopted candidate branches
+   feature or fix per patch. Before continuing past a patch, `cargo check
+   --workspace --tests` and its Validation commands must pass. A patch that
+   hides or gates behavior must also pass the full test suites of every crate
+   it touches, compared with clean upstream, because gating breaks upstream
+   tests of the gated surface. A patch rewritten from scratch can be skipped
+   during `git am` (save its message first), then added at its position with
+   an interactive rebase `break` once the rest of the stack applies.
+6. `just snapshot-patches` (add `--prune` when the plan removes or renames
+   files; renamed files need `git add` before validation), `just list-patches`
+   to confirm the mapping, `just validate-patch-files`, and
+   `just check-patch-isolation`, which applies each patch to the clean release
+   with only its declared dependencies in about two minutes. Fix every isolation
+   failure before any build.
+7. `just test-all-patches` (about six minutes per patch, resumable, logs under
+   `.tools/patch-tests/`). Run it in the background. Fix failures in the owning
+   commit, re-snapshot, and rerun. Unchanged passing patches are skipped.
+8. `just validate-patched-copy` as the final check. Fix failures in the owning
+   commit and repeat from step 6.
+9. Update or remove the affected feature docs. Retire adopted candidate branches
    locally; closing upstream PRs or deleting remote branches needs the user.
    Refresh each retained candidate's branch on the new base with
    `just create-upstream-candidate-branch-from patches/<file>.patch`.
-8. Report the result with the catalog diff summary. The pin, patches, and docs
-   land together in one catalog commit, made only on request. Pushing,
-   installing, or running the release workflow also needs a separate request.
+10. Report the result with the catalog diff summary. The pin, patches, and docs
+    land together in one catalog commit, made only on request. Pushing,
+    installing, or running the release workflow also needs a separate request.
 
-Recovery: before step 6 succeeds, `git checkout -- VERSION.txt patches/ docs/`
-restores the reviewed catalog. Then run `just create-patched-copy` to put
-`.patched-jcode` back on the old base. Learned exclusions under `.tools/` are
-keyed by base commit, so new-base entries are harmless. Never discard unrelated
-user changes.
+Recovery: before step 8 succeeds, `git checkout -- VERSION.txt patches/ docs/`
+restores the reviewed catalog. Delete any new renamed patch files too. Then run
+`just create-patched-copy` to put `.patched-jcode` back on the old base. Learned
+exclusions under `.tools/` are keyed by base commit, so new-base entries are
+harmless. Never discard unrelated user changes.
 
 Throughout, run `just snapshot-patches` before any command that recreates
 `.patched-jcode` (create, validate, install) while it has unpersisted commits.
+Do not rebase `.patched-jcode` while a background run builds from it.
+
+### Delegating execution
+
+- Give each worker one objective, the allowed files, one acceptance command,
+  and an attempt cap. Open-ended "adapt this patch" tasks stall. A small
+  acceptance script that runs `cargo check --workspace --tests` plus the
+  patch's Validation lines (from the in-progress commit message, not the old
+  catalog file) and requires at least one test per line works well.
+- Name new tests with a shared prefix per objective so one filter runs them.
+- Workers write progress notes to a scratch file, never reset or discard work,
+  and leave the `git am` or rebase state alone unless told otherwise. A crashed
+  worker's uncommitted work is then cheap to resume: save `git diff` first.
+- Resolve trivial conflicts yourself (both sides add tests or methods, a test
+  moved to a split module) instead of spawning a worker.
 
 ## 7. Disposable outputs
 

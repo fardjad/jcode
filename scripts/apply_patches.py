@@ -35,7 +35,7 @@ def apply(root: Path, worktree: Path, target: str | None, required_kind: str | N
             subprocess.run(
                 [
                     "git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
-                    "am", *(str(patch.path) for patch in ordered),
+                    "am", "--3way", *(str(patch.path) for patch in ordered),
                 ],
                 cwd=worktree,
                 env=environment,

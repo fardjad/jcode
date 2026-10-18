@@ -72,6 +72,15 @@ validate-patch-files:
   python3 "$repo_root/scripts/isolate_config.py" -- \
     python3 "$repo_root/scripts/validate_patches.py"
 
+# Check each patch applies on the pinned release with only its declared dependencies.
+check-patch-isolation:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/check_patch_isolation.py"
+
 _bootstrap-nextest:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -206,11 +215,20 @@ test-patch-file patch:
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
   python3 "$repo_root/scripts/apply_patches.py" "$worktree" "$patch_name"
-  python3 "$repo_root/scripts/validate_patch_commands.py" "$worktree" "$patch_name"
+  python3 "$repo_root/scripts/validate_patch_commands.py" "$worktree" "$patch_name" --base "$base"
   just --justfile "$repo_root/justfile" _fast-test "$worktree" "$base"
 
   trap - ERR
   printf 'patch passed; worktree retained: %s\n' "$worktree"
+
+# Run test-patch-file for every patch, resumably, with per-patch logs.
+test-all-patches *args:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/run_all_patch_tests.py" {{args}}
 
 # Create an upstream-candidate branch from one candidate patch.
 create-upstream-candidate-branch-from patch:
@@ -232,7 +250,7 @@ create-upstream-candidate-branch-from patch:
   trap 'printf "workflow failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
   python3 "$repo_root/scripts/apply_patches.py" "$worktree" "$patch_name" --require-kind upstream-candidate
-  python3 "$repo_root/scripts/validate_patch_commands.py" "$worktree" "$patch_name"
+  python3 "$repo_root/scripts/validate_patch_commands.py" "$worktree" "$patch_name" --base "$base"
   python3 "$repo_root/scripts/candidate_branch.py" "$worktree" "$branch"
   python3 "$repo_root/scripts/patch_worktree.py" cleanup "$name" --path "$worktree"
 
@@ -253,6 +271,7 @@ learn-upstream-exclusions:
   trap 'printf "clean-upstream learning failed; worktree retained: %s\ncleanup: git worktree remove --force %q\n" "$worktree" "$worktree" >&2' ERR
 
   just --justfile "$repo_root/justfile" _learn-tests "$worktree" "$base"
+  python3 "$repo_root/scripts/validate_patch_commands.py" learn "$worktree" --base "$base"
   python3 "$repo_root/scripts/patch_worktree.py" cleanup clean-upstream --path "$worktree"
   trap - ERR
   printf 'learned clean-upstream exclusions for: %s\n' "$base"

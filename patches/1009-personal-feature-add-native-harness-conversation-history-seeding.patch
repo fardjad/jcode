@@ -33,7 +33,7 @@ rollback of failed fresh sessions. Keep empty-history create behavior unchanged.
 
 Validation:
 cargo test -p jcode-harness-api -p jcode-protocol -p jcode-harness-api-server --lib
-cargo test -p jcode-app-core --lib server::client_lifecycle:: -- --test-threads=1 --skip sdk_socket_configure_list_callback_and_busy_rejection
+cargo test -p jcode-app-core --lib server::client_lifecycle:: -- --test-threads=1
 cargo test -p jcode-sdk --test client_behavior session_busy_protocol_error_has_a_stable_sdk_code
 ---
  crates/jcode-app-core/src/agent/messages.rs   |  34 +++
