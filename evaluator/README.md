@@ -133,31 +133,55 @@ network access controls required by that deployment.
 
 ## Development
 
-Use uv and Python 3.14. From the repository root, run `cd evaluator && uv sync`
-to install the editable package and development tools. `just test-evaluator`
-runs pytest, Ruff lint/format checks, and mypy with a disposable `HOME`,
-`JCODE_HOME`, and XDG directories supplied by `scripts/isolate_config.py`.
+This directory is a standalone uv project. It does not depend on the rest of
+the repository, and every command below runs from `evaluator/`. Use uv and
+Python 3.14:
+
+```sh
+uv sync
+uv run pytest -q
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+```
+
 The Python package has no runtime dependencies. Pytest, Ruff, and mypy are
-development-only dependencies recorded in `uv.lock`.
+development-only dependencies recorded in `uv.lock`. The unit tests use fake
+servers and never start jcode or read jcode configuration.
 
 ## Manual bridge and daemon smoke test
 
-This optional live smoke test does not run as part of `just test-evaluator`.
-From the repository root, run:
+This optional live smoke test is not part of the checks above. It needs
+`socat` and two binaries built from a jcode checkout that includes harness
+history seeding:
 
 ```sh
-just test-evaluator-smoke
+cargo build -p jcode --bin jcode
+cargo build -p jcode-harness-api-server --bin jcode-harness-api-bridge
 ```
 
-The recipe refuses to build from a dirty `.patched-jcode`, builds jcode and the
-bridge with isolated configuration, then runs the smoke helper. The helper
-creates a restricted OpenAI-compatible provider profile, temporary working and
-socket directories, and a loopback fake completions endpoint. It launches the
-daemon, bridge, and `socat` relay with disposable `HOME`, `JCODE_HOME`, and XDG
-variables, exercises the client over TCP, checks for a normal `smoke reply`,
-and terminates every child process. It makes no external model requests. The
-unit tests cover abnormal event order, cancellation, split NDJSON lines, and
-concurrent callers. Never substitute a personal config path or real provider.
+Then, from `evaluator/`, run it with a throwaway home so no personal
+configuration is read:
+
+```sh
+smoke_home=$(mktemp -d)
+HOME="$smoke_home/home" JCODE_HOME="$smoke_home/jcode" \
+  uv run python smoke/run_smoke.py \
+  --jcode /path/to/jcode/target/debug/jcode \
+  --bridge /path/to/jcode/target/debug/jcode-harness-api-bridge
+```
+
+`--port` (default 18765) and `--mock-port` (default 18766) change the loopback
+ports. The helper creates a restricted OpenAI-compatible provider profile,
+temporary working and socket directories under `JCODE_HOME`, and a loopback
+fake completions endpoint. It launches the daemon, bridge, and `socat` relay
+with XDG variables pointing inside `JCODE_HOME`, exercises the client over TCP,
+checks for a normal `smoke reply`, and terminates every child process. It makes
+no external model requests. Never point `HOME` or `JCODE_HOME` at a personal
+directory or substitute a real provider.
+
+The unit tests cover abnormal event order, cancellation, split NDJSON lines,
+and concurrent callers.
 
 The fake-server tests also cover history serialization, capability refusal before
 the create request, invalid role/order/content inputs, exact and over-limit
