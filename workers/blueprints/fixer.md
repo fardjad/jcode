@@ -1,7 +1,7 @@
 ---
 name: fixer
 description: Executes one coordinator-defined mechanical objective (one or more literal edits, or a bounded fix-until-green loop) and returns the requested result contract.
-effort: low
+effort: xhigh
 enabled-tools:
   - read
   - agentgrep
