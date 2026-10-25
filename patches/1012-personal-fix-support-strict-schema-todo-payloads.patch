@@ -1,0 +1,245 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Sun, 25 Oct 2026 14:36:54 +0100
+Subject: [PATCH] fix: tolerate strict-schema empty arrays and expose todo
+ patch properties
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+X-Jcode-Patch-Intent: allow strict-schema models to use todo full and patch modes without false mode conflicts or missing update fields
+X-Jcode-Patch-Kind: personal-fix
+X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 1012-personal-fix-support-strict-schema-todo-payloads.patch
+
+Patch intent:
+Ignore empty sibling arrays (`[]`) when determining whether a `todo` call uses
+full-list replacement or `update`/`add`/`remove` patch mode, and declare explicit
+item properties on `update` and `add` in the `todo` parameter schema.
+
+Why it exists:
+Providers that enforce strict JSON schemas require models to emit every top-level
+property on tool calls (sending `[]` for unused array parameters) and strip or
+ignore `additionalProperties: true` on `update` and `add` items. Previously,
+`apply_todo_patch` treated any non-null `update`/`add`/`remove` array—including
+`[]`—as active patch mode and rejected calls that also supplied `todos`, while
+`update` items only declared `id` in `properties`, preventing strict-schema
+models from updating `status` or `completion_confidence`.
+
+Upstream integration points:
+Relies on `todo_write_mode`, `apply_todo_patch`, and `TodoTool::parameters_schema`
+in `crates/jcode-app-core/src/tool/todo.rs`.
+
+Update guidance:
+Preserve the conflict error when both a non-empty `todos` array and a non-empty
+patch array (`update`, `add`, or `remove`) are supplied. Keep `update` and `add`
+item property schemas aligned with `todos` item properties.
+
+Validation:
+scripts/cargo_exec.sh test -p jcode-app-core tool::todo::tests --lib
+---
+ crates/jcode-app-core/src/tool/todo.rs | 130 +++++++++++++++++++++++--
+ 1 file changed, 123 insertions(+), 7 deletions(-)
+
+diff --git a/crates/jcode-app-core/src/tool/todo.rs b/crates/jcode-app-core/src/tool/todo.rs
+index 4c7206810..0b1ee0e37 100644
+--- a/crates/jcode-app-core/src/tool/todo.rs
++++ b/crates/jcode-app-core/src/tool/todo.rs
+@@ -72,12 +72,29 @@ fn merge_confidence_history(previous: &[TodoItem], incoming: &mut [TodoItem]) {
+     }
+ }
+
++fn has_nonempty_todo_field(input: &Value, key: &str) -> bool {
++    match input.get(key) {
++        None | Some(Value::Null) => false,
++        Some(Value::Array(items)) => !items.is_empty(),
++        Some(Value::String(raw)) => !raw.trim().is_empty(),
++        Some(_) => true,
++    }
++}
++
+ /// How a todo call wrote, for measuring whether agents use incremental edits
+ /// instead of resending the list. Counted locally in
+ /// `~/.jcode/stats/todo-write-modes.json`; nothing leaves the machine.
+ fn todo_write_mode(input: &Value) -> &'static str {
+-    let has = |key: &str| input.get(key).is_some_and(|value| !value.is_null());
+-    match (has("todos"), has("update") || has("add") || has("remove")) {
++    let has = |key: &str| has_nonempty_todo_field(input, key);
++    let has_todos = input.get("todos").is_some_and(|value| match value {
++        Value::Null => false,
++        Value::String(raw) => !raw.trim().is_empty(),
++        _ => true,
++    }) && !(input
++        .get("todos")
++        .is_some_and(|v| v.as_array().is_some_and(Vec::is_empty))
++        && (has("update") || has("add") || has("remove") || has("goals") || has("plan")));
++    match (has_todos, has("update") || has("add") || has("remove")) {
+         (true, _) => "full",
+         (false, true) => "patch",
+         (false, false) if has("goals") || has("plan") => "assessment",
+@@ -113,15 +130,48 @@ fn apply_todo_patch(mut input: Value, stored: impl FnOnce() -> Value) -> Result<
+     let Some(obj) = input.as_object_mut() else {
+         return Ok(input);
+     };
++    for key in ["update", "add", "remove"] {
++        if obj
++            .get(key)
++            .is_some_and(|v| v.as_array().is_some_and(Vec::is_empty))
++        {
++            obj.remove(key);
++        }
++    }
+     let patching = ["update", "add", "remove"]
+         .iter()
+         .any(|key| obj.get(*key).is_some_and(|value| !value.is_null()));
+     if !patching {
++        if obj
++            .get("todos")
++            .is_some_and(|v| v.as_array().is_some_and(Vec::is_empty))
++            && (obj.get("plan").is_some_and(|v| !v.is_null())
++                || obj
++                    .get("goals")
++                    .is_some_and(|v| !v.is_null() && !v.as_array().is_some_and(Vec::is_empty)))
++        {
++            obj.remove("todos");
++        }
++        if obj
++            .get("goals")
++            .is_some_and(|v| v.as_array().is_some_and(Vec::is_empty))
++        {
++            obj.remove("goals");
++        }
+         return Ok(input);
+     }
+-    if obj.get("todos").is_some_and(|value| !value.is_null()) {
++    if obj.get("todos").is_some_and(|value| {
++        !value.is_null() && !value.as_array().is_some_and(Vec::is_empty)
++    }) {
+         bail!("send either a full `todos` list or `update`/`add`/`remove` edits, not both");
+     }
++    obj.remove("todos");
++    if obj
++        .get("goals")
++        .is_some_and(|v| v.as_array().is_some_and(Vec::is_empty))
++    {
++        obj.remove("goals");
++    }
+     let parse_list = |value: Option<Value>| -> Result<Vec<Value>> {
+         match value {
+             None | Some(Value::Null) => Ok(Vec::new()),
+@@ -167,7 +217,10 @@ fn apply_todo_patch(mut input: Value, stored: impl FnOnce() -> Value) -> Result<
+         };
+         let target = todo.as_object_mut().expect("stored todo is an object");
+         for (key, value) in fields {
+-            if key != "id" {
++            if key != "id"
++                && !value.is_null()
++                && !value.as_str().is_some_and(|s| s.trim().is_empty())
++            {
+                 // `phase`/`lane` are the card's words for `stage`/`group`;
+                 // write the canonical key so an alias never sits beside it.
+                 let key = match key.as_str() {
+@@ -186,7 +239,7 @@ fn apply_todo_patch(mut input: Value, stored: impl FnOnce() -> Value) -> Result<
+         };
+         let after = fields
+             .remove("after")
+-            .and_then(|v| v.as_str().map(str::to_string));
++            .and_then(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string));
+         let id = fields.get("id").and_then(Value::as_str).map(str::to_string);
+         if let Some(id) = &id
+             && todos.iter().any(|todo| id_of(todo).as_deref() == Some(id))
+@@ -892,7 +945,29 @@ impl Tool for TodoTool {
+                     "items": {
+                         "type": "object",
+                         "required": ["id"],
+-                        "properties": {"id": {"type": "string"}},
++                        "properties": {
++                            "id": {"type": "string", "description": "ID of existing todo to update."},
++                            "status": {
++                                "type": "string",
++                                "enum": ["pending", "in_progress", "completed", "cancelled"],
++                                "description": "Updated status."
++                            },
++                            "content": {"type": "string", "description": "Updated short title."},
++                            "details": {"type": "string", "description": "Updated details."},
++                            "priority": {"type": "string", "description": "Updated priority."},
++                            "lane": {"type": "string", "description": "Updated lane name."},
++                            "phase": {"type": "integer", "minimum": 1, "description": "Updated phase."},
++                            "confidence": {
++                                "type": "string",
++                                "enum": ["speculative", "plausible", "validated", "verified"],
++                                "description": "Updated confidence state."
++                            },
++                            "completion_confidence": {
++                                "type": "string",
++                                "enum": ["speculative", "plausible", "validated", "verified"],
++                                "description": "Updated completion confidence state."
++                            }
++                        },
+                         "additionalProperties": true
+                     }
+                 },
+@@ -902,6 +977,30 @@ impl Tool for TodoTool {
+                     "items": {
+                         "type": "object",
+                         "required": ["content", "status", "priority", "id", "confidence"],
++                        "properties": {
++                            "id": {"type": "string", "description": "ID."},
++                            "content": {"type": "string", "description": "Short title."},
++                            "details": {"type": "string", "description": "Optional longer brief."},
++                            "status": {
++                                "type": "string",
++                                "enum": ["pending", "in_progress", "completed", "cancelled"],
++                                "description": "Status."
++                            },
++                            "priority": {"type": "string", "description": "Priority."},
++                            "lane": {"type": "string", "description": "Optional lane name."},
++                            "phase": {"type": "integer", "minimum": 1, "description": "Optional phase."},
++                            "confidence": {
++                                "type": "string",
++                                "enum": ["speculative", "plausible", "validated", "verified"],
++                                "description": "Evidence state."
++                            },
++                            "completion_confidence": {
++                                "type": "string",
++                                "enum": ["speculative", "plausible", "validated", "verified"],
++                                "description": "Completion evidence state."
++                            },
++                            "after": {"type": "string", "description": "Optional id to insert after."}
++                        },
+                         "additionalProperties": true
+                     }
+                 },
+@@ -1974,7 +2073,9 @@ mod tests {
+             json!({"add": [{"content": "dup", "status": "pending", "priority": "high",
+                             "id": "a", "confidence": "plausible"}]}),
+             json!({"update": [{"id": "a", "status": "finished-ish"}]}),
+-            json!({"todos": [], "update": [{"id": "a", "status": "pending"}]}),
++            json!({"todos": [{"content": "a", "status": "pending", "priority": "high",
++                              "id": "a", "confidence": "plausible"}],
++                   "update": [{"id": "a", "status": "pending"}]}),
+         ] {
+             assert!(
+                 tool.execute(bad.clone(), test_ctx(session)).await.is_err(),
+@@ -1987,6 +2088,21 @@ mod tests {
+             "failed patches change nothing"
+         );
+
++        // OpenAI strict-mode tool calls emit empty arrays for unused mode fields.
++        tool.execute(
++            json!({
++                "todos": [],
++                "add": [],
++                "remove": [],
++                "goals": [],
++                "update": [{"id": "m", "status": "completed", "completion_confidence": "verified"}]
++            }),
++            test_ctx(session),
++        )
++        .await
++        .expect("strict-mode patch with empty sibling arrays");
++        assert_eq!(load_todos(session).unwrap()[1].status, "completed");
++
+         if let Some(home) = previous_home {
+             crate::env::set_var("JCODE_HOME", home);
+         } else {

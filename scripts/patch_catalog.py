@@ -66,10 +66,18 @@ def resolve_patch(root: Path, value: str) -> Path:
         raise CatalogError(f"patch must be under patches: {value}")
     if not name.endswith(".patch") or ".." in name:
         raise CatalogError(f"invalid patch filename: {value}")
-    path = catalog_directory(root) / name
+    directory = catalog_directory(root)
+    path = directory / name
     if not path.is_file():
         raise CatalogError(f"patch not in patches: {name}")
-    if path.resolve() != path:
+    # Canonicalize the catalog root as well as the candidate. This permits a
+    # worktree reached through /var-style aliases while still rejecting a
+    # symlinked patches directory or patch file.
+    if (
+        directory.is_symlink()
+        or path.is_symlink()
+        or path.resolve() != directory.resolve() / name
+    ):
         raise CatalogError(f"patch escapes patches: {value}")
     return path
 

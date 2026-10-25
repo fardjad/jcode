@@ -3,6 +3,38 @@
 This directory versions personal worker blueprints installed locally under
 `~/.jcode/worker-blueprints/`.
 
+## Worker evaluations
+
+`workers/` organizes worker-specific assets alongside [`blueprints/`](blueprints/):
+
+- [`scenarios/`](scenarios/README.md): three real-code scenarios with
+  outcome-only prompts, independent acceptance, named metrics, harness-focused
+  judge criteria, and simulated-user behavior (no schema-version field).
+- [`fixtures/`](fixtures/README.md): pinned benchmark codebases, provenance,
+  licenses, and acceptance details.
+- [`tests/`](tests/): generic static invariants for the discovered blueprints.
+- `.eval-settings.example.toml` / `.eval-settings.toml`: owner-only live provider
+  and coordinator/swarm/judge/simulator model settings; the private file is
+  ignored.
+- `results/`: ignored complete evidence bundles.
+
+Run `just eval-workers` for all scenarios or `just eval-workers <scenario-id>`
+for one. These are paid live coordinator/worker, simulated-user, and judge runs
+and are separate from `just test-catalog`. Use the project-local
+`/evaluate-worker-blueprints` skill for the run/review procedure.
+
+The recipe automatically builds or reuses binaries for the exact resolved
+`VERSION.txt` base plus every current ordered catalog patch. Valid fingerprints,
+success stamps, source identity, and binary hashes control reuse; an arbitrary
+existing debug binary is not accepted. Build logs/stamps live under
+`.tools/worker-eval/`, and each run's `manifest.json` records build/reuse
+provenance alongside binary, blueprint, plugin, and scenario identities.
+
+Generic runner code and the harness API client live under
+[`../evaluator/`](../evaluator/README.md). Bundled workers are examples discovered
+dynamically at runtime, not an evaluator registry: adding, removing, or renaming
+a worker requires no runner or judge change. Only `coordinator` is reserved.
+
 ## Bundled blueprints
 
 | Blueprint | Tool name | Purpose |
@@ -69,10 +101,10 @@ separate prompt-overlay installer.
 
 `swarm_fixer` is intentionally not an implementation or planning specialist.
 Delegate one mechanical objective: exact edits in named files, or a bounded
-fix-until-green loop with allowed files, an exact acceptance command, and an
-attempt cap. State the required return facts. Fixer may make local,
-failure-directed corrections inside that contract, but must escalate rather
-than choose designs, change unstated behavior, or broaden scope.
+fix-until-green loop with allowed files and an exact acceptance command. State
+the required return facts. Fixer may make local, failure-directed corrections
+inside that contract, but must escalate rather than choose designs, change
+unstated behavior, or broaden scope.
 
 ### Portable execution discipline
 
@@ -80,15 +112,14 @@ These contracts apply across projects. Repository-specific procedures belong
 in project instructions or the dynamic assignment, not in reusable roles.
 
 - Give each worker one outcome or question, named inputs and allowed actions,
-  an acceptance check or answer predicate, an attempt/search budget, and a
-  return contract. A runtime timeout does not replace an attempt budget.
+  an acceptance check or answer predicate, and a return contract.
 - Count progress as an edit completed, a check observed, a question answered,
   or a blocker narrowed. Retry only with changed inputs or new evidence.
-  Stop at success, a precise blocker, no new evidence, or the budget limit.
-- Return status first, then results, evidence, budget used, and unfinished
-  work. Preserve partial changes and live command identifiers. Writable roles
-  use an assigned, resolved scratch notes path for recoverable handoffs.
-  Research has no write tools and returns its evidence in the final report.
+  Stop at success, a precise blocker, or no new evidence.
+- Return status first, then results, evidence, and unfinished work. Preserve
+  partial changes and live command identifiers. Writable roles use an assigned,
+  resolved scratch notes path for recoverable handoffs. Research has no write
+  tools and returns its evidence in the final report.
 - The coordinator owns decisions, dependencies, verification, shared-resource
   scheduling, and result bookkeeping. Avoid duplicate assignments and shared
   mutable caches or output paths during parallel work. Inspect existing runs
@@ -220,10 +251,9 @@ blueprint ID.
 
 The special `coordinator.md` file is an exception: its filename supplies the
 reserved `coordinator` ID. It requires YAML front matter with the supported
-`enabled-tools` and `disabled-tools` keys. The bundled file leaves both lists
-empty; its Markdown body is the coordinator prompt segment. Coordinator tool
-policy is configured only through `[agents.worker_blueprints.coordinator]` in
-TOML, not through front matter.
+`enabled-tools` and `disabled-tools` keys. Its Markdown body is the coordinator
+prompt segment, and its front-matter tool policy can be overridden through
+`[agents.worker_blueprints.coordinator]` in TOML.
 
 #### Front-matter keys (ordinary worker blueprints)
 
@@ -244,19 +274,22 @@ accepted; use `enabled-tools` instead.
 
 #### coordinator.md front matter
 
-`coordinator.md` requires YAML front matter. The bundled file explicitly
-leaves both supported fields empty:
+`coordinator.md` requires YAML front matter. The bundled file leaves
+`enabled-tools` empty and disables the generic `swarm` tool so the coordinator
+uses the generated `swarm_<id>` blueprint tools:
 
 ```yaml
 ---
 enabled-tools: []
-disabled-tools: []
+disabled-tools:
+  - swarm
 ---
 ```
 
 Its nonblank Markdown body is loaded as the coordinator prompt segment. The
-current runtime applies coordinator tool policy from the `enabled` and
-`disabled` keys in the reserved TOML override shown above.
+runtime applies coordinator tool policy from `coordinator.md` front matter,
+overridden when present by the `enabled` and `disabled` keys in the reserved
+TOML override shown above.
 
 #### Body
 
@@ -298,8 +331,7 @@ override inherits the source value. Invalid overrides are diagnosed and fall
 through to the source value.
 
 The reserved `coordinator` ID accepts only `enabled` and `disabled`; worker-only
-fields (`model`, `effort`, `timeout-minutes`) are rejected for it. Coordinator
-front matter does not set tool policy.
+fields (`model`, `effort`, `timeout-minutes`) are rejected for it.
 
 #### Global defaults
 
@@ -318,9 +350,9 @@ blueprint can further restrict globally allowed tools but can never restore a
 globally disabled tool. An empty `enabled-tools: []` means the worker has no
 tools. Omission means no blueprint-specific restriction.
 
-For the coordinator, configure `enabled` and `disabled` in the reserved TOML
-override. These are combined with global `[tools]` policy. `coordinator.md`
-front matter does not affect tool policy.
+For the coordinator, configure `enabled-tools` and `disabled-tools` in
+`coordinator.md` front matter or `enabled` and `disabled` in the reserved TOML
+override. These are combined with global `[tools]` policy.
 
 Tool names support exact names, aliases, `"*"`/`"all"` wildcards, and anchored
 whole-name patterns such as `swarm_*` and `mcp_*`. The `mcp` family shorthand

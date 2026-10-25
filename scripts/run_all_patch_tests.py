@@ -1,26 +1,28 @@
-"""Run patch validation resumably and retain per-patch logs."""
-
+"""Run patch validation with exclusive ownership and durable evidence."""
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from patch_catalog import CatalogError, fail, patches, repository_root, resolve_patch
+from validation_state import blob as patch_blob, exclusive_lock, validation_identity
 from version_base import resolve_base
 
 
-def should_skip(results: dict[str, dict[str, str]], name: str, blob: str, force: bool) -> bool:
-    """Return whether a previously successful unchanged patch can be skipped."""
+def should_skip(results, name, blob, force, fingerprint=None):
     result = results.get(name, {})
-    return not force and result.get("status") == "pass" and result.get("blob") == blob
+    return (not force and fingerprint is not None and result.get("status") == "pass"
+            and result.get("blob") == blob and result.get("fingerprint") == fingerprint)
 
 
 def retained_worktree_path(output: str) -> str | None:
-    """Extract the path emitted by test-patch-file's retained-worktree line."""
     for line in output.splitlines():
         marker = "worktree retained: "
         if marker in line:
@@ -28,102 +30,136 @@ def retained_worktree_path(output: str) -> str | None:
     return None
 
 
-def patch_blob(root: Path, path: Path) -> str:
-    """Return Git's object hash for a patch file."""
-    result = subprocess.run(
-        ["git", "hash-object", str(path)], cwd=root, check=True,
-        capture_output=True, text=True,
-    )
-    return result.stdout.strip()
-
-
-def save_results(path: Path, results: dict[str, dict[str, str]]) -> None:
-    """Atomically persist current per-patch results."""
+def save_results(path: Path, results: dict) -> None:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temporary:
         temporary_path = Path(temporary.name)
         json.dump(results, temporary, indent=2, sort_keys=True)
         temporary.write("\n")
         temporary.flush()
+        os.fsync(temporary.fileno())
     temporary_path.replace(path)
 
 
-def run_all(root: Path, only: list[str] | None = None, force: bool = False) -> int:
-    """Run selected patches in sorted order and record resumable outcomes."""
+def load_results(path):
+    if not path.exists():
+        return {}
+    try:
+        results = json.loads(path.read_text())
+        if not isinstance(results, dict) or any(not isinstance(v, dict) for v in results.values()):
+            raise ValueError("results must map patch names to records")
+        return results
+    except (OSError, ValueError) as error:
+        raise CatalogError(f"invalid results {path}: {error}") from error
+
+
+def run_all(root: Path, only=None, force=False, audit=False) -> int:
     base = resolve_base(root)
-    catalog = patches(root)
-    ordered = [catalog[name] for name in sorted(catalog)]
-    if only:
-        selected = {resolve_patch(root, name).name for name in only}
-        ordered = [patch for patch in ordered if patch.path.name in selected]
-    directory = root / ".tools" / "patch-tests" / base
+    directory = root / ".tools/patch-tests" / base
     directory.mkdir(parents=True, exist_ok=True)
-    results_path = directory / "results.json"
-    if results_path.exists():
-        try:
-            results = json.loads(results_path.read_text(encoding="utf-8"))
-            if not isinstance(results, dict):
-                raise ValueError("results must be an object")
-        except (OSError, json.JSONDecodeError, ValueError) as error:
-            raise CatalogError(f"invalid patch test results {results_path}: {error}") from error
-    else:
-        results = {}
-
-    failures: list[str] = []
-    passed = 0
-    total = len(ordered)
-    for index, patch in enumerate(ordered, start=1):
-        name = patch.path.name
-        blob = patch_blob(root, patch.path)
-        if should_skip(results, name, blob, force):
-            status = "pass"
-            passed += 1
-        else:
+    # One catalog runner across pins, since worktree names are shared across pins.
+    with exclusive_lock(root / ".tools/patch-tests/runner.lock", "patch validation") as lock:
+        for ledger in (root / ".tools/patch-tests").glob("*/results.json"):
+            for name, record in load_results(ledger).items():
+                if record.get("status") == "running" and record.get("pid"):
+                    try:
+                        os.kill(int(record["pid"]), 0)
+                    except ProcessLookupError:
+                        pass
+                    except (OSError, ValueError) as error:
+                        raise CatalogError(f"cannot establish stopped runner child: {name}, {ledger}") from error
+                    else:
+                        raise CatalogError(f"prior validation child may still be active: {name}, "
+                                           f"pid={record['pid']}, log={record.get('log')}")
+        catalog = patches(root)
+        selected = {resolve_patch(root, name).name for name in only} if only else set(catalog)
+        ordered = [catalog[name] for name in sorted(selected)]
+        results_path = directory / "results.json"
+        results = load_results(results_path)
+        fingerprints = {p.path.name: validation_identity(root, p.path.name, base) for p in ordered}
+        passed = 0
+        for index, patch in enumerate(ordered, 1):
+            name = patch.path.name
+            blob = patch_blob(root, patch.path)
+            fingerprint = fingerprints[name]
+            if should_skip(results, name, blob, force, fingerprint):
+                passed += 1
+                continue
+            if audit:
+                print(f"not current: {name}")
+                continue
+            if resolve_base(root) != base or validation_identity(root, name, base) != fingerprint:
+                raise CatalogError("validation inputs changed before launch, stop and rerun")
             log_path = directory / f"{patch.path.stem}.log"
-            try:
-                result = subprocess.run(
-                    ["just", "test-patch-file", f"patches/{name}"],
-                    cwd=root, capture_output=True, text=True,
-                )
-                output = result.stdout + result.stderr
-                log_path.write_text(output, encoding="utf-8")
-                status = "pass" if result.returncode == 0 else "fail"
-                if status == "pass":
-                    worktree = retained_worktree_path(output)
-                    if worktree is not None:
-                        cleanup = subprocess.run(
-                            ["git", "worktree", "remove", "--force", worktree],
-                            cwd=root, capture_output=True, text=True,
-                        )
-                        if cleanup.returncode != 0:
-                            status = "fail"
-                            with log_path.open("a", encoding="utf-8") as log:
-                                log.write(cleanup.stdout + cleanup.stderr)
-                if status == "pass":
-                    passed += 1
-                else:
-                    failures.append(name)
-            except OSError as error:
-                status = "fail"
-                failures.append(name)
-                log_path.write_text(f"{error}\n", encoding="utf-8")
-            results[name] = {"blob": blob, "status": status}
+            command = ["just", "test-patch-file", f"patches/{name}"]
+            record = {"blob": blob, "fingerprint": fingerprint, "base": base,
+                      "status": "running", "started": time.time(), "command": command,
+                      "log": str(log_path), "runner_pid": os.getpid(), "exit_code": None}
+            results[name] = record
             save_results(results_path, results)
-        print(f'JCODE_PROGRESS {{"current":{index},"total":{total},"message":"{name} {status}"}}')
-    failed_count = len(failures)
-    print(f"patch tests: {passed} passed, {failed_count} failed, {total} total")
-    if failures:
-        print("failed patches: " + " ".join(failures), file=sys.stderr)
-        return 1
-    return 0
+            with log_path.open("w", encoding="utf-8") as log:
+                try:
+                    options = {"pass_fds": (lock.fileno(),)} if os.name != "nt" else {}
+                    child = subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
+                                             start_new_session=os.name != "nt", **options)
+                    record["pid"] = child.pid
+                    save_results(results_path, results)
+                    try:
+                        code = child.wait()
+                    except KeyboardInterrupt:
+                        # Do not release resource ownership while a build survives.
+                        if os.name != "nt":
+                            os.killpg(child.pid, signal.SIGTERM)
+                        else:
+                            child.terminate()
+                        try:
+                            child.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            if os.name != "nt":
+                                os.killpg(child.pid, signal.SIGKILL)
+                            else:
+                                child.kill()
+                            child.wait()
+                        record.update(status="interrupted", exit_code=child.returncode,
+                                      finished=time.time())
+                        save_results(results_path, results)
+                        raise
+                except OSError as error:
+                    log.write(f"launch failed: {error}\n")
+                    code = 127
+                record.update(exit_code=code, finished=time.time(), status="pass" if code == 0 else "fail")
+                if resolve_base(root) != base or validation_identity(root, name, base) != fingerprint:
+                    record["status"] = "stale"
+                    log.write("inputs changed during validation, result rejected\n")
+                log.flush()
+                os.fsync(log.fileno())
+            if record["status"] == "pass":
+                worktree = retained_worktree_path(log_path.read_text())
+                if worktree:
+                    with log_path.open("a") as log:
+                        cleanup = subprocess.run(["git", "worktree", "remove", "--force", worktree],
+                                                 cwd=root, stdout=log, stderr=subprocess.STDOUT)
+                    record["cleanup_exit_code"] = cleanup.returncode
+                    if cleanup.returncode:
+                        record["status"] = "fail"
+                if record["status"] == "pass":
+                    passed += 1
+            save_results(results_path, results)
+            print(f'JCODE_PROGRESS {{"current":{index},"total":{len(ordered)},"message":"{name} {record["status"]}"}}', flush=True)
+        # Recheck every selected input, including ones skipped earlier.
+        current = all(resolve_base(root) == base and validation_identity(root, p.path.name, base)
+                      == fingerprints[p.path.name] for p in ordered)
+        print(f"patch tests: {passed} current passes, {len(ordered)} total")
+        return 0 if passed == len(ordered) and current else 1
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--only", nargs="+")
+    parser.add_argument("--audit", action="store_true", help="Check exact cached acceptance without running tests")
     args = parser.parse_args()
     try:
-        raise SystemExit(run_all(repository_root(), args.only, args.force))
+        raise SystemExit(run_all(repository_root(), args.only, args.force, args.audit))
     except CatalogError as error:
         fail(str(error))
 

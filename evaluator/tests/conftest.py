@@ -27,6 +27,7 @@ class FakeHarnessServer:
         capabilities: list[str] | None = None,
         create_error: Frame | None = None,
         close_on_create: bool = False,
+        request_responses: dict[str, Frame] | None = None,
     ) -> None:
         family = socket.AF_UNIX if unix_path is not None else socket.AF_INET
         self.listener = socket.socket(family, socket.SOCK_STREAM)
@@ -49,6 +50,7 @@ class FakeHarnessServer:
         )
         self.create_error = create_error
         self.close_on_create = close_on_create
+        self.request_responses = request_responses or {}
         self.requests: list[Frame] = []
         self._request_lock = threading.Lock()
         self._session_count = 0
@@ -103,6 +105,16 @@ class FakeHarnessServer:
                     self.requests.append(request)
                 request_id = request["id"]
                 kind = request["req"]
+                if kind in self.request_responses:
+                    self.send(
+                        connection,
+                        {
+                            "v": 1,
+                            "reply_to": request_id,
+                            **self.request_responses[kind],
+                        },
+                    )
+                    continue
                 if kind == "hello":
                     if self.hello_error:
                         self.send(
@@ -175,6 +187,49 @@ class FakeHarnessServer:
                         ),
                         daemon=True,
                     ).start()
+                elif kind == "list_sessions":
+                    self.send(
+                        connection,
+                        {
+                            "v": 1,
+                            "reply_to": request_id,
+                            "ev": "sessions",
+                            "sessions": [
+                                {
+                                    "session_id": session_id,
+                                    "status": "idle",
+                                    "parent_session_id": None,
+                                    "agent_label": "fixture",
+                                    "swarm_status": "ready",
+                                    "worker_blueprint_policy": None,
+                                    "edit_stats": {
+                                        "added": 0,
+                                        "removed": 0,
+                                        "approximate": False,
+                                    },
+                                    "future_session_field": {"retained": True},
+                                }
+                            ],
+                        },
+                    )
+                elif kind == "list_tools":
+                    self.send(
+                        connection,
+                        {
+                            "v": 1,
+                            "reply_to": request_id,
+                            "ev": "tools",
+                            "session_id": session_id,
+                            "tools": [
+                                {
+                                    "name": "read",
+                                    "description": "Read a file",
+                                    "parameters": {"type": "object"},
+                                    "future_tool_field": [1, 2, 3],
+                                }
+                            ],
+                        },
+                    )
                 elif kind == "detach_session":
                     pass
                 elif kind == "cancel":

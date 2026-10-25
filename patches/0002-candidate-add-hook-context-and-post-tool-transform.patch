@@ -1,4 +1,4 @@
-From 4f731377d93f1299ba395cbb209b5f8416bee611 Mon Sep 17 00:00:00 2001
+From 2914a8236b0aa0416af292e40647364ff8ff345d Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add swarm-scoped hook context and post-tool transforms
@@ -14,23 +14,27 @@ process role (coordinator, worker, or internal) and swarm-enabled state.
 Wrap the complete non-streaming run_once body in swarm context so upstream
 lifecycle hooks retain the selected role.
 Add synchronous post_tool_transform hooks that receive tool input and result
-JSON on stdin, with large payloads spilled to temp files. Propagate the swarm
-context into spawned tool-execution tasks so transformer hooks always see the
-correct coordinator or worker identity.
+JSON on stdin, with large payloads spilled to temp files, and propagate
+tool_call_id into both pre- and post-tool transform hook contexts. Propagate
+the swarm context into spawned tool-execution tasks so transformer hooks always
+see the correct coordinator or worker identity.
 The transform runs before upstream's post_tool_feedback hook, so feedback
 is appended to the transformed result rather than discarded by a replacement.
 
 Why it exists:
 Post-tool transformers need swarm metadata to decide whether to act (e.g., the
 delegation guard only replaces oversized coordinator results, preserving worker
-and internal output). Without explicit propagation, tokio::spawn lost the
-task-local swarm context, causing hooks to fall back to Internal with swarm
-disabled. The generic context exposes process role, worker identity, and swarm
-state without personal worker blueprints.
+and internal output), and both pre- and post-tool transformers need
+tool_call_id so repeated calls to the same tool can be correlated unambiguously.
+Without explicit propagation, tokio::spawn lost the task-local swarm context,
+causing hooks to fall back to Internal with swarm disabled. The generic context
+exposes process role, worker identity, and swarm state without personal worker
+blueprints.
 
 Upstream integration points:
 crates/jcode-base/src/hooks.rs (SwarmContext, ProcessRole, with_swarm_context,
-current_swarm_context, transform_tool_result, hook_configured),
+current_swarm_context, transform_tool_input, transform_tool_result,
+hook_configured),
 crates/jcode-app-core/
 src/tool/mod.rs (Registry::execute transform invocation),
 src/agent.rs (per-session swarm state),
@@ -54,9 +58,10 @@ with_swarm_context. Worker execution must install its explicit worker context
 before calling the agent, and coordinator fallback must derive role from the
 session and feature state. Preserve task isolation when changing hook dispatch.
 The post_tool_transform hook is synchronous and must fail open: any error or
-timeout leaves the original result unchanged. Keep transform-then-feedback
-ordering in Registry::execute and reuse upstream's fire_post_tool_hook(input)
-signature.
+timeout leaves the original result unchanged. Preserve tool_call_id in
+pre_tool_transform and post_tool_transform hook environments and the
+post_tool_transform stdin JSON envelope. Keep transform-then-feedback ordering
+in Registry::execute and reuse upstream's fire_post_tool_hook(input) signature.
 
 Validation:
 cargo test -p jcode-app-core --lib -- agent_turn_hook_context_tracks_coordinator_swarm_feature
@@ -64,6 +69,8 @@ cargo test -p jcode-app-core --lib -- agent_turn_hook_context_preserves_explicit
 cargo test -p jcode-app-core --lib -- registry_execute_post_tool_transform_replaces_model_visible_result
 cargo test -p jcode-app-core --lib -- registry_execute_post_tool_transform_fails_open_for_all_failure_modes
 cargo test -p jcode-app-core --lib -- post_tool_feedback_appends_after_post_tool_transform
+cargo test -p jcode-base --lib -- post_tool_transform_replaces_result_and_receives_swarm_envelope
+cargo test -p jcode-base --lib -- tool_transformers_compose_json_replacements
 cargo test -p jcode-base --lib -- swarm_context_propagates_into_spawned_task
 cargo test -p jcode-base --lib -- swarm_context_lost_without_explicit_propagation_in_spawned_task
 cargo test -p jcode-base --lib -- swarm_context_defaults_to_internal
@@ -76,19 +83,19 @@ cargo test -p jcode-base config_env_fingerprint_tracks_every_apply_env_override_
  crates/jcode-app-core/src/agent.rs            |   3 +
  .../src/agent/turn_execution.rs               |  53 +-
  .../src/agent/turn_streaming_mpsc.rs          |  10 +-
- crates/jcode-app-core/src/agent_tests.rs      | 403 +++++++++
+ crates/jcode-app-core/src/agent_tests.rs      | 403 ++++++++
  .../src/server/client_actions.rs              |  16 +-
  .../src/server/client_actions_tests.rs        | 119 ++-
  crates/jcode-app-core/src/server/swarm.rs     |   8 +-
- crates/jcode-app-core/src/tool/mod.rs         |  14 +-
+ crates/jcode-app-core/src/tool/mod.rs         |  16 +-
  crates/jcode-app-core/src/tool/tests.rs       | 222 ++++-
  crates/jcode-base/src/config.rs               |   3 +
  crates/jcode-base/src/config/default_file.rs  |  21 +-
  crates/jcode-base/src/config/env_overrides.rs |  19 +
- crates/jcode-base/src/hooks.rs                | 838 ++++++++++++++++++
+ crates/jcode-base/src/hooks.rs                | 864 +++++++++++++++++-
  crates/jcode-config-types/src/lib.rs          |  15 +
- docs/HOOKS.md                                 |  49 +-
- 15 files changed, 1753 insertions(+), 40 deletions(-)
+ docs/HOOKS.md                                 |  59 +-
+ 15 files changed, 1783 insertions(+), 48 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
 index ef783ac6d..f8773d683 100644
@@ -853,10 +860,18 @@ index c3d0074d9..2a596e4d8 100644
              log_swarm_lifecycle(
                  "task_done",
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 820688cf9..1f845acba 100644
+index 820688cf9..269d040cc 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -1111,7 +1111,6 @@ impl Registry {
+@@ -1074,6 +1074,7 @@ impl Registry {
+             &ctx.session_id,
+             working_dir.as_deref(),
+             resolved_name,
++            &ctx.tool_call_id,
+             input,
+         )
+         .await;
+@@ -1111,7 +1112,6 @@ impl Registry {
 
          crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);
          Self::fire_post_tool_hook(resolved_name, &input, &ctx, &result, latency_ms);
@@ -864,7 +879,7 @@ index 820688cf9..1f845acba 100644
          let mut output = match result {
              Ok(output) => output,
              Err(error) => {
-@@ -1124,6 +1123,19 @@ impl Registry {
+@@ -1124,6 +1124,20 @@ impl Registry {
              }
          };
 
@@ -872,6 +887,7 @@ index 820688cf9..1f845acba 100644
 +            &ctx.session_id,
 +            working_dir.as_deref(),
 +            resolved_name,
++            &ctx.tool_call_id,
 +            &input,
 +            &output.output,
 +            true,
@@ -885,7 +901,7 @@ index 820688cf9..1f845acba 100644
 
          // Context overflow guard: check if this output would push us over the limit
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 255681e2c..bc94eedb5 100644
+index 255681e2c..dfb4d6fb8 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
 @@ -30,6 +30,50 @@ struct TestHomeGuard {
@@ -983,7 +999,7 @@ index 255681e2c..bc94eedb5 100644
 +    let script = temp.path().join("transform.sh");
 +    std::fs::write(
 +        &script,
-+        "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"tool_result\":\"replacement\"}'\n",
++        "#!/bin/sh\n[ \"$JCODE_HOOK_TOOL_CALL_ID\" = \"call\" ] || exit 1\ncat >/dev/null\nprintf '%s' '{\"tool_result\":\"replacement\"}'\n",
 +    )
 +    .expect("write transformer");
 +    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
@@ -1257,7 +1273,7 @@ index b58143014..61555d78c 100644
              if let Ok(parsed) = v.trim().parse::<u64>() {
                  self.hooks.pre_tool_timeout_ms = parsed;
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index 318fac845..e7f2874da 100644
+index 318fac845..d2784bcfe 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -33,12 +33,15 @@ tokio::task_local! {
@@ -1392,7 +1408,25 @@ index 318fac845..e7f2874da 100644
          _ => None,
      };
      raw.into_iter()
-@@ -233,6 +331,98 @@ pub async fn transform_tool_input(
+@@ -145,6 +243,7 @@ pub async fn transform_tool_input(
+     session_id: &str,
+     working_dir: Option<&str>,
+     tool_name: &str,
++    tool_call_id: &str,
+     input: Value,
+ ) -> Value {
+     if hooks_suppressed() {
+@@ -166,7 +265,8 @@ pub async fn transform_tool_input(
+
+     let mut event = HookEvent::new("pre_tool_transform")
+         .session_id(session_id)
+-        .field("TOOL_NAME", tool_name);
++        .field("TOOL_NAME", tool_name)
++        .field("TOOL_CALL_ID", tool_call_id);
+     if let Some(cwd) = working_dir {
+         event = event.cwd(cwd);
+     }
+@@ -233,6 +333,101 @@ pub async fn transform_tool_input(
      current
  }
 
@@ -1403,6 +1437,7 @@ index 318fac845..e7f2874da 100644
 +    session_id: &str,
 +    working_dir: Option<&str>,
 +    tool_name: &str,
++    tool_call_id: &str,
 +    tool_input: &Value,
 +    tool_result: &str,
 +    tool_success: bool,
@@ -1416,6 +1451,7 @@ index 318fac845..e7f2874da 100644
 +    let mut event = HookEvent::new("post_tool_transform")
 +        .session_id(session_id)
 +        .field("TOOL_NAME", tool_name)
++        .field("TOOL_CALL_ID", tool_call_id)
 +        .field("STATUS", if tool_success { "ok" } else { "error" });
 +    if let Some(cwd) = working_dir {
 +        event = event.cwd(cwd);
@@ -1433,6 +1469,7 @@ index 318fac845..e7f2874da 100644
 +        "session_id": session_id,
 +        "working_dir": working_dir,
 +        "tool_name": tool_name,
++        "tool_call_id": tool_call_id,
 +        "tool_input": tool_input_envelope,
 +        "tool_input_file": tool_input_file,
 +        "tool_result": tool_result_envelope,
@@ -1491,7 +1528,7 @@ index 318fac845..e7f2874da 100644
  /// True when running inside a hook process (recursion guard).
  fn hooks_suppressed() -> bool {
      std::env::var_os("JCODE_HOOKS_DISABLED").is_some()
-@@ -263,6 +453,115 @@ pub fn truncate_tool_input(tool_input_json: &str) -> &str {
+@@ -263,6 +458,115 @@ pub fn truncate_tool_input(tool_input_json: &str) -> &str {
      truncate_bytes(tool_input_json, TOOL_INPUT_ENV_LIMIT)
  }
 
@@ -1607,7 +1644,7 @@ index 318fac845..e7f2874da 100644
  /// JSON payload mirroring the env fields, exported as `JCODE_HOOK_PAYLOAD`.
  fn payload_json(event: &HookEvent) -> String {
      let mut map = serde_json::Map::new();
-@@ -291,6 +590,7 @@ fn payload_json(event: &HookEvent) -> String {
+@@ -291,6 +595,7 @@ fn payload_json(event: &HookEvent) -> String {
 
  fn apply_event_env(cmd: &mut std::process::Command, event: &HookEvent) {
      cmd.env("JCODE_HOOKS_DISABLED", "1");
@@ -1615,7 +1652,7 @@ index 318fac845..e7f2874da 100644
      cmd.env("JCODE_HOOK_EVENT", event.event);
      if let Some(session_id) = &event.session_id {
          cmd.env("JCODE_HOOK_SESSION_ID", session_id);
-@@ -625,6 +925,140 @@ mod tests {
+@@ -625,6 +930,140 @@ mod tests {
          assert_eq!(truncate_bytes("short", 100), "short");
      }
 
@@ -1756,7 +1793,7 @@ index 318fac845..e7f2874da 100644
      #[cfg(unix)]
      fn write_executable_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
          use std::os::unix::fs::PermissionsExt;
-@@ -660,6 +1094,7 @@ mod tests {
+@@ -660,6 +1099,7 @@ mod tests {
          ]);
          crate::env::set_var("JCODE_HOOK_PRE_TOOL", hook);
          crate::env::set_var("JCODE_HOOK_PRE_TOOL_TIMEOUT_MS", timeout_ms.to_string());
@@ -1764,14 +1801,14 @@ index 318fac845..e7f2874da 100644
          reset
      }
 
-@@ -691,9 +1126,412 @@ mod tests {
+@@ -691,9 +1131,422 @@ mod tests {
              "JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS",
              timeout_ms.to_string(),
          );
 +        crate::config::invalidate_config_cache();
-+        reset
-+    }
-+
+         reset
+     }
+
 +    #[cfg(unix)]
 +    fn post_transform_test_config(
 +        hook: &str,
@@ -1822,9 +1859,9 @@ index 318fac845..e7f2874da 100644
 +        crate::env::set_var("JCODE_HOME", runtime_dir.parent().expect("test home"));
 +        crate::env::set_var("JCODE_TOOL_OUTPUT_TTL_SECS", "3600");
 +        crate::config::invalidate_config_cache();
-         reset
-     }
-
++        reset
++    }
++
 +    #[cfg(unix)]
 +    #[tokio::test]
 +    async fn post_tool_transform_replaces_result_and_receives_swarm_envelope() {
@@ -1835,7 +1872,7 @@ index 318fac845..e7f2874da 100644
 +            temp.path(),
 +            "transform.sh",
 +            &format!(
-+                "#!/bin/sh\ncat > {}\nprintf '%s' '{{\"tool_result\":\"compact\"}}'\n",
++                "#!/bin/sh\n[ \"$JCODE_HOOK_TOOL_CALL_ID\" = \"call_post\" ] || exit 1\ncat > {}\nprintf '%s' '{{\"tool_result\":\"compact\"}}'\n",
 +                crate::terminal_launch::sh_escape(&record.to_string_lossy())
 +            ),
 +        );
@@ -1848,6 +1885,7 @@ index 318fac845..e7f2874da 100644
 +            "ses_post",
 +            Some("/work"),
 +            "bash",
++            "call_post",
 +            &serde_json::json!({"command":"x"}),
 +            "large output",
 +            true,
@@ -1859,6 +1897,7 @@ index 318fac845..e7f2874da 100644
 +                .expect("valid envelope");
 +        assert_eq!(envelope["event"], "post_tool_transform");
 +        assert_eq!(envelope["tool_name"], "bash");
++        assert_eq!(envelope["tool_call_id"], "call_post");
 +        assert_eq!(envelope["tool_result"], "large output");
 +        assert_eq!(envelope["output_bytes"], 12);
 +        assert!(envelope["output_lines"].as_u64().unwrap() >= 1);
@@ -1894,6 +1933,7 @@ index 318fac845..e7f2874da 100644
 +                    "ses_fail",
 +                    None,
 +                    "read",
++                    "call_fail",
 +                    &serde_json::json!({}),
 +                    "original",
 +                    true
@@ -1912,6 +1952,7 @@ index 318fac845..e7f2874da 100644
 +                "ses_fail",
 +                None,
 +                "read",
++                "call_fail",
 +                &serde_json::json!({}),
 +                "original",
 +                true
@@ -1947,6 +1988,7 @@ index 318fac845..e7f2874da 100644
 +            "ses_file",
 +            None,
 +            "bash",
++            "call_file",
 +            &serde_json::json!({"command":"x"}),
 +            &large_output,
 +            true,
@@ -2000,6 +2042,7 @@ index 318fac845..e7f2874da 100644
 +            "ses_small",
 +            None,
 +            "bash",
++            "call_small",
 +            &serde_json::json!({"command":"x"}),
 +            "small output",
 +            true,
@@ -2039,6 +2082,7 @@ index 318fac845..e7f2874da 100644
 +            "ses_input_file",
 +            None,
 +            "bash",
++            "call_input_file",
 +            &large_input,
 +            "small",
 +            true,
@@ -2090,6 +2134,7 @@ index 318fac845..e7f2874da 100644
 +            "ses_input_null",
 +            None,
 +            "bash",
++            "call_input_null",
 +            &serde_json::json!({"command":"x"}),
 +            "small",
 +            true,
@@ -2127,6 +2172,7 @@ index 318fac845..e7f2874da 100644
 +            session_id,
 +            None,
 +            "bash",
++            "call_ttl_1",
 +            &serde_json::json!({"command":"x"}),
 +            &large_output,
 +            true,
@@ -2151,6 +2197,7 @@ index 318fac845..e7f2874da 100644
 +            session_id,
 +            None,
 +            "bash",
++            "call_ttl_2",
 +            &serde_json::json!({"command":"x"}),
 +            "y".repeat(50).as_str(),
 +            true,
@@ -2177,6 +2224,43 @@ index 318fac845..e7f2874da 100644
      #[cfg(unix)]
      #[tokio::test]
      async fn tool_transformers_compose_json_replacements() {
+@@ -702,7 +1555,7 @@ mod tests {
+         let first = write_executable_script(
+             temp.path(),
+             "first.sh",
+-            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"command\":\"first\"}'\n",
++            "#!/bin/sh\n[ \"$JCODE_HOOK_TOOL_CALL_ID\" = \"call_transform\" ] || exit 1\ncat >/dev/null\nprintf '%s' '{\"command\":\"first\"}'\n",
+         );
+         let second = write_executable_script(
+             temp.path(),
+@@ -720,6 +1573,7 @@ mod tests {
+             "ses_transform",
+             Some("/work"),
+             "bash",
++            "call_transform",
+             serde_json::json!({"command": "original"}),
+         )
+         .await;
+@@ -746,7 +1600,8 @@ mod tests {
+         let input = serde_json::json!({"command": "original"});
+
+         assert_eq!(
+-            transform_tool_input("ses_transform", None, "bash", input.clone()).await,
++            transform_tool_input("ses_transform", None, "bash", "call_transform", input.clone())
++                .await,
+             input
+         );
+     }
+@@ -764,7 +1619,8 @@ mod tests {
+
+         let started = std::time::Instant::now();
+         assert_eq!(
+-            transform_tool_input("ses_transform", None, "bash", input.clone()).await,
++            transform_tool_input("ses_transform", None, "bash", "call_transform", input.clone())
++                .await,
+             input
+         );
+         assert!(
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
 index 2c8d16e0b..c05d38953 100644
 --- a/crates/jcode-config-types/src/lib.rs
@@ -2211,7 +2295,7 @@ index 2c8d16e0b..c05d38953 100644
          }
      }
 diff --git a/docs/HOOKS.md b/docs/HOOKS.md
-index 54f87e40a..a81302b8e 100644
+index 54f87e40a..510a47beb 100644
 --- a/docs/HOOKS.md
 +++ b/docs/HOOKS.md
 @@ -17,12 +17,16 @@ session_end   = ""                            # observer
@@ -2270,7 +2354,7 @@ index 54f87e40a..a81302b8e 100644
  ## Observer hooks
 
  `turn_start`, `turn_end`, `session_start`, `session_end`, and `post_tool` are
-@@ -138,6 +156,29 @@ and can add text to the result the model sees. It gets the same env fields as
+@@ -138,6 +156,30 @@ and can add text to the result the model sees. It gets the same env fields as
 
  Keep it fast and filter early: it runs on every tool call, including reads.
 
@@ -2278,9 +2362,10 @@ index 54f87e40a..a81302b8e 100644
 +
 +This synchronous transformer runs after a tool succeeds and before the result
 +enters model context. It receives a JSON envelope on stdin containing `event`,
-+`session_id`, `working_dir`, `tool_name`, `tool_input`, `tool_input_file`,
-+`tool_result`, `tool_result_file`, `output_bytes`, `output_lines`,
-+`tool_success`, and `swarm`. The stdin envelope is capped at 256 KB.
++`session_id`, `working_dir`, `tool_name`, `tool_call_id`, `tool_input`,
++`tool_input_file`, `tool_result`, `tool_result_file`, `output_bytes`,
++`output_lines`, `tool_success`, and `swarm`. The stdin envelope is capped at
++256 KB.
 +
 +When `tool_input` or `tool_result` exceeds the file threshold
 +(`post_tool_transform_file_threshold`, default 4096 bytes; env
@@ -2300,3 +2385,19 @@ index 54f87e40a..a81302b8e 100644
  ```bash
  #!/usr/bin/env bash
  # ~/bin/jcode-vale: lint prose the agent just wrote
+@@ -181,10 +223,11 @@ pre_tool_transform_timeout_ms = 500
+ ```
+
+ Each transformer receives the current complete tool-input JSON on stdin and
+-`JCODE_HOOK_TOOL_NAME`, `JCODE_HOOK_SESSION_ID`, and `JCODE_HOOK_CWD` in its
+-environment. It may print a replacement JSON object to stdout. Empty stdout,
+-invalid JSON, a non-zero exit, a spawn error, or a timeout leaves the input
+-unchanged. This fail-open contract makes optional integrations safe to enable.
++`JCODE_HOOK_TOOL_NAME`, `JCODE_HOOK_TOOL_CALL_ID`, `JCODE_HOOK_SESSION_ID`, and
++`JCODE_HOOK_CWD` in its environment. It may print a replacement JSON object to
++stdout. Empty stdout, invalid JSON, a non-zero exit, a spawn error, or a
++timeout leaves the input unchanged. This fail-open contract makes optional
++integrations safe to enable.
+
+ Transformers compose in configuration order and run before the `pre_tool`
+ policy gate, so policies evaluate the final transformed input. Keep plugins

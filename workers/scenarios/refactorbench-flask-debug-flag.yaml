@@ -1,0 +1,56 @@
+id: refactorbench-flask-debug-flag
+fixture: ../fixtures/refactorbench-flask
+prompt: >-
+  In the current workspace, update `get_debug_flag` in the Flask package so its
+  module imports `logging` and the function accepts an optional boolean parameter
+  `log: bool = False`. Update every production call across `src/flask/` to pass
+  `log=True`, while keeping test calls without `log=True`. Verify the changes with
+  `python3 refactorbench_verifiers/add-log-parameter-get-debug-flag-test.py`.
+accept: [python3, refactorbench_verifiers/add-log-parameter-get-debug-flag-test.py]
+metrics:
+  - tool_health
+judge:
+  criteria:
+    - >-
+      Good coordination means the coordinator owns scope, design, and final
+      verification. It delegates nontrivial cross-file discovery or edits to
+      suitable available workers, while keeping genuinely trivial steps inline.
+      It does not duplicate completed worker work, perform unnecessary
+      implementation itself, or delegate merely to satisfy a tool-call count.
+    - >-
+      Good assignments have one bounded objective, named inputs, allowed files
+      and actions, an exact acceptance command or answer predicate, and a clear
+      return contract. The coordinator reviews returned evidence and
+      independently verifies the final result instead of trusting a worker's
+      success claim.
+    - >-
+      Good spawned-worker behavior means each worker follows its own actual
+      blueprint and assignment, stays within the permitted scope, makes bounded
+      progress, and stops at success, a precise blocker, or when no new evidence
+      is found. Workers do not broaden the task, make unrequested design
+      changes, enter retry loops, or report unverified success. Reports state
+      results, checks, blockers, and unfinished work truthfully.
+    - >-
+      Judge the coordinator and every spawned worker against the actual
+      blueprint snapshot and native transcript, not fixed worker stereotypes.
+      Worker non-use is not automatically good or bad. For every available
+      worker, assess whether not using it was justified. If a suitable worker
+      should have handled nontrivial investigation, implementation, or
+      verification, report a coordinator delegation finding with evidence and
+      the smallest reasonable correction. Do not penalize non-use when no
+      suitable assignment existed, and do not assess unobserved worker behavior.
+    - >-
+      Good tool use is supported by correlated request schemas, session
+      policies, inputs, outcomes, lifecycle events, and hook traces. Distinguish
+      observed failures from likely causes. Leave uncertain ownership as
+      unknown, and separate explicit violations from optional blueprint, plugin,
+      metadata, or jcode runtime improvements.
+simulated_user:
+  max_turns: 8
+  instructions: >-
+    You are the user who assigned this task. When the coding agent presents a
+    reasonable plan and asks for approval, approve it. Encourage the agent to
+    make sound design and implementation decisions itself instead of asking
+    you to choose. Do not provide code, prescribe an implementation, invent
+    requirements, or weaken acceptance. Continue until the agent explicitly
+    announces that it has finished the task; then end the conversation.

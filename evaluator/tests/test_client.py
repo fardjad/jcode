@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -25,18 +26,20 @@ from jcode_harness_client import (
 def test_unix_transport_reassembles_split_ndjson_and_skips_unknown_event(
     tmp_path: Path,
 ) -> None:
-    server = FakeHarnessServer(
-        unix_path=tmp_path / "api.sock",
-        split_frames=True,
-        on_message=lambda _content, sid, send: (
-            send({"v": 1, "ev": "future_event", "session_id": sid}),
-            FakeHarnessServer._default_message(_content, sid, send),
-        ),
-    )
-    with server:
-        with server.client() as client:
-            session = client.create_session(working_dir=tmp_path)
-            result = session.send_message("hello")
+    # macOS limits AF_UNIX paths to 104 bytes; pytest's base temp can exceed it.
+    with tempfile.TemporaryDirectory(prefix="jcode-socket-") as socket_dir:
+        server = FakeHarnessServer(
+            unix_path=Path(socket_dir) / "api.sock",
+            split_frames=True,
+            on_message=lambda _content, sid, send: (
+                send({"v": 1, "ev": "future_event", "session_id": sid}),
+                FakeHarnessServer._default_message(_content, sid, send),
+            ),
+        )
+        with server:
+            with server.client() as client:
+                session = client.create_session(working_dir=tmp_path)
+                result = session.send_message("hello")
 
     assert result == HarnessResult(text="reply", session_id="session-1")
     create = next(

@@ -14,6 +14,7 @@ from pathlib import Path
 from isolate_config import isolated_environment
 from patch_catalog import CatalogError, dependency_order, fail, patches, repository_root, resolve_patch, validation_commands
 from run_nextest import config_path, load_validation_names
+from validation_state import exclusive_lock, source_cache
 from version_base import resolve_base
 
 
@@ -58,15 +59,15 @@ def write_validation_names(root: Path, base: str, names: list[str]) -> Path:
 def learn(root: Path, worktree: Path, base: str) -> list[str]:
     """Run cargo Validation commands on clean upstream and record failing tests."""
     catalog = patches(root)
-    cargo_target = root / ".tools" / "cargo-target" / "patch-validation"
-    cargo_target.mkdir(parents=True, exist_ok=True)
+    cargo_target = source_cache(root, worktree, "patch-validation")
     names: set[str] = set()
     for patch in (catalog[name] for name in sorted(catalog)):
         for command in validation_commands(patch.path):
             if not command.lstrip().startswith("cargo test"):
                 continue
             print(f"learning validation exclusions from {patch.path.name}: {command}")
-            with isolated_environment() as environment:
+            with isolated_environment() as environment, exclusive_lock(
+                    cargo_target / "catalog.lock", "baseline validation cache"):
                 environment["CARGO_TARGET_DIR"] = str(cargo_target)
                 environment["JCODE_CATALOG_ROOT"] = str(root)
                 result = subprocess.run(
@@ -90,8 +91,7 @@ def validate(root: Path, worktree: Path, target: str | None, base: str | None = 
     base = base or resolve_base(root)
     exclusions = load_validation_names(root, base)
     print(f"validation exclusions: {len(exclusions)}")
-    cargo_target = root / ".tools" / "cargo-target" / "patch-validation"
-    cargo_target.mkdir(parents=True, exist_ok=True)
+    cargo_target = source_cache(root, worktree, "patch-validation")
     for patch in ordered:
         for command in validation_commands(patch.path):
             if command.lstrip().startswith("cargo test"):
@@ -99,14 +99,11 @@ def validate(root: Path, worktree: Path, target: str | None, base: str | None = 
             print(f"validating {patch.path.name}: {command}")
             try:
                 with isolated_environment() as environment:
-                    # Validation worktrees are disposable, but Cargo artifacts are
-                    # safe to retain in this ignored catalog-local cache. Cargo
-                    # fingerprints keep revisions, profiles, features, and targets
-                    # distinct while allowing sequential validation commands to
-                    # reuse unchanged dependencies.
+                    # Compiler metadata belongs to this clean source tree only.
                     environment["CARGO_TARGET_DIR"] = str(cargo_target)
                     environment["JCODE_CATALOG_ROOT"] = str(root)
-                    subprocess.run(["bash", "-c", command], cwd=worktree, env=environment, check=True)
+                    with exclusive_lock(cargo_target / "catalog.lock", "declared validation cache"):
+                        subprocess.run(["bash", "-c", command], cwd=worktree, env=environment, check=True)
             except subprocess.CalledProcessError as error:
                 raise CatalogError(f"validation failed in {patch.path.name}: {command}") from error
 

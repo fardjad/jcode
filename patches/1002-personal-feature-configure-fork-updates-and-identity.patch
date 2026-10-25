@@ -3,36 +3,43 @@ From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:50 +0200
 Subject: [PATCH] feat: allow selecting the self-update repository
 
-X-Jcode-Patch-Intent: let fork builds check and install updates from a selected GitHub repository
+X-Jcode-Patch-Intent: let fork builds check and install updates from a selected GitHub repository and state fork identity in the default system prompt
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
-X-Jcode-Patch-File: 1002-personal-feature-allow-selecting-the-self-update-repository.patch
+X-Jcode-Patch-File: 1002-personal-feature-configure-fork-updates-and-identity.patch
 
 Patch intent:
 Add a validated JCODE_UPDATE_REPO override for GitHub release, main-channel,
-source-bootstrap, and development-build self-update operations.
+source-bootstrap, and development-build self-update operations, and state in the
+default system prompt that this agent is a fork based on Fardjad's patches
+(https://github.com/fardjad/jcode).
 
 Why it exists:
 Fork maintainers need release binaries and source bootstrap updates to follow
 their published releases without redirecting unrelated runtime network traffic
-or checked-out Git remotes.
+or checked-out Git remotes, and the default system prompt should accurately
+identify the agent as Fardjad's patched fork rather than vanilla jcode.
 
 Upstream integration points:
 crates/jcode-app-core/src/update.rs owns release lookup, main checks, source
 bootstrap, and prepared update installation. update_dev_guard.rs owns the
 GitHub ancestry comparison. jcode-update-core::PreparedUpdate carries the
 selected source repository across background installation.
+crates/jcode-base/src/prompt/system_prompt.md and prompt_tests.rs own the
+built-in default system prompt identity.
 
 Update guidance:
 Keep repository input GitHub-slug-only and validated before URL or clone
 construction. Preserve configured checkout upstreams and retain the selected
 repository throughout a prepared source update. Fork releases must keep the
-expected platform assets and optional SHA256SUMS asset.
+expected platform assets and optional SHA256SUMS asset. Preserve the fork
+identity line in system_prompt.md alongside upstream's open-source attribution.
 
 Validation:
 cargo test -p jcode-app-core update_repository --lib
 cargo test -p jcode-app-core github_comparison_uses_selected_update_repository --lib
 cargo test -p jcode-app-core default_update_urls_never_target_upstream_repo --lib
+cargo test -p jcode-base test_skill_prompt_integration --lib
 cargo check -p jcode-app-core
 ---
  README.md                                     |   7 +
@@ -41,9 +48,11 @@ cargo check -p jcode-app-core
  crates/jcode-app-core/src/update.rs           | 163 +++++++++++++-----
  crates/jcode-app-core/src/update_dev_guard.rs |  35 +++-
  crates/jcode-app-core/src/update_tests.rs     |  89 ++++++++++
+ crates/jcode-base/src/prompt/system_prompt.md |  10 +-
+ crates/jcode-base/src/prompt_tests.rs         |   1 +
  crates/jcode-update-core/src/lib.rs           |   1 +
  src/cli/selfdev.rs                            |  12 +-
- 8 files changed, 259 insertions(+), 56 deletions(-)
+ 10 files changed, 264 insertions(+), 62 deletions(-)
 
 diff --git a/README.md b/README.md
 index 36338fc7f..9e13aa677 100644
@@ -608,6 +617,51 @@ index bc281ed44..27d759908 100644
  #[test]
  fn test_version_is_newer() {
      assert!(version_is_newer("0.1.3", "0.1.2"));
+diff --git a/crates/jcode-base/src/prompt/system_prompt.md b/crates/jcode-base/src/prompt/system_prompt.md
+index 4945d2abb..5ce0499bc 100644
+--- a/crates/jcode-base/src/prompt/system_prompt.md
++++ b/crates/jcode-base/src/prompt/system_prompt.md
+@@ -2,24 +2,22 @@
+
+ You are Jcode. You are a maximally helpful and proactive coding agent and assistant.
+ Jcode is open source: <https://github.com/1jehuang/jcode>
++You are not vanilla jcode; you are a fork based on the patches of Fardjad: <https://github.com/fardjad/jcode>
+
+ ## Autonomy and persistence
+
+-Use todo tool extensively
++Use the todo tool when available to track multi-step work.
+ Have autonomy. Persist to completing a task.
+ Fix problems over surfacing them.
+-Accomplish user intent over literals
+ Given a task, be comprehensive
+-Requesting input from user is a blocking action. Use this sparsely.
+-User response summary should be under 5 lines
+ Hesitate for destructive or non-reversible actions. Examples: Completing a payment, deleting a database, sending an email.
+
+ ## Coding
+
+-Commit as you go.
++Only commit when asked.
+ Prefer swarm coordination over branches and git worktrees unless isolation is needed.
+ You can't interact with interactive commands. Use non-interactive instead.
+-Edit files with `edit`, `replace`, `apply_patch`, or `write`, not sed, perl, or Python scripts in bash.
++Edit files with `edit` (single file), `apply_patch` (multi-file), or `write` (new files), not sed, perl, or Python scripts in bash.
+
+ ## Dont
+
+diff --git a/crates/jcode-base/src/prompt_tests.rs b/crates/jcode-base/src/prompt_tests.rs
+index 34914e99b..c1d764cd7 100644
+--- a/crates/jcode-base/src/prompt_tests.rs
++++ b/crates/jcode-base/src/prompt_tests.rs
+@@ -50,6 +50,7 @@ fn test_skill_prompt_integration() {
+     // The prompt should contain our default system prompt
+     // Identity line reworded in 24838926e ("docs: refine base agent guidance").
+     assert!(prompt.contains("You are Jcode."));
++    assert!(prompt.contains("https://github.com/fardjad/jcode"));
+
+     // The prompt should contain the skill prompt
+     assert!(prompt.contains(skill_prompt));
 diff --git a/crates/jcode-update-core/src/lib.rs b/crates/jcode-update-core/src/lib.rs
 index 5cc735095..a87f94856 100644
 --- a/crates/jcode-update-core/src/lib.rs

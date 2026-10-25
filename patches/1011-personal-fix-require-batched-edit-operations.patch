@@ -5,7 +5,7 @@ Subject: [PATCH] fix: require batched edit operations
 
 X-Jcode-Patch-Intent: Require the edit tool batch operations input contract
 X-Jcode-Patch-Kind: personal-fix
-X-Jcode-Patch-Depends-On: 1010-personal-fix-stop-repeated-deterministic-tool-input-failures.patch
+X-Jcode-Patch-Depends-On: 1010-personal-fix-nudge-repeated-deterministic-tool-input-failures.patch
 X-Jcode-Patch-File: 1011-personal-fix-require-batched-edit-operations.patch
 
 Patch intent:

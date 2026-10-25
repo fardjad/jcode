@@ -13,11 +13,35 @@ from isolate_config import isolated_environment
 
 
 class IsolateConfigTests(unittest.TestCase):
-    def test_wrapper_replaces_inherited_home_and_jcode_home(self):
-        wrapper = Path(__file__).with_name("isolate_config.py")
+    def disposable_wrapper_environment(self):
+        """Contain even interpreter startup caches before the wrapper runs."""
+        directory = tempfile.TemporaryDirectory(prefix="jcode-isolation-fixture-")
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        home = root / "sentinel-home-that-must-not-be-inherited"
+        home.mkdir()
         environment = os.environ.copy()
-        environment["HOME"] = "/sentinel-home-that-must-not-be-inherited"
-        environment["JCODE_HOME"] = "/sentinel-jcode-home-that-must-not-be-inherited"
+        environment["HOME"] = str(home)
+        environment["JCODE_HOME"] = str(root / "sentinel-jcode-home-that-must-not-be-inherited")
+        for variable in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+            environment[variable] = str(root / variable.lower())
+        environment["PYTHONPYCACHEPREFIX"] = str(root / "python-cache")
+        return root, environment
+
+    def test_disposable_wrapper_fixture_cleans_startup_artifacts(self):
+        root, environment = self.disposable_wrapper_environment()
+        for variable in ("HOME", "JCODE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+                         "XDG_DATA_HOME", "XDG_STATE_HOME", "PYTHONPYCACHEPREFIX"):
+            self.assertTrue(Path(environment[variable]).is_relative_to(root))
+        cache = Path(environment["HOME"]) / "Library" / "Caches" / "com.apple.python"
+        cache.mkdir(parents=True)
+        (cache / "fixture").write_text("test cache")
+        self.doCleanups()
+        self.assertFalse(root.exists())
+
+    def test_wrapper_replaces_inherited_home_and_jcode_home(self):
+        wrapper = Path(__file__).resolve().with_name("isolate_config.py")
+        root, environment = self.disposable_wrapper_environment()
         result = subprocess.run(
             [
                 sys.executable,
@@ -31,6 +55,7 @@ class IsolateConfigTests(unittest.TestCase):
             capture_output=True,
             text=True,
             env=environment,
+            cwd=root,
         )
         home, jcode_home, home_exists = result.stdout.splitlines()
         self.assertNotEqual(home, environment["HOME"])
@@ -39,13 +64,11 @@ class IsolateConfigTests(unittest.TestCase):
         self.assertTrue(jcode_home.endswith("/.jcode"))
 
     def test_wrapper_preserves_explicit_rust_toolchain_locations(self):
-        wrapper = Path(__file__).with_name("isolate_config.py")
-        environment = os.environ.copy()
+        wrapper = Path(__file__).resolve().with_name("isolate_config.py")
+        root, environment = self.disposable_wrapper_environment()
         environment.update({
-            "HOME": "/sentinel-home-that-must-not-be-inherited",
-            "JCODE_HOME": "/sentinel-jcode-home-that-must-not-be-inherited",
-            "CARGO_HOME": "/sentinel-cargo-home-that-may-be-inherited",
-            "RUSTUP_HOME": "/sentinel-rustup-home-that-may-be-inherited",
+            "CARGO_HOME": str(root / "sentinel-cargo-home-that-may-be-inherited"),
+            "RUSTUP_HOME": str(root / "sentinel-rustup-home-that-may-be-inherited"),
         })
         result = subprocess.run(
             [
@@ -60,6 +83,7 @@ class IsolateConfigTests(unittest.TestCase):
             capture_output=True,
             text=True,
             env=environment,
+            cwd=root,
         )
         cargo_home, rustup_home, home, jcode_home = result.stdout.splitlines()
         self.assertEqual(cargo_home, environment["CARGO_HOME"])

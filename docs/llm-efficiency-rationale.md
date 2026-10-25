@@ -41,8 +41,8 @@ pattern:
 
 - `fixer` performs exact mechanical changes within coordinator-defined scope,
   using `edit`, `apply_patch`, or `write`.
-- `investigator` runs coordinator-specified, read-only shell commands, searches
-  code, and reads files to return compact facts.
+- `investigator` runs read-only shell commands within its assigned scope, searches
+  code, and reads files to return factual evidence.
 - `research` handles web and jcode documentation research.
 
 The coordinator blueprint explicitly guides selection of these workers for
@@ -63,15 +63,16 @@ worker is cheaper, that it is always the right choice, or that delegation
 reduces total tokens. The saving comes when a lower-cost specialist avoids
 placing its raw investigation and tool output in the coordinator context.
 
-## Bounded worker results and incremental inspection
+## Bounded spawn summaries and incremental inspection
 
 Patch
 `1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
-makes the initial swarm-tool response a compact summary, bounded to 2,000
-characters. It also supplies deterministic, non-LLM follow-up reads, paged in
-2,000-character chunks. Consequently, the coordinator can ask for a small
-conclusion first and inspect more evidence only for ambiguous or important
-cases.
+makes the initial `swarm_<id>` tool response a compact summary, bounded to
+2,000 characters. Worker report instructions do not impose a character limit;
+reports can include the detail needed to hand off the work. Deterministic,
+non-LLM follow-up reads page the report or transcript in 2,000-character chunks.
+The coordinator can inspect the summary first and retrieve more evidence only
+when needed.
 
 This is a context-shaping mechanism, not information deletion: the worker's
 full result remains available for paged retrieval according to the runtime's

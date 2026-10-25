@@ -7,7 +7,7 @@ X-Jcode-Patch-Intent: Keep hosted services, telemetry, promotional content,
 sponsored discovery, and automatic onboarding present but never active
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: 1001-personal-provider-add-typed-openrouter-eu-provider.patch, 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
-X-Jcode-Patch-File: 1007-personal-feature-keep-hosted-services-and-telemetry-inactive.patch
+X-Jcode-Patch-File: 1007-personal-feature-disable-hosted-services-telemetry-and-promotions.patch
 
 Patch intent:
 The personal build keeps upstream's hosted service code but never activates,
@@ -141,10 +141,10 @@ cargo test -p jcode-telemetry-core policy_sync_ --lib
  73 files changed, 1754 insertions(+), 790 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 9ef3a30c6..1ebbc44b7 100644
+index f4769491b..4c8d2f64e 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -1556,7 +1556,10 @@ impl Agent {
+@@ -1608,7 +1608,10 @@ impl Agent {
      }
 
      fn upload_transcript_telemetry(&mut self, end_reason: crate::telemetry::SessionEndReason) {
@@ -681,7 +681,7 @@ index 420432c05..c92aae063 100644
  //!
  //! `discover_tools` sends a model-written `query` and `reason` to a hosted
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index b747c741d..fd634530c 100644
+index be4695541..3c466376c 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -446,12 +446,6 @@ impl Registry {

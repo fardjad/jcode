@@ -37,6 +37,7 @@ Commands:
 ```text
 just help
 just test-catalog               # run catalog script and plugin tests
+just eval-workers [scenario]    # paid live blueprint evaluation; never in test-catalog
 just validate-patch-files
 just create-patched-copy
 just snapshot-patches            # regenerate patches and normalize personal hashes
@@ -60,6 +61,12 @@ declared validation commands and compatibility tests. Failures retain worktrees
 and print cleanup commands. `just test-all-patches` runs it for every patch in
 the background, keeps logs under `.tools/patch-tests/<base>/`, and skips
 unchanged patches that already passed.
+
+`just eval-workers [scenario]` runs paid live real-code coordinator/worker,
+simulated-user, and judge calls outside normal catalog tests. Its build gate uses the exact pinned
+base plus every current patch and never resets or implicitly uses
+`.patched-jcode`. Follow `workers/AGENTS.md` and `evaluator/AGENTS.md`, and use
+the project-local `/evaluate-worker-blueprints` skill for run/review procedures.
 
 Tests that already fail on clean upstream are learned, never hand-coded. `just
 learn-upstream-exclusions` records them for the compatibility suite and for
@@ -299,6 +306,13 @@ create a PR unless the user explicitly asks. Leave updated catalog files and
 generated worktree changes uncommitted for user review. Do not create temporary
 commits merely to regenerate a patch.
 
+When applying a stack before full testing, preserve follow-up fixes with
+explicit owning-patch attribution until the corresponding source commits can
+be amended. Never temporarily commit an earlier feature's correction into a
+later patch. Preserve recovery refs or bundles before rewriting the stack,
+and verify exact final tree equality after ownership repair. Do not reset a
+copy with unpersisted commits or edits to simplify bookkeeping.
+
 ## Delegating patch work
 
 These rules apply whenever workers edit `.patched-jcode`, during a sync or not.
@@ -312,6 +326,79 @@ These rules apply whenever workers edit `.patched-jcode`, during a sync or not.
   uses it.
 - Resolve trivial conflicts directly, such as both sides adding tests or
   methods, or a test moved into a split module.
+
+## Worker blueprint boundaries
+
+The blueprints under `workers/blueprints/` are reusable harness roles, used in
+other projects as well as this catalog. Keep catalog paths, patch ownership,
+release pins, sync procedures, isolation commands, and installer recipes out
+of those blueprints. Supply this repository's context through project
+instructions and scoped assignments. Runtime tool guidance and transferable
+execution discipline belong in blueprints, not catalog-specific procedures.
+
+Before changing workers or delegation rules, check the blueprints, their
+README, tool permissions, and these project instructions for contradictions.
+Fix the authoritative instruction that is wrong. Do not add generic
+"be project-independent" boilerplate, conflicting exceptions, or workarounds
+that bypass permissions. Preserve established role responsibilities unless
+the user explicitly approves changing them. Static contract tests check known
+regressions, not whether a model will follow the instructions in practice.
+
+## Validation execution discipline
+
+Give each result ledger and shared mutable build cache one active runner.
+Do not overlap per-patch runners or modify their inputs during validation.
+Before rerunning after a timeout, inspect the original process, task state,
+and log. A monitoring timeout is not command failure or proof of termination.
+Long runs need persistent logs, process/task identity, and an explicit exit
+status that can be inspected independently of the monitoring call.
+
+Do not accept compiler diagnostics that contradict the actual worktree as a
+source defect without checking dependency resolution and cached artifacts.
+After affected builds stop, invalidate only the implicated disposable cache
+entries and rerun the failing check. Never widen patch dependencies merely to
+mask stale artifacts, hide patched failures, or accept unexplained retries.
+
+Final individual-test acceptance must match the current patch content hashes
+and pinned base, including candidate hashes changed by regeneration. A prior
+pass for an older patch is not current evidence. Verify regenerated patches
+reproduce the intended source tree exactly, and map all required checks to
+observed outcomes before reporting the sync validated. The resumable runner
+now fingerprints dependency closure, validation tooling, exclusions, and Rust
+version. Run this no-build current-result audit:
+
+```text
+python3 scripts/isolate_config.py -- python3 scripts/run_all_patch_tests.py --audit
+```
+
+Legacy records lack the stronger fingerprint and are not upgraded to passes
+automatically.
+Compiler caches are keyed by clean source tree under `.tools/cargo-target/`.
+Different trees cost additional disk space and cold compilation, but cannot
+reuse one another's mutable compiler metadata. Preserve the documented JUnit
+path under each worktree. Runner locks do not authorize resetting a worktree
+or bypass manual coordination with other source users.
+
+## Review evidence and instruction changes
+
+Before reporting a sync complete, record a final intent/code/test review for
+all retained patches under `sync-scratch/reviews/`. Use
+`python3 scripts/isolate_config.py -- python3 scripts/check_patch_reviews.py init`
+to create pending templates, then fill them from actual review. Never mark a
+record reviewed solely because tests passed. Each claim needs code locations,
+actual test functions, findings, and a supported outcome or explicitly
+user-accepted gap. Include full-scope coverage, broader changes, and residuals.
+The source commit, patch and dependency hashes, and base identify the reviewed
+version. After changes, re-review stale records. Run the script's `check` action
+before completion. It checks freshness and record structure, not truth or
+semantic completeness, and does not redefine patch intent.
+
+For instruction edits, name the concrete defect and authoritative location,
+make the smallest correction, and state whether role responsibilities or tool
+permissions change. Changes to approval, cost, security, or role semantics
+require explicit approval for that change, not incidental cleanup. Review
+questionable assumptions separately. Distinguish proposed rules, implemented
+checks, and behavior actually verified by a live harness.
 
 ## Plugins
 

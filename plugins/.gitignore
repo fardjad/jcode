@@ -5,3 +5,4 @@ __pycache__/
 # Editor and macOS metadata.
 .DS_Store
 *.swp
+agent-sudo/

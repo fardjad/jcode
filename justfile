@@ -139,7 +139,7 @@ snapshot-patches *args:
   python3 "$repo_root/scripts/isolate_config.py" -- \
     python3 "$repo_root/scripts/normalize_patch.py"
 
-# Runs every scripts/test_* and plugins/*/test_* file under isolation, except
+# Runs scripts/test_*, plugins/*/test_*, workers/tests/test_*, and evaluator pytest suite under isolation, except
 # test_install_patched_version_recipe.sh, which does a full release build and
 # resets .patched-jcode; run that one by hand when changing the install recipe.
 # Run the catalog's own script and plugin tests.
@@ -150,7 +150,7 @@ test-catalog:
   repo_root=$(git rev-parse --show-toplevel)
   cd "$repo_root"
   failed=()
-  for test in scripts/test_* plugins/*/test_*; do
+  for test in scripts/test_* plugins/*/test_* workers/tests/test_*; do
     case "$test" in
       scripts/test_install_patched_version_recipe.sh)
         printf 'skip %s (full release build)\n' "$test"
@@ -167,10 +167,37 @@ test-catalog:
       failed+=("$test")
     fi
   done
+  if [[ ! -x "$repo_root/evaluator/.venv/bin/pytest" ]]; then
+    printf 'evaluation tests need: cd evaluator && uv sync --extra eval\n' >&2
+    exit 1
+  fi
+  if (cd "$repo_root/evaluator" && python3 "$repo_root/scripts/isolate_config.py" -- "$repo_root/evaluator/.venv/bin/pytest" -q) >/dev/null 2>&1; then
+    printf 'ok   evaluator/tests\n'
+  else
+    printf 'FAIL evaluator/tests\n'
+    failed+=("evaluator/tests")
+  fi
   if (( ${#failed[@]} )); then
     printf 'rerun to see output: python3 scripts/isolate_config.py -- <runner> %s\n' "${failed[0]}" >&2
     exit 1
   fi
+
+# Run paid live real-code evaluations with coordinator/worker and judge calls.
+# Automatically builds or reuses the exact VERSION.txt base plus every current
+# catalog patch. Ignored logs/stamps live under .tools/worker-eval/builds/;
+# inspect the reported build.log and build-status.json after a failed build.
+# Paid live provider/judge runs; deliberately separate from test-catalog.
+eval-workers scenario="":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  repo_root=$(git rev-parse --show-toplevel)
+  scenario_args=()
+  if [[ -n "{{scenario}}" ]]; then
+    scenario_args=(--scenario "{{scenario}}")
+  fi
+  python3 "$repo_root/scripts/isolate_config.py" -- \
+    python3 "$repo_root/scripts/eval_workers.py" "${scenario_args[@]}"
 
 # Print the commit-to-patch mapping for .patched-jcode.
 list-patches *args:

@@ -6,7 +6,7 @@ Subject: [PATCH] fix: nudge repeated deterministic tool input failures
 X-Jcode-Patch-Intent: Nudge repeated deterministic tool failures without stopping turns
 X-Jcode-Patch-Kind: personal-fix
 X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch
-X-Jcode-Patch-File: 1010-personal-fix-stop-repeated-deterministic-tool-input-failures.patch
+X-Jcode-Patch-File: 1010-personal-fix-nudge-repeated-deterministic-tool-input-failures.patch
 
 Patch intent:
 After three matching typed deterministic failures, return feedback in the tool
@@ -798,7 +798,7 @@ index 928dea08b..ed6c61559 100644
  fn action_message_is_compact() {
      let msg = format_action_message(
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index fd634530c..cf4747e2b 100644
+index 3c466376c..f6905537c 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -41,6 +41,7 @@ mod open;
@@ -962,7 +962,7 @@ index fd634530c..cf4747e2b 100644
          };
 
          // Drop the lock before executing
-@@ -1122,6 +1193,48 @@ impl Registry {
+@@ -1123,6 +1194,48 @@ impl Registry {
              input,
          )
          .await;
@@ -1011,7 +1011,7 @@ index fd634530c..cf4747e2b 100644
 
          // User-configured pre_tool gate: external policy hook that can block
          // this call (exit 2). Skipped entirely when not configured.
-@@ -1979,3 +2092,269 @@ mod mcp_allow_list_tests {
+@@ -1981,3 +2094,269 @@ mod mcp_allow_list_tests {
 
  #[cfg(test)]
  mod tests;

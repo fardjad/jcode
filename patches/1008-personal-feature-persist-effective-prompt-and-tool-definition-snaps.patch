@@ -109,10 +109,10 @@ index bbc0a3a46..ad2df15be 100644
 
  [[package]]
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 1ebbc44b7..61c90ed4f 100644
+index 4c8d2f64e..4769e458c 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -1374,6 +1374,7 @@ impl Agent {
+@@ -1426,6 +1426,7 @@ impl Agent {
                      timestamp: Some(chrono::Utc::now()),
                      tool_duration_ms: None,
                      token_usage: None,

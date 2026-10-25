@@ -1,6 +1,6 @@
 # Privacy and hosted-feature controls
 
-Patch `1007-personal-feature-keep-hosted-services-and-telemetry-inactive.patch`
+Patch `1007-personal-feature-disable-hosted-services-telemetry-and-promotions.patch`
 keeps hosted services and telemetry present in the code but inactive. It gates
 cloud-dependent and promotional surfaces so jcode runs without contacting
 hosted services unless a provider is explicitly allowed.

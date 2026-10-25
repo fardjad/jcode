@@ -6,6 +6,15 @@ readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = []
 
+[project.optional-dependencies]
+eval = [
+    "PyYAML>=6.0.2,<7",
+    "pydantic-ai-slim[anthropic,openai,openrouter]>=1.0.0,<2",
+]
+
+[project.scripts]
+jcode-eval = "jcode_harness_client.cli:main"
+
 [dependency-groups]
 dev = [
     "mypy>=1.15,<2",
@@ -30,6 +39,9 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.14"
 strict = true
 files = ["jcode_harness_client"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff.lint.per-file-ignores]
 "smoke/mock_completions.py" = ["E402"]

@@ -19,6 +19,8 @@ _KNOWN_EVENTS = frozenset(
     {
         "hello_ok",
         "ok",
+        "sessions",
+        "tools",
         "error",
         "attached",
         "message_accepted",
@@ -27,6 +29,10 @@ _KNOWN_EVENTS = frozenset(
         "text_replace",
         "turn_stopped",
         "turn_done",
+        "tool_start",
+        "tool_input_delta",
+        "tool_exec",
+        "tool_done",
     }
 )
 _DEFAULT_TURN_TIMEOUT = 300.0
@@ -72,6 +78,63 @@ class ConversationTurn:
 
     role: str
     content: str
+
+
+@dataclass(frozen=True, slots=True)
+class NativeSessionInfo:
+    """Read-only native session inventory with additive fields preserved."""
+
+    session_id: str
+    parent_session_id: str | None
+    agent_label: str | None
+    swarm_status: Any
+    worker_blueprint_policy: dict[str, Any] | None
+    edit_stats: Any
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeToolDefinition:
+    """One effective native tool definition, including unknown fields."""
+
+    name: str
+    raw: dict[str, Any]
+
+
+def _session_info(value: Any) -> NativeSessionInfo:
+    if not isinstance(value, dict):
+        raise HarnessProtocolError("list_sessions entries must be objects")
+    session_id = _required_string(value, "session_id", "list_sessions")
+    parent = value.get("parent_session_id")
+    label = value.get("agent_label")
+    policy = value.get("worker_blueprint_policy")
+    if parent is not None and not isinstance(parent, str):
+        raise HarnessProtocolError("parent_session_id must be a string or null")
+    if label is not None and not isinstance(label, str):
+        raise HarnessProtocolError("agent_label must be a string or null")
+    if policy is not None and not isinstance(policy, dict):
+        raise HarnessProtocolError("worker_blueprint_policy must be an object or null")
+    return NativeSessionInfo(
+        session_id=session_id,
+        parent_session_id=parent,
+        agent_label=label,
+        swarm_status=value.get("swarm_status"),
+        worker_blueprint_policy=policy,
+        edit_stats=value.get("edit_stats"),
+        raw=dict(value),
+    )
+
+
+def _tool_definition(value: Any) -> NativeToolDefinition:
+    if not isinstance(value, dict):
+        raise HarnessProtocolError("list_tools entries must be objects")
+    name = value.get("name")
+    if not isinstance(name, str):
+        function = value.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+    if not isinstance(name, str) or not name:
+        raise HarnessProtocolError("effective tool definition has no name")
+    return NativeToolDefinition(name=name, raw=dict(value))
 
 
 def _normalize_history(
@@ -145,6 +208,7 @@ class HarnessResult:
     provider_stop_reason: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    events: tuple[dict[str, Any], ...] = ()
 
     @property
     def completed_normally(self) -> bool:
@@ -177,6 +241,7 @@ class _Turn:
     session: HarnessSession
     events: queue.Queue[dict[str, Any] | BaseException]
     request_id: int
+    event_sink: list[dict[str, Any]] | None = None
     stop_seen: bool = False
     abandoned: bool = False
 
@@ -458,6 +523,38 @@ class HarnessClient:
             self._sessions[session_id] = session
         return session
 
+    def list_sessions(self) -> list[NativeSessionInfo]:
+        """Return the daemon's current native session inventory."""
+
+        reply = self._request(
+            "list_sessions", {"include_archived": True}, timeout=_HANDSHAKE_TIMEOUT
+        )
+        if reply.get("ev") == "error":
+            raise _request_error(reply)
+        if reply.get("ev") != "sessions" or not isinstance(reply.get("sessions"), list):
+            raise HarnessProtocolError(
+                "list_sessions did not return a native session list"
+            )
+        return [_session_info(value) for value in reply["sessions"]]
+
+    def list_tools(self, session_id: str) -> list[NativeToolDefinition]:
+        """Return effective tool definitions for one existing native session."""
+
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a nonempty string")
+        reply = self._request(
+            "list_tools", {"session_id": session_id}, timeout=_HANDSHAKE_TIMEOUT
+        )
+        if reply.get("ev") == "error":
+            raise _request_error(reply)
+        if (
+            reply.get("ev") != "tools"
+            or reply.get("session_id") != session_id
+            or not isinstance(reply.get("tools"), list)
+        ):
+            raise HarnessProtocolError("list_tools did not return a native tool list")
+        return [_tool_definition(value) for value in reply["tools"]]
+
     def send_message(
         self,
         content: str,
@@ -465,6 +562,8 @@ class HarnessClient:
         thread_id: str | None = None,
         working_dir: str | os.PathLike[str] | None = None,
         timeout: float | None = None,
+        capture_events: bool = False,
+        event_sink: list[dict[str, Any]] | None = None,
     ) -> HarnessResult:
         """Send one message, optionally reusing an in-memory thread mapping.
 
@@ -482,7 +581,12 @@ class HarnessClient:
                 )
             with call_lock:
                 session = self.create_session(working_dir=directory)
-                return session.send_message(content, timeout=timeout)
+                return session.send_message(
+                    content,
+                    timeout=timeout,
+                    capture_events=capture_events,
+                    event_sink=event_sink,
+                )
         if not isinstance(thread_id, str) or not thread_id:
             raise ValueError("thread_id must be a non-empty string")
         with self._lock:
@@ -514,7 +618,12 @@ class HarnessClient:
                 with self._lock:
                     self._ensure_open_locked()
                     self._thread_sessions[thread_id] = (directory, mapped_session)
-            return mapped_session.send_message(content, timeout=timeout)
+            return mapped_session.send_message(
+                content,
+                timeout=timeout,
+                capture_events=capture_events,
+                event_sink=event_sink,
+            )
 
     def close(self) -> None:
         """Best-effort detach all created sessions, then close the transport."""
@@ -590,7 +699,12 @@ class HarnessClient:
             raise response
         return response
 
-    def _start_turn(self, session: HarnessSession, content: str) -> _Turn:
+    def _start_turn(
+        self,
+        session: HarnessSession,
+        content: str,
+        event_sink: list[dict[str, Any]] | None = None,
+    ) -> _Turn:
         with self._lock:
             self._ensure_open_locked()
             if session._settling:
@@ -602,7 +716,7 @@ class HarnessClient:
                     f"session {session.session_id!r} already has an in-flight turn"
                 )
             request_id = self._allocate_id_locked()
-            turn = _Turn(session, queue.Queue(), request_id)
+            turn = _Turn(session, queue.Queue(), request_id, event_sink)
             session._active_turn = turn
             self._turns_by_request[request_id] = turn
             frame = {
@@ -769,6 +883,8 @@ class HarnessClient:
 
     def _route_turn_event_locked(self, turn: _Turn, frame: _Reply) -> None:
         event_name = frame.get("ev")
+        if turn.event_sink is not None:
+            turn.event_sink.append(dict(frame))
         if event_name == "turn_stopped":
             turn.stop_seen = True
         if turn.abandoned:
@@ -823,7 +939,12 @@ class HarnessSession:
         self._settling = False
 
     def send_message(
-        self, content: str, *, timeout: float | None = None
+        self,
+        content: str,
+        *,
+        timeout: float | None = None,
+        capture_events: bool = False,
+        event_sink: list[dict[str, Any]] | None = None,
     ) -> HarnessResult:
         """Send one user turn and synchronously await its terminal event."""
         if not isinstance(content, str):
@@ -833,8 +954,9 @@ class HarnessSession:
             if timeout is None
             else _positive_timeout(timeout, "timeout")
         )
-        turn = self._client._start_turn(self, content)
+        turn = self._client._start_turn(self, content, event_sink)
         messages: OrderedDict[str | None, _MessageText] = OrderedDict()
+        captured: list[dict[str, Any]] = []
         stop: _Reply | None = None
         trailing_error: _Reply | None = None
         completed_message_ids: set[str | None] = set()
@@ -856,6 +978,8 @@ class HarnessSession:
                     ) from None
                 if isinstance(item, BaseException):
                     raise item
+                if capture_events:
+                    captured.append(dict(item))
                 name = item.get("ev")
                 if name == "error":
                     error = _request_error(item)
@@ -882,7 +1006,9 @@ class HarnessSession:
                             completed_only=True,
                             completed_ids=completed_message_ids,
                         )
-                        result = HarnessResult(result_text, self.session_id)
+                        result = HarnessResult(
+                            result_text, self.session_id, events=tuple(captured)
+                        )
                     else:
                         result = HarnessResult(
                             text=_joined_text(
@@ -891,6 +1017,7 @@ class HarnessSession:
                                 completed_ids=completed_message_ids,
                             ),
                             session_id=self.session_id,
+                            events=tuple(captured),
                             stop_reason=_required_string(
                                 stop, "reason", "turn_stopped"
                             ),

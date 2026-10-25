@@ -9,8 +9,10 @@ from run_all_patch_tests import retained_worktree_path, should_skip
 
 class RunAllPatchTestsTests(unittest.TestCase):
     def test_skip_requires_matching_pass_blob_and_no_force(self):
-        results = {"change.patch": {"blob": "abc123", "status": "pass"}}
-        self.assertTrue(should_skip(results, "change.patch", "abc123", False))
+        results = {"change.patch": {"blob": "abc123", "status": "pass", "fingerprint": "closure123"}}
+        self.assertTrue(should_skip(results, "change.patch", "abc123", False, "closure123"))
+        self.assertFalse(should_skip(results, "change.patch", "abc123", False))
+        self.assertFalse(should_skip(results, "change.patch", "abc123", False, "changed-dependency"))
         self.assertFalse(should_skip(results, "change.patch", "different", False))
         self.assertFalse(should_skip(results, "change.patch", "abc123", True))
         self.assertFalse(should_skip({"change.patch": {"blob": "abc123", "status": "fail"}},

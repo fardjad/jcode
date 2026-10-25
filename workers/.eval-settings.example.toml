@@ -1,0 +1,33 @@
+# Copy using `jcode-eval init-settings`, which creates mode 600.
+# Never put real credentials in this example or commit the private copy.
+[provider]
+# Supported protocol/provider types:
+# openai-compatible, anthropic-compatible, openrouter
+# The URL is the API base, not a full chat/messages endpoint.
+type = "openai-compatible"
+url = "https://api.example.com/v1"
+# Provider-native fallback model for any role omitted from [models].
+model = "REPLACE_WITH_YOUR_MODEL"
+api_key = "REPLACE_WITH_YOUR_API_KEY"
+auth = "bearer"
+# For header authentication (for example an Anthropic-compatible endpoint):
+# auth = "header"
+# auth_header = "x-api-key"
+
+[models]
+coordinator = "REPLACE_WITH_COORDINATOR_MODEL"
+swarm = "REPLACE_WITH_SWARM_MODEL"
+judge = "REPLACE_WITH_JUDGE_MODEL"
+# LLM-powered user actor; behavior and turn cap come from each scenario YAML.
+simulator = "REPLACE_WITH_SIMULATOR_MODEL"
+
+[limits]
+# Native coordinator turn and delegated worker limits.
+turn_timeout_seconds = 300
+swarm_timeout_minutes = 10
+# Independent acceptance command limit; a timeout does not erase source evidence.
+acceptance_timeout_seconds = 300
+# Positive paid-call guard. If pages + synthesis exceed it, review is incomplete.
+judge_max_calls = 32
+# Evidence bytes per page. Oversized records remain whole; nothing is truncated.
+judge_page_bytes = 120000

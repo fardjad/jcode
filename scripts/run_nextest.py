@@ -11,6 +11,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from validation_state import exclusive_lock, source_cache
 from isolate_config import isolated_environment
 
 NEXTEST_VERSION = "0.9.143"
@@ -119,7 +120,21 @@ def run(binary: str, root: Path, worktree: Path, names: list[str]) -> int:
         command += ["--filterset", " and ".join(f"not test(={name})" for name in names)]
     with isolated_environment() as environment:
         environment["JCODE_DEV_FEATURE_PROFILE"] = "minimal"
-        return subprocess.run(command, env=environment).returncode
+        cargo_target = source_cache(root, worktree, "compatibility")
+        environment["CARGO_TARGET_DIR"] = str(cargo_target)
+        # Preserve the public report location while separating compiled artifacts.
+        with exclusive_lock(cargo_target / "catalog.lock", "compatibility cache"):
+            report = cargo_target / "nextest/compat/junit.xml"
+            destination = worktree / "target/nextest/compat/junit.xml"
+            report.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            code = subprocess.run(command, env=environment).returncode
+            # nextest may keep its store at workspace/target despite Cargo's
+            # artifact override. Accept either actual location, never old data.
+            if report.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(report.read_bytes())
+            return code
 
 
 def main() -> int:

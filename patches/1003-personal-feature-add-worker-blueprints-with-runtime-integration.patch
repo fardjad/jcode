@@ -180,9 +180,9 @@ cargo test -p jcode-app-core blueprint_native_sync_ --lib
 cargo test -p jcode-base blueprint_policy_persistence_ --lib
 cargo test -p jcode-app-core worker_blueprint_policy --lib
 ---
- crates/jcode-app-core/src/agent.rs            |  201 +-
+ crates/jcode-app-core/src/agent.rs            |  255 +-
  crates/jcode-app-core/src/agent/prompting.rs  |   21 +-
- .../src/agent/turn_execution.rs               |   48 +-
+ .../src/agent/turn_execution.rs               |   52 +-
  crates/jcode-app-core/src/agent_tests.rs      |  517 ++++
  .../src/protocol_tests/comm_requests.rs       |    1 +
  .../src/server/client_actions.rs              |    6 +
@@ -201,7 +201,7 @@ cargo test -p jcode-app-core worker_blueprint_policy --lib
  .../jcode-app-core/src/server/comm_control.rs |    1 +
  .../src/server/comm_control_tests.rs          |    1 +
  .../src/server/comm_plan_tests.rs             |    1 +
- .../jcode-app-core/src/server/comm_session.rs |  133 +-
+ .../jcode-app-core/src/server/comm_session.rs |  155 +-
  .../src/server/comm_session_tests.rs          |  195 +-
  .../src/server/debug_session_admin.rs         |    1 +
  .../jcode-app-core/src/server/debug_tests.rs  |    1 +
@@ -219,7 +219,7 @@ cargo test -p jcode-app-core worker_blueprint_policy --lib
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
  .../src/tool/communicate_tests.rs             |    2 +-
- .../src/tool/communicate_tests/end_to_end.rs  |  121 +
+ .../src/tool/communicate_tests/end_to_end.rs  |  152 ++
  crates/jcode-app-core/src/tool/mod.rs         |   62 +-
  crates/jcode-app-core/src/tool/tests.rs       |   12 +
  crates/jcode-base/src/config.rs               |    1 +
@@ -236,21 +236,21 @@ cargo test -p jcode-app-core worker_blueprint_policy --lib
  crates/jcode-protocol/src/wire.rs             |    7 +
  crates/jcode-swarm-core/src/lib.rs            |    9 +-
  docs/HOOKS.md                                 |    2 +
- 56 files changed, 5759 insertions(+), 66 deletions(-)
+ 56 files changed, 5858 insertions(+), 78 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index f8773d683..9ef3a30c6 100644
+index f8773d683..f4769491b 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -78,6 +78,76 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
+@@ -78,6 +78,123 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
      LazyLock::new(|| StdMutex::new(HashMap::new()));
  const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
 
 +/// Apply the optional coordinator tool policy to a root session's allowed-tools
-+/// set. The coordinator policy is sourced from the reserved
++/// and disabled-tools sets. The coordinator policy is sourced from the reserved
 +/// `[agents.worker_blueprints.coordinator]` override and the `coordinator.md`
 +/// blueprint file. When swarm is disabled, the global policy passes through
 +/// unchanged.
@@ -261,19 +261,31 @@ index f8773d683..9ef3a30c6 100644
 +    if !swarm_enabled {
 +        return global_allowed;
 +    }
++    let blueprints_dir = crate::config::config()
++        .agents
++        .worker_blueprints_dir
++        .as_deref()
++        .map(str::to_string);
++    let file_coord = match crate::worker_blueprint::load_coordinator_blueprint(blueprints_dir.as_deref()) {
++        crate::worker_blueprint::CoordinatorLoadResult::Ok(coord) => Some(coord),
++        _ => None,
++    };
 +    let coordinator_override = crate::config::config()
 +        .agents
 +        .worker_blueprints
 +        .get(crate::worker_blueprint::COORDINATOR_ID);
-+    let coordinator_enabled = coordinator_override
++    let source_enabled = coordinator_override
 +        .and_then(|ov| ov.enabled.as_ref())
++        .or_else(|| file_coord.as_ref().and_then(|c| c.enabled_tools.as_ref()));
++    let coordinator_enabled = source_enabled
 +        .map(|tools| {
 +            tools
 +                .iter()
 +                .map(|t| t.trim().to_string())
 +                .filter(|t| !t.is_empty())
 +                .collect::<HashSet<String>>()
-+        });
++        })
++        .filter(|set| !set.is_empty());
 +    match (global_allowed, coordinator_enabled) {
 +        // Both present: intersect.
 +        (Some(global), Some(coord)) => Some(global.intersection(&coord).cloned().collect()),
@@ -282,6 +294,41 @@ index f8773d683..9ef3a30c6 100644
 +        // Only global or neither: pass through.
 +        (global, None) => global,
 +    }
++}
++
++fn effective_root_disabled_tools(
++    mut global_disabled: HashSet<String>,
++    swarm_enabled: bool,
++    is_root: bool,
++) -> HashSet<String> {
++    if !is_root || !swarm_enabled {
++        return global_disabled;
++    }
++    let blueprints_dir = crate::config::config()
++        .agents
++        .worker_blueprints_dir
++        .as_deref()
++        .map(str::to_string);
++    let file_coord = match crate::worker_blueprint::load_coordinator_blueprint(blueprints_dir.as_deref()) {
++        crate::worker_blueprint::CoordinatorLoadResult::Ok(coord) => Some(coord),
++        _ => None,
++    };
++    let coordinator_override = crate::config::config()
++        .agents
++        .worker_blueprints
++        .get(crate::worker_blueprint::COORDINATOR_ID);
++    let source_disabled = coordinator_override
++        .and_then(|ov| ov.disabled.as_ref())
++        .or_else(|| file_coord.as_ref().and_then(|c| c.disabled_tools.as_ref()));
++    if let Some(disabled) = source_disabled {
++        global_disabled.extend(
++            disabled
++                .iter()
++                .map(|t| t.trim().to_string())
++                .filter(|t| !t.is_empty()),
++        );
++    }
++    global_disabled
 +}
 +
 +fn effective_root_allowed_tools(
@@ -322,7 +369,7 @@ index f8773d683..9ef3a30c6 100644
  fn stable_hash_str(value: &str) -> u64 {
      let mut hasher = std::collections::hash_map::DefaultHasher::new();
      value.hash(&mut hasher);
-@@ -324,6 +394,10 @@ pub struct Agent {
+@@ -324,6 +441,10 @@ pub struct Agent {
      active_skill: Option<String>,
      allowed_tools: Option<HashSet<String>>,
      disabled_tools: HashSet<String>,
@@ -333,7 +380,7 @@ index f8773d683..9ef3a30c6 100644
      /// Generation-scoped ownership of this Agent's global tool-policy entry.
      _tool_policy_registration: crate::tool::SessionToolPolicyRegistration,
      /// MCP top-level definition exposure policy captured when the session starts.
-@@ -401,8 +475,13 @@ pub struct Agent {
+@@ -401,8 +522,13 @@ pub struct Agent {
      announced_skills_scan_index: usize,
      /// Whether memory features are enabled for this session
      memory_enabled: bool,
@@ -348,7 +395,7 @@ index f8773d683..9ef3a30c6 100644
      /// One-step undo snapshot captured before the most recent rewind.
      rewind_undo_snapshot: Option<RewindUndoSnapshot>,
      /// Channel for tools to request stdin input from the user
-@@ -502,8 +581,11 @@ impl Agent {
+@@ -502,8 +628,11 @@ impl Agent {
              skills,
              session,
              active_skill: None,
@@ -362,7 +409,7 @@ index f8773d683..9ef3a30c6 100644
              _tool_policy_registration: tool_policy_registration,
              mcp_tools_mode: tool_config.mcp_tools,
              provider_session_id: None,
-@@ -532,6 +614,7 @@ impl Agent {
+@@ -532,6 +661,7 @@ impl Agent {
              announced_skills_scan_index: 0,
              memory_enabled: crate::config::config().features.memory,
              swarm_enabled: crate::config::config().features.swarm,
@@ -370,7 +417,7 @@ index f8773d683..9ef3a30c6 100644
              rewind_undo_snapshot: None,
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
-@@ -550,6 +633,63 @@ impl Agent {
+@@ -550,6 +680,63 @@ impl Agent {
          agent
      }
 
@@ -434,7 +481,7 @@ index f8773d683..9ef3a30c6 100644
      fn current_skills_snapshot(&self) -> Arc<SkillRegistry> {
          // Global skills come from the process-wide shared registry; the
          // project-local overlay is composed fresh from this session's
-@@ -611,6 +751,25 @@ impl Agent {
+@@ -611,6 +798,25 @@ impl Agent {
          Self::new_with_initial_ownership(provider, registry, working_dir, parent_id, true)
      }
 
@@ -460,7 +507,7 @@ index f8773d683..9ef3a30c6 100644
      fn new_with_initial_ownership(
          provider: Arc<dyn Provider>,
          registry: Registry,
-@@ -626,6 +785,18 @@ impl Agent {
+@@ -626,6 +832,23 @@ impl Agent {
              *lap = Instant::now();
          };
          let tool_selection = crate::config::config().tools.selection();
@@ -476,19 +523,26 @@ index f8773d683..9ef3a30c6 100644
 +        );
 +
 +        let is_root = parent_id.is_none();
++        let disabled_tools = effective_root_disabled_tools(
++            tool_selection.disabled_tools,
++            crate::config::config().features.swarm,
++            is_root,
++        );
          let mut session = Session::create(parent_id, None);
          if let Some(working_dir) = working_dir {
              session.working_dir = Some(working_dir.to_string());
-@@ -635,7 +806,7 @@ impl Agent {
+@@ -635,8 +858,8 @@ impl Agent {
              provider,
              registry,
              session,
 -            tool_selection.allowed_tools,
+-            tool_selection.disabled_tools,
 +            allowed_tools,
-             tool_selection.disabled_tools,
++            disabled_tools,
          );
          mark("build_base", &mut lap);
-@@ -644,6 +815,10 @@ impl Agent {
+         // activate_concurrency_tracking writes the presence markers when the
+@@ -644,6 +867,10 @@ impl Agent {
          // session never touches the marker files.
          agent.session.mark_active_unregistered();
          mark("mark_active", &mut lap);
@@ -499,7 +553,7 @@ index f8773d683..9ef3a30c6 100644
          agent.session.model = Some(agent.provider_model());
          agent.session.provider_key = agent.provider_key_for_new_session();
          agent.reconcile_explicit_provider_pin_route();
-@@ -692,7 +867,20 @@ impl Agent {
+@@ -692,7 +919,20 @@ impl Agent {
          session: Session,
          allowed_tools: Option<HashSet<String>>,
      ) -> Self {
@@ -521,7 +575,7 @@ index f8773d683..9ef3a30c6 100644
              crate::config::ToolSelection {
                  allowed_tools: Some(allowed_tools),
                  disabled_tools: HashSet::new(),
-@@ -707,6 +895,9 @@ impl Agent {
+@@ -707,6 +947,9 @@ impl Agent {
              tool_selection.allowed_tools,
              tool_selection.disabled_tools,
          );
@@ -580,7 +634,7 @@ index cfce180b9..66361996b 100644
      }
 
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index fd8903f33..6fcd598af 100644
+index fd8903f33..1f7044c23 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
 @@ -210,6 +210,8 @@ impl Agent {
@@ -592,7 +646,7 @@ index fd8903f33..6fcd598af 100644
          }
      }
 
-@@ -443,9 +445,37 @@ impl Agent {
+@@ -443,9 +445,41 @@ impl Agent {
          }
      }
 
@@ -615,7 +669,11 @@ index fd8903f33..6fcd598af 100644
 +                enabled,
 +                true,
 +            );
-+            self.base_disabled_tools = selection.disabled_tools.clone();
++            self.base_disabled_tools = super::effective_root_disabled_tools(
++                selection.disabled_tools.clone(),
++                enabled,
++                true,
++            );
 +            self.global_disabled_tools = selection.disabled_tools;
 +            let policy = self.session.worker_blueprint_policy.clone();
 +            self.apply_worker_blueprint_policy(policy.as_ref());
@@ -631,7 +689,7 @@ index fd8903f33..6fcd598af 100644
      }
 
      /// Mark this session as an inline swarm worker. When enabled, the streaming
-@@ -677,6 +707,9 @@ impl Agent {
+@@ -677,6 +711,9 @@ impl Agent {
              .map(|names| names.iter().cloned().collect());
          let allowed = enabled.as_ref().or(self.allowed_tools.as_ref());
          let mut tools = self.registry.definitions(allowed).await;
@@ -641,7 +699,7 @@ index fd8903f33..6fcd598af 100644
          if enabled.is_none() && !self.disabled_tools.is_empty() {
              tools.retain(|tool| {
                  !self
-@@ -1156,6 +1189,12 @@ impl Agent {
+@@ -1156,6 +1193,12 @@ impl Agent {
                  "Tool 'jcode_docs' is disabled in self-development mode. Read the working tree documentation instead."
              ));
          }
@@ -654,7 +712,7 @@ index fd8903f33..6fcd598af 100644
          if sdk_enabled {
              return Ok(());
          }
-@@ -1252,11 +1291,8 @@ impl Agent {
+@@ -1252,11 +1295,8 @@ impl Agent {
          self.refresh_agents_md_snapshot();
          let agents_md_ms = lap.elapsed().as_millis();
          let lap = Instant::now();
@@ -1680,7 +1738,7 @@ index b6444a039..35d87f44c 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/server/comm_session.rs b/crates/jcode-app-core/src/server/comm_session.rs
-index 5b496b7c6..02072de20 100644
+index 5b496b7c6..ec8f66f85 100644
 --- a/crates/jcode-app-core/src/server/comm_session.rs
 +++ b/crates/jcode-app-core/src/server/comm_session.rs
 @@ -18,6 +18,7 @@ use crate::config::SwarmSpawnMode;
@@ -1918,6 +1976,42 @@ index 5b496b7c6..02072de20 100644
      let startup_message = startup_message.clone();
      {
          let mut plans = swarm_plans.write().await;
+@@ -825,6 +951,17 @@ pub(super) async fn spawn_swarm_agent(
+             agent_sessions.get(&new_session_id).cloned()
+         };
+         if let Some(agent_arc) = agent_arc {
++            update_member_status(
++                &new_session_id,
++                "running",
++                Some(truncate_detail(&initial_msg, 120)),
++                swarm_members,
++                swarms_by_id,
++                Some(event_history),
++                Some(event_counter),
++                Some(swarm_event_tx),
++            )
++            .await;
+             let sid_clone = new_session_id.clone();
+             let swarm_members2 = Arc::clone(swarm_members);
+             let swarms_by_id2 = Arc::clone(swarms_by_id);
+@@ -832,17 +969,6 @@ pub(super) async fn spawn_swarm_agent(
+             let event_counter2 = Arc::clone(event_counter);
+             let swarm_event_tx2 = swarm_event_tx.clone();
+             crate::runtime_activity::spawn(async move {
+-                update_member_status(
+-                    &sid_clone,
+-                    "running",
+-                    Some(truncate_detail(&initial_msg, 120)),
+-                    &swarm_members2,
+-                    &swarms_by_id2,
+-                    Some(&event_history2),
+-                    Some(&event_counter2),
+-                    Some(&swarm_event_tx2),
+-                )
+-                .await;
+                 let event_tx = super::session_event_fanout_sender(
+                     sid_clone.clone(),
+                     Arc::clone(&swarm_members2),
 @@ -899,6 +1025,7 @@ pub(super) async fn handle_comm_spawn(
      model: Option<String>,
      effort: Option<String>,
@@ -4323,10 +4417,10 @@ index 3217be906..c8c26a95b 100644
  use anyhow::Result;
  use async_trait::async_trait;
 diff --git a/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs b/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
-index 734004add..1626af130 100644
+index 734004add..673085dc2 100644
 --- a/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
 +++ b/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
-@@ -131,6 +131,127 @@ async fn communicate_list_and_await_members_work_end_to_end() {
+@@ -131,6 +131,158 @@ async fn communicate_list_and_await_members_work_end_to_end() {
      server_task.abort();
  }
 
@@ -4398,34 +4492,65 @@ index 734004add..1626af130 100644
 +        .tool("swarm_e2e-worker")
 +        .await
 +        .expect("generated blueprint tool should be registered");
-+    let result = tokio::time::timeout(
-+        Duration::from_secs(5),
-+        generated_tool.execute(
-+            json!({
-+                "task": "Acknowledge this end-to-end test.",
-+                "spawn_mode": "auto",
-+                "intent": "exercise generated blueprint tool"
-+            }),
-+            test_ctx(&watcher_session, &repo_dir),
-+        ),
-+    )
-+    .await
-+    .expect("generated blueprint tool should complete promptly")
-+    .expect("generated blueprint tool should succeed");
++    let execution_session = watcher_session.clone();
++    let execution = tokio::spawn(async move {
++        generated_tool
++            .execute(
++                json!({
++                    "task": "Acknowledge this end-to-end test.",
++                    "spawn_mode": "auto",
++                    "intent": "exercise generated blueprint tool"
++                }),
++                test_ctx(&execution_session, &repo_dir),
++            )
++            .await
++    });
++    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
++    let (worker_session, worker_status) = loop {
++        let members = watcher
++            .comm_list(&watcher_session)
++            .await
++            .expect("list spawned worker");
++        if let Some(member) = members.iter().find(|member| {
++            member.session_id != watcher_session && member.is_headless == Some(true)
++        }) {
++            break (member.session_id.clone(), member.status.clone());
++        }
++        assert!(
++            tokio::time::Instant::now() < deadline,
++            "spawned worker did not appear while its task was running"
++        );
++        tokio::time::sleep(Duration::from_millis(25)).await;
++    };
++    assert_eq!(
++        worker_status.as_deref(),
++        Some("running"),
++        "a spawned worker must be marked running before its first message starts; an initial ready status makes the wait return prematurely"
++    );
++    assert!(
++        !execution.is_finished(),
++        "the generated tool must still be waiting for the worker"
++    );
++    let result = tokio::time::timeout(Duration::from_secs(5), execution)
++        .await
++        .expect("generated blueprint tool should complete promptly")
++        .expect("generated blueprint task should join")
++        .expect("generated blueprint tool should succeed");
 +
 +    assert!(
 +        result.output.contains("Worker session:"),
 +        "tool output should return the worker session ID: {}",
 +        result.output
 +    );
-+    let worker_session = result
++    let result_worker_session = result
 +        .output
 +        .lines()
 +        .find_map(|line| line.strip_prefix("Worker session: "))
 +        .map(str::trim)
 +        .filter(|session_id| !session_id.is_empty())
 +        .expect("tool output should contain a nonblank worker session ID");
-+    let members = wait_for_member_presence(&mut watcher, &watcher_session, worker_session)
++    assert_eq!(result_worker_session, worker_session);
++    let members = wait_for_member_presence(&mut watcher, &watcher_session, &worker_session)
 +        .await
 +        .expect("spawned worker should be visible to the server");
 +    let worker = members
@@ -4455,7 +4580,7 @@ index 734004add..1626af130 100644
  async fn communicate_await_members_background_returns_immediately_and_notifies() {
      let _env_lock = crate::storage::lock_test_env();
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 1f845acba..b747c741d 100644
+index 269d040cc..be4695541 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,4 +1,7 @@
@@ -4570,7 +4695,7 @@ index 1f845acba..b747c741d 100644
      /// Called when session is marked as debug
      pub async fn enable_memory_test_mode(&self) {
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index bc94eedb5..6eff13ddd 100644
+index dfb4d6fb8..31d67bb56 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
 @@ -886,6 +886,18 @@ async fn tool_descriptions_stay_under_token_cap() {
@@ -4727,7 +4852,7 @@ index 9c19010ee..31b2eb1dc 100644
  fn mermaid_feature_defaults_on_and_parses_false() {
      assert!(Config::default().features.mermaid);
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index e7f2874da..f86749004 100644
+index d2784bcfe..fd136698f 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -119,6 +119,8 @@ pub struct SwarmContext {
@@ -4779,7 +4904,7 @@ index e7f2874da..f86749004 100644
      }
  }
 
-@@ -939,12 +953,16 @@ mod tests {
+@@ -944,12 +958,16 @@ mod tests {
              mode: Some("background".to_string()),
              role: ProcessRole::Worker,
              worker_id: Some("worker-1".to_string()),
@@ -4796,7 +4921,7 @@ index e7f2874da..f86749004 100644
      }
 
      #[test]
-@@ -954,6 +972,8 @@ mod tests {
+@@ -959,6 +977,8 @@ mod tests {
              mode: Some("foreground".to_string()),
              role: ProcessRole::Coordinator,
              worker_id: Some("worker-2".to_string()),
@@ -4805,7 +4930,7 @@ index e7f2874da..f86749004 100644
          };
          let mut command = std::process::Command::new("true");
          context.apply_env(&mut command);
-@@ -984,6 +1004,8 @@ mod tests {
+@@ -989,6 +1009,8 @@ mod tests {
              env.get("JCODE_HOOK_WORKER_ID").map(String::as_str),
              Some("worker-2")
          );
@@ -4814,7 +4939,7 @@ index e7f2874da..f86749004 100644
          assert!(!env.contains_key("JCODE_HOOK_UNKNOWN"));
      }
 
-@@ -1000,6 +1022,8 @@ mod tests {
+@@ -1005,6 +1027,8 @@ mod tests {
              mode: Some("test".to_string()),
              role: ProcessRole::Worker,
              worker_id: Some("worker".to_string()),
@@ -4823,7 +4948,7 @@ index e7f2874da..f86749004 100644
          };
          with_swarm_context(context.clone(), async move {
              assert_eq!(current_swarm_context().role, ProcessRole::Worker);
-@@ -1020,6 +1044,8 @@ mod tests {
+@@ -1025,6 +1049,8 @@ mod tests {
              mode: None,
              role: ProcessRole::Coordinator,
              worker_id: None,
@@ -4832,7 +4957,7 @@ index e7f2874da..f86749004 100644
          };
          let captured = context.clone();
          let handle = tokio::spawn(async move {
-@@ -1046,6 +1072,8 @@ mod tests {
+@@ -1051,6 +1077,8 @@ mod tests {
              mode: None,
              role: ProcessRole::Coordinator,
              worker_id: None,
@@ -7462,7 +7587,7 @@ index 6ca0b4349..dc37de1f6 100644
 
      /// List models/routes available for spawning swarm agents
 diff --git a/crates/jcode-swarm-core/src/lib.rs b/crates/jcode-swarm-core/src/lib.rs
-index 4240376ac..712a05a04 100644
+index 4240376ac..8f1beafe4 100644
 --- a/crates/jcode-swarm-core/src/lib.rs
 +++ b/crates/jcode-swarm-core/src/lib.rs
 @@ -352,9 +352,9 @@ pub fn append_swarm_completion_report_instructions(message: &str) -> String {
@@ -7472,8 +7597,8 @@ index 4240376ac..712a05a04 100644
 -        "\nBefore finishing, call the swarm tool with action=\"report\" to submit your completion report. \
 -Include a concise message, validation/tests performed, and blockers or follow-ups. \
 -After the report tool succeeds, also write a brief final assistant response. \
-+        "\nBefore finishing, write a brief final assistant response that serves as your completion report. \
-+Include a concise summary, validation/tests performed, and blockers or follow-ups. \
++        "\nBefore finishing, write a final assistant response that serves as your completion report. \
++Follow your role's report contract when one is provided; otherwise include a concise summary, validation/tests performed, and blockers or follow-ups. \
 +Do not call a swarm report tool: your final assistant response is collected by the coordinator. \
  Do not finish with only tool output, a lifecycle status change, or no final response. \
  Do not send a separate DM for the final report unless you need interactive coordination before finishing.\n",
@@ -7489,7 +7614,7 @@ index 4240376ac..712a05a04 100644
              append_swarm_completion_report_instructions(&with_instructions),
              with_instructions
 diff --git a/docs/HOOKS.md b/docs/HOOKS.md
-index a81302b8e..65a6506e2 100644
+index 510a47beb..ac002c01b 100644
 --- a/docs/HOOKS.md
 +++ b/docs/HOOKS.md
 @@ -76,6 +76,8 @@ Every hook also receives process role and swarm metadata:

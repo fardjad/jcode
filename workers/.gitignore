@@ -1,0 +1,6 @@
+# Generated worker evaluation evidence and private evaluation settings.
+/results/
+.eval-settings.toml
+.eval-settings.toml.*
+.eval-settings.toml~
+..eval-settings.toml.swp
