@@ -46,10 +46,10 @@ cargo check -p jcode-app-core
  8 files changed, 259 insertions(+), 56 deletions(-)
 
 diff --git a/README.md b/README.md
-index 81e5401f6..1b3260480 100644
+index 36338fc7f..9e13aa677 100644
 --- a/README.md
 +++ b/README.md
-@@ -56,6 +56,13 @@
+@@ -46,6 +46,13 @@
 
  </div>
 

@@ -1,4 +1,4 @@
-From 05534b8789bb806d6407617a5db8817e8af84194 Mon Sep 17 00:00:00 2001
+From 097832fc37f361f8ff220ca4e79e017301537dd6 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: delete sessions from picker with Ctrl+D
@@ -41,10 +41,10 @@ cargo test -p jcode-tui ctrl_d_deletes_session_from_server_group --lib
  4 files changed, 288 insertions(+), 3 deletions(-)
 
 diff --git a/crates/jcode-tui/src/tui/session_picker.rs b/crates/jcode-tui/src/tui/session_picker.rs
-index 2684e7a17..a92585f82 100644
+index 2fed445ee..de0d9e66b 100644
 --- a/crates/jcode-tui/src/tui/session_picker.rs
 +++ b/crates/jcode-tui/src/tui/session_picker.rs
-@@ -835,6 +835,55 @@ impl SessionPicker {
+@@ -860,6 +860,55 @@ impl SessionPicker {
          self.selected_session_ids.len()
      }
 
@@ -100,7 +100,7 @@ index 2684e7a17..a92585f82 100644
      fn toggle_selected_session(&mut self) {
          let Some(session_id) = self.selected_session().map(|session| session.id.clone()) else {
              return;
-@@ -1265,6 +1314,9 @@ impl SessionPicker {
+@@ -1322,6 +1371,9 @@ impl SessionPicker {
              KeyCode::Char('/') => {
                  self.search_active = true;
              }
@@ -111,10 +111,10 @@ index 2684e7a17..a92585f82 100644
                  self.toggle_test_sessions();
              }
 diff --git a/crates/jcode-tui/src/tui/session_picker/loading.rs b/crates/jcode-tui/src/tui/session_picker/loading.rs
-index d6d1c18d5..b2dc7731b 100644
+index c40046b09..a73ea1e38 100644
 --- a/crates/jcode-tui/src/tui/session_picker/loading.rs
 +++ b/crates/jcode-tui/src/tui/session_picker/loading.rs
-@@ -182,6 +182,9 @@ pub fn invalidate_session_list_cache() {
+@@ -187,6 +187,9 @@ pub fn invalidate_session_list_cache() {
          state.generation = state.generation.wrapping_add(1);
          state.entry = None;
      }
@@ -142,7 +142,7 @@ index a7df2aa81..f044ce55e 100644
              }
          };
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index ce789e0f1..d9f9b5bf3 100644
+index c151cda83..e269f3fd1 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
 @@ -1119,6 +1119,237 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
@@ -383,7 +383,7 @@ index ce789e0f1..d9f9b5bf3 100644
  #[test]
  fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
      let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
-@@ -2590,7 +2821,6 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
+@@ -2617,7 +2848,6 @@ fn preview_without_search_has_no_highlight_and_scrolls_to_bottom() {
          "no search means no highlight color in preview"
      );
  }

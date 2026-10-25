@@ -1,4 +1,4 @@
-From 467d95930e5cf67f5c902c4a609d66490581c2a0 Mon Sep 17 00:00:00 2001
+From 4f731377d93f1299ba395cbb209b5f8416bee611 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add swarm-scoped hook context and post-tool transforms
@@ -30,7 +30,8 @@ state without personal worker blueprints.
 
 Upstream integration points:
 crates/jcode-base/src/hooks.rs (SwarmContext, ProcessRole, with_swarm_context,
-current_swarm_context, transform_tool_result, hook_configured), crates/jcode-app-core/
+current_swarm_context, transform_tool_result, hook_configured),
+crates/jcode-app-core/
 src/tool/mod.rs (Registry::execute transform invocation),
 src/agent.rs (per-session swarm state),
 src/agent/turn_execution.rs (run_once, run_once_streaming,
@@ -69,28 +70,31 @@ cargo test -p jcode-base --lib -- swarm_context_defaults_to_internal
 cargo test -p jcode-base --lib -- swarm_context_is_scoped_to_async_future
 cargo test -p jcode-app-core run_subagent_hook_context --lib
 cargo test -p jcode-app-core --lib -- run_once_preserves_swarm_context_during_turn_execution
+cargo test -p jcode-app-core streaming_preserves_hook_context --lib
+cargo test -p jcode-base config_env_fingerprint_tracks_every_apply_env_override_var --lib
 ---
  crates/jcode-app-core/src/agent.rs            |   3 +
- .../src/agent/turn_execution.rs               |  43 +-
+ .../src/agent/turn_execution.rs               |  53 +-
  .../src/agent/turn_streaming_mpsc.rs          |  10 +-
- crates/jcode-app-core/src/agent_tests.rs      | 138 +++
- .../src/server/client_actions.rs              |  11 +-
+ crates/jcode-app-core/src/agent_tests.rs      | 403 +++++++++
+ .../src/server/client_actions.rs              |  16 +-
  .../src/server/client_actions_tests.rs        | 119 ++-
  crates/jcode-app-core/src/server/swarm.rs     |   8 +-
  crates/jcode-app-core/src/tool/mod.rs         |  14 +-
- crates/jcode-app-core/src/tool/tests.rs       | 148 ++++
+ crates/jcode-app-core/src/tool/tests.rs       | 222 ++++-
+ crates/jcode-base/src/config.rs               |   3 +
  crates/jcode-base/src/config/default_file.rs  |  21 +-
  crates/jcode-base/src/config/env_overrides.rs |  19 +
- crates/jcode-base/src/hooks.rs                | 794 ++++++++++++++++++
+ crates/jcode-base/src/hooks.rs                | 838 ++++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |  15 +
  docs/HOOKS.md                                 |  49 +-
- 14 files changed, 1370 insertions(+), 22 deletions(-)
+ 15 files changed, 1753 insertions(+), 40 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 12a885cc9..df2343a5e 100644
+index ef783ac6d..f8773d683 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -353,6 +353,8 @@ pub struct Agent {
+@@ -401,6 +401,8 @@ pub struct Agent {
      announced_skills_scan_index: usize,
      /// Whether memory features are enabled for this session
      memory_enabled: bool,
@@ -99,7 +103,7 @@ index 12a885cc9..df2343a5e 100644
      /// One-step undo snapshot captured before the most recent rewind.
      rewind_undo_snapshot: Option<RewindUndoSnapshot>,
      /// Channel for tools to request stdin input from the user
-@@ -471,6 +473,7 @@ impl Agent {
+@@ -529,6 +531,7 @@ impl Agent {
              announced_skills: HashSet::new(),
              announced_skills_scan_index: 0,
              memory_enabled: crate::config::config().features.memory,
@@ -108,13 +112,13 @@ index 12a885cc9..df2343a5e 100644
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index 563e52aad..652870b2d 100644
+index e18b69b44..fd8903f33 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
-@@ -34,6 +34,11 @@ impl Agent {
-
+@@ -35,6 +35,11 @@ impl Agent {
      /// Run a single turn with the given user message
      pub async fn run_once(&mut self, user_message: &str) -> Result<()> {
+         let _runtime_activity = crate::runtime_activity::global().try_enter()?;
 +        let context = self.current_swarm_hook_context();
 +        crate::hooks::with_swarm_context(context, self.run_once_with_context(user_message)).await
 +    }
@@ -123,7 +127,7 @@ index 563e52aad..652870b2d 100644
          self.announce_late_mcp_tools().await;
          self.announce_late_skills();
          let input_id = self.add_message(
-@@ -87,7 +92,8 @@ impl Agent {
+@@ -95,7 +100,8 @@ impl Agent {
          if trace_enabled() {
              eprintln!("[trace] session_id {}", self.session.id);
          }
@@ -133,19 +137,17 @@ index 563e52aad..652870b2d 100644
      }
 
      /// Run one conversation turn with streaming events via mpsc channel (per-client)
-@@ -164,13 +170,35 @@ impl Agent {
+@@ -179,12 +185,34 @@ impl Agent {
          crate::telemetry::record_turn();
          let turn_started_at = Instant::now();
          let start_message_index = self.message_count();
 -        self.fire_turn_start_hook("chat");
 -        let result = self.run_turn_streaming_mpsc(event_tx).await;
--        self.current_turn_system_reminder = None;
 -        self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
 +        let context = self.current_swarm_hook_context();
 +        let result = crate::hooks::with_swarm_context(context, async {
 +            self.fire_turn_start_hook("chat");
 +            let result = self.run_turn_streaming_mpsc(event_tx).await;
-+            self.current_turn_system_reminder = None;
 +            self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
 +            result
 +        })
@@ -170,10 +172,29 @@ index 563e52aad..652870b2d 100644
 +        }
 +    }
 +
-     /// Append and persist a user message without starting a model turn.
-     pub(crate) fn append_user_context_message(
-         &mut self,
-@@ -348,6 +376,11 @@ impl Agent {
+     /// Re-run the model loop for the turn already in history, without
+     /// appending a new user message. Used after the server switched routes
+     /// because the previous account hit a usage limit: the failed request is
+@@ -202,10 +230,14 @@ impl Agent {
+         let _ = system_reminder;
+         let turn_started_at = Instant::now();
+         let start_message_index = self.message_count();
+-        self.fire_turn_start_hook("failover");
+-        let result = self.run_turn_streaming_mpsc(event_tx).await;
+-        self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
+-        result
++        let context = self.current_swarm_hook_context();
++        crate::hooks::with_swarm_context(context, async {
++            self.fire_turn_start_hook("failover");
++            let result = self.run_turn_streaming_mpsc(event_tx).await;
++            self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
++            result
++        })
++        .await
+     }
+
+     /// Persist a hidden, model-visible `<system-reminder>` message at the tail
+@@ -411,6 +443,11 @@ impl Agent {
          }
      }
 
@@ -186,10 +207,10 @@ index 563e52aad..652870b2d 100644
      /// loop publishes a throttled output tail to the global bus so a
      /// coordinator can render a live inline gallery viewport for it.
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index 90674a128..26b4d7ad0 100644
+index 9b7a6985b..5d6cd2e06 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-@@ -1667,10 +1667,14 @@ impl Agent {
+@@ -1653,10 +1653,14 @@ impl Agent {
                  let registry_clone = self.registry.clone();
                  let tool_name_for_spawn = tc.name.clone();
                  let tool_input_for_spawn = tc.input.clone();
@@ -208,10 +229,10 @@ index 90674a128..26b4d7ad0 100644
 
                  // Reset background signal before waiting
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 64e7c57ea..057b0faeb 100644
+index 1bfb75a6e..357b50a93 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -194,6 +194,12 @@ async fn saved_account_restore_mismatch_blocks_model_turn() {
+@@ -200,6 +200,12 @@ async fn saved_account_restore_mismatch_blocks_model_turn() {
 
  struct NativeCompactionStreamProvider;
 
@@ -224,7 +245,7 @@ index 64e7c57ea..057b0faeb 100644
  #[derive(Clone, Default)]
  struct SignatureSessionProvider {
      requests: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
-@@ -253,6 +259,38 @@ impl Provider for SignatureSessionProvider {
+@@ -259,6 +265,38 @@ impl Provider for SignatureSessionProvider {
      }
  }
 
@@ -263,7 +284,7 @@ index 64e7c57ea..057b0faeb 100644
  #[tokio::test]
  async fn mpsc_preserves_signatures_and_never_rebinds_to_provider_session_id() {
      let _lock = crate::storage::lock_test_env();
-@@ -376,6 +414,106 @@ fn content_text(content: &[ContentBlock]) -> &str {
+@@ -382,6 +420,371 @@ fn content_text(content: &[ContentBlock]) -> &str {
      }
  }
 
@@ -321,6 +342,271 @@ index 64e7c57ea..057b0faeb 100644
 +    agent.run_once("test turn context").await.unwrap();
 +}
 +
++#[derive(Clone)]
++struct StreamingHookContextProvider {
++    requests: Arc<std::sync::Mutex<usize>>,
++    contexts: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
++}
++
++#[async_trait]
++impl Provider for StreamingHookContextProvider {
++    async fn complete(
++        &self,
++        _messages: &[Message],
++        _tools: &[ToolDefinition],
++        _system: &str,
++        _resume_session_id: Option<&str>,
++    ) -> Result<EventStream> {
++        self.contexts
++            .lock()
++            .unwrap()
++            .push(crate::hooks::current_swarm_context().to_json());
++        let first = {
++            let mut requests = self.requests.lock().unwrap();
++            *requests += 1;
++            *requests == 1
++        };
++        let events = if first {
++            vec![
++                StreamEvent::ToolUseStart {
++                    id: "hook-context-call".into(),
++                    name: "streaming_hook_context_probe".into(),
++                },
++                StreamEvent::ToolInputDelta("{}".into()),
++                StreamEvent::ToolUseEnd,
++                StreamEvent::MessageEnd {
++                    stop_reason: Some("tool_use".into()),
++                },
++            ]
++        } else {
++            vec![
++                StreamEvent::TextDelta("stream complete".into()),
++                StreamEvent::MessageEnd {
++                    stop_reason: Some("end_turn".into()),
++                },
++            ]
++        };
++        Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
++    }
++
++    fn name(&self) -> &str {
++        "streaming-hook-context-test"
++    }
++
++    fn fork(&self) -> Arc<dyn Provider> {
++        Arc::new(self.clone())
++    }
++}
++
++struct StreamingHookContextTool(Arc<std::sync::Mutex<Vec<serde_json::Value>>>);
++
++#[async_trait]
++impl crate::tool::Tool for StreamingHookContextTool {
++    fn name(&self) -> &str {
++        "streaming_hook_context_probe"
++    }
++
++    fn description(&self) -> &str {
++        "Check streaming swarm context propagation"
++    }
++
++    fn parameters_schema(&self) -> serde_json::Value {
++        serde_json::json!({"type": "object"})
++    }
++
++    async fn execute(
++        &self,
++        _input: serde_json::Value,
++        _context: crate::tool::ToolContext,
++    ) -> Result<ToolOutput> {
++        self.0
++            .lock()
++            .unwrap()
++            .push(crate::hooks::current_swarm_context().to_json());
++        Ok(ToolOutput::new("tool context retained"))
++    }
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn streaming_preserves_hook_context() {
++    use std::os::unix::fs::PermissionsExt;
++
++    let _guard = crate::storage::lock_test_env();
++    // Give this integration fixture a generous hook-process budget so it checks
++    // context and ordering, not platform process-startup scheduling.
++    struct RestoreHookEnv {
++        vars: [(&'static str, Option<std::ffi::OsString>); 7],
++    }
++    impl Drop for RestoreHookEnv {
++        fn drop(&mut self) {
++            for (name, value) in &self.vars {
++                match value {
++                    Some(value) => crate::env::set_var(name, value),
++                    None => crate::env::remove_var(name),
++                }
++            }
++            crate::config::Config::invalidate_cache();
++        }
++    }
++
++    let temp = tempfile::tempdir().unwrap();
++    let log = temp.path().join("hook-context.log");
++    let script = temp.path().join("capture-hook-context.sh");
++    let transform = temp.path().join("transform-tool-result.sh");
++    let feedback = temp.path().join("append-tool-feedback.sh");
++    let transform_log = temp.path().join("transform-input.json");
++    std::fs::write(
++        &script,
++        "#!/bin/sh\nprintf '%s|%s|%s|%s|%s\\n' \"$JCODE_HOOK_EVENT\" \"$JCODE_HOOK_PROCESS_ROLE\" \"$JCODE_HOOK_SWARM_ENABLED\" \"$JCODE_HOOK_SWARM_MODE\" \"$JCODE_HOOK_WORKER_ID\" >> \"$JCODE_TEST_HOOK_CONTEXT_LOG\"\n",
++    )
++    .unwrap();
++    std::fs::write(
++        &transform,
++        "#!/bin/sh\ncat > \"$JCODE_TEST_HOOK_TRANSFORM_LOG\"\nprintf '%s' '{\"tool_result\":\"transformed tool output\"}'\n",
++    )
++    .unwrap();
++    std::fs::write(
++        &feedback,
++        "#!/bin/sh\ncat >/dev/null\nprintf '%s' 'streaming feedback'\n",
++    )
++    .unwrap();
++    for hook_script in [&script, &transform, &feedback] {
++        std::fs::set_permissions(hook_script, std::fs::Permissions::from_mode(0o755)).unwrap();
++    }
++
++    let _restore = RestoreHookEnv {
++        vars: [
++            (
++                "JCODE_HOOK_TURN_START",
++                std::env::var_os("JCODE_HOOK_TURN_START"),
++            ),
++            (
++                "JCODE_HOOK_TURN_END",
++                std::env::var_os("JCODE_HOOK_TURN_END"),
++            ),
++            (
++                "JCODE_TEST_HOOK_CONTEXT_LOG",
++                std::env::var_os("JCODE_TEST_HOOK_CONTEXT_LOG"),
++            ),
++            (
++                "JCODE_HOOK_POST_TOOL_TRANSFORM",
++                std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM"),
++            ),
++            (
++                "JCODE_HOOK_POST_TOOL_FEEDBACK",
++                std::env::var_os("JCODE_HOOK_POST_TOOL_FEEDBACK"),
++            ),
++            (
++                "JCODE_TEST_HOOK_TRANSFORM_LOG",
++                std::env::var_os("JCODE_TEST_HOOK_TRANSFORM_LOG"),
++            ),
++            (
++                "JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS",
++                std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS"),
++            ),
++        ],
++    };
++    let script = script.to_string_lossy().into_owned();
++    crate::env::set_var("JCODE_HOOK_TURN_START", &script);
++    crate::env::set_var("JCODE_HOOK_TURN_END", &script);
++    crate::env::set_var("JCODE_TEST_HOOK_CONTEXT_LOG", log.as_os_str());
++    crate::env::set_var(
++        "JCODE_HOOK_POST_TOOL_TRANSFORM",
++        transform.to_string_lossy().as_ref(),
++    );
++    crate::env::set_var(
++        "JCODE_HOOK_POST_TOOL_FEEDBACK",
++        feedback.to_string_lossy().as_ref(),
++    );
++    crate::env::set_var("JCODE_TEST_HOOK_TRANSFORM_LOG", transform_log.as_os_str());
++    crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS", "5000");
++    crate::config::Config::invalidate_cache();
++
++    let provider = Arc::new(StreamingHookContextProvider {
++        requests: Arc::new(std::sync::Mutex::new(0)),
++        contexts: Arc::new(std::sync::Mutex::new(Vec::new())),
++    });
++    let tool_contexts = Arc::new(std::sync::Mutex::new(Vec::new()));
++    let registry = Registry::empty();
++    registry
++        .register(
++            "streaming_hook_context_probe".into(),
++            Arc::new(StreamingHookContextTool(tool_contexts.clone())),
++        )
++        .await;
++    let session = Session::create(Some("parent-session".into()), None);
++    let mut agent = Agent::new_with_session(provider.clone(), registry, session, None);
++    let context = crate::hooks::SwarmContext {
++        enabled: true,
++        mode: Some("inline".into()),
++        role: crate::hooks::ProcessRole::Worker,
++        worker_id: Some("worker-session".into()),
++    };
++    let expected_context = context.to_json();
++    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
++
++    crate::hooks::with_swarm_context(context, async {
++        agent
++            .run_once_streaming_mpsc("streaming context", Vec::new(), None, tx)
++            .await
++            .unwrap();
++    })
++    .await;
++
++    assert_eq!(
++        *provider.contexts.lock().unwrap(),
++        vec![expected_context.clone(), expected_context.clone()]
++    );
++    assert_eq!(*tool_contexts.lock().unwrap(), [expected_context]);
++    let configured_transform = crate::hooks::hook_commands("post_tool_transform");
++    let mut saw_tool_done = false;
++    let mut received_events = Vec::new();
++    while let Ok(event) = rx.try_recv() {
++        saw_tool_done |= matches!(&event, ServerEvent::ToolDone { id, output, .. }
++            if id == "hook-context-call"
++                && output
++                    == "transformed tool output\n\n[post_tool_feedback]\nstreaming feedback");
++        received_events.push(event);
++    }
++    assert!(
++        saw_tool_done,
++        "streaming tool result should reach the client; received events: {received_events:#?}; configured transform: {configured_transform:?}; transform input: {:?}; hooks disabled: {}",
++        std::fs::read_to_string(&transform_log)
++            .unwrap_or_else(|error| format!("<unavailable: {error}>")),
++        std::env::var_os("JCODE_HOOKS_DISABLED").is_some()
++    );
++
++    let transform_input: serde_json::Value =
++        serde_json::from_slice(&std::fs::read(&transform_log).unwrap()).unwrap();
++    assert_eq!(transform_input["swarm"]["role"], "worker");
++    assert_eq!(transform_input["swarm"]["enabled"], true);
++    assert_eq!(transform_input["swarm"]["mode"], "inline");
++    assert_eq!(transform_input["swarm"]["worker_id"], "worker-session");
++
++    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
++    let hook_lines = loop {
++        let lines = std::fs::read_to_string(&log)
++            .unwrap_or_default()
++            .lines()
++            .map(str::to_owned)
++            .collect::<Vec<_>>();
++        if lines.len() >= 2 {
++            break lines;
++        }
++        assert!(
++            tokio::time::Instant::now() < deadline,
++            "turn lifecycle hooks did not finish: {lines:?}"
++        );
++        tokio::time::sleep(Duration::from_millis(10)).await;
++    };
++    for event in ["turn_start", "turn_end"] {
++        assert!(hook_lines.iter().any(|line| {
++            line == &format!("{event}|worker|1|inline|worker-session")
++        }));
++    }
++}
++
 +fn hook_env(context: &crate::hooks::SwarmContext) -> std::collections::HashMap<String, String> {
 +    let mut command = std::process::Command::new("true");
 +    context.apply_env(&mut command);
@@ -371,40 +657,45 @@ index 64e7c57ea..057b0faeb 100644
      content_text(&message.content)
  }
 diff --git a/crates/jcode-app-core/src/server/client_actions.rs b/crates/jcode-app-core/src/server/client_actions.rs
-index 281bafacc..b8232cbf6 100644
+index 03d531e2d..383d0ca3b 100644
 --- a/crates/jcode-app-core/src/server/client_actions.rs
 +++ b/crates/jcode-app-core/src/server/client_actions.rs
-@@ -354,8 +354,9 @@ pub(super) fn handle_run_subagent(
+@@ -354,9 +354,12 @@ pub(super) fn handle_run_subagent(
  ) {
      let agent = Arc::clone(agent);
      let tx = client_event_tx.clone();
 +    let swarm_context = crate::hooks::current_swarm_context();
 
--    tokio::spawn(async move {
-+    tokio::spawn(crate::hooks::with_swarm_context(swarm_context, async move {
-         let description = derive_subagent_description(&prompt);
+-    crate::runtime_activity::spawn(async move {
+-        let description = derive_subagent_description(&prompt);
++    crate::runtime_activity::spawn(crate::hooks::with_swarm_context(
++        swarm_context,
++        async move {
++            let description = derive_subagent_description(&prompt);
          let tool_call_id = crate::id::new_id("call");
          let tool_name = "subagent".to_string();
-@@ -421,8 +422,12 @@ pub(super) fn handle_run_subagent(
+         let tool_input = serde_json::json!({
+@@ -421,8 +424,12 @@ pub(super) fn handle_run_subagent(
 
          let started = Instant::now();
          let tool_name_for_exec = tool_name.clone();
 +        let tool_swarm_context = crate::hooks::current_swarm_context();
-         let result = match tokio::spawn(async move {
+         let result = match crate::runtime_activity::spawn(async move {
 -            registry.execute(&tool_name_for_exec, tool_input, ctx).await
 +            crate::hooks::with_swarm_context(tool_swarm_context, async move {
 +                registry.execute(&tool_name_for_exec, tool_input, ctx).await
 +            })
 +            .await
-         })
-         .await
-         {
-@@ -477,7 +482,7 @@ pub(super) fn handle_run_subagent(
+         }) {
+             Some(handle) => match handle.await {
+                 Ok(result) => result,
+@@ -480,7 +487,8 @@ pub(super) fn handle_run_subagent(
                  let _ = tx.send(ServerEvent::Done { id });
              }
          }
 -    });
-+    }));
++        },
++    ));
  }
 
  #[expect(
@@ -543,10 +834,10 @@ index fc49439a6..adf3a068f 100644
 +    );
 +}
 diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
-index 302e0441b..9321722c3 100644
+index c3d0074d9..2a596e4d8 100644
 --- a/crates/jcode-app-core/src/server/swarm.rs
 +++ b/crates/jcode-app-core/src/server/swarm.rs
-@@ -1784,7 +1784,13 @@ pub(super) async fn run_swarm_task(
+@@ -1830,7 +1830,13 @@ pub(super) async fn run_swarm_task(
          .apply_to_allowed_set(&mut allowed);
 
      let mut worker = Agent::new_with_session(provider, registry, session, Some(allowed));
@@ -562,10 +853,10 @@ index 302e0441b..9321722c3 100644
              log_swarm_lifecycle(
                  "task_done",
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 58652fb3c..89620bf16 100644
+index 820688cf9..1f845acba 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -1088,7 +1088,6 @@ impl Registry {
+@@ -1111,7 +1111,6 @@ impl Registry {
 
          crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);
          Self::fire_post_tool_hook(resolved_name, &input, &ctx, &result, latency_ms);
@@ -573,7 +864,7 @@ index 58652fb3c..89620bf16 100644
          let mut output = match result {
              Ok(output) => output,
              Err(error) => {
-@@ -1101,6 +1100,19 @@ impl Registry {
+@@ -1124,6 +1123,19 @@ impl Registry {
              }
          };
 
@@ -594,10 +885,90 @@ index 58652fb3c..89620bf16 100644
 
          // Context overflow guard: check if this output would push us over the limit
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index cb88f929d..23f2a1411 100644
+index 255681e2c..bc94eedb5 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
-@@ -621,6 +621,98 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {
+@@ -30,6 +30,50 @@ struct TestHomeGuard {
+     previous: Option<OsString>,
+ }
+
++struct PostToolHookEnvGuard {
++    previous: Vec<(&'static str, Option<OsString>)>,
++}
++
++impl PostToolHookEnvGuard {
++    fn new(transform: &std::path::Path, feedback: &std::path::Path) -> Self {
++        let keys = [
++            "JCODE_HOOK_POST_TOOL_TRANSFORM",
++            "JCODE_HOOK_POST_TOOL_FEEDBACK",
++            "JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS",
++            "JCODE_TOOL_OUTPUT_TTL_SECS",
++            "JCODE_RUNTIME_DIR",
++            "JCODE_HOME",
++        ];
++        let previous = keys
++            .into_iter()
++            .map(|key| (key, std::env::var_os(key)))
++            .collect();
++        crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM", transform);
++        crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", feedback);
++        crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS", "5000");
++        crate::env::set_var("JCODE_TOOL_OUTPUT_TTL_SECS", "3600");
++        crate::env::set_var(
++            "JCODE_RUNTIME_DIR",
++            transform.parent().expect("runtime parent").join("runtime"),
++        );
++        crate::env::set_var("JCODE_HOME", transform.parent().expect("test home"));
++        crate::config::invalidate_config_cache();
++        Self { previous }
++    }
++}
++
++impl Drop for PostToolHookEnvGuard {
++    fn drop(&mut self) {
++        for (key, previous) in self.previous.drain(..) {
++            match previous {
++                Some(value) => crate::env::set_var(key, value),
++                None => crate::env::remove_var(key),
++            }
++        }
++        crate::config::invalidate_config_cache();
++    }
++}
++
+ impl TestHomeGuard {
+     fn new(path: &std::path::Path) -> Self {
+         let previous = std::env::var_os("JCODE_HOME");
+@@ -310,18 +354,19 @@ fn test_resolve_skill_aliases_to_skill_manage() {
+ }
+
+ #[tokio::test]
+-async fn test_discover_tools_not_registered_when_sponsors_disabled() {
+-    // sponsors.enabled is the legacy config key; when false, integration discovery must not exist.
++async fn gate_tools_hosted_tools_are_never_registered() {
+     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+     let registry = Registry::new(provider).await;
+     let names = registry.tool_names().await;
+-    if crate::config::config().sponsors.enabled {
+-        assert!(names.iter().any(|n| n == "integration_tools"));
+-    } else {
+-        assert!(
+-            !names.iter().any(|n| n == "integration_tools"),
+-            "integration_tools must not be registered when sponsors are disabled"
+-        );
++    let definitions = registry.definitions(None).await;
++    for name in ["discover", "compile_remote", "integration_tools"] {
++        assert!(!names.iter().any(|registered| registered == name), "{name} registered");
++        assert!(!definitions.iter().any(|definition| definition.name == name), "{name} advertised");
++        let error = registry
++            .execute(name, serde_json::json!({}), mcp_test_context(std::path::Path::new(".")))
++            .await
++            .expect_err("unregistered hosted tool must fail");
++        assert!(error.to_string().contains("Unknown tool"), "{name}: {error}");
+     }
+ }
+
+@@ -652,6 +697,116 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {
      assert!(allowed.is_ok(), "non-matching input should pass the gate");
  }
 
@@ -617,11 +988,34 @@ index cb88f929d..23f2a1411 100644
 +    .expect("write transformer");
 +    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
 +        .expect("chmod transformer");
-+    let previous = std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM");
++    struct RestoreHookEnv {
++        hook: Option<OsString>,
++        timeout: Option<OsString>,
++    }
++    impl Drop for RestoreHookEnv {
++        fn drop(&mut self) {
++            match self.hook.take() {
++                Some(value) => crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM", value),
++                None => crate::env::remove_var("JCODE_HOOK_POST_TOOL_TRANSFORM"),
++            }
++            match self.timeout.take() {
++                Some(value) => {
++                    crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS", value)
++                }
++                None => crate::env::remove_var("JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS"),
++            }
++            crate::config::invalidate_config_cache();
++        }
++    }
++    let _restore = RestoreHookEnv {
++        hook: std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM"),
++        timeout: std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS"),
++    };
 +    crate::env::set_var(
 +        "JCODE_HOOK_POST_TOOL_TRANSFORM",
 +        script.to_string_lossy().to_string(),
 +    );
++    crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS", "5000");
 +    crate::config::invalidate_config_cache();
 +    let ctx = ToolContext {
 +        session_id: "test-post-transform".to_string(),
@@ -640,11 +1034,6 @@ index cb88f929d..23f2a1411 100644
 +        )
 +        .await
 +        .expect("bash succeeds");
-+    match previous {
-+        Some(value) => crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM", value),
-+        None => crate::env::remove_var("JCODE_HOOK_POST_TOOL_TRANSFORM"),
-+    }
-+    crate::config::invalidate_config_cache();
 +    assert_eq!(output.output, "replacement");
 +}
 +
@@ -696,7 +1085,34 @@ index cb88f929d..23f2a1411 100644
  #[tokio::test]
  async fn test_definitions_keep_batch_schema_generic() {
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
-@@ -1942,3 +2034,59 @@ async fn post_tool_feedback_hook_appends_stdout_to_tool_result() {
+@@ -706,8 +861,6 @@ async fn print_tool_definition_token_report() {
+ #[tokio::test]
+ async fn tool_descriptions_stay_under_token_cap() {
+     const DESCRIPTION_TOKEN_CAP: usize = 20;
+-    // integration_tools keeps a deliberate second sentence explaining that catalog
+-    // entries integrate directly with the agent.
+     // swarm appends the user-tunable swarm-prompt.md by design.
+     // batch carries a deliberate parallel-call example (2f4abae33, pinned by
+     // batch_tests::description_includes_parallel_tool_call_example).
+@@ -717,16 +870,14 @@ async fn tool_descriptions_stay_under_token_cap() {
+     // user, so planning happens proactively rather than only when prompted.
+     // applet carries the whole view-node vocabulary inline, since the model has
+     // no other way to learn which node types and props the host renders.
+-    // codemode documents its sandbox API; compile_remote a credit/consent notice.
++    // codemode documents its sandbox API.
+     const EXEMPT: &[&str] = &[
+-        "integration_tools",
+         "swarm",
+         "batch",
+         "browser",
+         "todo",
+         "applet",
+         "codemode",
+-        "compile_remote",
+     ];
+
+     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+@@ -1974,3 +2125,46 @@ async fn post_tool_feedback_hook_appends_stdout_to_tool_result() {
      );
      assert!(output.contains("stdin-ok"), "{output}");
  }
@@ -710,6 +1126,7 @@ index cb88f929d..23f2a1411 100644
 +    use std::os::unix::fs::PermissionsExt;
 +    let _env_lock = crate::storage::lock_test_env();
 +    let dir = tempfile::tempdir().expect("temp dir");
++    let _home_guard = TestHomeGuard::new(dir.path());
 +    std::fs::write(dir.path().join("prose.md"), "hello\n").expect("write target");
 +    let transform = dir.path().join("transform.sh");
 +    std::fs::write(
@@ -723,11 +1140,7 @@ index cb88f929d..23f2a1411 100644
 +    for script in [&transform, &feedback] {
 +        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 +    }
-+    let previous_transform = std::env::var_os("JCODE_HOOK_POST_TOOL_TRANSFORM");
-+    let previous_feedback = std::env::var_os("JCODE_HOOK_POST_TOOL_FEEDBACK");
-+    crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM", &transform);
-+    crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", &feedback);
-+    crate::config::invalidate_config_cache();
++    let _hooks_guard = PostToolHookEnvGuard::new(&transform, &feedback);
 +
 +    let registry = Registry::new(Arc::new(MockProvider) as Arc<dyn Provider>).await;
 +    let result = registry
@@ -738,16 +1151,6 @@ index cb88f929d..23f2a1411 100644
 +        )
 +        .await;
 +
-+    for (key, previous) in [
-+        ("JCODE_HOOK_POST_TOOL_TRANSFORM", previous_transform),
-+        ("JCODE_HOOK_POST_TOOL_FEEDBACK", previous_feedback),
-+    ] {
-+        match previous {
-+            Some(value) => crate::env::set_var(key, value),
-+            None => crate::env::remove_var(key),
-+        }
-+    }
-+    crate::config::invalidate_config_cache();
 +    let output = result.expect("read should succeed").output;
 +    assert!(output.starts_with("transformed"), "{output}");
 +    assert!(!output.contains("hello"), "{output}");
@@ -756,11 +1159,32 @@ index cb88f929d..23f2a1411 100644
 +        "{output}"
 +    );
 +}
+diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
+index 7418dab84..21b94419b 100644
+--- a/crates/jcode-base/src/config.rs
++++ b/crates/jcode-base/src/config.rs
+@@ -200,6 +200,8 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+     "JCODE_HOOK_POST_TOOL",
+     "JCODE_HOOK_POST_TOOL_FEEDBACK",
+     "JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS",
++    "JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS",
++    "JCODE_HOOK_POST_TOOL_TRANSFORM_FILE_THRESHOLD",
+     "JCODE_HOOK_SESSION_END",
+     "JCODE_HOOK_SESSION_START",
+     "JCODE_HOOK_TURN_END",
+@@ -298,6 +300,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
+     "JCODE_TELEGRAM_CHAT_ID",
+     "JCODE_TELEGRAM_REPLY_ENABLED",
+     "JCODE_TOOL_CALL_DETAILS",
++    "JCODE_TOOL_OUTPUT_TTL_SECS",
+     "JCODE_TOOL_PROFILE",
+     "JCODE_TOOLS",
+     "JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES",
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 226fa8a81..77bb97a2a 100644
+index 584b95382..46ce736f6 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -641,7 +641,8 @@ swarm_stall_after_secs = 600
+@@ -661,7 +661,8 @@ swarm_stall_after_secs = 600
  # (quotes work) but executed directly, with JCODE_HOOK_* env vars describing
  # the event:
  #   JCODE_HOOK_EVENT       - "turn_start", "turn_end", "session_start",
@@ -770,7 +1194,7 @@ index 226fa8a81..77bb97a2a 100644
  #   JCODE_HOOK_SESSION_ID  - the session the event belongs to
  #   JCODE_HOOK_CWD         - session working directory (also the hook's cwd)
  #   JCODE_HOOK_PAYLOAD     - JSON mirror of all fields
-@@ -650,7 +651,11 @@ swarm_stall_after_secs = 600
+@@ -670,7 +671,11 @@ swarm_stall_after_secs = 600
  # All hooks except pre_tool are observers: detached, fire-and-forget, failures
  # only logged. Env overrides: JCODE_HOOK_TURN_START, JCODE_HOOK_TURN_END,
  # JCODE_HOOK_SESSION_START, JCODE_HOOK_SESSION_END, JCODE_HOOK_PRE_TOOL,
@@ -783,7 +1207,7 @@ index 226fa8a81..77bb97a2a 100644
  #
  # Runs when an agent turn begins, before the model starts generating and before
  # the first pre_tool. Lets integrations detect the agent is working during the
-@@ -691,7 +696,17 @@ swarm_stall_after_secs = 600
+@@ -711,7 +716,17 @@ swarm_stall_after_secs = 600
  # the tool result the model sees, so linters can report findings inline.
  # post_tool_feedback = "~/bin/jcode-vale"
  # post_tool_feedback_timeout_ms = 10000
@@ -803,10 +1227,10 @@ index 226fa8a81..77bb97a2a 100644
  # Ambient mode: background agent that maintains your codebase
  # Enable ambient mode (default: false)
 diff --git a/crates/jcode-base/src/config/env_overrides.rs b/crates/jcode-base/src/config/env_overrides.rs
-index 5ad7f0301..8886a5868 100644
+index b58143014..61555d78c 100644
 --- a/crates/jcode-base/src/config/env_overrides.rs
 +++ b/crates/jcode-base/src/config/env_overrides.rs
-@@ -562,6 +562,25 @@ impl Config {
+@@ -564,6 +564,25 @@ impl Config {
          {
              self.hooks.post_tool_feedback_timeout_ms = parsed;
          }
@@ -833,7 +1257,7 @@ index 5ad7f0301..8886a5868 100644
              if let Ok(parsed) = v.trim().parse::<u64>() {
                  self.hooks.pre_tool_timeout_ms = parsed;
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index 318fac845..ca42c904c 100644
+index 318fac845..e7f2874da 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -33,12 +33,15 @@ tokio::task_local! {
@@ -1340,7 +1764,7 @@ index 318fac845..ca42c904c 100644
          reset
      }
 
-@@ -691,9 +1126,368 @@ mod tests {
+@@ -691,9 +1126,412 @@ mod tests {
              "JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS",
              timeout_ms.to_string(),
          );
@@ -1349,7 +1773,11 @@ index 318fac845..ca42c904c 100644
 +    }
 +
 +    #[cfg(unix)]
-+    fn post_transform_test_config(hook: &str, timeout_ms: u64) -> impl Drop + use<> {
++    fn post_transform_test_config(
++        hook: &str,
++        timeout_ms: u64,
++        runtime_dir: &std::path::Path,
++    ) -> impl Drop + use<> {
 +        struct EnvReset(Vec<(&'static str, Option<std::ffi::OsString>)>);
 +        impl Drop for EnvReset {
 +            fn drop(&mut self) {
@@ -1379,12 +1807,20 @@ index 318fac845..ca42c904c 100644
 +                "JCODE_TOOL_OUTPUT_TTL_SECS",
 +                std::env::var_os("JCODE_TOOL_OUTPUT_TTL_SECS"),
 +            ),
++            (
++                "JCODE_RUNTIME_DIR",
++                std::env::var_os("JCODE_RUNTIME_DIR"),
++            ),
++            ("JCODE_HOME", std::env::var_os("JCODE_HOME")),
 +        ]);
 +        crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM", hook);
 +        crate::env::set_var(
 +            "JCODE_HOOK_POST_TOOL_TRANSFORM_TIMEOUT_MS",
 +            timeout_ms.to_string(),
 +        );
++        crate::env::set_var("JCODE_RUNTIME_DIR", runtime_dir);
++        crate::env::set_var("JCODE_HOME", runtime_dir.parent().expect("test home"));
++        crate::env::set_var("JCODE_TOOL_OUTPUT_TTL_SECS", "3600");
 +        crate::config::invalidate_config_cache();
          reset
      }
@@ -1403,7 +1839,11 @@ index 318fac845..ca42c904c 100644
 +                crate::terminal_launch::sh_escape(&record.to_string_lossy())
 +            ),
 +        );
-+        let _env = post_transform_test_config(&script.to_string_lossy(), 500);
++        let _env = post_transform_test_config(
++            &script.to_string_lossy(),
++            5000,
++            &temp.path().join("runtime"),
++        );
 +        let result = transform_tool_result(
 +            "ses_post",
 +            Some("/work"),
@@ -1444,7 +1884,11 @@ index 318fac845..ca42c904c 100644
 +            "#!/bin/sh\ncat >/dev/null\nexit 1\n",
 +        );
 +        for hook in [empty, invalid, nonzero] {
-+            let _env = post_transform_test_config(&hook.to_string_lossy(), 500);
++            let _env = post_transform_test_config(
++                &hook.to_string_lossy(),
++                500,
++                &temp.path().join("runtime"),
++            );
 +            assert_eq!(
 +                transform_tool_result(
 +                    "ses_fail",
@@ -1458,7 +1902,11 @@ index 318fac845..ca42c904c 100644
 +                None
 +            );
 +        }
-+        let _env = post_transform_test_config("/nonexistent/post-transform", 500);
++        let _env = post_transform_test_config(
++            "/nonexistent/post-transform",
++            500,
++            &temp.path().join("runtime"),
++        );
 +        assert_eq!(
 +            transform_tool_result(
 +                "ses_fail",
@@ -1487,7 +1935,11 @@ index 318fac845..ca42c904c 100644
 +                crate::terminal_launch::sh_escape(&record.to_string_lossy())
 +            ),
 +        );
-+        let _env = post_transform_test_config(&script.to_string_lossy(), 500);
++        let _env = post_transform_test_config(
++            &script.to_string_lossy(),
++            5000,
++            &temp.path().join("runtime"),
++        );
 +        crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_FILE_THRESHOLD", "10");
 +        crate::config::invalidate_config_cache();
 +        let large_output = "x".repeat(100);
@@ -1537,7 +1989,11 @@ index 318fac845..ca42c904c 100644
 +                crate::terminal_launch::sh_escape(&record.to_string_lossy())
 +            ),
 +        );
-+        let _env = post_transform_test_config(&script.to_string_lossy(), 500);
++        let _env = post_transform_test_config(
++            &script.to_string_lossy(),
++            5000,
++            &temp.path().join("runtime"),
++        );
 +        crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_FILE_THRESHOLD", "4096");
 +        crate::config::invalidate_config_cache();
 +        let result = transform_tool_result(
@@ -1571,7 +2027,11 @@ index 318fac845..ca42c904c 100644
 +                crate::terminal_launch::sh_escape(&record.to_string_lossy())
 +            ),
 +        );
-+        let _env = post_transform_test_config(&script.to_string_lossy(), 500);
++        let _env = post_transform_test_config(
++            &script.to_string_lossy(),
++            5000,
++            &temp.path().join("runtime"),
++        );
 +        crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_FILE_THRESHOLD", "10");
 +        crate::config::invalidate_config_cache();
 +        let large_input = serde_json::json!({"command": "x".repeat(100)});
@@ -1619,7 +2079,11 @@ index 318fac845..ca42c904c 100644
 +                crate::terminal_launch::sh_escape(&record.to_string_lossy())
 +            ),
 +        );
-+        let _env = post_transform_test_config(&script.to_string_lossy(), 500);
++        let _env = post_transform_test_config(
++            &script.to_string_lossy(),
++            5000,
++            &temp.path().join("runtime"),
++        );
 +        crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_FILE_THRESHOLD", "4096");
 +        crate::config::invalidate_config_cache();
 +        let result = transform_tool_result(
@@ -1648,7 +2112,11 @@ index 318fac845..ca42c904c 100644
 +            "transform.sh",
 +            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"tool_result\":\"ok\"}'\n",
 +        );
-+        let _env = post_transform_test_config(&script.to_string_lossy(), 500);
++        let _env = post_transform_test_config(
++            &script.to_string_lossy(),
++            5000,
++            &temp.path().join("runtime"),
++        );
 +        crate::env::set_var("JCODE_HOOK_POST_TOOL_TRANSFORM_FILE_THRESHOLD", "10");
 +        crate::env::set_var("JCODE_TOOL_OUTPUT_TTL_SECS", "1");
 +        crate::config::invalidate_config_cache();
@@ -1710,10 +2178,10 @@ index 318fac845..ca42c904c 100644
      #[tokio::test]
      async fn tool_transformers_compose_json_replacements() {
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 415be522c..e222616cb 100644
+index 2c8d16e0b..c05d38953 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -955,6 +955,17 @@ pub struct HooksConfig {
+@@ -956,6 +956,17 @@ pub struct HooksConfig {
      /// Max milliseconds to wait for each post_tool_feedback hook (default:
      /// 10000). Env override: JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS.
      pub post_tool_feedback_timeout_ms: u64,
@@ -1731,7 +2199,7 @@ index 415be522c..e222616cb 100644
      /// Max milliseconds to wait for the pre_tool gate before failing open
      /// (default: 5000). Env override: JCODE_HOOK_PRE_TOOL_TIMEOUT_MS.
      pub pre_tool_timeout_ms: u64,
-@@ -973,6 +984,10 @@ impl Default for HooksConfig {
+@@ -974,6 +985,10 @@ impl Default for HooksConfig {
              post_tool: None,
              post_tool_feedback: None,
              post_tool_feedback_timeout_ms: 10_000,

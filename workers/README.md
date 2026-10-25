@@ -8,7 +8,7 @@ This directory versions personal worker blueprints installed locally under
 | Blueprint | Tool name | Purpose |
 | --- | --- | --- |
 | `coordinator.md` | (reserved, no tool) | Coordinator prompt and tool policy. Not a spawnable worker. |
-| `fixer.md` | `swarm_fixer` | One literal mechanical change with a coordinator-defined result contract. |
+| `fixer.md` | `swarm_fixer` | One mechanical objective with bounded edits or a fix loop and a coordinator-defined result contract. |
 | `investigator.md` | `swarm_investigator` | Read-only investigation and shell execution. |
 | `research.md` | `swarm_research` | Web and documentation research without file modification. |
 
@@ -22,22 +22,22 @@ this ownership list.
 
 | Worker | Owned tools |
 | --- | --- |
-| `swarm_fixer` | `edit`, `multiedit`, `apply_patch`, `write`, `patch`, plus bounded local file and command tools for one specified operation |
-| `swarm_investigator` | `agentgrep`, `bash`, `bg`, `conversation_search`, `ls`, `memory`, `read`, `session_search` |
-| `swarm_research` | `jcode_docs`, `read`, `webfetch`, `websearch` |
+| `swarm_fixer` | `read`, `agentgrep`, `bash`, `bg`, `edit`, `apply_patch`, `write` |
+| `swarm_investigator` | `agentgrep`, `bash`, `bg`, `conversation_search`, `jcode_docs`, `memory`, `mcp`, `read`, `session_search`, `skill_manage` |
+| `swarm_research` | `jcode_docs`, `mcp`, `read`, `skill_manage`, `webfetch`, `websearch` |
 
-All ordinary workers also have `mcp`, `mcp_search`, `mcp_call`, `skill_manage`,
-and `jcode_docs`. These tools are available only for explicitly requested,
-task-scoped capabilities. Workers must discover MCP tools before calling them,
-must obtain explicit approval before connecting untrusted servers or taking
-consequential remote actions, and must not use MCP for arbitrary browsing or
-open-ended internet research.
+The investigator and research workers also enable `mcp` and `skill_manage`;
+`jcode_docs` is enabled for the investigator and research workers. MCP server-tool discovery and
+invocation use the native `mcp` actions `search` and `call`, not separate
+`mcp_search` or `mcp_call` tool names. These capabilities are limited to
+explicitly requested, task-scoped use. Workers must obtain explicit approval
+before connecting untrusted servers or taking consequential remote actions,
+and must not use MCP for arbitrary browsing or open-ended internet research.
 
-The automation worker owns `open` because it supports user-facing UI and
-artifact workflows. These assignments do not change the existing internet-use
-boundary: research remains the web and documentation role, while other workers
-may use network-capable tools only for their explicitly requested, task-scoped
-capability.
+The `open` tool is not enabled for any bundled worker. These assignments do
+not change the existing internet-use boundary: research remains the web and
+jcode documentation role, while the investigator's shell use is limited to
+coordinator-specified, read-only investigation.
 
 Ordinary worker blueprints may set a `model` and `effort` in front matter.
 Use TOML overrides in `~/.jcode/config.toml` to centrally replace those values
@@ -68,11 +68,47 @@ separate prompt-overlay installer.
 ### Fixer delegation contract
 
 `swarm_fixer` is intentionally not an implementation or planning specialist.
-The coordinator may delegate only one literal mechanical task at a time and
-must state both its exact operation and the exact output required in return.
-For example: "In `path`, replace this literal string; report only the changed
-path and whether the replacement count was one." Fixer must escalate rather
-than infer missing details, choose an approach, review, or broaden scope.
+Delegate one mechanical objective: exact edits in named files, or a bounded
+fix-until-green loop with allowed files, an exact acceptance command, and an
+attempt cap. State the required return facts. Fixer may make local,
+failure-directed corrections inside that contract, but must escalate rather
+than choose designs, change unstated behavior, or broaden scope.
+
+### Portable execution discipline
+
+These contracts apply across projects. Repository-specific procedures belong
+in project instructions or the dynamic assignment, not in reusable roles.
+
+- Give each worker one outcome or question, named inputs and allowed actions,
+  an acceptance check or answer predicate, an attempt/search budget, and a
+  return contract. A runtime timeout does not replace an attempt budget.
+- Count progress as an edit completed, a check observed, a question answered,
+  or a blocker narrowed. Retry only with changed inputs or new evidence.
+  Stop at success, a precise blocker, no new evidence, or the budget limit.
+- Return status first, then results, evidence, budget used, and unfinished
+  work. Preserve partial changes and live command identifiers. Writable roles
+  use an assigned, resolved scratch notes path for recoverable handoffs.
+  Research has no write tools and returns its evidence in the final report.
+- The coordinator owns decisions, dependencies, verification, shared-resource
+  scheduling, and result bookkeeping. Avoid duplicate assignments and shared
+  mutable caches or output paths during parallel work. Inspect existing runs
+  before rerunning them after a timeout.
+- An escalation does not automatically trigger another delegation. Supply a
+  concrete prerequisite or take over. After one revised assignment stalls on
+  the same blocker, handle the judgment directly or report the constraint.
+
+These are prompt contracts, not new runtime enforcement. Tool permissions and
+communication restrictions remain unchanged.
+
+### Artifact paths
+
+For large temporary files, builds, and clones, use native `JCODE_SCRATCH_DIR`
+with a unique task subdirectory. The runtime may supply this only to shell
+commands and it is not necessarily worker-specific. Reports and notes use
+exact absolute paths assigned by the coordinator, including project-required
+locations when permitted. File tools do not expand shell variables. Do not
+probe personal configuration to discover scratch or create literal placeholder
+directories. Research returns evidence in its final report and writes no files.
 
 ## Configure
 
@@ -158,19 +194,17 @@ session. No restart needed.
    worker's full output. A deterministic follow-up read (no LLM) lets the
    coordinator page through more output in 2000-char chunks when needed.
 
-3. **Separate read-only from write-capable.** Exploration agents should not
-   have write tools. Non-research workers must not use available browser,
-   Gmail, MCP, or shell capabilities for arbitrary or open-ended internet
-   access. Task-specific exceptions are limited to automation's explicitly
-   requested UI or email workflow and a shell worker's explicitly requested
-   specific network operation. MCP is available to every ordinary worker only
-   for explicitly requested, task-scoped capabilities. Research remains the web
-   and documentation research role. Each blueprint's `enabled-tools` list
-   enforces the capability boundary.
+3. **Separate read-only from write-capable.** Exploration roles do not edit
+   implementation or configuration. Investigator may write explicitly assigned
+   reports and run authorized checks that produce artifacts. Research has no
+   shell or write tools. Fixer has no MCP or skills. Only Investigator and
+   Research enable MCP and skills, for explicitly requested, task-scoped use.
+   No role may use another capability to bypass its restrictions.
 
-4. **Workers implement, they do not plan.** A worker receives clear
-   instructions and executes. It does not research, spawn subagents, or
-   second-guess the task. This keeps the worker fast and cheap.
+4. **Workers execute bounded assignments, they do not own the plan.** Fixer
+   performs mechanical edits, Investigator answers local evidence questions,
+   and Research retrieves sources. The coordinator owns design, scope, and
+   acceptance decisions. Workers do not spawn subagents or broaden tasks.
 
 5. **Escalate capability gaps once.** A worker that lacks a needed specialty,
    tool, permission, source, or decision does not guess or widen its scope.

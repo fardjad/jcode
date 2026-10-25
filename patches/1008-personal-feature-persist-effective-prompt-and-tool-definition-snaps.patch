@@ -5,7 +5,7 @@ Subject: [PATCH] feat: persist effective prompt and tool definition snapshots
 
 X-Jcode-Patch-Intent: persist effective request prompts and tools alongside assistant replies
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-Depends-On: 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch, 1006-personal-feature-configure-session-picker-sort-order.patch
 X-Jcode-Patch-File: 1008-personal-feature-persist-effective-prompt-and-tool-definition-snaps.patch
 
 Patch intent:
@@ -64,7 +64,8 @@ cargo test -p jcode-app-core provider_request --lib
  .../src/agent/turn_streaming_mpsc.rs          |   4 +
  .../src/agent/turn_token_usage_tests.rs       |   3 +
  crates/jcode-app-core/src/agent_tests.rs      |   1 +
- .../src/agent_tests/tool_streaming.rs         | 516 +++++++++++++++++-
+ .../src/agent_tests/concurrency.rs            |   1 +
+ .../src/agent_tests/tool_streaming.rs         | 543 +++++++++++++++++-
  crates/jcode-app-core/src/ambient/runner.rs   |   2 +
  crates/jcode-app-core/src/overnight.rs        |   2 +
  .../src/server/client_actions.rs              |   2 +
@@ -77,28 +78,29 @@ cargo test -p jcode-app-core provider_request --lib
  crates/jcode-base/src/session.rs              | 113 +++-
  crates/jcode-base/src/session/journal.rs      |  10 +-
  crates/jcode-base/src/session/persistence.rs  |  25 +
+ crates/jcode-base/src/session/prewarm.rs      |   2 +
  .../src/session/render/response_stats.rs      |   1 +
- crates/jcode-base/src/session_tests/cases.rs  | 332 ++++++++++-
+ crates/jcode-base/src/session_tests/cases.rs  | 337 ++++++++++-
  crates/jcode-message-types/src/lib.rs         |   2 +-
  crates/jcode-session-types/Cargo.toml         |   1 +
- crates/jcode-session-types/src/lib.rs         |  63 +++
+ crates/jcode-session-types/src/lib.rs         |  63 ++
  .../jcode-tui/src/tui/app/commands_review.rs  |   7 +
  .../src/tui/app/conversation_state.rs         |   1 +
  .../app/tests/command_suggestions_cache.rs    |   1 +
  .../tests/remote_events_reload_03/part_02.rs  |   1 +
  .../tui/app/tests/remote_events_reload_04.rs  |   1 +
- .../tests/remote_startup_input_01/part_01.rs  |   4 +
+ .../tests/remote_startup_input_01/part_01.rs  |   5 +
  .../tests/remote_startup_input_02/part_01.rs  |   1 +
- .../src/tui/session_picker/loading_tests.rs   |  15 +
+ .../src/tui/session_picker/loading_tests.rs   |  17 +
  .../jcode-tui/src/tui/session_picker_tests.rs |   1 +
  src/cli/auth_test/choice.rs                   |   1 +
- 34 files changed, 1120 insertions(+), 18 deletions(-)
+ 36 files changed, 1158 insertions(+), 18 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 56b38d36f..ee622da83 100644
+index bbc0a3a46..ad2df15be 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -4230,6 +4230,7 @@ dependencies = [
+@@ -4234,6 +4234,7 @@ dependencies = [
   "jcode-message-types",
   "memchr",
   "serde",
@@ -107,10 +109,10 @@ index 56b38d36f..ee622da83 100644
 
  [[package]]
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 855ce1678..db4020eaf 100644
+index 1ebbc44b7..61c90ed4f 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -1145,6 +1145,7 @@ impl Agent {
+@@ -1374,6 +1374,7 @@ impl Agent {
                      timestamp: Some(chrono::Utc::now()),
                      tool_duration_ms: None,
                      token_usage: None,
@@ -119,10 +121,10 @@ index 855ce1678..db4020eaf 100644
                  self.session
                      .insert_message(index + 1 + inserted + offset, stored_message);
 diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
-index fae2c44c6..7eeea3e3f 100644
+index ddf462f0a..7d27ee84b 100644
 --- a/crates/jcode-app-core/src/agent/turn_loops.rs
 +++ b/crates/jcode-app-core/src/agent/turn_loops.rs
-@@ -199,6 +199,8 @@ impl Agent {
+@@ -202,6 +202,8 @@ impl Agent {
                  .message_timestamps
                  .then(|| Message::with_timestamps(&messages_with_memory));
              let send_messages = stamped.as_deref().unwrap_or(&messages_with_memory);
@@ -130,8 +132,8 @@ index fae2c44c6..7eeea3e3f 100644
 +                format!("{}{}", split_prompt.static_part, split_prompt.dynamic_part);
              let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
              self.last_status_detail = None;
-             let completion = self
-@@ -946,6 +948,8 @@ impl Agent {
+             self.provider.set_session_id(&self.session.id);
+@@ -966,6 +968,8 @@ impl Agent {
                  });
                  let message_id =
                      self.add_message_ext(Role::Assistant, content_blocks, None, token_usage);
@@ -141,10 +143,10 @@ index fae2c44c6..7eeea3e3f 100644
                  self.session.save()?;
                  self.record_model_turn_usage(&usage_turn_id);
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index 26b4d7ad0..0ce8aa842 100644
+index 5d6cd2e06..be4e35f0f 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-@@ -227,6 +227,8 @@ impl Agent {
+@@ -228,6 +228,8 @@ impl Agent {
                  .message_timestamps
                  .then(|| Message::with_timestamps(&messages_with_memory));
              let send_messages = stamped.as_deref().unwrap_or(&messages_with_memory);
@@ -153,7 +155,7 @@ index 26b4d7ad0..0ce8aa842 100644
              let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
              let provider = Arc::clone(&self.provider);
              // Capture the model id the request was issued with. A provider may
-@@ -1343,6 +1345,8 @@ impl Agent {
+@@ -1324,6 +1326,8 @@ impl Agent {
                  });
                  let message_id =
                      self.add_message_ext(Role::Assistant, content_blocks, None, token_usage);
@@ -191,10 +193,10 @@ index 82e828978..ef0958b56 100644
      }];
 
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index baf582aa8..06bb4941e 100644
+index 22b4878b7..d5975394e 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -2101,6 +2101,7 @@ async fn env_snapshot_detail_is_minimal_for_empty_sessions_and_full_after_histor
+@@ -2824,6 +2824,7 @@ async fn env_snapshot_detail_is_minimal_for_empty_sessions_and_full_after_histor
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -202,8 +204,20 @@ index baf582aa8..06bb4941e 100644
          });
 
      assert_eq!(agent.env_snapshot_detail(), EnvSnapshotDetail::Full);
+diff --git a/crates/jcode-app-core/src/agent_tests/concurrency.rs b/crates/jcode-app-core/src/agent_tests/concurrency.rs
+index dd18a390b..3e0c08e80 100644
+--- a/crates/jcode-app-core/src/agent_tests/concurrency.rs
++++ b/crates/jcode-app-core/src/agent_tests/concurrency.rs
+@@ -136,6 +136,7 @@ async fn deferred_restore_save_persists_when_called() {
+         timestamp: None,
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     stored.mark_closed();
+     stored.save().unwrap();
 diff --git a/crates/jcode-app-core/src/agent_tests/tool_streaming.rs b/crates/jcode-app-core/src/agent_tests/tool_streaming.rs
-index f7afc4b22..0702e4834 100644
+index f7afc4b22..c531731a4 100644
 --- a/crates/jcode-app-core/src/agent_tests/tool_streaming.rs
 +++ b/crates/jcode-app-core/src/agent_tests/tool_streaming.rs
 @@ -4,11 +4,46 @@ use std::sync::Mutex;
@@ -451,7 +465,7 @@ index f7afc4b22..0702e4834 100644
          for event in native_citation_events()
              .into_iter()
              .chain([StreamEvent::MessageEnd { stop_reason: None }])
-@@ -316,11 +443,149 @@ async fn native_citation_corrections_preserve_earlier_text_and_native_replay() {
+@@ -316,11 +443,176 @@ async fn native_citation_corrections_preserve_earlier_text_and_native_replay() {
      }
  }
 
@@ -482,7 +496,7 @@ index f7afc4b22..0702e4834 100644
 +}
 +
 +#[tokio::test]
-+async fn prompt_snapshot_contains_active_skill_and_turn_varying_reminders() {
++async fn request_snapshot_tracks_active_skill_and_turn_reminders() {
 +    let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
 +    let tempdir = tempfile::tempdir().unwrap();
 +    let skill_dir = tempdir.path().join(".jcode/skills/snapshot-skill");
@@ -494,11 +508,11 @@ index f7afc4b22..0702e4834 100644
 +    .unwrap();
 +
 +    let (mut agent, tx, _, requests, _) = setup().await;
++    agent.session.messages.clear();
 +    agent.session.working_dir = Some(tempdir.path().to_string_lossy().into_owned());
-+    agent.active_skill = Some("snapshot-skill".into());
++    assert!(agent.set_remote_active_skill(Some("snapshot-skill".into())));
 +    let first_reminder = "first turn snapshot reminder";
 +    let second_reminder = "second turn snapshot reminder";
-+    agent.current_turn_system_reminder = Some(first_reminder.into());
 +    for event in [
 +        StreamEvent::TextDelta("first response".into()),
 +        StreamEvent::MessageEnd {
@@ -512,27 +526,54 @@ index f7afc4b22..0702e4834 100644
 +        tx.send(Ok(event)).await.unwrap();
 +    }
 +    drop(tx);
-+    agent.run_turn(false).await.unwrap();
-+
-+    agent.current_turn_system_reminder = Some(second_reminder.into());
-+    agent.add_message(
-+        Role::User,
-+        vec![ContentBlock::Text {
-+            text: "second snapshot turn".into(),
-+            cache_control: None,
-+        }],
-+    );
-+    agent.run_turn(false).await.unwrap();
++    let (event_tx, _event_rx) = tokio_mpsc::unbounded_channel();
++    agent
++        .run_once_streaming_mpsc(
++            "first snapshot turn",
++            Vec::new(),
++            Some(first_reminder.into()),
++            event_tx.clone(),
++        )
++        .await
++        .unwrap();
++    agent
++        .run_once_streaming_mpsc(
++            "second snapshot turn",
++            Vec::new(),
++            Some(second_reminder.into()),
++            event_tx,
++        )
++        .await
++        .unwrap();
 +
 +    let requests = requests.lock().unwrap().clone();
 +    assert_eq!(requests.len(), 2);
 +    for request in &requests {
-+        assert!(request.system.contains("skill body for snapshot test"));
++        assert!(!request.system.contains("skill body for snapshot test"));
++        assert!(!request.system.contains(first_reminder));
++        assert!(!request.system.contains(second_reminder));
 +    }
-+    assert!(requests[0].system.contains(first_reminder));
-+    assert!(!requests[0].system.contains(second_reminder));
-+    assert!(requests[1].system.contains(second_reminder));
-+    assert!(!requests[1].system.contains(first_reminder));
++    let request_has_text = |request: &CapturedRequest, expected: &str| {
++        request.messages.iter().any(|message| {
++            message.content.iter().any(|block| {
++                matches!(block, ContentBlock::Text { text, .. } if text.contains(expected))
++            })
++        })
++    };
++    for request in &requests {
++        assert!(request_has_text(request, "skill body for snapshot test"));
++    }
++    let request_has_reminder = |request: &CapturedRequest, reminder: &str| {
++        request.messages.iter().any(|message| {
++            message.content.iter().any(|block| {
++                matches!(block, ContentBlock::Text { text, .. } if text.contains(reminder))
++            })
++        })
++    };
++    assert!(request_has_reminder(&requests[0], first_reminder));
++    assert!(!request_has_reminder(&requests[0], second_reminder));
++    assert!(request_has_reminder(&requests[1], first_reminder));
++    assert!(request_has_reminder(&requests[1], second_reminder));
 +
 +    let responses = agent
 +        .session
@@ -602,7 +643,7 @@ index f7afc4b22..0702e4834 100644
          for event in native_citation_events().into_iter().chain([
              StreamEvent::RetryRollback { attempt: 1, max: 2 },
              StreamEvent::TextDelta("Fresh response.".into()),
-@@ -346,5 +611,232 @@ async fn retry_after_native_citation_correction_discards_the_entire_attempt() {
+@@ -346,5 +638,232 @@ async fn retry_after_native_citation_correction_discards_the_entire_attempt() {
              matches!(&assistant.content[..], [ContentBlock::Text { text, .. }]
              if text == "Fresh response.")
          );
@@ -747,7 +788,7 @@ index f7afc4b22..0702e4834 100644
 +                cache_control: None,
 +            }],
 +        );
-     }
++    }
 +    let _ = agent.provider_messages();
 +    let (_, started) = agent.request_manual_compaction();
 +    assert!(started, "manual compaction should start");
@@ -794,7 +835,7 @@ index f7afc4b22..0702e4834 100644
 +        },
 +    ] {
 +        tx.send(Ok(event)).await.unwrap();
-+    }
+     }
 +    drop(tx);
 +    agent.run_turn(false).await.unwrap();
 +
@@ -862,10 +903,10 @@ index 15bdf8016..6b3346c64 100644
      child.provider_key = parent.provider_key.clone();
      child.route_api_method = parent.route_api_method.clone();
 diff --git a/crates/jcode-app-core/src/server/client_actions.rs b/crates/jcode-app-core/src/server/client_actions.rs
-index f31b1fef4..7ed4b3d71 100644
+index 4054d02e0..788f094a7 100644
 --- a/crates/jcode-app-core/src/server/client_actions.rs
 +++ b/crates/jcode-app-core/src/server/client_actions.rs
-@@ -842,6 +842,8 @@ fn clone_split_session(
+@@ -848,6 +848,8 @@ fn clone_split_session(
 
      let mut child = Session::create(Some(parent_session_id.to_string()), None);
      child.replace_messages(parent.messages.clone());
@@ -873,7 +914,7 @@ index f31b1fef4..7ed4b3d71 100644
 +    child.request_tool_snapshots = parent.request_tool_snapshots.clone();
      child.compaction = parent.compaction.clone();
      child.system_prompt = parent.system_prompt.clone();
-     child.working_dir = parent.working_dir.clone();
+     child.worker_blueprint_policy = parent.worker_blueprint_policy.clone();
 diff --git a/crates/jcode-app-core/src/server/client_session_tests/reload.rs b/crates/jcode-app-core/src/server/client_session_tests/reload.rs
 index 770558e2b..5ab929cb0 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests/reload.rs
@@ -959,7 +1000,7 @@ index 770558e2b..5ab929cb0 100644
 
      assert!(!restored_session_was_interrupted(
 diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
-index a922bf896..8af1401fb 100644
+index c04fe7a10..08207b0c3 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
 +++ b/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
 @@ -17,6 +17,7 @@ async fn handle_resume_session_allows_live_attach_when_existing_agent_is_busy()
@@ -971,10 +1012,10 @@ index a922bf896..8af1401fb 100644
 
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
 diff --git a/crates/jcode-app-core/src/server/client_state_tests.rs b/crates/jcode-app-core/src/server/client_state_tests.rs
-index 1fb23b5d5..5a9a6afac 100644
+index 899dd27d4..5a8aac7c6 100644
 --- a/crates/jcode-app-core/src/server/client_state_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_state_tests.rs
-@@ -400,6 +400,7 @@ async fn assert_history_service_tier_and_pdf_capability(
+@@ -531,6 +531,7 @@ async fn assert_history_service_tier_and_pdf_capability(
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -1068,10 +1109,10 @@ index 4b5ee2d1a..968187a0b 100644
      session.save().unwrap();
      assert_eq!(Session::load(&imported_id).unwrap().messages.len(), 3);
 diff --git a/crates/jcode-base/src/session.rs b/crates/jcode-base/src/session.rs
-index c95c21e2e..f7166a948 100644
+index 068eec82b..482157d3a 100644
 --- a/crates/jcode-base/src/session.rs
 +++ b/crates/jcode-base/src/session.rs
-@@ -50,8 +50,9 @@ pub use crash::{
+@@ -52,8 +52,9 @@ pub use crash::{
      find_session_by_name_or_id, recover_crashed_sessions, recover_crashed_sessions_by_ids,
  };
  pub use jcode_session_types::{
@@ -1083,9 +1124,9 @@ index c95c21e2e..f7166a948 100644
  };
  use journal::{PersistVectorMode, SessionJournalMeta, SessionPersistState};
  pub use maintenance::prune_old_session_backups;
-@@ -124,6 +125,12 @@ pub struct Session {
-     pub created_at: DateTime<Utc>,
+@@ -127,6 +128,12 @@ pub struct Session {
      pub updated_at: DateTime<Utc>,
+     #[serde(deserialize_with = "parallel_messages::deserialize")]
      pub messages: Vec<StoredMessage>,
 +    /// Unique effective system prompts sent through the provider abstraction.
 +    #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1096,7 +1137,7 @@ index c95c21e2e..f7166a948 100644
      /// Full assembled system prompt replacement, including an intentionally empty prompt.
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub system_prompt: Option<String>,
-@@ -401,6 +408,8 @@ impl Session {
+@@ -417,6 +424,8 @@ impl Session {
          session.created_at = snapshot.created_at;
          session.updated_at = snapshot.updated_at;
          session.messages = snapshot.messages;
@@ -1105,7 +1146,7 @@ index c95c21e2e..f7166a948 100644
          session.compaction = snapshot.compaction;
          session.provider_session_id = snapshot.provider_session_id;
          session.provider_key = snapshot.provider_key;
-@@ -452,6 +461,16 @@ impl Session {
+@@ -469,6 +478,16 @@ impl Session {
              self.memory_injections.iter().map(estimate_json_bytes).sum();
          let replay_events_json_bytes: usize =
              self.replay_events.iter().map(estimate_json_bytes).sum();
@@ -1122,7 +1163,7 @@ index c95c21e2e..f7166a948 100644
          let compaction_json_bytes = self
              .compaction
              .as_ref()
-@@ -509,6 +528,12 @@ impl Session {
+@@ -526,6 +545,12 @@ impl Session {
                  "count": self.replay_events.len(),
                  "json_bytes": replay_events_json_bytes,
              },
@@ -1135,7 +1176,7 @@ index c95c21e2e..f7166a948 100644
              "provider_messages_cache": {
                  "count": self.provider_messages_cache.len(),
                  "source_len": self.provider_messages_cache_len,
-@@ -523,6 +548,8 @@ impl Session {
+@@ -540,6 +565,8 @@ impl Session {
                      + env_snapshots_json_bytes
                      + memory_injections_json_bytes
                      + replay_events_json_bytes
@@ -1144,7 +1185,7 @@ index c95c21e2e..f7166a948 100644
                      + compaction_json_bytes,
                  "canonical_transcript_json_bytes": session_message_json_bytes,
                  "provider_cache_json_bytes": provider_messages_cache_json_bytes,
-@@ -569,10 +596,14 @@ impl Session {
+@@ -588,10 +615,14 @@ impl Session {
          self.persist_state = SessionPersistState {
              snapshot_exists,
              messages_len: self.messages.len(),
@@ -1159,7 +1200,7 @@ index c95c21e2e..f7166a948 100644
              env_snapshots_mode: PersistVectorMode::Clean,
              memory_injections_mode: PersistVectorMode::Clean,
              replay_events_mode: PersistVectorMode::Clean,
-@@ -713,6 +744,18 @@ impl Session {
+@@ -732,6 +763,18 @@ impl Session {
          }
      }
 
@@ -1178,7 +1219,7 @@ index c95c21e2e..f7166a948 100644
      fn mark_messages_full_dirty(&mut self) {
          self.persist_state.messages_mode = PersistVectorMode::Full;
          self.provider_messages_cache_mode = PersistVectorMode::Full;
-@@ -787,6 +830,8 @@ impl Session {
+@@ -805,6 +848,8 @@ impl Session {
              created_at: now,
              updated_at: now,
              messages: Vec::new(),
@@ -1187,7 +1228,7 @@ index c95c21e2e..f7166a948 100644
              system_prompt: None,
              model_usage_turn_id: None,
              compaction: None,
-@@ -845,6 +890,8 @@ impl Session {
+@@ -864,6 +909,8 @@ impl Session {
              created_at: now,
              updated_at: now,
              messages: Vec::new(),
@@ -1196,7 +1237,7 @@ index c95c21e2e..f7166a948 100644
              system_prompt: None,
              model_usage_turn_id: None,
              compaction: None,
-@@ -1325,6 +1372,61 @@ request in this new forked session, using the inherited conversation only as con
+@@ -1367,6 +1414,61 @@ request in this new forked session, using the inherited conversation only as con
          self.add_message_ext_with_display_role(role, content, tool_duration_ms, token_usage, None)
      }
 
@@ -1258,7 +1299,7 @@ index c95c21e2e..f7166a948 100644
      pub fn add_message_ext_with_display_role(
          &mut self,
          role: Role,
-@@ -1342,6 +1444,7 @@ request in this new forked session, using the inherited conversation only as con
+@@ -1384,6 +1486,7 @@ request in this new forked session, using the inherited conversation only as con
              timestamp: Some(Utc::now()),
              tool_duration_ms,
              token_usage,
@@ -1266,7 +1307,7 @@ index c95c21e2e..f7166a948 100644
          });
          id
      }
-@@ -1672,6 +1775,8 @@ request in this new forked session, using the inherited conversation only as con
+@@ -1714,6 +1817,8 @@ request in this new forked session, using the inherited conversation only as con
      /// in the client only inflates memory during idle remote sessions.
      pub fn strip_transcript_for_remote_client(&mut self) {
          self.messages.clear();
@@ -1275,8 +1316,8 @@ index c95c21e2e..f7166a948 100644
          self.compaction = None;
          self.env_snapshots.clear();
          self.memory_injections.clear();
-@@ -1752,6 +1857,10 @@ struct RemoteStartupSessionSnapshot {
-     #[serde(default)]
+@@ -1794,6 +1899,10 @@ struct RemoteStartupSessionSnapshot {
+     #[serde(default, deserialize_with = "parallel_messages::deserialize")]
      messages: Vec<StoredMessage>,
      #[serde(default)]
 +    request_prompt_snapshots: Vec<String>,
@@ -1287,19 +1328,19 @@ index c95c21e2e..f7166a948 100644
      #[serde(default)]
      provider_session_id: Option<String>,
 diff --git a/crates/jcode-base/src/session/journal.rs b/crates/jcode-base/src/session/journal.rs
-index 40a1f1202..d79017669 100644
+index caa31409d..e2176221d 100644
 --- a/crates/jcode-base/src/session/journal.rs
 +++ b/crates/jcode-base/src/session/journal.rs
 @@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
  use super::{
      EnvSnapshot, SessionImproveMode, SessionStatus, StoredCompactionState, StoredMemoryInjection,
--    StoredMessage, StoredReplayEvent,
-+    StoredMessage, StoredReplayEvent, StoredToolDefinition,
+-    StoredMessage, StoredReplayEvent, WorkerBlueprintPolicy,
++    StoredMessage, StoredReplayEvent, StoredToolDefinition, WorkerBlueprintPolicy,
  };
 
  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-@@ -47,6 +47,10 @@ pub(super) struct SessionJournalEntry {
+@@ -56,6 +56,10 @@ pub(super) struct SessionJournalEntry {
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
      pub(super) append_messages: Vec<StoredMessage>,
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1310,7 +1351,7 @@ index 40a1f1202..d79017669 100644
      pub(super) append_env_snapshots: Vec<EnvSnapshot>,
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
      pub(super) append_memory_injections: Vec<StoredMemoryInjection>,
-@@ -66,10 +70,14 @@ pub(super) enum PersistVectorMode {
+@@ -75,10 +79,14 @@ pub(super) enum PersistVectorMode {
  pub(super) struct SessionPersistState {
      pub(super) snapshot_exists: bool,
      pub(super) messages_len: usize,
@@ -1326,10 +1367,10 @@ index 40a1f1202..d79017669 100644
      pub(super) memory_injections_mode: PersistVectorMode,
      pub(super) replay_events_mode: PersistVectorMode,
 diff --git a/crates/jcode-base/src/session/persistence.rs b/crates/jcode-base/src/session/persistence.rs
-index 78be47b8c..967107900 100644
+index 1db6cdb6e..b5d9695ee 100644
 --- a/crates/jcode-base/src/session/persistence.rs
 +++ b/crates/jcode-base/src/session/persistence.rs
-@@ -297,6 +297,10 @@ impl Session {
+@@ -327,6 +327,10 @@ impl Session {
      fn apply_journal_entry(&mut self, entry: SessionJournalEntry) {
          self.apply_journal_meta(entry.meta);
          self.messages.extend(entry.append_messages);
@@ -1340,7 +1381,7 @@ index 78be47b8c..967107900 100644
          self.env_snapshots.extend(entry.append_env_snapshots);
          self.memory_injections
              .extend(entry.append_memory_injections);
-@@ -507,6 +511,16 @@ impl Session {
+@@ -557,6 +561,16 @@ impl Session {
              };
              session.apply_journal_meta(entry.meta);
              session.messages.extend(entry.append_messages);
@@ -1357,8 +1398,8 @@ index 78be47b8c..967107900 100644
              session.replay_events.extend(entry.append_replay_events);
          })?;
          let journal_ms = journal_start.elapsed().as_millis();
-@@ -621,10 +635,15 @@ impl Session {
-             .is_some_and(|prev| metadata_requires_snapshot(prev, &current_meta));
+@@ -690,10 +704,15 @@ impl Session {
+                 .is_some_and(|prev| metadata_requires_snapshot(prev, &current_meta));
          let vectors_need_snapshot = !self.persist_state.snapshot_exists
              || self.persist_state.messages_mode == PersistVectorMode::Full
 +            || self.persist_state.request_prompt_snapshots_mode == PersistVectorMode::Full
@@ -1373,9 +1414,9 @@ index 78be47b8c..967107900 100644
              || self.env_snapshots.len() < self.persist_state.env_snapshots_len
              || self.memory_injections.len() < self.persist_state.memory_injections_len
              || self.replay_events.len() < self.persist_state.replay_events_len;
-@@ -672,6 +691,12 @@ impl Session {
+@@ -752,6 +771,12 @@ impl Session {
              let entry = SessionJournalEntry {
-                 meta: current_meta.clone(),
+                 meta: entry_meta,
                  append_messages: self.messages[self.persist_state.messages_len..].to_vec(),
 +                append_request_prompt_snapshots: self.request_prompt_snapshots
 +                    [self.persist_state.request_prompt_snapshots_len..]
@@ -1386,6 +1427,26 @@ index 78be47b8c..967107900 100644
                  append_env_snapshots: self.env_snapshots[self.persist_state.env_snapshots_len..]
                      .to_vec(),
                  append_memory_injections: self.memory_injections
+diff --git a/crates/jcode-base/src/session/prewarm.rs b/crates/jcode-base/src/session/prewarm.rs
+index 86df15e7e..fc8a3f94a 100644
+--- a/crates/jcode-base/src/session/prewarm.rs
++++ b/crates/jcode-base/src/session/prewarm.rs
+@@ -322,6 +322,7 @@ mod tests {
+             timestamp: None,
+             tool_duration_ms: None,
+             token_usage: None,
++            request_snapshot: None,
+         });
+         session.save().unwrap();
+         session
+@@ -379,6 +380,7 @@ mod tests {
+             timestamp: None,
+             tool_duration_ms: None,
+             token_usage: None,
++            request_snapshot: None,
+         });
+         session.save().unwrap();
+         assert!(take("session_prewarm_stale").is_none());
 diff --git a/crates/jcode-base/src/session/render/response_stats.rs b/crates/jcode-base/src/session/render/response_stats.rs
 index ac900b5b7..cc4f38545 100644
 --- a/crates/jcode-base/src/session/render/response_stats.rs
@@ -1399,7 +1460,7 @@ index ac900b5b7..cc4f38545 100644
      }
      fn usage(input: u64) -> Option<StoredTokenUsage> {
 diff --git a/crates/jcode-base/src/session_tests/cases.rs b/crates/jcode-base/src/session_tests/cases.rs
-index ef4af44f4..9be5f709e 100644
+index 42a030903..37657e6e4 100644
 --- a/crates/jcode-base/src/session_tests/cases.rs
 +++ b/crates/jcode-base/src/session_tests/cases.rs
 @@ -171,14 +171,42 @@ fn test_debug_memory_profile_reports_messages_and_provider_cache() {
@@ -1463,7 +1524,7 @@ index ef4af44f4..9be5f709e 100644
      });
      session.record_env_snapshot(EnvSnapshot {
          captured_at: Utc::now(),
-@@ -616,12 +646,309 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
+@@ -616,6 +646,8 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
      assert_eq!(loaded.model.as_deref(), Some("gpt-5.4"));
      assert_eq!(loaded.reasoning_effort.as_deref(), Some("medium"));
      assert_eq!(loaded.messages.len(), 1);
@@ -1472,6 +1533,7 @@ index ef4af44f4..9be5f709e 100644
      assert!(loaded.replay_events.is_empty());
      assert!(loaded.env_snapshots.is_empty());
      assert!(loaded.memory_injections.is_empty());
+@@ -753,6 +785,301 @@ fn blueprint_policy_persistence_journal_roundtrip_and_startup_stub() -> Result<(
      Ok(())
  }
 
@@ -1773,7 +1835,7 @@ index ef4af44f4..9be5f709e 100644
  #[test]
  fn test_create_marks_debug_when_test_session_env_enabled() {
      let _env_lock = lock_env();
-@@ -2295,6 +2622,7 @@ fn reasoning_trace_survives_session_save_and_load() -> Result<()> {
+@@ -2426,6 +2753,7 @@ fn reasoning_trace_survives_session_save_and_load() -> Result<()> {
          timestamp: Some(Utc::now()),
          tool_duration_ms: None,
          token_usage: None,
@@ -1781,8 +1843,48 @@ index ef4af44f4..9be5f709e 100644
      });
      session.save()?;
 
+@@ -3115,6 +3443,7 @@ fn env_snapshot_past_cap_appends_instead_of_rewriting_snapshot() -> Result<()> {
+         timestamp: Some(Utc::now()),
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     let snapshot = |reason: &str| EnvSnapshot {
+         captured_at: Utc::now(),
+@@ -3189,6 +3518,7 @@ fn metadata_change_on_large_session_is_journaled_not_rewritten() -> Result<()> {
+             timestamp: Some(Utc::now()),
+             tool_duration_ms: None,
+             token_usage: None,
++            request_snapshot: None,
+         });
+     }
+     session.save()?;
+@@ -3249,6 +3579,7 @@ fn journal_entries_elide_unchanged_compaction_but_loads_keep_it() -> Result<()>
+         timestamp: Some(Utc::now()),
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     };
+     session.append_stored_message(msg(0));
+     session.compaction = Some(big_compaction("A"));
+@@ -3318,6 +3649,7 @@ fn legacy_journal_entries_with_inline_compaction_still_load() -> Result<()> {
+         timestamp: Some(Utc::now()),
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     session.save()?;
+     let snapshot_path = storage_paths::session_path(session_id)?;
+@@ -3365,6 +3697,7 @@ fn write_compaction_elision_compat_fixture() -> Result<()> {
+             timestamp: Some(Utc::now()),
+             tool_duration_ms: None,
+             token_usage: None,
++            request_snapshot: None,
+         });
+         if i == 0 {
+             session.compaction = Some(big_compaction("C"));
 diff --git a/crates/jcode-message-types/src/lib.rs b/crates/jcode-message-types/src/lib.rs
-index f279da4b2..1e524ce74 100644
+index ac43e16ee..de02da9e4 100644
 --- a/crates/jcode-message-types/src/lib.rs
 +++ b/crates/jcode-message-types/src/lib.rs
 @@ -17,7 +17,7 @@ pub struct ToolCall {
@@ -1885,7 +1987,7 @@ index 1a5206f7d..4a386df83 100644
 
  #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 diff --git a/crates/jcode-tui/src/tui/app/commands_review.rs b/crates/jcode-tui/src/tui/app/commands_review.rs
-index cf9e4e1b5..3e41e7b7e 100644
+index 2812726e8..a55c9b2d9 100644
 --- a/crates/jcode-tui/src/tui/app/commands_review.rs
 +++ b/crates/jcode-tui/src/tui/app/commands_review.rs
 @@ -73,6 +73,7 @@ fn judge_transcript_text_message(role: Role, text: String) -> StoredMessage {
@@ -1924,10 +2026,10 @@ index cf9e4e1b5..3e41e7b7e 100644
      child.system_prompt = app.session.system_prompt.clone();
      child.working_dir = app.session.working_dir.clone();
 diff --git a/crates/jcode-tui/src/tui/app/conversation_state.rs b/crates/jcode-tui/src/tui/app/conversation_state.rs
-index 4ae15443b..46a9e4d56 100644
+index 382b31ffb..2b29f2e07 100644
 --- a/crates/jcode-tui/src/tui/app/conversation_state.rs
 +++ b/crates/jcode-tui/src/tui/app/conversation_state.rs
-@@ -722,6 +722,7 @@ impl App {
+@@ -742,6 +742,7 @@ impl App {
                      timestamp: Some(chrono::Utc::now()),
                      tool_duration_ms: None,
                      token_usage: None,
@@ -1948,7 +2050,7 @@ index b3d1f9a0b..520a6b08a 100644
      app.advance_command_suggestions_epoch();
 
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_03/part_02.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_03/part_02.rs
-index 240a15ccd..0c14b9234 100644
+index c92a2f753..4406c43a7 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_03/part_02.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_03/part_02.rs
 @@ -23,6 +23,7 @@ fn test_metadata_only_history_preserves_fast_restored_startup_state() {
@@ -1960,10 +2062,10 @@ index 240a15ccd..0c14b9234 100644
      session.save().expect("save fast resume session");
 
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_04.rs b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_04.rs
-index 400d6711d..0ff207711 100644
+index 76214073b..be0294986 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_events_reload_04.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_events_reload_04.rs
-@@ -797,6 +797,7 @@ fn test_new_for_remote_uses_startup_stub_without_loading_full_transcript() {
+@@ -799,6 +799,7 @@ fn test_new_for_remote_uses_startup_stub_without_loading_full_transcript() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -1972,10 +2074,10 @@ index 400d6711d..0ff207711 100644
      session.save().expect("save remote session");
 
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
-index 457f18b06..5df0beeef 100644
+index 2fc576e47..894e82505 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
-@@ -241,6 +241,8 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
+@@ -243,6 +243,8 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
                  Some(title.to_string()),
              );
              child.replace_messages(parent.messages.clone());
@@ -1984,7 +2086,7 @@ index 457f18b06..5df0beeef 100644
              child.compaction = Some(crate::session::StoredCompactionState {
                  summary_text: "stale compaction".to_string(),
                  openai_encrypted_content: None,
-@@ -515,6 +517,7 @@ fn test_new_for_remote_fresh_spawn_restores_local_transcript() {
+@@ -517,6 +519,7 @@ fn test_new_for_remote_fresh_spawn_restores_local_transcript() {
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -1992,7 +2094,7 @@ index 457f18b06..5df0beeef 100644
          });
          session.save().expect("save spawned child session");
 
-@@ -582,6 +585,7 @@ fn test_new_for_remote_restores_display_history_without_retaining_session_transc
+@@ -584,6 +587,7 @@ fn test_new_for_remote_restores_display_history_without_retaining_session_transc
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2000,11 +2102,19 @@ index 457f18b06..5df0beeef 100644
          });
          session.save().expect("save remote restore session");
 
+@@ -618,6 +622,7 @@ fn test_remote_startup_restores_swarm_delivery_as_compact_card() {
+             timestamp: None,
+             tool_duration_ms: None,
+             token_usage: None,
++            request_snapshot: None,
+         });
+         session.save_prepared().expect("save persisted DM");
+
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs
-index b1165593c..96944dc33 100644
+index a37be8c9a..08d2f38b4 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs
-@@ -1387,6 +1387,7 @@ fn test_create_transfer_session_from_parent_copies_todos_and_uses_compacted_cont
+@@ -1390,6 +1390,7 @@ fn test_create_transfer_session_from_parent_copies_todos_and_uses_compacted_cont
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2013,10 +2123,26 @@ index b1165593c..96944dc33 100644
          let transfer_compaction = crate::session::StoredCompactionState {
              summary_text: "Compacted handoff summary".to_string(),
 diff --git a/crates/jcode-tui/src/tui/session_picker/loading_tests.rs b/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
-index b8505da31..2714ff4cb 100644
+index 366492e7e..1bd839c14 100644
 --- a/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker/loading_tests.rs
-@@ -633,6 +633,7 @@ fn load_sessions_prefers_custom_title_over_generated_title() {
+@@ -157,6 +157,7 @@ fn session_picker_cache_roundtrip_preserves_sort_order_and_metadata() {
+         timestamp: Some(now - chrono::Duration::hours(3)),
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     alpha.save().expect("save alpha fixture");
+
+@@ -182,6 +183,7 @@ fn session_picker_cache_roundtrip_preserves_sort_order_and_metadata() {
+         timestamp: Some(now - chrono::Duration::hours(2)),
+         tool_duration_ms: None,
+         token_usage: None,
++        request_snapshot: None,
+     });
+     bravo.save().expect("save bravo fixture");
+
+@@ -786,6 +788,7 @@ fn load_sessions_prefers_custom_title_over_generated_title() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -2024,7 +2150,7 @@ index b8505da31..2714ff4cb 100644
      });
      session.save().expect("save session");
      invalidate_session_list_cache();
-@@ -670,6 +671,7 @@ fn load_sessions_prefers_todo_group_over_generated_title() {
+@@ -823,6 +826,7 @@ fn load_sessions_prefers_todo_group_over_generated_title() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -2032,7 +2158,7 @@ index b8505da31..2714ff4cb 100644
      });
      session.save().expect("save session");
      crate::todo::save_todos(
-@@ -723,6 +725,7 @@ fn load_sessions_keeps_custom_title_over_todo_group() {
+@@ -878,6 +882,7 @@ fn load_sessions_keeps_custom_title_over_todo_group() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -2040,7 +2166,7 @@ index b8505da31..2714ff4cb 100644
      });
      session.save().expect("save session");
      crate::todo::save_todos(
-@@ -775,6 +778,7 @@ fn load_sessions_includes_saved_sessions_beyond_scan_limit() {
+@@ -932,6 +937,7 @@ fn load_sessions_includes_saved_sessions_beyond_scan_limit() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -2048,7 +2174,7 @@ index b8505da31..2714ff4cb 100644
      });
      saved_session.save().expect("save saved session");
 
-@@ -795,6 +799,7 @@ fn load_sessions_includes_saved_sessions_beyond_scan_limit() {
+@@ -952,6 +958,7 @@ fn load_sessions_includes_saved_sessions_beyond_scan_limit() {
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2056,7 +2182,7 @@ index b8505da31..2714ff4cb 100644
          });
          session.save().expect("save unsaved session");
      }
-@@ -832,6 +837,7 @@ fn load_sessions_preserves_snapshot_saved_when_journal_meta_omits_saved() {
+@@ -989,6 +996,7 @@ fn load_sessions_preserves_snapshot_saved_when_journal_meta_omits_saved() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -2064,7 +2190,7 @@ index b8505da31..2714ff4cb 100644
      });
      session.save().expect("save saved session");
 
-@@ -919,6 +925,7 @@ fn session_matches_query_searches_jcode_transcript_contents() {
+@@ -1076,6 +1084,7 @@ fn session_matches_query_searches_jcode_transcript_contents() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -2072,7 +2198,7 @@ index b8505da31..2714ff4cb 100644
      });
      session.save().expect("save session");
 
-@@ -964,6 +971,7 @@ fn jcode_search_index_keeps_late_turns_after_reaching_its_budget() {
+@@ -1121,6 +1130,7 @@ fn jcode_search_index_keeps_late_turns_after_reaching_its_budget() {
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2080,7 +2206,7 @@ index b8505da31..2714ff4cb 100644
          });
      }
      session.save().expect("save session");
-@@ -1249,6 +1257,7 @@ fn benchmark_resume_loading_reports_timings() {
+@@ -1406,6 +1416,7 @@ fn benchmark_resume_loading_reports_timings() {
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2088,7 +2214,7 @@ index b8505da31..2714ff4cb 100644
          });
          session.append_stored_message(crate::session::StoredMessage {
              id: format!("msg-{idx}-2"),
-@@ -1261,6 +1270,7 @@ fn benchmark_resume_loading_reports_timings() {
+@@ -1418,6 +1429,7 @@ fn benchmark_resume_loading_reports_timings() {
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2096,7 +2222,7 @@ index b8505da31..2714ff4cb 100644
          });
          session.save().expect("save benchmark session");
      }
-@@ -1319,6 +1329,7 @@ fn invalidated_in_flight_load_does_not_repopulate_session_list_cache() {
+@@ -1476,6 +1488,7 @@ fn invalidated_in_flight_load_does_not_repopulate_session_list_cache() {
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2104,7 +2230,7 @@ index b8505da31..2714ff4cb 100644
          });
          session.save().expect("save race session");
      };
-@@ -1415,6 +1426,7 @@ fn onboarding_scoped_loader_returns_only_codex_sessions() {
+@@ -1572,6 +1585,7 @@ fn onboarding_scoped_loader_returns_only_codex_sessions() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -2112,7 +2238,7 @@ index b8505da31..2714ff4cb 100644
      });
      jcode_session.save().expect("save jcode session");
 
-@@ -1457,6 +1469,7 @@ fn parallel_fill_skips_many_recent_empty_sessions_to_reach_scan_limit() {
+@@ -1614,6 +1628,7 @@ fn parallel_fill_skips_many_recent_empty_sessions_to_reach_scan_limit() {
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2120,7 +2246,7 @@ index b8505da31..2714ff4cb 100644
          });
      };
 
-@@ -1519,6 +1532,7 @@ fn hidden_debug_sessions_do_not_consume_default_resume_budget() {
+@@ -1676,6 +1691,7 @@ fn hidden_debug_sessions_do_not_consume_default_resume_budget() {
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -2128,7 +2254,7 @@ index b8505da31..2714ff4cb 100644
          });
      };
 
-@@ -1587,6 +1601,7 @@ fn session_matches_picker_query_requires_all_tokens_order_independent() {
+@@ -1744,6 +1760,7 @@ fn session_matches_picker_query_requires_all_tokens_order_independent() {
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,
@@ -2137,7 +2263,7 @@ index b8505da31..2714ff4cb 100644
      session.save().expect("save session");
 
 diff --git a/crates/jcode-tui/src/tui/session_picker_tests.rs b/crates/jcode-tui/src/tui/session_picker_tests.rs
-index 72b507871..590b06862 100644
+index fcc3d9062..1d584b283 100644
 --- a/crates/jcode-tui/src/tui/session_picker_tests.rs
 +++ b/crates/jcode-tui/src/tui/session_picker_tests.rs
 @@ -755,6 +755,7 @@ fn test_loading_preview_refreshes_search_index_for_picker_filtering() {

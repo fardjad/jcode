@@ -9,9 +9,11 @@ to measure the resulting trade-offs.
 
 ## Design principles
 
-1. **Allocate capability to the task.** Routine shell work, repository
-   inspection, research, UI automation, and focused implementation can use a
-   purpose-built worker rather than the coordinator's model and effort.
+1. **Allocate capability to the task.** Routine shell work and repository
+   inspection can use the read-only `swarm_investigator`; web and jcode
+   documentation research can use `swarm_research`; exact mechanical changes
+   can use `swarm_fixer`. A blueprint can pin a model and effort appropriate to
+   that work, while complex coordination stays with the coordinator.
 2. **Keep bulky evidence out of the coordinator by default.** The coordinator
    receives a bounded report, and can retrieve more only when it is needed.
 3. **Apply deterministic guards at the context boundary.** A plugin can replace
@@ -37,9 +39,10 @@ At runtime, each valid regular blueprint becomes a coordinator-visible
 `swarm_<id>` tool. The supplied roles in `workers/blueprints/` demonstrate this
 pattern:
 
-- `fixer` performs one literal mechanical change within coordinator-defined
-  scope.
-- `investigator` runs commands, searches code, and returns compact facts.
+- `fixer` performs exact mechanical changes within coordinator-defined scope,
+  using `edit`, `apply_patch`, or `write`.
+- `investigator` runs coordinator-specified, read-only shell commands, searches
+  code, and reads files to return compact facts.
 - `research` handles web and jcode documentation research.
 
 The coordinator blueprint explicitly guides selection of these workers for
@@ -47,7 +50,15 @@ large reads, verbose commands, broad searches, research, and focused edits.
 This is the reusable, runtime-supported form of the delegation workflow
 illustrated by `workers/`, not merely a collection of prompt files.
 
-A blueprint **can** pin a worker model and effort. It does not promise that a
+The fixer uses native `edit` for exact replacements in one file. Its `edits`
+array runs in order and all operations for that file succeed or none are
+written. For multi-file changes, native `apply_patch` accepts a Codex patch or
+unified diff, but does not promise all-or-none application across files. The
+investigator has read/search tools and coordinator-specified shell access, not
+file-editing tools. Research has no shell or file-edit tools. These are distinct
+capabilities, not general-purpose implementation or automation workers.
+
+A blueprint can pin a worker model and effort. It does not promise that a
 worker is cheaper, that it is always the right choice, or that delegation
 reduces total tokens. The saving comes when a lower-cost specialist avoids
 placing its raw investigation and tool output in the coordinator context.
@@ -128,13 +139,12 @@ reduction or normalization, not proof of a saving by itself: its effect depends
 on the configured adapter and command. The hook preserves the policy gate and
 uses the original input if transformation fails or times out.
 
-### Avoiding unrequested search fallback
+### Upstream web search configuration
 
-Patch `1005-personal-feature-keep-web-search-engine-selection-in-configuration.patch`
-limits web search to configured engines in their specified order. This is
-primarily a policy and predictability change. It can avoid wasted fallback
-attempts and their associated tool context, but it is not a general token
-reduction claim and should be evaluated separately from the delegation system.
+Upstream v0.99.1 owns web search engine and locale selection through
+configuration. Request-level engine selection and Bing market overrides are
+unavailable. Configure the engine and locale using upstream settings. The
+former personal search patch is no longer carried.
 
 ## How to evaluate the approach
 
@@ -157,7 +167,6 @@ failure rate is not automatically an efficiency improvement.
 
 - `1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
 - `1004-personal-feature-completion-quality-gates-respect-review.patch`
-- `1005-personal-feature-keep-web-search-engine-selection-in-configuration.patch`
 - `1006-personal-feature-configure-session-picker-sort-order.patch`
 - `0002-candidate-add-hook-context-and-post-tool-transform.patch`
 - upstream `pre_tool_transform` hook (formerly

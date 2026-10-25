@@ -5,7 +5,7 @@ Subject: [PATCH] feat: add worker blueprints with runtime integration
 
 X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch
+X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch, 1001-personal-provider-add-typed-openrouter-eu-provider.patch
 X-Jcode-Patch-File: 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
 
 Patch intent:
@@ -15,12 +15,20 @@ role instructions, model, effort, enabled-tools, disabled-tools,
 communication-policy, and timeout. At runtime, every valid blueprint
 generates a coordinator-visible tool named swarm_<id> that spawns a
 blueprint-backed worker, waits for completion, and returns a compact
-summary with paginated follow-up reads. Workers submit that completion report as their final assistant response, never through an unavailable swarm report tool. A reserved coordinator.md file
+summary with paginated follow-up reads. Workers submit that completion report as
+their final assistant response, never through an unavailable swarm report tool.
+A reserved coordinator.md file
 supplies the coordinator's durable prompt and tool policy
 (enabled-tools/disabled-tools), configured via the shared
 [agents.worker_blueprints.coordinator] override namespace. The old
 allowed-tools key is replaced by enabled-tools and disabled-tools,
 matching the global [tools] policy vocabulary.
+
+The selected blueprint name and enabled/disabled tool policy are persisted
+in session snapshots, startup projections, journals, and forks. Agents own
+the runtime policy registration for their lifetime. Visible and headless
+spawn, session restoration, wake, and revival restore the saved policy before
+worker execution, without expanding authority or restoring obsolete tools.
 
 Why it exists:
 Worker blueprints let a user specialize subagents without code changes.
@@ -75,7 +83,9 @@ Upstream integration points:
 - crates/jcode-app-core/src/agent/turn_execution.rs: set_swarm_enabled
   refreshes the root session policy and loads/clears coordinator_prompt
   when the feature is toggled at runtime.
-- crates/jcode-swarm-core/src/lib.rs: completion prompt instructs workers to use a final assistant response, which the coordinator collects, rather than a nonexistent swarm report tool.
+- crates/jcode-swarm-core/src/lib.rs: completion prompt instructs workers to use
+a final assistant response, which the coordinator collects, rather than a
+nonexistent swarm report tool.
     - crates/jcode-app-core/src/server/comm_session.rs: fallible blueprint
   resolution, prompt composition, tool policy application,
   communication policy storage in spawn_swarm_agent.
@@ -166,14 +176,17 @@ cargo test -p jcode-app-core transcript_scope_offset_zero_returns_end_of_convers
 cargo test -p jcode-app-core follow_up_mode_offset_beyond_end_returns_empty --lib
 cargo test -p jcode-app-core follow_up_scope_parses_report_default_and_transcript --lib
 cargo test -p jcode-app-core persisted_headless_session_is_registered_with_its_working_dir --lib
+cargo test -p jcode-app-core blueprint_native_sync_ --lib
+cargo test -p jcode-base blueprint_policy_persistence_ --lib
+cargo test -p jcode-app-core worker_blueprint_policy --lib
 ---
- crates/jcode-app-core/src/agent.rs            |   96 +-
- crates/jcode-app-core/src/agent/prompting.rs  |   19 +-
- .../src/agent/turn_execution.rs               |   38 +-
- crates/jcode-app-core/src/agent_tests.rs      |  201 ++
+ crates/jcode-app-core/src/agent.rs            |  201 +-
+ crates/jcode-app-core/src/agent/prompting.rs  |   21 +-
+ .../src/agent/turn_execution.rs               |   48 +-
+ crates/jcode-app-core/src/agent_tests.rs      |  517 ++++
  .../src/protocol_tests/comm_requests.rs       |    1 +
- .../src/server/client_actions.rs              |    4 +
- .../src/server/client_actions_tests.rs        |    7 +
+ .../src/server/client_actions.rs              |    6 +
+ .../src/server/client_actions_tests.rs        |   30 +
  .../src/server/client_comm_message.rs         |   19 +
  .../src/server/client_comm_tests.rs           |   13 +
  .../server/client_disconnect_grace_tests.rs   |    1 +
@@ -188,10 +201,11 @@ cargo test -p jcode-app-core persisted_headless_session_is_registered_with_its_w
  .../jcode-app-core/src/server/comm_control.rs |    1 +
  .../src/server/comm_control_tests.rs          |    1 +
  .../src/server/comm_plan_tests.rs             |    1 +
- .../jcode-app-core/src/server/comm_session.rs |  122 +-
- .../src/server/comm_session_tests.rs          |   43 +-
+ .../jcode-app-core/src/server/comm_session.rs |  133 +-
+ .../src/server/comm_session_tests.rs          |  195 +-
+ .../src/server/debug_session_admin.rs         |    1 +
  .../jcode-app-core/src/server/debug_tests.rs  |    1 +
- crates/jcode-app-core/src/server/headless.rs  |    1 +
+ crates/jcode-app-core/src/server/headless.rs  |    7 +-
  .../jcode-app-core/src/server/reload_tests.rs |    1 +
  .../src/server/session_connections.rs         |    1 +
  crates/jcode-app-core/src/server/state.rs     |    8 +
@@ -201,7 +215,7 @@ cargo test -p jcode-app-core persisted_headless_session_is_registered_with_its_w
  .../src/server/swarm_watchdog_tests.rs        |    1 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
  crates/jcode-app-core/src/tool/blueprint.rs   |  565 +++++
- .../src/tool/blueprint_tests.rs               | 1027 ++++++++
+ .../src/tool/blueprint_tests.rs               | 1241 +++++++++
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
  .../src/tool/communicate_tests.rs             |    2 +-
@@ -209,26 +223,29 @@ cargo test -p jcode-app-core persisted_headless_session_is_registered_with_its_w
  crates/jcode-app-core/src/tool/mod.rs         |   62 +-
  crates/jcode-app-core/src/tool/tests.rs       |   12 +
  crates/jcode-base/src/config.rs               |    1 +
- .../jcode-base/src/config/display_summary.rs  |   79 +-
+ .../jcode-base/src/config/display_summary.rs  |   75 +-
  crates/jcode-base/src/config_tests.rs         |   11 +
  crates/jcode-base/src/hooks.rs                |   28 +
  crates/jcode-base/src/lib.rs                  |    1 +
+ crates/jcode-base/src/session.rs              |   20 +
+ crates/jcode-base/src/session/journal.rs      |    5 +-
+ crates/jcode-base/src/session_tests/cases.rs  |  131 +
  crates/jcode-base/src/worker_blueprint.rs     | 2222 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   59 +
  .../src/protocol_tests/comm_requests.rs       |    1 +
  crates/jcode-protocol/src/wire.rs             |    7 +
  crates/jcode-swarm-core/src/lib.rs            |    9 +-
  docs/HOOKS.md                                 |    2 +
- 52 files changed, 4777 insertions(+), 54 deletions(-)
+ 56 files changed, 5759 insertions(+), 66 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index df2343a5e..1e3da9528 100644
+index f8773d683..9ef3a30c6 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -73,6 +73,76 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
+@@ -78,6 +78,76 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
      LazyLock::new(|| StdMutex::new(HashMap::new()));
  const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
 
@@ -305,7 +322,18 @@ index df2343a5e..1e3da9528 100644
  fn stable_hash_str(value: &str) -> u64 {
      let mut hasher = std::collections::hash_map::DefaultHasher::new();
      value.hash(&mut hasher);
-@@ -353,8 +423,13 @@ pub struct Agent {
+@@ -324,6 +394,10 @@ pub struct Agent {
+     active_skill: Option<String>,
+     allowed_tools: Option<HashSet<String>>,
+     disabled_tools: HashSet<String>,
++    /// Tool filters before applying a session's persisted worker blueprint.
++    base_allowed_tools: Option<HashSet<String>>,
++    base_disabled_tools: HashSet<String>,
++    global_disabled_tools: HashSet<String>,
+     /// Generation-scoped ownership of this Agent's global tool-policy entry.
+     _tool_policy_registration: crate::tool::SessionToolPolicyRegistration,
+     /// MCP top-level definition exposure policy captured when the session starts.
+@@ -401,8 +475,13 @@ pub struct Agent {
      announced_skills_scan_index: usize,
      /// Whether memory features are enabled for this session
      memory_enabled: bool,
@@ -320,7 +348,21 @@ index df2343a5e..1e3da9528 100644
      /// One-step undo snapshot captured before the most recent rewind.
      rewind_undo_snapshot: Option<RewindUndoSnapshot>,
      /// Channel for tools to request stdin input from the user
-@@ -474,6 +549,7 @@ impl Agent {
+@@ -502,8 +581,11 @@ impl Agent {
+             skills,
+             session,
+             active_skill: None,
+-            allowed_tools,
+-            disabled_tools,
++            allowed_tools: allowed_tools.clone(),
++            disabled_tools: disabled_tools.clone(),
++            base_allowed_tools: allowed_tools.clone(),
++            base_disabled_tools: disabled_tools.clone(),
++            global_disabled_tools: crate::config::config().tools.selection().disabled_tools,
+             _tool_policy_registration: tool_policy_registration,
+             mcp_tools_mode: tool_config.mcp_tools,
+             provider_session_id: None,
+@@ -532,6 +614,7 @@ impl Agent {
              announced_skills_scan_index: 0,
              memory_enabled: crate::config::config().features.memory,
              swarm_enabled: crate::config::config().features.swarm,
@@ -328,9 +370,99 @@ index df2343a5e..1e3da9528 100644
              rewind_undo_snapshot: None,
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
-@@ -556,6 +632,18 @@ impl Agent {
-     ) -> Self {
-         let start = Instant::now();
+@@ -550,6 +633,63 @@ impl Agent {
+         agent
+     }
+
++    fn apply_worker_blueprint_policy(
++        &mut self,
++        policy: Option<&crate::session::WorkerBlueprintPolicy>,
++    ) {
++        let global_allowed = crate::config::config().tools.selection().allowed_tools;
++        let mut base_allowed = match (self.base_allowed_tools.clone(), global_allowed) {
++            (Some(base), Some(global)) => Some(base.intersection(&global).cloned().collect()),
++            (Some(base), None) => Some(base),
++            (None, Some(global)) => Some(global),
++            (None, None) => None,
++        };
++        self.disabled_tools = self.base_disabled_tools.clone();
++        if let Some(policy) = policy {
++            if let Some(enabled) = policy.enabled_tools.as_ref() {
++                let enabled: HashSet<String> = enabled
++                    .iter()
++                    .map(|tool| tool.trim().to_string())
++                    .filter(|tool| !tool.is_empty())
++                    .collect();
++                base_allowed = Some(match base_allowed.take() {
++                    Some(base) => base.intersection(&enabled).cloned().collect(),
++                    None => enabled,
++                });
++            }
++            self.disabled_tools
++                .extend(self.global_disabled_tools.iter().cloned());
++            self.disabled_tools.extend(
++                policy
++                    .disabled_tools
++                    .iter()
++                    .flatten()
++                    .map(|tool| tool.trim().to_string())
++                .filter(|tool| !tool.is_empty()),
++            );
++        } else {
++            self.disabled_tools
++                .extend(self.global_disabled_tools.iter().cloned());
++        }
++        self.allowed_tools = base_allowed;
++        self._tool_policy_registration = crate::tool::register_session_tool_policy(
++            &self.session.id,
++            self.allowed_tools.clone(),
++            self.disabled_tools.clone(),
++        );
++    }
++
++    pub(crate) fn set_worker_blueprint_policy(
++        &mut self,
++        policy: crate::session::WorkerBlueprintPolicy,
++    ) -> anyhow::Result<()> {
++        self.session.worker_blueprint_policy = Some(policy.clone());
++        self.apply_worker_blueprint_policy(Some(&policy));
++        self.locked_tools = None;
++        self.cache_tracker.reset();
++        self.session.save_prepared()
++    }
++
+     fn current_skills_snapshot(&self) -> Arc<SkillRegistry> {
+         // Global skills come from the process-wide shared registry; the
+         // project-local overlay is composed fresh from this session's
+@@ -611,6 +751,25 @@ impl Agent {
+         Self::new_with_initial_ownership(provider, registry, working_dir, parent_id, true)
+     }
+
++    pub(crate) fn new_with_parent_and_initial_working_dir_and_blueprint_policy(
++        provider: Arc<dyn Provider>,
++        registry: Registry,
++        working_dir: Option<&str>,
++        parent_id: Option<String>,
++        worker_blueprint_policy: Option<crate::session::WorkerBlueprintPolicy>,
++    ) -> anyhow::Result<Self> {
++        let mut agent = Self::new_with_parent_and_initial_working_dir(
++            provider,
++            registry,
++            working_dir,
++            parent_id,
++        );
++        if let Some(policy) = worker_blueprint_policy {
++            agent.set_worker_blueprint_policy(policy)?;
++        }
++        Ok(agent)
++    }
++
+     fn new_with_initial_ownership(
+         provider: Arc<dyn Provider>,
+         registry: Registry,
+@@ -626,6 +785,18 @@ impl Agent {
+             *lap = Instant::now();
+         };
          let tool_selection = crate::config::config().tools.selection();
 +
 +        // Apply coordinator-only tool policy to user-facing root sessions.
@@ -347,7 +479,7 @@ index df2343a5e..1e3da9528 100644
          let mut session = Session::create(parent_id, None);
          if let Some(working_dir) = working_dir {
              session.working_dir = Some(working_dir.to_string());
-@@ -564,10 +652,14 @@ impl Agent {
+@@ -635,7 +806,7 @@ impl Agent {
              provider,
              registry,
              session,
@@ -355,7 +487,11 @@ index df2343a5e..1e3da9528 100644
 +            allowed_tools,
              tool_selection.disabled_tools,
          );
-         agent.session.mark_active();
+         mark("build_base", &mut lap);
+@@ -644,6 +815,10 @@ impl Agent {
+         // session never touches the marker files.
+         agent.session.mark_active_unregistered();
+         mark("mark_active", &mut lap);
 +        // Load the coordinator prompt for root sessions when swarm is enabled.
 +        if is_root && agent.swarm_enabled {
 +            agent.coordinator_prompt = load_coordinator_prompt_body();
@@ -363,11 +499,43 @@ index df2343a5e..1e3da9528 100644
          agent.session.model = Some(agent.provider_model());
          agent.session.provider_key = agent.provider_key_for_new_session();
          agent.reconcile_explicit_provider_pin_route();
+@@ -692,7 +867,20 @@ impl Agent {
+         session: Session,
+         allowed_tools: Option<HashSet<String>>,
+     ) -> Self {
+-        let tool_selection = if let Some(allowed_tools) = allowed_tools {
++        let tool_selection = if session.worker_blueprint_policy.is_some() {
++            let global = crate::config::config().tools.selection();
++            if let Some(explicit) = allowed_tools {
++                crate::config::ToolSelection {
++                    allowed_tools: Some(match global.allowed_tools.as_ref() {
++                        Some(configured) => explicit.intersection(configured).cloned().collect(),
++                        None => explicit,
++                    }),
++                    disabled_tools: global.disabled_tools,
++                }
++            } else {
++                global
++            }
++        } else if let Some(allowed_tools) = allowed_tools {
+             crate::config::ToolSelection {
+                 allowed_tools: Some(allowed_tools),
+                 disabled_tools: HashSet::new(),
+@@ -707,6 +895,9 @@ impl Agent {
+             tool_selection.allowed_tools,
+             tool_selection.disabled_tools,
+         );
++        if let Some(policy) = agent.session.worker_blueprint_policy.clone() {
++            agent.apply_worker_blueprint_policy(Some(&policy));
++        }
+         // begin_concurrency_tracking below writes the presence markers.
+         agent.session.mark_active_unregistered();
+         if agent.session.provider_key.is_none() {
 diff --git a/crates/jcode-app-core/src/agent/prompting.rs b/crates/jcode-app-core/src/agent/prompting.rs
-index 179472611..49a82275b 100644
+index cfce180b9..66361996b 100644
 --- a/crates/jcode-app-core/src/agent/prompting.rs
 +++ b/crates/jcode-app-core/src/agent/prompting.rs
-@@ -151,9 +151,16 @@ impl Agent {
+@@ -134,9 +134,16 @@ impl Agent {
          &self,
          memory_prompt: Option<&str>,
      ) -> crate::prompt::SplitSystemPrompt {
@@ -385,12 +553,21 @@ index 179472611..49a82275b 100644
                  dynamic_part: String::new(),
              };
          }
-@@ -183,6 +190,16 @@ impl Agent {
+@@ -156,7 +163,7 @@ impl Agent {
+             .as_ref()
+             .map(std::path::PathBuf::from);
+
+-        let (split, _context_info) = crate::prompt::build_system_prompt_split_with_agents_md(
++        let (mut split, _context_info) = crate::prompt::build_system_prompt_split_with_agents_md(
+             skill_prompt.as_deref(),
+             available_skills,
+             self.session.is_canary,
+@@ -165,6 +172,16 @@ impl Agent {
              self.agents_md_snapshot.clone(),
          );
 
 +        // Inject the coordinator prompt as a stable static segment, after the
-+        // base/overlay content but before turn-varying reminders. This
++        // base/overlay content and before the next turn's transcript reminders. This
 +        // preserves the byte-for-byte stable base prefix for KV-cache reuse.
 +        if let Some(ref coord) = self.coordinator_prompt {
 +            if !split.static_part.is_empty() {
@@ -399,14 +576,14 @@ index 179472611..49a82275b 100644
 +            split.static_part.push_str(coord);
 +        }
 +
-         self.append_current_turn_system_reminder(&mut split);
-         crate::prompt::append_swarm_effort_directive(
-             &mut split,
+         split
+     }
+
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index 652870b2d..605c48ce9 100644
+index fd8903f33..6fcd598af 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
-@@ -196,6 +196,8 @@ impl Agent {
+@@ -210,6 +210,8 @@ impl Agent {
                  crate::hooks::ProcessRole::Coordinator
              },
              worker_id: None,
@@ -415,7 +592,7 @@ index 652870b2d..605c48ce9 100644
          }
      }
 
-@@ -376,9 +378,34 @@ impl Agent {
+@@ -443,9 +445,37 @@ impl Agent {
          }
      }
 
@@ -432,13 +609,16 @@ index 652870b2d..605c48ce9 100644
 +        }
          self.swarm_enabled = enabled;
 +        if self.session.parent_id.is_none() {
-+            let global_allowed = crate::config::config().tools.selection().allowed_tools;
-+            self.allowed_tools = super::effective_root_allowed_tools(global_allowed, enabled, true);
-+            self._tool_policy_registration = crate::tool::register_session_tool_policy(
-+                &self.session.id,
-+                self.allowed_tools.clone(),
-+                self.disabled_tools.clone(),
++            let selection = crate::config::config().tools.selection();
++            self.base_allowed_tools = super::effective_root_allowed_tools(
++                selection.allowed_tools,
++                enabled,
++                true,
 +            );
++            self.base_disabled_tools = selection.disabled_tools.clone();
++            self.global_disabled_tools = selection.disabled_tools;
++            let policy = self.session.worker_blueprint_policy.clone();
++            self.apply_worker_blueprint_policy(policy.as_ref());
 +            // Load or clear the coordinator prompt for root sessions.
 +            if enabled {
 +                self.coordinator_prompt = super::load_coordinator_prompt_body();
@@ -451,7 +631,7 @@ index 652870b2d..605c48ce9 100644
      }
 
      /// Mark this session as an inline swarm worker. When enabled, the streaming
-@@ -615,6 +642,9 @@ impl Agent {
+@@ -677,6 +707,9 @@ impl Agent {
              .map(|names| names.iter().cloned().collect());
          let allowed = enabled.as_ref().or(self.allowed_tools.as_ref());
          let mut tools = self.registry.definitions(allowed).await;
@@ -461,7 +641,7 @@ index 652870b2d..605c48ce9 100644
          if enabled.is_none() && !self.disabled_tools.is_empty() {
              tools.retain(|tool| {
                  !self
-@@ -1103,6 +1133,12 @@ impl Agent {
+@@ -1156,6 +1189,12 @@ impl Agent {
                  "Tool 'jcode_docs' is disabled in self-development mode. Read the working tree documentation instead."
              ));
          }
@@ -474,11 +654,34 @@ index 652870b2d..605c48ce9 100644
          if sdk_enabled {
              return Ok(());
          }
+@@ -1252,11 +1291,8 @@ impl Agent {
+         self.refresh_agents_md_snapshot();
+         let agents_md_ms = lap.elapsed().as_millis();
+         let lap = Instant::now();
+-        self._tool_policy_registration = crate::tool::register_session_tool_policy(
+-            &self.session.id,
+-            self.allowed_tools.clone(),
+-            self.disabled_tools.clone(),
+-        );
++        let policy = self.session.worker_blueprint_policy.clone();
++        self.apply_worker_blueprint_policy(policy.as_ref());
+         let policy_ms = lap.elapsed().as_millis();
+         let assign_ms = assign_start.elapsed().as_millis();
+         if assign_ms >= 50 {
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 057b0faeb..baf582aa8 100644
+index 357b50a93..22b4878b7 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -494,6 +494,8 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
+@@ -674,6 +674,8 @@ async fn streaming_preserves_hook_context() {
+         mode: Some("inline".into()),
+         role: crate::hooks::ProcessRole::Worker,
+         worker_id: Some("worker-session".into()),
++        blueprint_id: None,
++        blueprint_name: None,
+     };
+     let expected_context = context.to_json();
+     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+@@ -765,6 +767,8 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
          mode: Some("inline".to_string()),
          role: crate::hooks::ProcessRole::Worker,
          worker_id: Some("worker-session".to_string()),
@@ -487,7 +690,328 @@ index 057b0faeb..baf582aa8 100644
      };
 
      crate::hooks::with_swarm_context(worker.clone(), async {
-@@ -1497,6 +1499,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
+@@ -789,6 +793,320 @@ fn message_text(message: &Message) -> &str {
+     content_text(&message.content)
+ }
+
++#[tokio::test]
++async fn blueprint_native_sync_agent_restore_preserves_permission_boundaries() {
++    let _storage = crate::storage::lock_test_env();
++    struct RestoreHome(Option<std::ffi::OsString>);
++    impl Drop for RestoreHome {
++        fn drop(&mut self) {
++            match self.0.take() {
++                Some(home) => crate::env::set_var("JCODE_HOME", home),
++                None => crate::env::remove_var("JCODE_HOME"),
++            }
++            crate::config::Config::invalidate_cache();
++        }
++    }
++
++    let previous_home = std::env::var_os("JCODE_HOME");
++    let _restore_home = RestoreHome(previous_home);
++    let home = tempfile::tempdir().expect("temporary JCODE_HOME");
++    std::fs::write(
++        home.path().join("config.toml"),
++        "[tools]\ndisabled = [\"write\"]\n",
++    )
++    .expect("write isolated tool config");
++    crate::env::set_var("JCODE_HOME", home.path());
++    crate::config::Config::invalidate_cache();
++
++    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
++    let registry = Registry::new(provider.clone()).await;
++    let explicit_allowed = HashSet::from([
++        "read".to_string(),
++        "edit".to_string(),
++        "apply_patch".to_string(),
++        "bash".to_string(),
++        "write".to_string(),
++    ]);
++    let policy = crate::session::WorkerBlueprintPolicy {
++        name: "native-worker".to_string(),
++        enabled_tools: Some(vec![
++            "read".to_string(),
++            "edit".to_string(),
++            "apply_patch".to_string(),
++            "bash".to_string(),
++            "agentgrep".to_string(),
++            "write".to_string(),
++        ]),
++        disabled_tools: Some(vec![
++            "edit".to_string(),
++            "apply_patch".to_string(),
++            "bash".to_string(),
++        ]),
++    };
++
++    let mut session = Session::create_with_id(
++        "blueprint-native-sync-agent-restore".to_string(),
++        Some("blueprint-parent".to_string()),
++        None,
++    );
++    session.save_prepared().expect("save initial session");
++    let mut setter_agent = Agent::new_with_session(
++        provider.clone(),
++        registry.clone(),
++        session,
++        Some(explicit_allowed.clone()),
++    );
++    setter_agent
++        .set_worker_blueprint_policy(policy.clone())
++        .expect("persist worker blueprint policy");
++    drop(setter_agent);
++
++    let persisted = Session::load("blueprint-native-sync-agent-restore")
++        .expect("load saved worker session");
++    assert_eq!(persisted.worker_blueprint_policy, Some(policy.clone()));
++    let session_id = persisted.id.clone();
++    let mut agent = Agent::new_with_session(
++        provider.clone(),
++        registry.clone(),
++        persisted,
++        Some(explicit_allowed.clone()),
++    );
++    assert_eq!(
++        agent.allowed_tools,
++        Some(HashSet::from([
++            "read".to_string(),
++            "edit".to_string(),
++            "apply_patch".to_string(),
++            "bash".to_string(),
++            "write".to_string(),
++        ])),
++        "saved enabled tools must be intersected with explicit allowed tools"
++    );
++    let definitions = agent.tool_definitions().await;
++    let names: HashSet<String> = definitions
++        .into_iter()
++        .map(|definition| definition.name)
++        .collect();
++    assert!(names.contains("read"));
++    for denied in ["edit", "apply_patch", "bash", "write"] {
++        assert!(!names.contains(denied), "disabled tool exposed: {denied}");
++        assert_eq!(
++            crate::tool::session_tool_policy_allows_tool_for_test(&session_id, denied),
++            Some(false),
++            "global or blueprint deny missing for {denied}"
++        );
++        let error = agent
++            .execute_tool(denied, serde_json::json!({}))
++            .await
++            .expect_err("disabled tool execution must be rejected");
++        assert!(
++            error.to_string().contains("disabled")
++                || error.to_string().contains("not allowed"),
++            "{error}"
++        );
++    }
++    for definition_name in ["agentgrep"] {
++        assert!(!names.contains(definition_name));
++        assert_eq!(
++            crate::tool::session_tool_policy_allows_tool_for_test(&session_id, definition_name),
++            Some(false),
++            "saved enabled tools must remain bounded by explicit allowed tools"
++        );
++        let error = agent
++            .execute_tool(definition_name, serde_json::json!({}))
++            .await
++            .expect_err("explicit allowed-tool boundary must be enforced");
++        assert!(error.to_string().contains("not allowed"), "{error}");
++    }
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(&session_id, "write"),
++        Some(false),
++        "global disabled policy should remain unioned with blueprint policy"
++    );
++
++    let mut policy_target = Session::create_with_id(
++        "blueprint-native-sync-agent-restore-target".to_string(),
++        Some("blueprint-parent".to_string()),
++        None,
++    );
++    policy_target.save_prepared().expect("save restore target");
++    let mut restorer = Agent::new_with_session(
++        provider.clone(),
++        registry.clone(),
++        policy_target,
++        Some(explicit_allowed.clone()),
++    );
++    assert!(restorer.validate_tool_allowed("edit").is_ok());
++    restorer
++        .restore_session(&session_id)
++        .expect("restore saved policy session");
++    assert!(restorer.validate_tool_allowed("edit").is_err());
++    assert!(restorer.validate_tool_allowed("bash").is_err());
++
++    let mut plain = Session::create_with_id(
++        "blueprint-native-sync-agent-restore-plain".to_string(),
++        Some("blueprint-parent".to_string()),
++        None,
++    );
++    let plain_id = plain.id.clone();
++    plain.save_prepared().expect("save policy-free session");
++    restorer
++        .restore_session(&plain_id)
++        .expect("restore policy-free session");
++    assert!(
++        restorer.session.worker_blueprint_policy.is_none(),
++        "policy-free restore should clear persisted policy"
++    );
++    assert!(restorer.validate_tool_allowed("edit").is_ok());
++    assert!(restorer.validate_tool_allowed("apply_patch").is_ok());
++    assert!(restorer.validate_tool_allowed("bash").is_ok());
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(&plain_id, "bash"),
++        Some(true),
++        "policy-free restore should clear stale blueprint restrictions"
++    );
++}
++
++#[tokio::test]
++async fn blueprint_native_sync_revival_preserves_worker_policy() {
++    let _storage = crate::storage::lock_test_env();
++    struct RestoreHome(Option<std::ffi::OsString>);
++    impl Drop for RestoreHome {
++        fn drop(&mut self) {
++            match self.0.take() {
++                Some(home) => crate::env::set_var("JCODE_HOME", home),
++                None => crate::env::remove_var("JCODE_HOME"),
++            }
++            crate::config::Config::invalidate_cache();
++        }
++    }
++    let previous_home = std::env::var_os("JCODE_HOME");
++    let _restore_home = RestoreHome(previous_home);
++    let home = tempfile::tempdir().expect("temporary JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", home.path());
++    crate::config::Config::invalidate_cache();
++
++    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
++    let registry = Registry::new(provider.clone()).await;
++    let policy = crate::session::WorkerBlueprintPolicy {
++        name: "native-worker".to_string(),
++        enabled_tools: Some(vec![
++            "read".to_string(),
++            "edit".to_string(),
++            "apply_patch".to_string(),
++            "bash".to_string(),
++        ]),
++        disabled_tools: Some(vec![
++            "edit".to_string(),
++            "apply_patch".to_string(),
++            "bash".to_string(),
++        ]),
++    };
++    let mut session = Session::create_with_id(
++        "blueprint-native-sync-revival".to_string(),
++        Some("blueprint-parent".to_string()),
++        None,
++    );
++    session
++        .save_prepared()
++        .expect("save session before blueprint application");
++    let mut source = Agent::new_with_session(
++        provider.clone(),
++        registry.clone(),
++        session,
++        None,
++    );
++    source
++        .set_worker_blueprint_policy(policy.clone())
++        .expect("persist worker blueprint policy");
++    let session_id = source.session_id().to_string();
++    let expected_policy = Session::load(&session_id)
++        .expect("saved session")
++        .worker_blueprint_policy;
++    assert_eq!(expected_policy, Some(policy));
++    drop(source);
++
++    fn revive_from_saved_session(
++        provider: Arc<dyn Provider>,
++        registry: Registry,
++        session_id: &str,
++    ) -> Agent {
++        let saved = Session::load(session_id).expect("load saved session for revival");
++        Agent::new_with_session(provider, registry, saved, None)
++    }
++
++    let mut agent = revive_from_saved_session(provider, registry.clone(), &session_id);
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(&session_id, "read"),
++        Some(true),
++        "revival must re-register the saved allowlist"
++    );
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(&session_id, "bash"),
++        Some(false),
++        "revival must re-register saved denials"
++    );
++    let definitions = agent.tool_definitions().await;
++    let names: HashSet<String> = definitions
++        .into_iter()
++        .map(|definition| definition.name)
++        .collect();
++    assert!(names.contains("read"));
++    for denied in ["edit", "apply_patch", "bash"] {
++        assert!(!names.contains(denied), "disabled tool exposed: {denied}");
++        let error = registry
++            .execute(
++                denied,
++                match denied {
++                    "edit" => serde_json::json!({
++                        "file_path": "must-not-be-created.txt",
++                        "old_string": "before",
++                        "new_string": "after"
++                    }),
++                    "apply_patch" => serde_json::json!({
++                        "patch_text": "*** Begin Patch\n*** Add File: must-not-be-created.txt\n+denied\n*** End Patch"
++                    }),
++                    _ => serde_json::json!({ "command": "touch must-not-be-created.txt" }),
++                },
++                crate::tool::ToolContext {
++                    session_id: session_id.clone(),
++                    message_id: "message".to_string(),
++                    tool_call_id: format!("call-{denied}"),
++                    working_dir: Some(home.path().to_path_buf()),
++                    stdin_request_tx: None,
++                    graceful_shutdown_signal: None,
++                    execution_mode: crate::tool::ToolExecutionMode::Direct,
++                },
++            )
++            .await
++            .expect_err("disabled tool must be rejected by the actual registry");
++        assert!(error.to_string().contains("disabled"), "{error}");
++        assert!(
++            !home.path().join("must-not-be-created.txt").exists(),
++            "rejected tool ran before policy enforcement: {denied}"
++        );
++    }
++
++    let definitions_after = agent.tool_definitions().await;
++    assert!(definitions_after.iter().any(|definition| definition.name == "read"));
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(&session_id, "read"),
++        Some(true),
++        "the policy registration must outlive the revival helper"
++    );
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(&session_id, "bash"),
++        Some(false),
++        "the runtime deny must remain after spawn helper returns"
++    );
++    drop(agent);
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(&session_id, "read"),
++        None,
++        "dropping the owning Agent must unregister its policy"
++    );
++}
++
+ #[test]
+ fn agent_drop_removes_its_configured_session_tool_policy() {
+     let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+@@ -1907,6 +2225,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
      crate::config::Config::invalidate_cache();
  }
 
@@ -706,10 +1230,10 @@ index 1a1a54390..5298ba8a5 100644
      let json = serde_json::to_string(&req)?;
      assert!(json.contains("\"type\":\"comm_spawn\""));
 diff --git a/crates/jcode-app-core/src/server/client_actions.rs b/crates/jcode-app-core/src/server/client_actions.rs
-index b8232cbf6..f31b1fef4 100644
+index 383d0ca3b..4054d02e0 100644
 --- a/crates/jcode-app-core/src/server/client_actions.rs
 +++ b/crates/jcode-app-core/src/server/client_actions.rs
-@@ -558,6 +558,10 @@ pub(super) async fn handle_set_feature(
+@@ -564,6 +564,10 @@ pub(super) async fn handle_set_feature(
              }
          }
          FeatureToggle::Swarm => {
@@ -720,11 +1244,71 @@ index b8232cbf6..f31b1fef4 100644
              if *swarm_enabled == enabled {
                  let _ = client_event_tx.send(ServerEvent::Done { id });
                  return;
+@@ -846,6 +850,7 @@ fn clone_split_session(
+     child.replace_messages(parent.messages.clone());
+     child.compaction = parent.compaction.clone();
+     child.system_prompt = parent.system_prompt.clone();
++    child.worker_blueprint_policy = parent.worker_blueprint_policy.clone();
+     child.working_dir = parent.working_dir.clone();
+     child.model = parent.model.clone();
+     // Keep the same provider account. Replayed provider-native blocks (Anthropic
+@@ -886,6 +891,7 @@ fn create_transfer_child_session(
+     child.messages.clear();
+     child.compaction = compaction;
+     child.system_prompt = parent.system_prompt.clone();
++    child.worker_blueprint_policy = parent.worker_blueprint_policy.clone();
+     child.working_dir = parent.working_dir.clone();
+     child.model = parent.model.clone();
+     child.provider_key = parent.provider_key.clone();
 diff --git a/crates/jcode-app-core/src/server/client_actions_tests.rs b/crates/jcode-app-core/src/server/client_actions_tests.rs
-index adf3a068f..c0b082cb0 100644
+index adf3a068f..676a285ce 100644
 --- a/crates/jcode-app-core/src/server/client_actions_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_actions_tests.rs
-@@ -420,6 +420,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
+@@ -120,6 +120,11 @@ fn clone_split_session_uses_persisted_session_state() {
+     parent.working_dir = Some("/tmp/jcode-split-test".to_string());
+     parent.model = Some("gpt-test".to_string());
+     parent.system_prompt = Some("forked system prompt".into());
++    parent.worker_blueprint_policy = Some(crate::session::WorkerBlueprintPolicy {
++        name: "split-worker".to_string(),
++        enabled_tools: Some(Vec::new()),
++        disabled_tools: None,
++    });
+     parent.add_message(
+         Role::User,
+         vec![ContentBlock::Text {
+@@ -152,6 +157,7 @@ fn clone_split_session_uses_persisted_session_state() {
+
+     assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
+     assert_eq!(child.system_prompt, parent.system_prompt);
++    assert_eq!(child.worker_blueprint_policy, parent.worker_blueprint_policy);
+     assert_eq!(
+         child.messages.len(),
+         parent.messages.len() + 1,
+@@ -377,6 +383,23 @@ fn transfer_preserves_system_prompt_including_empty_override() {
+     }
+ }
+
++#[test]
++fn transfer_child_copies_worker_blueprint_policy() {
++    let _guard = crate::storage::lock_test_env();
++    let _home = SplitTestHome::new();
++    let mut parent = crate::session::Session::create(None, None);
++    parent.worker_blueprint_policy = Some(crate::session::WorkerBlueprintPolicy {
++        name: "transfer-worker".to_string(),
++        enabled_tools: None,
++        disabled_tools: Some(Vec::new()),
++    });
++
++    let (child_id, _) = create_transfer_child_session(&parent.id, &parent, None)
++        .expect("create transfer session");
++    let child = crate::session::Session::load(&child_id).expect("load transfer session");
++    assert_eq!(child.worker_blueprint_policy, parent.worker_blueprint_policy);
++}
++
+ #[test]
+ fn split_corrupt_persisted_parent_is_not_hidden_by_live_fallback() {
+     let _guard = crate::storage::lock_test_env();
+@@ -420,6 +443,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -732,7 +1316,7 @@ index adf3a068f..c0b082cb0 100644
          },
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
-@@ -528,6 +529,7 @@ async fn rename_session_event_uses_agent_session_id_even_when_client_id_is_stale
+@@ -528,6 +552,7 @@ async fn rename_session_event_uses_agent_session_id_even_when_client_id_is_stale
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -740,7 +1324,7 @@ index adf3a068f..c0b082cb0 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -630,6 +632,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
+@@ -630,6 +655,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -748,7 +1332,7 @@ index adf3a068f..c0b082cb0 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -748,6 +751,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
+@@ -748,6 +774,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -756,7 +1340,7 @@ index adf3a068f..c0b082cb0 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -834,6 +838,7 @@ fn live_member(session_id: &str) -> (SwarmMember, mpsc::UnboundedReceiver<Server
+@@ -834,6 +861,7 @@ fn live_member(session_id: &str) -> (SwarmMember, mpsc::UnboundedReceiver<Server
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -764,7 +1348,7 @@ index adf3a068f..c0b082cb0 100644
      };
      (member, attach_rx)
  }
-@@ -1127,6 +1132,8 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
+@@ -1127,6 +1155,8 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
          mode: Some("parallel".to_string()),
          role: crate::hooks::ProcessRole::Coordinator,
          worker_id: None,
@@ -774,10 +1358,10 @@ index adf3a068f..c0b082cb0 100644
 
      crate::hooks::with_swarm_context(context, async {
 diff --git a/crates/jcode-app-core/src/server/client_comm_message.rs b/crates/jcode-app-core/src/server/client_comm_message.rs
-index 631b1a7b3..d50f1c82f 100644
+index 61ac32eda..d4a403519 100644
 --- a/crates/jcode-app-core/src/server/client_comm_message.rs
 +++ b/crates/jcode-app-core/src/server/client_comm_message.rs
-@@ -155,6 +155,25 @@ pub(super) async fn handle_comm_message(
+@@ -156,6 +156,25 @@ pub(super) async fn handle_comm_message(
      );
      let swarm_id = swarm_id_for_session(&from_session, swarm_members).await;
 
@@ -804,7 +1388,7 @@ index 631b1a7b3..d50f1c82f 100644
          let friendly_name = friendly_name_for_session(&from_session, swarm_members).await;
 
 diff --git a/crates/jcode-app-core/src/server/client_comm_tests.rs b/crates/jcode-app-core/src/server/client_comm_tests.rs
-index 78c1bd04b..10f7d3ff2 100644
+index 8e3ada839..834f2a5b1 100644
 --- a/crates/jcode-app-core/src/server/client_comm_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_comm_tests.rs
 @@ -86,6 +86,7 @@ async fn comm_message_default_does_not_queue_soft_interrupt_for_connected_sessio
@@ -823,7 +1407,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -251,6 +253,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
+@@ -252,6 +254,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -831,7 +1415,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -276,6 +279,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
+@@ -277,6 +280,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -839,7 +1423,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -405,6 +409,7 @@ async fn comm_list_includes_member_status_and_detail() {
+@@ -407,6 +411,7 @@ async fn comm_list_includes_member_status_and_detail() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -847,7 +1431,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -430,6 +435,7 @@ async fn comm_list_includes_member_status_and_detail() {
+@@ -432,6 +437,7 @@ async fn comm_list_includes_member_status_and_detail() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -855,7 +1439,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -513,6 +519,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
+@@ -515,6 +521,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -863,7 +1447,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -538,6 +545,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
+@@ -540,6 +547,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -871,7 +1455,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -649,6 +657,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+@@ -652,6 +660,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -879,7 +1463,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -674,6 +683,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+@@ -677,6 +686,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -887,7 +1471,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -699,6 +709,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+@@ -702,6 +712,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -895,7 +1479,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
          ),
-@@ -787,6 +798,7 @@ async fn comm_broadcast_reaches_only_senders_spawned_subtree() {
+@@ -791,6 +802,7 @@ async fn comm_broadcast_reaches_only_senders_spawned_subtree() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -903,7 +1487,7 @@ index 78c1bd04b..10f7d3ff2 100644
                  task_label: None,
              },
              event_rx,
-@@ -947,6 +959,7 @@ async fn comm_message_cross_swarm_dm_by_label() {
+@@ -953,6 +965,7 @@ async fn comm_message_cross_swarm_dm_by_label() {
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
                  task_label: None,
@@ -924,10 +1508,10 @@ index d6e8921ef..455483942 100644
          )])));
          let sessions = Arc::new(RwLock::new(HashMap::from([(id.clone(), agent.clone())])));
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index 2e462d924..cef3f5998 100644
+index b543fa53f..3e2d341f1 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
-@@ -2722,6 +2722,7 @@ pub(super) async fn handle_client(
+@@ -2725,6 +2725,7 @@ pub(super) async fn handle_client(
                  model,
                  effort,
                  label,
@@ -935,7 +1519,7 @@ index 2e462d924..cef3f5998 100644
              } => {
                  let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                      Some(spawn_mode) => spawn_mode,
-@@ -2737,6 +2738,7 @@ pub(super) async fn handle_client(
+@@ -2740,6 +2741,7 @@ pub(super) async fn handle_client(
                      model,
                      effort,
                      label,
@@ -944,10 +1528,10 @@ index 2e462d924..cef3f5998 100644
                      &sessions,
                      &global_session_id,
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-index f760e28fb..85fe32740 100644
+index e56fd3a45..fb40ef198 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-@@ -1083,6 +1083,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
+@@ -1086,6 +1086,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -956,10 +1540,10 @@ index f760e28fb..85fe32740 100644
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
 diff --git a/crates/jcode-app-core/src/server/client_lightweight_control.rs b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-index c320f6cd1..b62eb3440 100644
+index 91c3dea19..4c03dedb2 100644
 --- a/crates/jcode-app-core/src/server/client_lightweight_control.rs
 +++ b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-@@ -187,6 +187,7 @@ async fn ensure_lightweight_swarm_member(
+@@ -183,6 +183,7 @@ async fn ensure_lightweight_swarm_member(
              event_tx: member_event_tx,
              event_txs: HashMap::new(),
              working_dir: working_dir.clone(),
@@ -967,7 +1551,7 @@ index c320f6cd1..b62eb3440 100644
              swarm_id: swarm_id.clone(),
              swarm_enabled: true,
              status: "ready".to_string(),
-@@ -709,6 +710,7 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -626,6 +627,7 @@ pub(super) async fn handle_lightweight_control_request(
              model,
              effort,
              label,
@@ -975,7 +1559,7 @@ index c320f6cd1..b62eb3440 100644
          } => {
              let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                  Some(spawn_mode) => spawn_mode,
-@@ -724,6 +726,7 @@ pub(super) async fn handle_lightweight_control_request(
+@@ -641,6 +643,7 @@ pub(super) async fn handle_lightweight_control_request(
                  model,
                  effort,
                  label,
@@ -983,7 +1567,7 @@ index c320f6cd1..b62eb3440 100644
                  &client_event_tx,
                  sessions,
                  global_session_id,
-@@ -1166,6 +1169,7 @@ mod lightweight_swarm_member_tests {
+@@ -1092,6 +1095,7 @@ mod lightweight_swarm_member_tests {
              member.working_dir.as_deref(),
              Some(std::path::Path::new("/tmp/project-a"))
          );
@@ -992,7 +1576,7 @@ index c320f6cd1..b62eb3440 100644
          assert!(
              swarms
 diff --git a/crates/jcode-app-core/src/server/client_session.rs b/crates/jcode-app-core/src/server/client_session.rs
-index 6732307f5..2af1c9806 100644
+index dc6ac6691..7c8e048c8 100644
 --- a/crates/jcode-app-core/src/server/client_session.rs
 +++ b/crates/jcode-app-core/src/server/client_session.rs
 @@ -406,6 +406,7 @@ async fn ensure_client_swarm_member(
@@ -1036,7 +1620,7 @@ index d6ce56885..770558e2b 100644
              ),
          ])));
 diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
-index dffccba76..5b6250b8d 100644
+index 404866b6c..fb8a4e8de 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
 +++ b/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
 @@ -69,6 +69,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() ->
@@ -1048,10 +1632,10 @@ index dffccba76..5b6250b8d 100644
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
 diff --git a/crates/jcode-app-core/src/server/client_target_attach_tests.rs b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
-index e40ea98f0..4dbe8474e 100644
+index 02bf78ebc..8a2393787 100644
 --- a/crates/jcode-app-core/src/server/client_target_attach_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
-@@ -173,6 +173,7 @@ async fn target_subscribe_busy_live_agent_uses_member_root_without_waiting() {
+@@ -175,6 +175,7 @@ async fn target_subscribe_busy_live_agent_uses_member_root_without_waiting() {
              todo_progress: None,
              todo_items: vec![],
              runtime: Default::default(),
@@ -1060,10 +1644,10 @@ index e40ea98f0..4dbe8474e 100644
      )])));
      let _busy = agent.lock().await;
 diff --git a/crates/jcode-app-core/src/server/comm_control.rs b/crates/jcode-app-core/src/server/comm_control.rs
-index 3b18ba7ec..3b5243ca6 100644
+index 5d9ab2b91..e6c09214a 100644
 --- a/crates/jcode-app-core/src/server/comm_control.rs
 +++ b/crates/jcode-app-core/src/server/comm_control.rs
-@@ -1927,6 +1927,7 @@ pub(super) async fn handle_comm_assign_next(
+@@ -1631,6 +1631,7 @@ pub(super) async fn handle_comm_assign_next(
                  model.clone(),
                  effort.clone(),
                  None,
@@ -1072,7 +1656,7 @@ index 3b18ba7ec..3b5243ca6 100644
                  global_session_id,
                  provider_template,
 diff --git a/crates/jcode-app-core/src/server/comm_control_tests.rs b/crates/jcode-app-core/src/server/comm_control_tests.rs
-index 541e64090..4358ac229 100644
+index 57a94e45a..dd7729aec 100644
 --- a/crates/jcode-app-core/src/server/comm_control_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_control_tests.rs
 @@ -72,6 +72,7 @@ fn member(session_id: &str, swarm_id: &str, status: &str) -> SwarmMember {
@@ -1084,10 +1668,10 @@ index 541e64090..4358ac229 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/server/comm_plan_tests.rs b/crates/jcode-app-core/src/server/comm_plan_tests.rs
-index 4fe3cf366..815d41a57 100644
+index b6444a039..35d87f44c 100644
 --- a/crates/jcode-app-core/src/server/comm_plan_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_plan_tests.rs
-@@ -69,6 +69,7 @@ fn member(session_id: &str, swarm_id: &str, role: &str) -> SwarmMember {
+@@ -68,6 +68,7 @@ fn member(session_id: &str, swarm_id: &str, role: &str) -> SwarmMember {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1096,7 +1680,7 @@ index 4fe3cf366..815d41a57 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/server/comm_session.rs b/crates/jcode-app-core/src/server/comm_session.rs
-index c4624023e..492246042 100644
+index 5b496b7c6..02072de20 100644
 --- a/crates/jcode-app-core/src/server/comm_session.rs
 +++ b/crates/jcode-app-core/src/server/comm_session.rs
 @@ -18,6 +18,7 @@ use crate::config::SwarmSpawnMode;
@@ -1156,7 +1740,74 @@ index c4624023e..492246042 100644
  /// Serialize spawn admission through member registration within one swarm.
  /// Without a reservation or lock, many recursive agents can all observe the same
  /// free slot and burst past the configured limit before any child is registered.
-@@ -544,6 +587,7 @@ async fn register_visible_spawned_member(
+@@ -71,6 +114,7 @@ fn create_visible_spawn_session(
+     route_api_method_override: Option<&str>,
+     effort_override: Option<&str>,
+     selfdev_requested: bool,
++    worker_blueprint_policy: Option<&crate::session::WorkerBlueprintPolicy>,
+ ) -> anyhow::Result<(String, PathBuf)> {
+     let cwd = working_dir
+         .map(PathBuf::from)
+@@ -99,6 +143,7 @@ fn create_visible_spawn_session(
+     if selfdev_requested {
+         session.set_canary("self-dev");
+     }
++    session.worker_blueprint_policy = worker_blueprint_policy.cloned();
+     // The headed client attaches in a separate process and must find the
+     // prepared model/provider/effort on disk, so bypass the untouched-session
+     // save gate from 783c979a0.
+@@ -445,6 +490,7 @@ fn cleanup_prepared_visible_spawn_session(session_id: &str) {
+     }
+ }
+
++#[cfg(test)]
+ #[allow(clippy::too_many_arguments)]
+ fn prepare_visible_spawn_session<F>(
+     working_dir: Option<&str>,
+@@ -456,6 +502,34 @@ fn prepare_visible_spawn_session<F>(
+     startup_message: Option<&str>,
+     launch_visible: F,
+ ) -> anyhow::Result<(String, bool)>
++where
++    F: FnOnce(&str, &std::path::Path, bool, Option<&str>) -> anyhow::Result<bool>,
++{
++    prepare_visible_spawn_session_with_policy(
++        working_dir,
++        model_override,
++        provider_key_override,
++        route_api_method_override,
++        effort_override,
++        selfdev_requested,
++        startup_message,
++        None,
++        launch_visible,
++    )
++}
++
++#[allow(clippy::too_many_arguments)]
++fn prepare_visible_spawn_session_with_policy<F>(
++    working_dir: Option<&str>,
++    model_override: Option<&str>,
++    provider_key_override: Option<&str>,
++    route_api_method_override: Option<&str>,
++    effort_override: Option<&str>,
++    selfdev_requested: bool,
++    startup_message: Option<&str>,
++    worker_blueprint_policy: Option<&crate::session::WorkerBlueprintPolicy>,
++    launch_visible: F,
++) -> anyhow::Result<(String, bool)>
+ where
+     F: FnOnce(&str, &std::path::Path, bool, Option<&str>) -> anyhow::Result<bool>,
+ {
+@@ -467,6 +541,7 @@ where
+         route_api_method_override,
+         effort_override,
+         selfdev_requested,
++        worker_blueprint_policy,
+     )?;
+
+     if let Some(message) = startup_message {
+@@ -544,6 +619,7 @@ async fn register_visible_spawned_member(
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1164,7 +1815,7 @@ index c4624023e..492246042 100644
              },
          );
      }
-@@ -617,6 +661,7 @@ pub(super) async fn spawn_swarm_agent(
+@@ -624,6 +700,7 @@ pub(super) async fn spawn_swarm_agent(
      requested_model: Option<String>,
      requested_effort: Option<String>,
      label: Option<String>,
@@ -1172,7 +1823,7 @@ index c4624023e..492246042 100644
      sessions: &SessionAgents,
      global_session_id: &Arc<RwLock<String>>,
      provider_template: &Arc<dyn Provider>,
-@@ -631,6 +676,19 @@ pub(super) async fn spawn_swarm_agent(
+@@ -638,6 +715,19 @@ pub(super) async fn spawn_swarm_agent(
      soft_interrupt_queues: &SessionInterruptQueues,
      client_connections: &ClientConnections,
  ) -> anyhow::Result<String> {
@@ -1192,7 +1843,7 @@ index c4624023e..492246042 100644
      let resolved_working_dir =
          resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
      let coordinator = resolve_coordinator_spawn_identity(req_session_id, sessions).await;
-@@ -672,7 +730,16 @@ pub(super) async fn spawn_swarm_agent(
+@@ -679,15 +769,31 @@ pub(super) async fn spawn_swarm_agent(
 
      let startup_message = initial_message
          .as_deref()
@@ -1208,44 +1859,44 @@ index c4624023e..492246042 100644
 +            }
 +        });
 
++    let worker_blueprint_policy = blueprint.as_ref().map(|bp| {
++        crate::session::WorkerBlueprintPolicy {
++            name: bp.name.clone(),
++            enabled_tools: bp.enabled_tools.clone(),
++            disabled_tools: bp.disabled_tools.clone(),
++        }
++    });
      let visible_spawn = match resolved_spawn_mode {
          // Inline workers run in-process like headless ones; the difference is
-@@ -749,6 +816,56 @@ pub(super) async fn spawn_swarm_agent(
+         // purely how the coordinator renders them (a live inline gallery).
+         SwarmSpawnMode::Headless | SwarmSpawnMode::Inline => {
+             Err(anyhow::anyhow!("headless spawn requested"))
+         }
+-        SwarmSpawnMode::Visible | SwarmSpawnMode::Auto => prepare_visible_spawn_session(
++        SwarmSpawnMode::Visible | SwarmSpawnMode::Auto => prepare_visible_spawn_session_with_policy(
+             resolved_working_dir.as_deref(),
+             spawn_model.as_deref(),
+             spawn_provider_key.as_deref(),
+@@ -695,6 +801,7 @@ pub(super) async fn spawn_swarm_agent(
+             spawn_effort.as_deref(),
+             coordinator_is_canary,
+             startup_message.as_deref(),
++            worker_blueprint_policy.as_ref(),
+             |session_id, cwd, selfdev_requested, provider_key| {
+                 // Tag the headed window as a swarm-agent spawn so spawn hooks
+                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
+@@ -738,6 +845,7 @@ pub(super) async fn spawn_swarm_agent(
+                 spawn_effort.clone(),
+                 Some(Arc::clone(mcp_pool)),
+                 Some(req_session_id.to_string()),
++                worker_blueprint_policy.clone(),
+                 super::headless::HeadlessMemoryScope::RealProject,
+             )
+             .await
+@@ -756,6 +864,24 @@ pub(super) async fn spawn_swarm_agent(
          }
      }?;
 
-+    // Apply blueprint allowed-tools as a restrictive per-session tool policy.
-+    // The policy must filter model-visible definitions and reject prohibited
-+    // raw tool calls at the central dispatcher. An empty allowed-tools list
-+    // means no worker tools; `None` (omission) means no blueprint-specific
-+    // restriction.
-+    if let Some(bp) = &blueprint {
-+        if let Some(allowed) = &bp.enabled_tools {
-+            let allowed_set: HashSet<String> = allowed.iter().cloned().collect();
-+            // Intersect with global tool policy so a blueprint can never
-+            // restore a globally disabled or unpermitted tool.
-+            let global_allowed = crate::config::config().tools.selection().allowed_tools;
-+            let effective_allowed = if let Some(global) = global_allowed {
-+                let intersection: HashSet<String> = allowed_set
-+                    .intersection(&global)
-+                    .cloned()
-+                    .collect();
-+                Some(intersection)
-+            } else {
-+                Some(allowed_set)
-+            };
-+            let _registration = crate::tool::register_session_tool_policy(
-+                &new_session_id,
-+                effective_allowed,
-+                HashSet::new(),
-+            );
-+            // The registration is intentionally dropped: the spawned Agent's
-+            // own build_base already installed a policy, and this replaces it
-+            // for this session. The Drop impl on the old registration is a
-+            // no-op because it checks owner matching.
-+        }
-+    }
-+
 +    // Store the blueprint's communication policy on the swarm member so the
 +    // message-routing path can enforce it. The policy is enforced in
 +    // message-routing and subscription paths, not through prompts.
@@ -1267,7 +1918,7 @@ index c4624023e..492246042 100644
      let startup_message = startup_message.clone();
      {
          let mut plans = swarm_plans.write().await;
-@@ -892,6 +1009,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -899,6 +1025,7 @@ pub(super) async fn handle_comm_spawn(
      model: Option<String>,
      effort: Option<String>,
      label: Option<String>,
@@ -1275,7 +1926,7 @@ index c4624023e..492246042 100644
      client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
      sessions: &SessionAgents,
      global_session_id: &Arc<RwLock<String>>,
-@@ -951,6 +1069,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -958,6 +1085,7 @@ pub(super) async fn handle_comm_spawn(
              effort.clone().unwrap_or_default(),
              model.clone().unwrap_or_default(),
              label.clone().unwrap_or_default(),
@@ -1283,7 +1934,7 @@ index c4624023e..492246042 100644
          ],
      );
      let Some(mutation_state) = begin_or_replay(
-@@ -975,6 +1094,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -982,6 +1110,7 @@ pub(super) async fn handle_comm_spawn(
          model,
          effort,
          label,
@@ -1292,14 +1943,17 @@ index c4624023e..492246042 100644
          global_session_id,
          provider_template,
 diff --git a/crates/jcode-app-core/src/server/comm_session_tests.rs b/crates/jcode-app-core/src/server/comm_session_tests.rs
-index 2adde36f6..b826dd60f 100644
+index daf18c8e4..88ab4d3a0 100644
 --- a/crates/jcode-app-core/src/server/comm_session_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_session_tests.rs
-@@ -2,11 +2,12 @@
+@@ -1,12 +1,14 @@
+ #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
  use super::{
-     CoordinatorSpawnIdentity, ensure_spawn_coordinator_swarm, prepare_visible_spawn_session,
+-    CoordinatorSpawnIdentity, ensure_spawn_coordinator_swarm, prepare_visible_spawn_session,
 -    register_visible_spawned_member, resolve_coordinator_spawn_identity, resolve_spawn_working_dir,
++    CoordinatorSpawnIdentity, create_headless_session, ensure_spawn_coordinator_swarm,
++    prepare_visible_spawn_session, prepare_visible_spawn_session_with_policy,
 +    register_visible_spawned_member, resolve_blueprint_for_spawn, resolve_coordinator_spawn_identity, resolve_spawn_working_dir,
      resolve_stop_target_session, resolve_swarm_spawn_selection, spawn_admission_lock,
      swarm_stop_allowed_by_owner,
@@ -1309,7 +1963,7 @@ index 2adde36f6..b826dd60f 100644
  use crate::message::{Message, ToolDefinition};
  use crate::protocol::{NotificationType, ServerEvent};
  use crate::provider::{EventStream, Provider};
-@@ -102,6 +103,7 @@ fn member(
+@@ -102,6 +104,7 @@ fn member(
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1317,7 +1971,163 @@ index 2adde36f6..b826dd60f 100644
              task_label: None,
          },
          event_rx,
-@@ -496,6 +498,44 @@ fn coordinator_identity(
+@@ -319,6 +322,155 @@ fn prepare_visible_spawn_session_persists_startup_before_launch() {
+     crate::env::remove_var("JCODE_HOME");
+ }
+
++#[test]
++fn blueprint_native_sync_spawn_policy_precedes_execution_visible() {
++    let _guard = crate::storage::lock_test_env();
++    let temp_home = tempfile::TempDir::new().expect("temp home");
++    crate::env::set_var("JCODE_HOME", temp_home.path());
++
++    let worktree = tempfile::TempDir::new().expect("temp worktree");
++    let startup = "Inspect this before doing anything.";
++    let policy = crate::session::WorkerBlueprintPolicy {
++        name: "reviewer".to_string(),
++        enabled_tools: Some(vec!["read".to_string(), "edit".to_string()]),
++        disabled_tools: Some(vec!["edit".to_string()]),
++    };
++    let (session_id, launched) = prepare_visible_spawn_session_with_policy(
++        Some(worktree.path().to_str().expect("utf8 worktree path")),
++        None,
++        None,
++        None,
++        None,
++        false,
++        Some(startup),
++        Some(&policy),
++        |session_id, _cwd: &std::path::Path, _selfdev, _provider_key| {
++            let session = crate::session::Session::load(session_id)
++                .expect("prepared session must be saved before launch");
++            let saved_policy = session
++                .worker_blueprint_policy
++                .expect("prepared policy should be saved before launch");
++            assert_eq!(saved_policy.name, "reviewer");
++            assert_eq!(
++                saved_policy.enabled_tools,
++                Some(vec!["read".to_string(), "edit".to_string()])
++            );
++            assert_eq!(saved_policy.disabled_tools, Some(vec!["edit".to_string()]));
++            let path = crate::storage::jcode_dir()
++                .expect("jcode dir")
++                .join(format!("client-input-{}", session_id));
++            let data = std::fs::read_to_string(path).expect("startup file should be persisted");
++            assert!(data.contains(startup));
++            Ok(true)
++        },
++    )
++    .expect("visible spawn preparation should succeed");
++
++    assert!(launched);
++    let session = crate::session::Session::load(&session_id).expect("prepared session should save");
++    assert_eq!(session.worker_blueprint_policy, Some(policy));
++    crate::env::remove_var("JCODE_HOME");
++}
++
++#[tokio::test]
++async fn blueprint_native_sync_spawn_policy_precedes_execution_headless() {
++    let _guard = crate::storage::lock_test_env();
++    struct RestoreHome(Option<std::ffi::OsString>);
++    impl Drop for RestoreHome {
++        fn drop(&mut self) {
++            match self.0.take() {
++                Some(home) => crate::env::set_var("JCODE_HOME", home),
++                None => crate::env::remove_var("JCODE_HOME"),
++            }
++            crate::config::invalidate_config_cache();
++        }
++    }
++    let previous_home = std::env::var_os("JCODE_HOME");
++    let _restore_home = RestoreHome(previous_home);
++    let home = tempfile::tempdir().expect("temporary JCODE_HOME");
++    std::fs::write(
++        home.path().join("config.toml"),
++        "[features]\nswarm = false\nmemory = false\n",
++    )
++    .expect("write isolated config");
++    crate::env::set_var("JCODE_HOME", home.path());
++    crate::config::invalidate_config_cache();
++
++    let policy = crate::session::WorkerBlueprintPolicy {
++        name: "reviewer".to_string(),
++        enabled_tools: Some(vec!["read".to_string()]),
++        disabled_tools: Some(vec!["edit".to_string()]),
++    };
++    let sessions = Arc::new(RwLock::new(HashMap::new()));
++    let global_session_id = Arc::new(RwLock::new(String::new()));
++    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
++    let swarm_members = Arc::new(RwLock::new(HashMap::new()));
++    let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
++    let swarm_coordinators = Arc::new(RwLock::new(HashMap::new()));
++    let swarm_plans = Arc::new(RwLock::new(HashMap::new()));
++    let soft_interrupt_queues: crate::server::SessionInterruptQueues =
++        Arc::new(RwLock::new(HashMap::new()));
++
++    let result = create_headless_session(
++        &sessions,
++        &global_session_id,
++        &provider,
++        "create_session",
++        &swarm_members,
++        &swarms_by_id,
++        &swarm_coordinators,
++        &swarm_plans,
++        &soft_interrupt_queues,
++        false,
++        None,
++        None,
++        None,
++        None,
++        None,
++        Some("blueprint-parent".to_string()),
++        Some(policy.clone()),
++        super::super::headless::HeadlessMemoryScope::RealProject,
++    )
++    .await
++    .expect("headless session creation should succeed");
++    let value: serde_json::Value = serde_json::from_str(&result).expect("headless result JSON");
++    let session_id = value
++        .get("session_id")
++        .and_then(serde_json::Value::as_str)
++        .expect("headless result session id");
++
++    let agent = sessions
++        .read()
++        .await
++        .get(session_id)
++        .cloned()
++        .expect("constructor should register the Agent");
++    {
++        let agent = agent.lock().await;
++        assert_eq!(agent.session_id(), session_id);
++        assert!(
++            agent.messages().iter().all(|message| {
++                !message.content_preview().contains("startup message")
++            }),
++            "worker startup message is not processed yet"
++        );
++    }
++    let session = crate::session::Session::load(session_id)
++        .expect("headless worker session should be persisted");
++    assert_eq!(session.worker_blueprint_policy, Some(policy));
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(session_id, "read"),
++        Some(true)
++    );
++    for denied in ["edit", "bash"] {
++        assert_eq!(
++            crate::tool::session_tool_policy_allows_tool_for_test(session_id, denied),
++            Some(false),
++            "headless worker must not have {denied} authority before startup"
++        );
++    }
++}
++
+ #[test]
+ fn prepare_visible_spawn_session_cleans_startup_when_launch_not_started() {
+     let _guard = crate::storage::lock_test_env();
+@@ -496,6 +648,44 @@ fn coordinator_identity(
      }
  }
 
@@ -1362,7 +2172,7 @@ index 2adde36f6..b826dd60f 100644
  #[test]
  fn resolve_swarm_spawn_model_prefers_configured_model_over_coordinator_model() {
      let selection = resolve_swarm_spawn_selection(
-@@ -944,6 +984,7 @@ async fn session_agent_models_update_and_spawn_while_coordinator_busy() {
+@@ -944,6 +1134,7 @@ async fn session_agent_models_update_and_spawn_while_coordinator_busy() {
              None,
              None,
              Some("routing test".into()),
@@ -1370,6 +2180,18 @@ index 2adde36f6..b826dd60f 100644
              &sessions,
              &Arc::new(RwLock::new(String::new())),
              &provider,
+diff --git a/crates/jcode-app-core/src/server/debug_session_admin.rs b/crates/jcode-app-core/src/server/debug_session_admin.rs
+index 555730c99..d7b360178 100644
+--- a/crates/jcode-app-core/src/server/debug_session_admin.rs
++++ b/crates/jcode-app-core/src/server/debug_session_admin.rs
+@@ -89,6 +89,7 @@ pub(super) async fn maybe_handle_session_admin_command(
+             None,
+             mcp_pool,
+             None,
++            None,
+             super::headless::HeadlessMemoryScope::IsolatedTest,
+         )
+         .await?;
 diff --git a/crates/jcode-app-core/src/server/debug_tests.rs b/crates/jcode-app-core/src/server/debug_tests.rs
 index 6ee5d53e0..cc680fb05 100644
 --- a/crates/jcode-app-core/src/server/debug_tests.rs
@@ -1383,12 +2205,36 @@ index 6ee5d53e0..cc680fb05 100644
          }
      }
 diff --git a/crates/jcode-app-core/src/server/headless.rs b/crates/jcode-app-core/src/server/headless.rs
-index b0ce1ccd2..837ac50c7 100644
+index eea5f8b05..fba42be0f 100644
 --- a/crates/jcode-app-core/src/server/headless.rs
 +++ b/crates/jcode-app-core/src/server/headless.rs
-@@ -282,6 +282,7 @@ pub(super) async fn create_headless_session(
-                     effort,
-                     elapsed_secs: Some(0),
+@@ -51,6 +51,7 @@ pub(super) async fn create_headless_session(
+     effort_override: Option<String>,
+     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
+     report_back_to_session_id: Option<String>,
++    worker_blueprint_policy: Option<crate::session::WorkerBlueprintPolicy>,
+     memory_scope: HeadlessMemoryScope,
+ ) -> Result<String> {
+     let _runtime_activity = crate::runtime_activity::global().try_enter()?;
+@@ -91,12 +92,13 @@ pub(super) async fn create_headless_session(
+     let working_dir_string = working_dir
+         .as_ref()
+         .map(|dir| dir.to_string_lossy().into_owned());
+-    let mut new_agent = Agent::new_with_parent_and_initial_working_dir(
++    let mut new_agent = Agent::new_with_parent_and_initial_working_dir_and_blueprint_policy(
+         Arc::clone(&provider),
+         registry,
+         working_dir_string.as_deref(),
+         report_back_to_session_id.clone(),
+-    );
++        worker_blueprint_policy,
++    )?;
+     new_agent.set_memory_enabled(memory_enabled);
+     // Inline swarm mode renders a live gallery of worker viewports in the
+     // coordinator TUI; enable the per-agent output tap so this worker streams a
+@@ -285,6 +287,7 @@ pub(super) async fn create_headless_session(
+                     activity_age_secs: None,
+                     ..Default::default()
                  },
 +                communication_policy: None,
              },
@@ -1419,10 +2265,10 @@ index fa09ecd8a..a50fd9bdb 100644
          }
      }
 diff --git a/crates/jcode-app-core/src/server/state.rs b/crates/jcode-app-core/src/server/state.rs
-index 3fc37c65d..e35814081 100644
+index 0b166b5a3..bd6c2d2c3 100644
 --- a/crates/jcode-app-core/src/server/state.rs
 +++ b/crates/jcode-app-core/src/server/state.rs
-@@ -237,6 +237,13 @@ pub struct SwarmMember {
+@@ -253,6 +253,13 @@ pub struct SwarmMember {
      pub todo_items: Vec<crate::protocol::SwarmTodoItem>,
      /// Ephemeral model/timing metadata for the inline swarm card.
      pub runtime: crate::protocol::SwarmMemberRuntime,
@@ -1436,7 +2282,7 @@ index 3fc37c65d..e35814081 100644
  }
 
  impl SwarmMember {
-@@ -292,6 +299,7 @@ impl SwarmMember {
+@@ -308,6 +315,7 @@ impl SwarmMember {
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1445,10 +2291,10 @@ index 3fc37c65d..e35814081 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
-index 9321722c3..dff1adb94 100644
+index 2a596e4d8..f61b6dcb5 100644
 --- a/crates/jcode-app-core/src/server/swarm.rs
 +++ b/crates/jcode-app-core/src/server/swarm.rs
-@@ -1789,6 +1789,8 @@ pub(super) async fn run_swarm_task(
+@@ -1835,6 +1835,8 @@ pub(super) async fn run_swarm_task(
          mode: None,
          role: crate::hooks::ProcessRole::Worker,
          worker_id: Some(child_session_id.clone()),
@@ -1457,7 +2303,7 @@ index 9321722c3..dff1adb94 100644
      };
      match crate::hooks::with_swarm_context(worker_context, worker.run_once_capture(prompt)).await {
          Ok(output) => {
-@@ -2039,6 +2041,7 @@ mod tests {
+@@ -2085,6 +2087,7 @@ mod tests {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1478,10 +2324,10 @@ index 356086ea5..419740983 100644
          event_rx,
      )
 diff --git a/crates/jcode-app-core/src/server/swarm_persistence_tests.rs b/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
-index 7849e8a2b..642937a38 100644
+index 904153189..ab63d932e 100644
 --- a/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
 +++ b/crates/jcode-app-core/src/server/swarm_persistence_tests.rs
-@@ -94,6 +94,7 @@ fn persisted_swarm_state_round_trips_and_marks_running_stale() {
+@@ -91,6 +91,7 @@ fn persisted_swarm_state_round_trips_and_marks_running_stale() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1489,7 +2335,7 @@ index 7849e8a2b..642937a38 100644
          task_label: None,
      }];
 
-@@ -169,6 +170,7 @@ fn ready_headless_member_with_report_stops_without_losing_report() {
+@@ -166,6 +167,7 @@ fn ready_headless_member_with_report_stops_without_losing_report() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1497,7 +2343,7 @@ index 7849e8a2b..642937a38 100644
          task_label: None,
      }];
 
-@@ -213,6 +215,7 @@ fn ready_detached_client_stops_on_reload_until_it_reattaches() {
+@@ -210,6 +212,7 @@ fn ready_detached_client_stops_on_reload_until_it_reattaches() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1505,7 +2351,7 @@ index 7849e8a2b..642937a38 100644
          task_label: None,
      }];
 
-@@ -299,6 +302,7 @@ fn terminal_member_retention_preserves_recent_reports_and_prunes_expired_records
+@@ -294,6 +297,7 @@ fn terminal_member_retention_preserves_recent_reports_and_prunes_expired_records
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1513,7 +2359,7 @@ index 7849e8a2b..642937a38 100644
          task_label: Some("retention test".to_string()),
      };
      let loaded_at = 10_000_000;
-@@ -347,6 +351,7 @@ fn legacy_terminal_member_uses_snapshot_time_as_retention_fallback() {
+@@ -342,6 +346,7 @@ fn legacy_terminal_member_uses_snapshot_time_as_retention_fallback() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1521,7 +2367,7 @@ index 7849e8a2b..642937a38 100644
          task_label: None,
      };
      let loaded_at = 20_000_000;
-@@ -388,6 +393,7 @@ fn recovery_induced_terminal_status_starts_retention_at_load_time() {
+@@ -383,6 +388,7 @@ fn recovery_induced_terminal_status_starts_retention_at_load_time() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1529,7 +2375,7 @@ index 7849e8a2b..642937a38 100644
          task_label: None,
      };
      let loaded_at = 300_000_000;
-@@ -430,6 +436,7 @@ fn startup_gc_removes_expired_terminal_members_from_durable_snapshot() {
+@@ -425,6 +431,7 @@ fn startup_gc_removes_expired_terminal_members_from_durable_snapshot() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1537,7 +2383,7 @@ index 7849e8a2b..642937a38 100644
          task_label: None,
      }];
      persist_swarm_state("swarm-expired", None, None, &members);
-@@ -1065,6 +1072,7 @@ fn persisted_swarm_state_without_plan_still_restores_coordinator_and_members() {
+@@ -821,6 +828,7 @@ fn persisted_swarm_state_without_plan_still_restores_coordinator_and_members() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1545,7 +2391,7 @@ index 7849e8a2b..642937a38 100644
          task_label: None,
      }];
 
-@@ -1260,6 +1268,7 @@ fn member_listed_in_several_snapshots_loads_only_into_its_newest_swarm() {
+@@ -1016,6 +1024,7 @@ fn member_listed_in_several_snapshots_loads_only_into_its_newest_swarm() {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1566,7 +2412,7 @@ index a8b4d486c..9fde839db 100644
          swarm_enabled: true,
          status: status.to_string(),
 diff --git a/crates/jcode-app-core/src/server/tests.rs b/crates/jcode-app-core/src/server/tests.rs
-index dd5dcf233..fc317fc51 100644
+index f8272fa9c..113483ee7 100644
 --- a/crates/jcode-app-core/src/server/tests.rs
 +++ b/crates/jcode-app-core/src/server/tests.rs
 @@ -290,6 +290,7 @@ fn attached_swarm_member(
@@ -2158,10 +3004,10 @@ index 000000000..1e212cfc8
 +}
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
 new file mode 100644
-index 000000000..edb520a7d
+index 000000000..b1cfcbbf7
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -0,0 +1,1027 @@
+@@ -0,0 +1,1241 @@
 +//! Phase two integration tests for worker blueprints.
 +//!
 +//! These tests verify the runtime integration of worker blueprints:
@@ -2657,6 +3503,66 @@ index 000000000..edb520a7d
 +    let eff = effective.unwrap();
 +    assert!(eff.contains("read"));
 +    assert!(eff.contains("bash"));
++}
++
++#[tokio::test]
++async fn blueprint_native_sync_registry_preserves_permission_boundaries() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "native-worker.md",
++        "---\n\
++         name: native-worker\n\
++         description: Uses selected native tools.\n\
++         enabled-tools:\n\
++           - read\n\
++           - agentgrep\n\
++           - edit\n\
++           - apply_patch\n\
++         disabled-tools:\n\
++           - edit\n\
++         ---\n\
++         You use only the permitted native tools.",
++    );
++
++    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let blueprint = report.registry.get("native-worker").unwrap();
++    let allowed = blueprint
++        .enabled_tools
++        .as_ref()
++        .unwrap()
++        .iter()
++        .cloned()
++        .collect();
++    let disabled = blueprint
++        .disabled_tools
++        .as_ref()
++        .unwrap()
++        .iter()
++        .cloned()
++        .collect();
++
++    let registry = crate::tool::Registry::empty();
++    let native_tools = crate::tool::Registry::base_tools(&registry.skills);
++    for (name, tool) in native_tools {
++        registry.register(name, tool).await;
++    }
++
++    let session_id = "blueprint-native-sync-registry-boundaries";
++    let _policy = crate::tool::register_session_tool_policy(
++        session_id,
++        Some(allowed),
++        disabled,
++    );
++    let definitions = registry.definitions_for_session(session_id).await;
++    let names: HashSet<String> = definitions.into_iter().map(|definition| definition.name).collect();
++
++    assert_eq!(names, HashSet::from(["read".into(), "agentgrep".into(), "apply_patch".into()]));
++    for obsolete in ["ls", "invalid", "replace", "patch"] {
++        assert!(!names.contains(obsolete), "obsolete name restored: {obsolete}");
++    }
++    assert!(!names.contains("edit"), "explicitly disabled edit was restored");
++    assert!(!names.contains("bash"), "unrelated shell authority was added");
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -3189,43 +4095,197 @@ index 000000000..edb520a7d
 +        serde_json::json!(["report", "transcript"])
 +    );
 +}
++
++#[tokio::test]
++async fn blueprint_native_sync_registry_uses_canonical_tools_and_mcp_allowlist() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "reviewer.md",
++        "---\n\
++         name: reviewer\n\
++         description: Reviews code.\n\
++         enabled-tools: [edit, apply_patch, mcp, ls, invalid, replace, patch]\n\
++         ---\n\
++         You are a reviewer.",
++    );
++    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let blueprint = report.registry.get("reviewer").expect("blueprint loaded");
++    let allowed: HashSet<String> = blueprint
++        .enabled_tools
++        .as_ref()
++        .expect("enabled tools")
++        .iter()
++        .cloned()
++        .collect();
++
++    let skills = std::sync::Arc::new(tokio::sync::RwLock::new(
++        crate::skill::SkillRegistry::default(),
++    ));
++    let native_tools = crate::tool::Registry::base_tools(&skills);
++    assert!(native_tools.contains_key("edit"));
++    assert!(native_tools.contains_key("apply_patch"));
++    let registry = crate::tool::Registry::empty();
++    for (name, tool) in native_tools {
++        registry.register(name, tool).await;
++    }
++    let pool = std::sync::Arc::new(crate::mcp::SharedMcpPool::new(
++        crate::mcp::McpConfig::default(),
++    ));
++    registry
++        .register_mcp_tools_for_dir(
++            None,
++            Some(pool),
++            Some("blueprint-native-sync".to_string()),
++            None,
++        )
++        .await;
++
++    let definitions = registry.definitions(Some(&allowed)).await;
++    let names: Vec<&str> = definitions.iter().map(|definition| definition.name.as_str()).collect();
++    assert_eq!(names, ["apply_patch", "edit", "mcp"]);
++    for obsolete in ["ls", "invalid", "replace", "patch"] {
++        assert!(!names.contains(&obsolete), "unexpected registered name: {obsolete}");
++    }
++
++    let session_id = "blueprint-native-sync-alias-policy";
++    assert_eq!(crate::tool::Registry::resolve_tool_name("patch"), "apply_patch");
++    let _policy = crate::tool::register_session_tool_policy(
++        session_id,
++        Some(HashSet::from(["patch".to_string()])),
++        HashSet::new(),
++    );
++    assert!(
++        !registry
++            .definitions_for_session(session_id)
++            .await
++            .iter()
++            .any(|definition| definition.name == "apply_patch"),
++        "an obsolete alias must not grant canonical tool authority"
++    );
++    let error = registry
++        .execute(
++            "patch",
++            serde_json::json!({}),
++            crate::tool::ToolContext {
++                session_id: session_id.to_string(),
++                message_id: "message".to_string(),
++                tool_call_id: "call".to_string(),
++                working_dir: None,
++                stdin_request_tx: None,
++                graceful_shutdown_signal: None,
++                execution_mode: crate::tool::ToolExecutionMode::Direct,
++            },
++        )
++        .await
++        .expect_err("alias-only policy must reject the canonical patch tool");
++    assert!(error.to_string().contains("not allowed"), "{error}");
++}
++
++#[tokio::test]
++async fn blueprint_native_sync_registered_worker_keeps_allow_deny_and_role_policy() {
++    let dir = temp_blueprints_dir();
++    write_blueprint(
++        dir.path(),
++        "reviewer.md",
++        "---\n\
++         name: reviewer\n\
++         description: Reviews code.\n\
++         enabled-tools: [edit, apply_patch]\n\
++         disabled-tools: [apply_patch]\n\
++         communication-policy: report-to-parent\n\
++         ---\n\
++         You are a reviewer.\n\
++         Report findings to your parent.",
++    );
++    let report = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++    let blueprint = report.registry.get("reviewer").expect("blueprint loaded");
++    assert_eq!(blueprint.body, "You are a reviewer.\nReport findings to your parent.");
++    assert_eq!(
++        blueprint.communication_policy,
++        Some(CommunicationPolicy::ReportToParent)
++    );
++
++    let skills = std::sync::Arc::new(tokio::sync::RwLock::new(
++        crate::skill::SkillRegistry::default(),
++    ));
++    let registry = crate::tool::Registry::empty();
++    for (name, tool) in crate::tool::Registry::base_tools(&skills) {
++        registry.register(name, tool).await;
++    }
++    let session_id = "blueprint-native-sync-worker-policy";
++    let allowed = blueprint
++        .enabled_tools
++        .as_ref()
++        .expect("enabled tools")
++        .iter()
++        .cloned()
++        .collect();
++    let disabled = blueprint
++        .disabled_tools
++        .as_ref()
++        .expect("disabled tools")
++        .iter()
++        .cloned()
++        .collect();
++    let _policy = crate::tool::register_session_tool_policy(
++        session_id,
++        Some(allowed),
++        disabled,
++    );
++    let definitions = registry.definitions_for_session(session_id).await;
++    assert!(definitions.iter().any(|definition| definition.name == "edit"));
++    assert!(
++        !definitions
++            .iter()
++            .any(|definition| definition.name == "apply_patch")
++    );
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(session_id, "edit"),
++        Some(true)
++    );
++    assert_eq!(
++        crate::tool::session_tool_policy_allows_tool_for_test(session_id, "apply_patch"),
++        Some(false)
++    );
++}
 diff --git a/crates/jcode-app-core/src/tool/communicate.rs b/crates/jcode-app-core/src/tool/communicate.rs
-index a872bf758..5b4c94d79 100644
+index b34294ef0..062596c1e 100644
 --- a/crates/jcode-app-core/src/tool/communicate.rs
 +++ b/crates/jcode-app-core/src/tool/communicate.rs
-@@ -29,7 +29,7 @@ const REQUEST_ID: u64 = 1;
- /// with the server's recursive-spawn RAM safety guard).
- const LIGHT_MODE_DEFAULT_CONCURRENCY: usize = 4;
+@@ -26,7 +26,7 @@ const REQUEST_ID: u64 = 1;
+ /// does not pass `concurrency_limit`.
+ const DEFAULT_RUN_PLAN_CONCURRENCY: usize = 4;
 
 -mod transport;
 +pub(crate) mod transport;
  use transport::{send_request, send_request_with_timeout};
 
  fn fresh_spawn_request_nonce(ctx: &ToolContext) -> String {
-@@ -1538,6 +1538,7 @@ async fn spawn_assignment_session(ctx: &ToolContext, params: &CommunicateInput)
-         model: params.model.clone(),
-         effort: params.effort.clone(),
+@@ -1420,6 +1420,7 @@ async fn spawn_assignment_session(ctx: &ToolContext, params: &CommunicateInput)
+         // `agents.swarm_effort` (default "low").
+         effort: None,
          label: None,
 +        blueprint: params.blueprint.clone(),
      };
 
      match send_request(spawn_request).await {
-@@ -1939,6 +1940,12 @@ struct CommunicateInput {
-     /// Required and nonblank for the explicit `spawn` action.
-     #[serde(default)]
-     label: Option<String>,
+@@ -1783,6 +1784,12 @@ struct CommunicateInput {
+     /// active phase.
+     #[serde(default, alias = "stage")]
+     phase: Option<u32>,
 +    /// Optional worker blueprint ID for spawn and assignment actions. When
 +    /// set, the spawned agent receives the blueprint's role instructions
 +    /// before the runtime task, and the blueprint's model, effort,
-+    /// allowed-tools, and communication-policy are applied.
++    /// enabled-tools, disabled-tools, and communication-policy are applied.
 +    #[serde(default)]
 +    blueprint: Option<String>,
  }
 
  impl CommunicateInput {
-@@ -2868,6 +2875,7 @@ impl Tool for CommunicateTool {
-                     model: params.model.clone(),
-                     effort: params.effort.clone(),
+@@ -2519,6 +2526,7 @@ impl Tool for CommunicateTool {
+                     // `agents.swarm_effort` (default "low").
+                     effort: None,
                      label: Some(label),
 +                    blueprint: params.blueprint.clone(),
                  };
@@ -3250,7 +4310,7 @@ index 8df0245fc..566e172e2 100644
      timeout: Option<std::time::Duration>,
  ) -> Result<ServerEvent> {
 diff --git a/crates/jcode-app-core/src/tool/communicate_tests.rs b/crates/jcode-app-core/src/tool/communicate_tests.rs
-index 350b9a6f7..0bfd08250 100644
+index 3217be906..c8c26a95b 100644
 --- a/crates/jcode-app-core/src/tool/communicate_tests.rs
 +++ b/crates/jcode-app-core/src/tool/communicate_tests.rs
 @@ -13,7 +13,7 @@ use crate::protocol::{
@@ -3263,7 +4323,7 @@ index 350b9a6f7..0bfd08250 100644
  use anyhow::Result;
  use async_trait::async_trait;
 diff --git a/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs b/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
-index 127babbbe..92aa30b48 100644
+index 734004add..1626af130 100644
 --- a/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
 +++ b/crates/jcode-app-core/src/tool/communicate_tests/end_to_end.rs
 @@ -131,6 +131,127 @@ async fn communicate_list_and_await_members_work_end_to_end() {
@@ -3395,7 +4455,7 @@ index 127babbbe..92aa30b48 100644
  async fn communicate_await_members_background_returns_immediately_and_notifies() {
      let _env_lock = crate::storage::lock_test_env();
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 89620bf16..478a0da45 100644
+index 1f845acba..b747c741d 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,4 +1,7 @@
@@ -3406,7 +4466,7 @@ index 89620bf16..478a0da45 100644
  pub mod ambient;
  mod apply_patch;
  mod bash;
-@@ -74,6 +77,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
+@@ -93,6 +96,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
      disabled.contains(name) || (disabled.contains("mcp") && is_mcp_tool_name(name))
  }
 
@@ -3417,7 +4477,7 @@ index 89620bf16..478a0da45 100644
  fn is_fixed_mcp_tool(name: &str) -> bool {
      matches!(name, "mcp_search" | "mcp_call")
  }
-@@ -567,16 +574,25 @@ impl Registry {
+@@ -587,16 +594,25 @@ impl Registry {
          }
          let session_tools_ms = session_tools_start.elapsed().as_millis();
 
@@ -3444,15 +4504,15 @@ index 89620bf16..478a0da45 100644
              write_ms,
              start.elapsed().as_millis()
          ));
-@@ -593,6 +609,7 @@ impl Registry {
-             .iter()
+@@ -614,6 +630,7 @@ impl Registry {
+             .filter(|(_, tool)| tool.model_visible())
              .filter(|(name, _)| allowed_tools.is_none_or(|set| self.tool_is_allowed(set, name)))
              .map(|(name, tool)| {
 +
                  let mut def = tool.to_definition();
                  // Use registry key as the tool name (important for MCP tools where
                  // the registry key is "mcp__server__tool" but Tool::name() returns
-@@ -609,6 +626,44 @@ impl Registry {
+@@ -630,6 +647,44 @@ impl Registry {
          defs
      }
 
@@ -3497,7 +4557,7 @@ index 89620bf16..478a0da45 100644
      pub async fn tool_names(&self) -> Vec<String> {
          let tools = self.tools.read().await;
          tools.keys().cloned().collect()
-@@ -629,6 +684,11 @@ impl Registry {
+@@ -651,6 +706,11 @@ impl Registry {
          defs
      }
 
@@ -3510,10 +4570,10 @@ index 89620bf16..478a0da45 100644
      /// Called when session is marked as debug
      pub async fn enable_memory_test_mode(&self) {
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 23f2a1411..3eb4f3717 100644
+index bc94eedb5..6eff13ddd 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
 +++ b/crates/jcode-app-core/src/tool/tests.rs
-@@ -796,6 +796,18 @@ async fn tool_descriptions_stay_under_token_cap() {
+@@ -886,6 +886,18 @@ async fn tool_descriptions_stay_under_token_cap() {
          .definitions(None)
          .await
          .into_iter()
@@ -3533,7 +4593,7 @@ index 23f2a1411..3eb4f3717 100644
          .filter(|def| def.description_token_estimate() > DESCRIPTION_TOKEN_CAP)
          .map(|def| {
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
-index 45ce92e07..a2c2973b1 100644
+index 21b94419b..c27edd73b 100644
 --- a/crates/jcode-base/src/config.rs
 +++ b/crates/jcode-base/src/config.rs
 @@ -3,6 +3,7 @@
@@ -3545,21 +4605,22 @@ index 45ce92e07..a2c2973b1 100644
      AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
      CompactionMode, CrossProviderFailoverMode, CustomWebSearchConfig, CustomWebSearchMethod,
 diff --git a/crates/jcode-base/src/config/display_summary.rs b/crates/jcode-base/src/config/display_summary.rs
-index 8856eb574..44c647354 100644
+index ebbeac3da..15c6a359c 100644
 --- a/crates/jcode-base/src/config/display_summary.rs
 +++ b/crates/jcode-base/src/config/display_summary.rs
-@@ -8,6 +8,43 @@ impl Config {
+@@ -8,6 +8,41 @@ impl Config {
          let mut effective_disabled_tools: Vec<String> =
              self.tools.selection().disabled_tools.into_iter().collect();
          effective_disabled_tools.sort();
 +        let agent_models_summary = if self.features.swarm {
 +            format!(
-+                "**Agent models:**\n- Swarm / subagent: {}\n- Swarm spawn mode: {}\n- Spawn hook: {}\n- Review: {}\n- Judge: {}\n- Memory: {}\n- Memory sidecar: {}\n- Ambient: {}",
++                "**Agent models:**\n- Swarm / subagent: {}\n- Swarm spawn mode: {}\n- Swarm root effort: {}\n- Spawn hook: {}\n- Review: {}\n- Judge: {}\n- Memory recall: Jev ({})\n- Memory extraction sidecar: {}\n- Ambient: {}",
 +                self.agents
 +                    .swarm_model
 +                    .as_deref()
 +                    .unwrap_or("(inherit current session)"),
 +                self.agents.swarm_spawn_mode.as_str(),
++                self.agents.root_effort_for_swarm(),
 +                self.terminal
 +                    .spawn_hook
 +                    .as_deref()
@@ -3572,10 +4633,7 @@ index 8856eb574..44c647354 100644
 +                    .model
 +                    .as_deref()
 +                    .unwrap_or("(inherit current session)"),
-+                self.agents
-+                    .memory_model
-+                    .as_deref()
-+                    .unwrap_or("(sidecar auto-select)"),
++                self.agents.memory_jev_provider,
 +                if self.agents.memory_sidecar_enabled {
 +                    "enabled"
 +                } else {
@@ -3592,7 +4650,7 @@ index 8856eb574..44c647354 100644
 
          format!(
              r#"**Configuration** (`{}`)
-@@ -97,17 +134,7 @@ impl Config {
+@@ -97,16 +132,7 @@ impl Config {
  - OpenAI native compaction threshold ratio: {:.2}
  - Cross-provider failover: {}
 
@@ -3600,7 +4658,6 @@ index 8856eb574..44c647354 100644
 -- Swarm / subagent: {}
 -- Swarm spawn mode: {}
 -- Swarm root effort: {}
--- Deep swarm root effort: {}
 -- Spawn hook: {}
 -- Review: {}
 -- Judge: {}
@@ -3611,7 +4668,7 @@ index 8856eb574..44c647354 100644
 
  **Gateway:**
  - Enabled: {}
-@@ -281,35 +308,7 @@ impl Config {
+@@ -280,34 +306,7 @@ impl Config {
              self.provider.openai_native_compaction_mode.as_str(),
              self.provider.openai_native_compaction_threshold_tokens,
              self.provider.cross_provider_failover.as_str(),
@@ -3620,8 +4677,7 @@ index 8856eb574..44c647354 100644
 -                .as_deref()
 -                .unwrap_or("(inherit current session)"),
 -            self.agents.swarm_spawn_mode.as_str(),
--            self.agents.root_effort_for_swarm(false),
--            self.agents.root_effort_for_swarm(true),
+-            self.agents.root_effort_for_swarm(),
 -            self.terminal
 -                .spawn_hook
 -                .as_deref()
@@ -3649,10 +4705,10 @@ index 8856eb574..44c647354 100644
              self.gateway.bind_addr,
              self.gateway.port,
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index d5d5035b7..c4cd89efe 100644
+index 9c19010ee..31b2eb1dc 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
-@@ -173,6 +173,17 @@ fn swarm_max_concurrent_agents_defaults_to_safe_live_worker_budget() {
+@@ -187,6 +187,17 @@ fn swarm_max_concurrent_agents_defaults_to_safe_live_worker_budget() {
      assert_eq!(Config::default().agents.swarm_max_concurrent_agents, 32);
  }
 
@@ -3671,7 +4727,7 @@ index d5d5035b7..c4cd89efe 100644
  fn mermaid_feature_defaults_on_and_parses_false() {
      assert!(Config::default().features.mermaid);
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index ca42c904c..a80d63aea 100644
+index e7f2874da..f86749004 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -119,6 +119,8 @@ pub struct SwarmContext {
@@ -3786,10 +4842,10 @@ index ca42c904c..a80d63aea 100644
          with_swarm_context(context, async {
              let handle = tokio::spawn(async move {
 diff --git a/crates/jcode-base/src/lib.rs b/crates/jcode-base/src/lib.rs
-index e49f75f05..4867fbf84 100644
+index 0bdab9bef..c0f3b64c7 100644
 --- a/crates/jcode-base/src/lib.rs
 +++ b/crates/jcode-base/src/lib.rs
-@@ -109,6 +109,7 @@ pub mod transport;
+@@ -110,6 +110,7 @@ pub mod transport;
  pub mod usage;
  pub mod util;
  pub mod voice_intent;
@@ -3797,6 +4853,272 @@ index e49f75f05..4867fbf84 100644
  #[cfg(not(feature = "embeddings"))]
  pub use embedding_stub as embedding;
  pub use jcode_core::{terminal_eprint, terminal_eprintln, terminal_print, terminal_println};
+diff --git a/crates/jcode-base/src/session.rs b/crates/jcode-base/src/session.rs
+index ee5d1ddc0..068eec82b 100644
+--- a/crates/jcode-base/src/session.rs
++++ b/crates/jcode-base/src/session.rs
+@@ -157,6 +157,9 @@ pub struct Session {
+     /// Optional fixed model to use for subagents launched from this session.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub subagent_model: Option<String>,
++    /// Worker blueprint policy selected for this session, if any.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub worker_blueprint_policy: Option<WorkerBlueprintPolicy>,
+     /// Session worker routing. Missing keys follow saved global defaults.
+     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+     pub agent_model_overrides: AgentModelOverrides,
+@@ -228,6 +231,13 @@ pub struct Session {
+     memory_profile_dirty: bool,
+ }
+
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++pub struct WorkerBlueprintPolicy {
++    pub name: String,
++    pub enabled_tools: Option<Vec<String>>,
++    pub disabled_tools: Option<Vec<String>>,
++}
++
+ #[derive(Debug, Deserialize)]
+ struct SessionStartupStub {
+     id: String,
+@@ -256,6 +266,8 @@ struct SessionStartupStub {
+     #[serde(default)]
+     subagent_model: Option<String>,
+     #[serde(default)]
++    worker_blueprint_policy: Option<WorkerBlueprintPolicy>,
++    #[serde(default)]
+     agent_model_overrides: AgentModelOverrides,
+     #[serde(default)]
+     improve_mode: Option<SessionImproveMode>,
+@@ -372,6 +384,7 @@ impl Session {
+         session.route_api_method = stub.route_api_method;
+         session.reasoning_effort = stub.reasoning_effort;
+         session.subagent_model = stub.subagent_model;
++        session.worker_blueprint_policy = stub.worker_blueprint_policy;
+         session.agent_model_overrides = stub.agent_model_overrides;
+         session.improve_mode = stub.improve_mode;
+         session.autoreview_enabled = stub.autoreview_enabled;
+@@ -411,6 +424,7 @@ impl Session {
+         session.route_api_method = snapshot.route_api_method;
+         session.reasoning_effort = snapshot.reasoning_effort;
+         session.subagent_model = snapshot.subagent_model;
++        session.worker_blueprint_policy = snapshot.worker_blueprint_policy;
+         session.agent_model_overrides = snapshot.agent_model_overrides;
+         session.improve_mode = snapshot.improve_mode;
+         session.autoreview_enabled = snapshot.autoreview_enabled;
+@@ -552,6 +566,7 @@ impl Session {
+             model: self.model.clone(),
+             reasoning_effort: self.reasoning_effort.clone(),
+             subagent_model: self.subagent_model.clone(),
++            worker_blueprint_policy: self.worker_blueprint_policy.clone(),
+             agent_model_overrides: self.agent_model_overrides.clone(),
+             improve_mode: self.improve_mode,
+             autoreview_enabled: self.autoreview_enabled,
+@@ -755,6 +770,7 @@ impl Session {
+         self.model = meta.model;
+         self.reasoning_effort = meta.reasoning_effort;
+         self.subagent_model = meta.subagent_model;
++        self.worker_blueprint_policy = meta.worker_blueprint_policy;
+         self.agent_model_overrides = meta.agent_model_overrides;
+         self.improve_mode = meta.improve_mode;
+         self.autoreview_enabled = meta.autoreview_enabled;
+@@ -798,6 +814,7 @@ impl Session {
+             route_api_method: None,
+             reasoning_effort: None,
+             subagent_model: None,
++            worker_blueprint_policy: None,
+             agent_model_overrides: AgentModelOverrides::new(),
+             improve_mode: None,
+             autoreview_enabled: None,
+@@ -856,6 +873,7 @@ impl Session {
+             route_api_method: None,
+             reasoning_effort: None,
+             subagent_model: None,
++            worker_blueprint_policy: None,
+             agent_model_overrides: AgentModelOverrides::new(),
+             improve_mode: None,
+             autoreview_enabled: None,
+@@ -1790,6 +1808,8 @@ struct RemoteStartupSessionSnapshot {
+     #[serde(default)]
+     subagent_model: Option<String>,
+     #[serde(default)]
++    worker_blueprint_policy: Option<WorkerBlueprintPolicy>,
++    #[serde(default)]
+     agent_model_overrides: AgentModelOverrides,
+     #[serde(default)]
+     improve_mode: Option<SessionImproveMode>,
+diff --git a/crates/jcode-base/src/session/journal.rs b/crates/jcode-base/src/session/journal.rs
+index db3a76aff..caa31409d 100644
+--- a/crates/jcode-base/src/session/journal.rs
++++ b/crates/jcode-base/src/session/journal.rs
+@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
+
+ use super::{
+     EnvSnapshot, SessionImproveMode, SessionStatus, StoredCompactionState, StoredMemoryInjection,
+-    StoredMessage, StoredReplayEvent,
++    StoredMessage, StoredReplayEvent, WorkerBlueprintPolicy,
+ };
+
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+@@ -32,6 +32,8 @@ pub(super) struct SessionJournalMeta {
+     pub(super) reasoning_effort: Option<String>,
+     pub(super) subagent_model: Option<String>,
+     #[serde(default)]
++    pub(super) worker_blueprint_policy: Option<WorkerBlueprintPolicy>,
++    #[serde(default)]
+     pub(super) agent_model_overrides: super::AgentModelOverrides,
+     pub(super) improve_mode: Option<SessionImproveMode>,
+     pub(super) autoreview_enabled: Option<bool>,
+@@ -98,6 +100,7 @@ pub(super) fn metadata_requires_snapshot(
+         || prev.provider_key != current.provider_key
+         || prev.reasoning_effort != current.reasoning_effort
+         || prev.subagent_model != current.subagent_model
++        || prev.worker_blueprint_policy != current.worker_blueprint_policy
+         || prev.agent_model_overrides != current.agent_model_overrides
+         || prev.improve_mode != current.improve_mode
+         || prev.autoreview_enabled != current.autoreview_enabled
+diff --git a/crates/jcode-base/src/session_tests/cases.rs b/crates/jcode-base/src/session_tests/cases.rs
+index e405956f6..42a030903 100644
+--- a/crates/jcode-base/src/session_tests/cases.rs
++++ b/crates/jcode-base/src/session_tests/cases.rs
+@@ -622,6 +622,137 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
+     Ok(())
+ }
+
++#[test]
++fn blueprint_policy_persistence_snapshot_and_startup_projections() -> Result<()> {
++    let _env_lock = lock_env();
++    let temp_home = tempfile::tempdir()?;
++    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path());
++
++    for (suffix, policy) in [
++        (
++            "enabled_empty",
++            WorkerBlueprintPolicy {
++                name: "restricted-worker".to_string(),
++                enabled_tools: Some(Vec::new()),
++                disabled_tools: None,
++            },
++        ),
++        (
++            "disabled_empty",
++            WorkerBlueprintPolicy {
++                name: "open-worker".to_string(),
++                enabled_tools: None,
++                disabled_tools: Some(Vec::new()),
++            },
++        ),
++    ] {
++        let session_id = format!("session_blueprint_policy_{suffix}");
++        let mut session = Session::create_with_id(session_id.clone(), None, None);
++        session.add_message(
++            Role::User,
++            vec![ContentBlock::Text {
++                text: "persist policy".to_string(),
++                cache_control: None,
++            }],
++        );
++        session.save()?;
++
++        session.worker_blueprint_policy = Some(policy.clone());
++        session.save()?;
++
++        let snapshot: serde_json::Value =
++            serde_json::from_slice(&std::fs::read(session_path(&session_id)?)?)?;
++        let stored_policy = &snapshot["worker_blueprint_policy"];
++        assert_eq!(stored_policy["name"], policy.name);
++        assert_eq!(stored_policy["enabled_tools"], match &policy.enabled_tools {
++            Some(tools) => serde_json::json!(tools),
++            None => serde_json::Value::Null,
++        });
++        assert_eq!(stored_policy["disabled_tools"], match &policy.disabled_tools {
++            Some(tools) => serde_json::json!(tools),
++            None => serde_json::Value::Null,
++        });
++        assert!(!session_journal_path(&session_id)?.exists());
++
++        assert_eq!(Session::load(&session_id)?.worker_blueprint_policy, Some(policy.clone()));
++        assert_eq!(
++            Session::load_startup_stub(&session_id)?.worker_blueprint_policy,
++            Some(policy.clone())
++        );
++        assert_eq!(
++            Session::load_for_remote_startup(&session_id)?.worker_blueprint_policy,
++            Some(policy)
++        );
++    }
++    Ok(())
++}
++
++#[test]
++fn blueprint_policy_persistence_legacy_snapshot_defaults_to_none() -> Result<()> {
++    let _env_lock = lock_env();
++    let temp_home = tempfile::tempdir()?;
++    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path());
++    let session_id = "session_blueprint_policy_legacy";
++    let mut session = Session::create_with_id(session_id.to_string(), None, None);
++    session.add_message(
++        Role::User,
++        vec![ContentBlock::Text {
++            text: "legacy policy fixture".to_string(),
++            cache_control: None,
++        }],
++    );
++    session.save()?;
++
++    let path = session_path(session_id)?;
++    let mut snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
++    snapshot.as_object_mut().unwrap().remove("worker_blueprint_policy");
++    std::fs::write(&path, serde_json::to_vec(&snapshot)?)?;
++
++    assert!(Session::load(session_id)?.worker_blueprint_policy.is_none());
++    assert!(Session::load_startup_stub(session_id)?.worker_blueprint_policy.is_none());
++    assert!(Session::load_for_remote_startup(session_id)?.worker_blueprint_policy.is_none());
++    Ok(())
++}
++
++#[test]
++fn blueprint_policy_persistence_journal_roundtrip_and_startup_stub() -> Result<()> {
++    let _env_lock = lock_env();
++    let temp_home = tempfile::tempdir()?;
++    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path());
++    let session_id = "session_blueprint_policy_journal";
++    let mut session = Session::create_with_id(session_id.to_string(), None, None);
++    session.add_message(
++        Role::User,
++        vec![ContentBlock::Text {
++            text: "large transcript ".repeat(80_000),
++            cache_control: None,
++        }],
++    );
++    session.save()?;
++
++    let policy = WorkerBlueprintPolicy {
++        name: "journal-worker".to_string(),
++        enabled_tools: None,
++        disabled_tools: Some(Vec::new()),
++    };
++    session.worker_blueprint_policy = Some(policy.clone());
++    session.save()?;
++    let journal = session_journal_path(session_id)?;
++    assert!(journal.exists(), "large session metadata should use its journal");
++    let journal_text = std::fs::read_to_string(journal)?;
++    assert!(journal_text.contains("worker_blueprint_policy"));
++    assert_eq!(Session::load(session_id)?.worker_blueprint_policy, Some(policy.clone()));
++    assert_eq!(
++        Session::load_startup_stub(session_id)?.worker_blueprint_policy,
++        Some(policy.clone())
++    );
++    assert_eq!(
++        Session::load_for_remote_startup(session_id)?.worker_blueprint_policy,
++        Some(policy)
++    );
++    Ok(())
++}
++
+ #[test]
+ fn test_create_marks_debug_when_test_session_env_enabled() {
+     let _env_lock = lock_env();
 diff --git a/crates/jcode-base/src/worker_blueprint.rs b/crates/jcode-base/src/worker_blueprint.rs
 new file mode 100644
 index 000000000..cfb3fd02b
@@ -6026,10 +7348,10 @@ index 000000000..cfb3fd02b
 +    }
 +}
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 4c4f84d85..064d70581 100644
+index 213007231..022a526c3 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -12,6 +12,43 @@ pub use keybindings::{
+@@ -14,6 +14,43 @@ pub use keybindings::{
      keybinding_default, keybinding_defaults_report, validate_keybinding_defaults,
  };
 
@@ -6073,7 +7395,7 @@ index 4c4f84d85..064d70581 100644
  /// Compaction mode
  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
  #[serde(rename_all = "lowercase")]
-@@ -567,6 +604,25 @@ pub struct AgentsConfig {
+@@ -569,6 +606,25 @@ pub struct AgentsConfig {
      /// string to change the worker default. An explicit `model` in the swarm
      /// tool overrides this default for newly spawned workers.
      pub swarm_model: Option<String>,
@@ -6096,10 +7418,10 @@ index 4c4f84d85..064d70581 100644
 +    /// specifies a value. Default: 20.
 +    #[serde(default = "default_swarm_timeout_minutes")]
 +    pub swarm_timeout_minutes: u32,
-     /// Optional default reasoning effort for spawned swarm/subagent sessions
-     /// (`"low"`, `"medium"`, `"high"`, ...). Applied when a `swarm spawn`
-     /// call does not pass an explicit `effort`. Leave unset to let workers
-@@ -690,6 +746,9 @@ impl Default for AgentsConfig {
+     /// Reasoning effort for spawned swarm workers (`"low"`, `"medium"`,
+     /// `"high"`, ...). The swarm tool does not let agents choose worker
+     /// effort. Unset means `"low"`.
+@@ -694,6 +750,9 @@ impl Default for AgentsConfig {
      fn default() -> Self {
          Self {
              swarm_model: None,
@@ -6108,7 +7430,7 @@ index 4c4f84d85..064d70581 100644
 +            swarm_timeout_minutes: default_swarm_timeout_minutes(),
              swarm_effort: None,
              swarm_root_effort: None,
-             swarm_deep_root_effort: None,
+             swarm_spawn_mode: SwarmSpawnMode::default(),
 diff --git a/crates/jcode-protocol/src/protocol_tests/comm_requests.rs b/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
 index f8a11933f..0c809ec6f 100644
 --- a/crates/jcode-protocol/src/protocol_tests/comm_requests.rs
@@ -6122,10 +7444,10 @@ index f8a11933f..0c809ec6f 100644
      let json = serde_json::to_string(&req)?;
      assert!(json.contains("\"type\":\"comm_spawn\""));
 diff --git a/crates/jcode-protocol/src/wire.rs b/crates/jcode-protocol/src/wire.rs
-index 413ca86cf..30a6bb080 100644
+index 6ca0b4349..dc37de1f6 100644
 --- a/crates/jcode-protocol/src/wire.rs
 +++ b/crates/jcode-protocol/src/wire.rs
-@@ -718,6 +718,13 @@ pub enum Request {
+@@ -686,6 +686,13 @@ pub enum Request {
          /// otherwise derived from the first line of `initial_message`.
          #[serde(default, skip_serializing_if = "Option::is_none")]
          label: Option<String>,
@@ -6140,7 +7462,7 @@ index 413ca86cf..30a6bb080 100644
 
      /// List models/routes available for spawning swarm agents
 diff --git a/crates/jcode-swarm-core/src/lib.rs b/crates/jcode-swarm-core/src/lib.rs
-index c6a25f627..311bc9ab0 100644
+index 4240376ac..712a05a04 100644
 --- a/crates/jcode-swarm-core/src/lib.rs
 +++ b/crates/jcode-swarm-core/src/lib.rs
 @@ -352,9 +352,9 @@ pub fn append_swarm_completion_report_instructions(message: &str) -> String {
@@ -6156,7 +7478,7 @@ index c6a25f627..311bc9ab0 100644
  Do not finish with only tool output, a lifecycle status change, or no final response. \
  Do not send a separate DM for the final report unless you need interactive coordination before finishing.\n",
      );
-@@ -727,6 +727,9 @@ mod tests {
+@@ -603,6 +603,9 @@ mod tests {
          let prompt = "Do work";
          let with_instructions = append_swarm_completion_report_instructions(prompt);
          assert!(with_instructions.contains(SWARM_COMPLETION_REPORT_MARKER));

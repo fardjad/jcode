@@ -1,4 +1,4 @@
-From ce166f9503868611cc239b9ddc6795d9da1bc9ac Mon Sep 17 00:00:00 2001
+From f3a1ce73148307a7b3dc5a584a3c1f83ecf49aac Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:49 +0200
 Subject: [PATCH] feat: add provider family execution allowlist
@@ -24,13 +24,15 @@ field that cannot grant execution the allowlist denies.
 
 Upstream integration points:
 crates/jcode-config-types/src/lib.rs adds the allowed_providers field.
-crates/jcode-provider-core/src/lib.rs defines ProviderFamily, ProviderFamilyPolicy,
+crates/jcode-provider-core/src/lib.rs defines ProviderFamily,
+ProviderFamilyPolicy,
 provider_family() methods on RuntimeKey and ModelRouteApiMethod.
 crates/jcode-base/src/provider/mod.rs enforces policy in set_model and route
 filtering, and in available_providers_for_model and provider_details_for_model.
 crates/jcode-base/src/provider/dispatch.rs and multi_provider.rs enforce policy
 at dispatch and failover boundaries.
-crates/jcode-base/src/provider/catalog_memo.rs projects cached routes under policy;
+crates/jcode-base/src/provider/catalog_memo.rs projects cached routes under
+policy;
 crates/jcode-base/src/provider/catalog_remote_routes.rs and catalog_routes.rs
 filter names-only remote and full catalog routes by runtime family.
 crates/jcode-base/src/sidecar.rs applies policy to automatic selection, explicit
@@ -40,7 +42,8 @@ enforcement, including denied jcode auth/import through dispatch, failover,
 sidecar, and model switching. crates/jcode-base/src/provider/jcode.rs also
 blocks direct jcode model switching when its family is denied.
 crates/jcode-protocol/src/wire/events.rs carries runtime identity through
-names-only catalog events. crates/jcode-base/src/config/default_file.rs documents
+names-only catalog events. crates/jcode-base/src/config/default_file.rs
+documents
 the policy.
 
 Update guidance:
@@ -59,32 +62,33 @@ cargo test -p jcode-base policy_filters_catalog --lib
 cargo test -p jcode-base policy_blocks_persisted --lib
 cargo test -p jcode-base policy_blocks_set_model_for_all_provider_families --lib
 cargo test -p jcode-base jcode_auth_and_import_cannot_bypass_provider_family_allowlist --lib
+cargo test -p jcode-base provider_policy_sync_ --lib
 ---
  crates/jcode-app-core/src/agent/provider.rs   |   1 +
- .../src/server/available_models_cache.rs      |  17 +-
+ .../src/server/available_models_cache.rs      |  27 +-
  .../src/server/available_models_dedup.rs      |   3 +-
- .../client_lifecycle_catalog_dedup_tests.rs   |   1 +
- .../src/server/client_lifecycle_tests.rs      |  38 +++
+ .../client_lifecycle_catalog_dedup_tests.rs   |   3 +
  .../src/server/provider_control.rs            |   1 +
  .../src/server/provider_control_tests.rs      |   2 +
  crates/jcode-base/src/auth/lifecycle.rs       |   2 +-
  crates/jcode-base/src/config/default_file.rs  |  12 +-
- crates/jcode-base/src/provider/accessors.rs   |  18 ++
+ crates/jcode-base/src/provider/accessors.rs   |  18 +
  .../jcode-base/src/provider/catalog_memo.rs   |  18 +-
- .../src/provider/catalog_remote_routes.rs     | 159 ++++++++--
+ .../src/provider/catalog_remote_routes.rs     | 159 ++++++-
  .../jcode-base/src/provider/catalog_routes.rs |   7 +-
- crates/jcode-base/src/provider/dispatch.rs    |  65 ++++
+ crates/jcode-base/src/provider/dispatch.rs    |  65 +++
  crates/jcode-base/src/provider/external.rs    |   5 +-
- crates/jcode-base/src/provider/jcode.rs       |  72 +++++
- crates/jcode-base/src/provider/mod.rs         | 293 ++++++++++++++++--
- .../jcode-base/src/provider/multi_provider.rs | 125 ++++----
- .../jcode-base/src/provider/policy_tests.rs   | 242 +++++++++++++++
+ crates/jcode-base/src/provider/jcode.rs       |  72 +++
+ crates/jcode-base/src/provider/mod.rs         | 293 +++++++++++--
+ .../jcode-base/src/provider/multi_provider.rs |  61 +--
+ .../jcode-base/src/provider/policy_tests.rs   | 413 ++++++++++++++++++
  crates/jcode-base/src/provider/selection.rs   |   8 +-
  crates/jcode-base/src/provider/tests.rs       |   6 +-
- .../src/provider/tests/account_failover.rs    |   1 +
+ .../src/provider/tests/account_failover.rs    |  42 ++
  .../src/provider/tests/agent_failover.rs      |   3 +
  .../tests/issue_534_profile_preservation.rs   |   2 +-
- crates/jcode-base/src/sidecar.rs              | 151 ++++++++-
+ .../src/provider/tests/session_binding.rs     |  10 +-
+ crates/jcode-base/src/sidecar.rs              | 151 ++++++-
  crates/jcode-config-types/src/lib.rs          |  12 +-
  crates/jcode-protocol/src/wire/events.rs      |   2 +
  .../src/lib.rs                                |  14 +
@@ -92,19 +96,20 @@ cargo test -p jcode-base jcode_auth_and_import_cannot_bypass_provider_family_all
  crates/jcode-provider-bedrock/src/lib.rs      |   4 +
  .../jcode-provider-copilot-runtime/src/lib.rs |   4 +
  .../jcode-provider-core/src/fallback_pick.rs  |   2 +-
- crates/jcode-provider-core/src/lib.rs         | 293 +++++++++++++++++-
+ crates/jcode-provider-core/src/lib.rs         | 293 ++++++++++++-
  crates/jcode-provider-core/src/lib_tests.rs   |   2 +-
- .../jcode-provider-core/src/policy_tests.rs   |  71 +++++
+ .../jcode-provider-core/src/policy_tests.rs   |  71 +++
  .../jcode-provider-cursor-runtime/src/lib.rs  |   4 +
  .../jcode-provider-gemini-runtime/src/lib.rs  |   4 +
- .../src/lib.rs                                |   4 +
- .../src/lib.rs                                |  40 +--
+ .../src/lib.rs                                |   7 +-
+ .../src/lib.rs                                |  40 +-
  .../src/openrouter_provider_impl.rs           |  14 +
  crates/jcode-tui/src/tui/app.rs               |   1 +
  .../src/tui/app/inline_interactive.rs         |  24 +-
  .../src/tui/app/inline_interactive/helpers.rs |   2 +-
  .../inline_interactive_placeholder_routes.rs  |   3 +
  .../src/tui/app/remote/server_events.rs       |   4 +-
+ crates/jcode-tui/src/tui/app/remote_tests.rs  |   1 +
  .../tests/remote_startup_input_01/part_01.rs  |   5 +
  .../tests/remote_startup_input_01/part_02.rs  |   2 +
  .../app/tests/state_model_poke_02/part_02.rs  |   4 +-
@@ -112,12 +117,12 @@ cargo test -p jcode-base jcode_auth_and_import_cannot_bypass_provider_family_all
  src/cli/commands/model_routes.rs              |   2 +-
  src/cli/commands_tests.rs                     |  10 +-
  src/cli/startup.rs                            |   4 +-
- 52 files changed, 1588 insertions(+), 201 deletions(-)
+ 53 files changed, 1764 insertions(+), 161 deletions(-)
  create mode 100644 crates/jcode-base/src/provider/policy_tests.rs
  create mode 100644 crates/jcode-provider-core/src/policy_tests.rs
 
 diff --git a/crates/jcode-app-core/src/agent/provider.rs b/crates/jcode-app-core/src/agent/provider.rs
-index 63eb609bd..93ff7a8f0 100644
+index 41725a955..df7be81b6 100644
 --- a/crates/jcode-app-core/src/agent/provider.rs
 +++ b/crates/jcode-app-core/src/agent/provider.rs
 @@ -157,6 +157,7 @@ impl Agent {
@@ -129,7 +134,7 @@ index 63eb609bd..93ff7a8f0 100644
 
      pub fn registry(&self) -> Registry {
 diff --git a/crates/jcode-app-core/src/server/available_models_cache.rs b/crates/jcode-app-core/src/server/available_models_cache.rs
-index d18e3a254..c1f39ad60 100644
+index d18e3a254..57387addc 100644
 --- a/crates/jcode-app-core/src/server/available_models_cache.rs
 +++ b/crates/jcode-app-core/src/server/available_models_cache.rs
 @@ -21,6 +21,7 @@ pub(super) struct Catalog {
@@ -179,6 +184,37 @@ index d18e3a254..c1f39ad60 100644
              _ => ModelCatalogSnapshot::default(),
          }
      }
+@@ -256,6 +261,9 @@ mod tests {
+     #[test]
+     fn oversized_catalog_preserves_names_in_live_payload() {
+         let mut full = snapshot("one");
++        full.runtime_key = Some(jcode_provider_core::RuntimeKey::OpenAiCompatible {
++            profile_id: Some("corp-gateway".into()),
++        });
+         full.model_routes = vec![crate::provider::ModelRoute {
+             model: "one".into(),
+             provider: "test".into(),
+@@ -268,6 +276,7 @@ mod tests {
+         let catalog = Catalog::new(full);
+         assert!(catalog.encoded_len > MAX_LIVE_BYTES);
+         let Some(ServerEvent::AvailableModelsUpdated {
++            runtime_key,
+             available_models,
+             available_model_routes,
+             ..
+@@ -275,6 +284,12 @@ mod tests {
+         else {
+             panic!("no slim payload")
+         };
++        assert_eq!(
++            runtime_key,
++            &Some(jcode_provider_core::RuntimeKey::OpenAiCompatible {
++                profile_id: Some("corp-gateway".into()),
++            })
++        );
+         assert_eq!(available_models, &["one"]);
+         assert!(available_model_routes.is_empty());
+         assert_eq!(catalog.snapshot().model_routes.len(), 1);
 diff --git a/crates/jcode-app-core/src/server/available_models_dedup.rs b/crates/jcode-app-core/src/server/available_models_dedup.rs
 index 45bf6ca5d..213a1a3d9 100644
 --- a/crates/jcode-app-core/src/server/available_models_dedup.rs
@@ -201,7 +237,7 @@ index 45bf6ca5d..213a1a3d9 100644
  }
 
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_catalog_dedup_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_catalog_dedup_tests.rs
-index 140b3cde1..f56af19d2 100644
+index 140b3cde1..ea5f4a07c 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_catalog_dedup_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle_catalog_dedup_tests.rs
 @@ -34,6 +34,7 @@ fn catalog_dedup_key_ignores_age_drift_but_keeps_real_changes() {
@@ -212,57 +248,24 @@ index 140b3cde1..f56af19d2 100644
          provider_name: Some("OpenRouter".to_string()),
          provider_model: Some("claude-opus-4.6".to_string()),
          available_models: vec!["claude-opus-4.6".to_string()],
-diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-index f760e28fb..4b6dfe095 100644
---- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-+++ b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
-@@ -7,6 +7,44 @@ use futures::stream;
- use std::sync::atomic::{AtomicBool, Ordering};
- use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-+#[test]
-+fn names_only_catalog_preserves_runtime_key() {
-+    let event = ServerEvent::AvailableModelsUpdated {
-+        runtime_key: Some(jcode_provider_core::RuntimeKey::OpenAiCompatible {
-+            profile_id: Some("corp-gateway".to_string()),
-+        }),
-+        provider_name: Some("Renamed Gateway".to_string()),
-+        provider_model: Some("vendor/model".to_string()),
-+        available_models: vec!["vendor/model".to_string()],
-+        available_model_routes: vec![crate::provider::ModelRoute {
-+            model: "vendor/model".to_string(),
-+            provider: "Renamed Gateway".to_string(),
-+            api_method: "openai-compatible:corp-gateway".to_string(),
-+            available: true,
-+            detail: String::new(),
-+            cheapness: None,
-+            usage: None,
-+        }],
-+    };
-+
-+    let slim = names_only_available_models_event(&event).expect("catalog event");
-+    let ServerEvent::AvailableModelsUpdated {
-+        runtime_key,
-+        available_model_routes,
-+        ..
-+    } = slim
-+    else {
-+        panic!("expected available-models event");
-+    };
-+    assert_eq!(
-+        runtime_key,
-+        Some(jcode_provider_core::RuntimeKey::OpenAiCompatible {
-+            profile_id: Some("corp-gateway".to_string()),
-+        })
-+    );
-+    assert!(available_model_routes.is_empty());
-+}
-+
- struct IsolatedRuntimeDir {
-     _prev_runtime: Option<std::ffi::OsString>,
-     _temp: tempfile::TempDir,
+@@ -78,6 +79,7 @@ fn age_normalization_handles_long_non_age_digit_runs() {
+ #[test]
+ fn catalog_dedup_keeps_model_and_auth_route_changes() {
+     let baseline = ServerEvent::AvailableModelsUpdated {
++        runtime_key: None,
+         provider_name: Some("test 12m ago".into()),
+         provider_model: Some("model 12m ago".into()),
+         available_models: vec!["model 12m ago".into()],
+@@ -101,6 +103,7 @@ fn catalog_dedup_keeps_model_and_auth_route_changes() {
+             provider_model,
+             available_models,
+             available_model_routes,
++            ..
+         } = &mut changed
+         else {
+             unreachable!()
 diff --git a/crates/jcode-app-core/src/server/provider_control.rs b/crates/jcode-app-core/src/server/provider_control.rs
-index 70dc7e4c1..79c7c7029 100644
+index c88d399c8..bcad997ed 100644
 --- a/crates/jcode-app-core/src/server/provider_control.rs
 +++ b/crates/jcode-app-core/src/server/provider_control.rs
 @@ -51,6 +51,7 @@ fn finish_auth_refresh(session_id: &str, generation: u64) {
@@ -307,10 +310,10 @@ index 4feab2a4d..3ee4ca206 100644
          "azure-openai" => {
              // Azure OpenAI reuses the OpenRouter transport (configured via Azure
 diff --git a/crates/jcode-base/src/config/default_file.rs b/crates/jcode-base/src/config/default_file.rs
-index 77bb97a2a..a64950762 100644
+index 46ce736f6..9df3ba002 100644
 --- a/crates/jcode-base/src/config/default_file.rs
 +++ b/crates/jcode-base/src/config/default_file.rs
-@@ -427,6 +427,14 @@ tool_profile = "acp"
+@@ -432,6 +432,14 @@ tool_profile = "acp"
  # `claude` and `anthropic-api` are distinct providers with distinct credentials.
  # See docs/AUTH_CREDENTIAL_SOURCES.md for where each credential lives.
  # default_provider = "copilot"
@@ -325,7 +328,7 @@ index 77bb97a2a..a64950762 100644
  # OpenAI reasoning effort (none|minimal|low|medium|high|xhigh|max)
  openai_reasoning_effort = "low"
  # Anthropic reasoning effort for Claude reasoning models (none|low|medium|high|xhigh|max)
-@@ -456,7 +464,9 @@ cross_provider_failover = "countdown"
+@@ -463,7 +471,9 @@ cross_provider_failover = "countdown"
  # provider labels ("openai", "anthropic", "copilot", "openrouter", ...), route
  # api methods ("claude-oauth", "openai-compatible:myprofile"), or bare
  # openai-compatible profile ids ("myprofile"). The active model's routes always
@@ -366,10 +369,10 @@ index 0af913bbc..f254f0c7c 100644
          ProviderRegistry::new(self).clear_active_compatible_profile();
      }
 diff --git a/crates/jcode-base/src/provider/catalog_memo.rs b/crates/jcode-base/src/provider/catalog_memo.rs
-index 1211d40c5..661986b50 100644
+index 3678dda7e..c921fd97d 100644
 --- a/crates/jcode-base/src/provider/catalog_memo.rs
 +++ b/crates/jcode-base/src/provider/catalog_memo.rs
-@@ -172,6 +172,12 @@ impl MultiProvider {
+@@ -183,6 +183,12 @@ impl MultiProvider {
      /// shared memo (so shared-server forks reuse one build), then a
      /// single-flight build that followers wait on instead of duplicating.
      pub(super) fn fresh_routes_memo_entry(&self) -> RoutesMemoEntry {
@@ -382,7 +385,7 @@ index 1211d40c5..661986b50 100644
          // Backstop only: invalidation is event-driven via auth/catalog
          // generations, so a completed refresh shows up on the next render.
          const ROUTES_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(60);
-@@ -195,7 +201,7 @@ impl MultiProvider {
+@@ -206,7 +212,7 @@ impl MultiProvider {
                  && let Some(entry) = memo.as_ref()
                  && fresh(entry)
              {
@@ -391,7 +394,7 @@ index 1211d40c5..661986b50 100644
              }
 
              // Shared path: another instance with the same catalog-relevant state
-@@ -221,7 +227,7 @@ impl MultiProvider {
+@@ -232,7 +238,7 @@ impl MultiProvider {
                  Some(entry)
              };
              if let Some(entry) = try_shared() {
@@ -400,7 +403,7 @@ index 1211d40c5..661986b50 100644
              }
 
              // Single-flight: serialize builds so a connect burst produces one
-@@ -238,7 +244,7 @@ impl MultiProvider {
+@@ -249,7 +255,7 @@ impl MultiProvider {
              // Re-check after acquiring the lock: the leader that held it may have
              // just published exactly the entry this instance needs.
              if let Some(entry) = try_shared() {
@@ -409,7 +412,7 @@ index 1211d40c5..661986b50 100644
              }
 
              let routes = catalog_routes::multiprovider_model_routes(self);
-@@ -269,18 +275,18 @@ impl MultiProvider {
+@@ -280,18 +286,18 @@ impl MultiProvider {
                  });
                  shared.insert(shared_key, entry.clone());
              }
@@ -695,7 +698,7 @@ index 10725bba1..92cd73d82 100644
              ["claude-sonnet-4-6".into()],
          );
 diff --git a/crates/jcode-base/src/provider/dispatch.rs b/crates/jcode-base/src/provider/dispatch.rs
-index 66a416939..784398ad2 100644
+index 57511c058..63c117e7a 100644
 --- a/crates/jcode-base/src/provider/dispatch.rs
 +++ b/crates/jcode-base/src/provider/dispatch.rs
 @@ -28,6 +28,51 @@ impl CompletionMode<'_> {
@@ -774,7 +777,7 @@ index 66a416939..784398ad2 100644
          match provider {
              ActiveProvider::Claude => {
                  if let Some(anthropic) = self.anthropic_provider() {
-@@ -174,6 +229,7 @@ impl MultiProvider {
+@@ -182,6 +237,7 @@ impl MultiProvider {
 
      pub(super) async fn complete_split_on_provider(
          &self,
@@ -782,7 +785,7 @@ index 66a416939..784398ad2 100644
          provider: ActiveProvider,
          messages: &[Message],
          tools: &[ToolDefinition],
-@@ -182,6 +238,15 @@ impl MultiProvider {
+@@ -190,6 +246,15 @@ impl MultiProvider {
          resume_session_id: Option<&str>,
      ) -> Result<EventStream> {
          self.reconcile_auth_if_provider_missing(provider);
@@ -815,7 +818,7 @@ index 243de12fa..15e734973 100644
      CompatibleProfile(crate::provider_catalog::OpenAiCompatibleProfile),
      /// User-defined named OpenAI-compatible provider from config
 diff --git a/crates/jcode-base/src/provider/jcode.rs b/crates/jcode-base/src/provider/jcode.rs
-index 3b5fc3b06..ab1ec6c36 100644
+index d4f46411f..dd526b100 100644
 --- a/crates/jcode-base/src/provider/jcode.rs
 +++ b/crates/jcode-base/src/provider/jcode.rs
 @@ -11,6 +11,12 @@ pub struct JcodeProvider {
@@ -945,7 +948,7 @@ index 3b5fc3b06..ab1ec6c36 100644
      fn jcode_provider_exposes_only_explicit_subscription_routes() {
          use crate::subscription_catalog::JcodeTier;
 diff --git a/crates/jcode-base/src/provider/mod.rs b/crates/jcode-base/src/provider/mod.rs
-index ded7a6c31..e36cdf2fe 100644
+index 9a2f2588e..8f8b3a4fd 100644
 --- a/crates/jcode-base/src/provider/mod.rs
 +++ b/crates/jcode-base/src/provider/mod.rs
 @@ -52,8 +52,10 @@ pub use account_failover::{has_alternate_account_in_pool, has_eligible_alternate
@@ -974,13 +977,12 @@ index ded7a6c31..e36cdf2fe 100644
 +    dedupe_model_routes, explicit_model_provider_prefix, fresh_transport_client,
 +    grok_build_model_spec,
      inferred_reasoning_efforts, model_name_for_provider, normalize_copilot_model_name,
-     provider_from_model_key, shared_http_client, summarize_model_catalog_refresh,
- };
-@@ -432,6 +436,75 @@ pub struct MultiProvider {
-     post_auth_refreshes_pending: Arc<std::sync::atomic::AtomicUsize>,
- }
+     oauth_account_label, provider_from_model_key, shared_http_client,
+     summarize_model_catalog_refresh,
+@@ -457,6 +461,75 @@ impl MultiProvider {
+         }
+     }
 
-+impl MultiProvider {
 +    fn provider_family_policy(families: &[String]) -> ProviderFamilyPolicy {
 +    let policy = ProviderFamilyPolicy::parse(families);
 +    if !policy.unknown_values().is_empty() {
@@ -1049,10 +1051,11 @@ index ded7a6c31..e36cdf2fe 100644
 +
 +}
 +
- impl MultiProvider {
++impl MultiProvider {
      #[cfg(test)]
      fn same_provider_account_candidates(provider: ActiveProvider) -> Vec<String> {
-@@ -446,6 +519,10 @@ impl MultiProvider {
+         account_failover::same_provider_account_candidates(provider)
+@@ -470,6 +543,10 @@ impl MultiProvider {
          resume_session_id: Option<&str>,
      ) -> Result<EventStream> {
          self.bind_auto_account_for_request(self.active_provider())?;
@@ -1063,7 +1066,7 @@ index ded7a6c31..e36cdf2fe 100644
          self.spawn_anthropic_catalog_refresh_if_needed();
          self.spawn_openai_catalog_refresh_if_needed();
 
-@@ -499,6 +576,7 @@ impl MultiProvider {
+@@ -523,6 +600,7 @@ impl MultiProvider {
                  models::provider_unavailability_detail_for_account_label(key, Some(&bound_label))
              {
                  self.try_same_provider_account_failover(
@@ -1071,7 +1074,7 @@ index ded7a6c31..e36cdf2fe 100644
                      active,
                      messages,
                      tools,
-@@ -516,7 +594,14 @@ impl MultiProvider {
+@@ -540,7 +618,14 @@ impl MultiProvider {
              }
              let attempt = match mode {
                  CompletionMode::Unified { system } => {
@@ -1087,7 +1090,7 @@ index ded7a6c31..e36cdf2fe 100644
                          .await
                  }
                  CompletionMode::Split {
-@@ -524,6 +609,7 @@ impl MultiProvider {
+@@ -548,6 +633,7 @@ impl MultiProvider {
                      system_dynamic,
                  } => {
                      self.complete_split_on_provider(
@@ -1095,7 +1098,7 @@ index ded7a6c31..e36cdf2fe 100644
                          active,
                          messages,
                          tools,
-@@ -564,6 +650,7 @@ impl MultiProvider {
+@@ -588,6 +674,7 @@ impl MultiProvider {
                              );
                          }
                          self.try_same_provider_account_failover(
@@ -1103,7 +1106,7 @@ index ded7a6c31..e36cdf2fe 100644
                              active,
                              messages,
                              tools,
-@@ -584,6 +671,10 @@ impl MultiProvider {
+@@ -608,6 +695,10 @@ impl MultiProvider {
              Self::estimate_request_input(messages, tools, mode);
 
          for candidate in sequence {
@@ -1114,7 +1117,7 @@ index ded7a6c31..e36cdf2fe 100644
              let label = Self::provider_label(candidate);
              let key = self.provider_runtime_cooldown_key(candidate);
 
-@@ -600,6 +691,7 @@ impl MultiProvider {
+@@ -624,6 +715,7 @@ impl MultiProvider {
                      reason
                  };
                  if let Some(prompt) = self.cross_provider_pool_prompt(
@@ -1122,7 +1125,7 @@ index ded7a6c31..e36cdf2fe 100644
                      active,
                      candidate,
                      reason,
-@@ -646,7 +738,7 @@ impl MultiProvider {
+@@ -670,7 +762,7 @@ impl MultiProvider {
                  if candidate == active
                      && let Some(stream) = self
                          .try_same_provider_account_failover(
@@ -1131,7 +1134,7 @@ index ded7a6c31..e36cdf2fe 100644
                          )
                          .await?
                  {
-@@ -657,22 +749,53 @@ impl MultiProvider {
+@@ -681,22 +773,53 @@ impl MultiProvider {
 
              let attempt = match mode {
                  CompletionMode::Unified { system } => {
@@ -1195,7 +1198,7 @@ index ded7a6c31..e36cdf2fe 100644
                  }
              };
              let attempt = self.await_account_stream_start(candidate, attempt).await;
-@@ -680,9 +803,8 @@ impl MultiProvider {
+@@ -704,9 +827,8 @@ impl MultiProvider {
              match attempt {
                  Ok(stream) => {
                      clear_provider_unavailable_for_account(key);
@@ -1206,7 +1209,7 @@ index ded7a6c31..e36cdf2fe 100644
                          let from_label = Self::provider_label(active);
                          let to_label = Self::provider_label(candidate);
                          crate::logging::info(&format!(
-@@ -699,6 +821,7 @@ impl MultiProvider {
+@@ -723,6 +845,7 @@ impl MultiProvider {
                                  from_label, to_label
                              ));
                      }
@@ -1214,7 +1217,7 @@ index ded7a6c31..e36cdf2fe 100644
                      return Ok(stream);
                  }
                  Err(err) => {
-@@ -726,7 +849,7 @@ impl MultiProvider {
+@@ -750,7 +873,7 @@ impl MultiProvider {
                              && decision.should_mark_provider_unavailable()
                              && let Some(stream) = self
                                  .try_same_provider_account_failover(
@@ -1223,7 +1226,7 @@ index ded7a6c31..e36cdf2fe 100644
                                  )
                                  .await?
                          {
-@@ -804,12 +927,9 @@ impl MultiProvider {
+@@ -828,12 +951,9 @@ impl MultiProvider {
              ActiveProvider::OpenRouter => {
                  // The OpenRouter slot multiplexes the public aggregator, the
                  // jcode subscription, and direct OpenAI-compatible profiles.
@@ -1239,7 +1242,7 @@ index ded7a6c31..e36cdf2fe 100644
              }
              other => Self::provider_key(other).to_string(),
          }
-@@ -931,6 +1051,17 @@ impl MultiProvider {
+@@ -955,6 +1075,17 @@ impl MultiProvider {
              .get(profile_name)
              .cloned()
              .ok_or_else(|| anyhow::anyhow!("Unknown provider profile '{}'", profile_name))?;
@@ -1257,7 +1260,7 @@ index ded7a6c31..e36cdf2fe 100644
 
          if matches!(
              config.provider_type,
-@@ -993,10 +1124,14 @@ impl MultiProvider {
+@@ -1017,10 +1148,14 @@ impl MultiProvider {
      /// model name: doing so lets `set_model`'s family heuristic spend the
      /// user's unrelated provider credentials instead of their subscription.
      fn set_model_on_jcode_subscription(&self, model: &str) -> Result<()> {
@@ -1272,7 +1275,7 @@ index ded7a6c31..e36cdf2fe 100644
          models::ensure_model_allowed_for_subscription(model)?;
          crate::subscription_catalog::apply_runtime_env();
          crate::provider::activation::ProviderActivation::jcode_subscription(model).apply_env()?;
-@@ -1037,6 +1172,23 @@ impl MultiProvider {
+@@ -1061,6 +1196,23 @@ impl MultiProvider {
              anyhow::bail!("Model cannot be empty");
          }
 
@@ -1296,7 +1299,7 @@ index ded7a6c31..e36cdf2fe 100644
          self.reconcile_auth_if_provider_missing(provider);
 
          match provider {
-@@ -1212,7 +1364,9 @@ impl MultiProvider {
+@@ -1236,7 +1388,9 @@ impl MultiProvider {
                  };
                  let (openrouter, install_openrouter) = if needs_rebind {
                      let openrouter = external::instantiate_openrouter_runtime(
@@ -1307,7 +1310,7 @@ index ded7a6c31..e36cdf2fe 100644
                      )?;
                      (openrouter, true)
                  } else {
-@@ -1242,6 +1396,12 @@ impl MultiProvider {
+@@ -1266,6 +1420,12 @@ impl MultiProvider {
          profile: crate::provider_catalog::OpenAiCompatibleProfile,
          model: &str,
      ) -> Result<()> {
@@ -1320,7 +1323,7 @@ index ded7a6c31..e36cdf2fe 100644
          let model = model.trim();
          if model.is_empty() {
              anyhow::bail!("Model cannot be empty");
-@@ -1758,6 +1918,11 @@ impl Provider for MultiProvider {
+@@ -1790,6 +1950,11 @@ impl Provider for MultiProvider {
          }
      }
 
@@ -1332,7 +1335,7 @@ index ded7a6c31..e36cdf2fe 100644
      fn display_name(&self) -> String {
          // The OpenRouter slot multiplexes the public aggregator and every
          // direct OpenAI-compatible profile (NVIDIA NIM, DeepSeek, ...). Ask the
-@@ -2018,6 +2183,37 @@ impl Provider for MultiProvider {
+@@ -2062,6 +2227,37 @@ impl Provider for MultiProvider {
              anyhow::bail!("Model cannot be empty");
          }
 
@@ -1370,7 +1373,7 @@ index ded7a6c31..e36cdf2fe 100644
          if let Some((prefix, target_model)) = requested_model.split_once(':')
              && let Some((method, label)) = prefix.split_once('@')
              && matches!(method, "claude-oauth" | "openai-oauth")
-@@ -2040,6 +2236,9 @@ impl Provider for MultiProvider {
+@@ -2084,6 +2280,9 @@ impl Provider for MultiProvider {
          }
 
          if let Some(target_model) = requested_model.strip_prefix("grok-build:") {
@@ -1380,7 +1383,7 @@ index ded7a6c31..e36cdf2fe 100644
              let target_model = target_model.trim();
              if target_model.is_empty() {
                  anyhow::bail!("Grok Build model cannot be empty");
-@@ -2086,6 +2285,19 @@ impl Provider for MultiProvider {
+@@ -2130,6 +2329,19 @@ impl Provider for MultiProvider {
          if let Some((target, prefix, target_model)) =
              explicit_model_provider_prefix(requested_model)
          {
@@ -1400,7 +1403,7 @@ index ded7a6c31..e36cdf2fe 100644
              // The single canonical parser decides whether this prefix pins a
              // dual-auth credential (and which provider/mode). Bare `claude:` /
              // `openai:` prefixes route without pinning a credential.
-@@ -2180,6 +2392,14 @@ impl Provider for MultiProvider {
+@@ -2224,6 +2436,14 @@ impl Provider for MultiProvider {
              anyhow::bail!("Model cannot be empty");
          }
 
@@ -1415,7 +1418,7 @@ index ded7a6c31..e36cdf2fe 100644
          // The subscription is a distinct endpoint/auth runtime, not a model
          // alias. Handle its structured identity before converting other routes
          // back into their legacy string specs.
-@@ -2195,12 +2415,21 @@ impl Provider for MultiProvider {
+@@ -2239,12 +2459,21 @@ impl Provider for MultiProvider {
 
      fn available_models(&self) -> Vec<&'static str> {
          let mut models = Vec::new();
@@ -1439,7 +1442,7 @@ index ded7a6c31..e36cdf2fe 100644
          match self.active_provider() {
              ActiveProvider::Claude => {
                  if let Some(anthropic) = self.anthropic_provider() {
-@@ -2245,6 +2474,9 @@ impl Provider for MultiProvider {
+@@ -2289,6 +2518,9 @@ impl Provider for MultiProvider {
      }
 
      fn available_providers_for_model(&self, model: &str) -> Vec<String> {
@@ -1449,7 +1452,7 @@ index ded7a6c31..e36cdf2fe 100644
          if let Some(model) = openrouter_catalog_model_id(model)
              && let Some(openrouter) = self.openrouter_provider()
          {
-@@ -2254,6 +2486,9 @@ impl Provider for MultiProvider {
+@@ -2298,6 +2530,9 @@ impl Provider for MultiProvider {
      }
 
      fn provider_details_for_model(&self, model: &str) -> Vec<(String, String)> {
@@ -1460,10 +1463,10 @@ index ded7a6c31..e36cdf2fe 100644
              && let Some(openrouter) = self.openrouter_provider()
          {
 diff --git a/crates/jcode-base/src/provider/multi_provider.rs b/crates/jcode-base/src/provider/multi_provider.rs
-index 8213be71c..4ca59810b 100644
+index 57027f509..5ef514e4c 100644
 --- a/crates/jcode-base/src/provider/multi_provider.rs
 +++ b/crates/jcode-base/src/provider/multi_provider.rs
-@@ -67,6 +67,7 @@ impl MultiProvider {
+@@ -78,6 +78,7 @@ impl MultiProvider {
 
      fn account_failover_prompt(
          &self,
@@ -1471,7 +1474,7 @@ index 8213be71c..4ca59810b 100644
          provider: ActiveProvider,
          current: &str,
          reason: &str,
-@@ -74,6 +75,9 @@ impl MultiProvider {
+@@ -85,6 +86,9 @@ impl MultiProvider {
          tools: &[ToolDefinition],
          mode: CompletionMode<'_>,
      ) -> Option<ProviderFailoverPrompt> {
@@ -1481,7 +1484,7 @@ index 8213be71c..4ca59810b 100644
          let key = Self::provider_key(provider);
          let labels = saved_account_labels(key);
          // Missing pins cannot heal to a different account. Neither may an
-@@ -88,17 +92,21 @@ impl MultiProvider {
+@@ -99,17 +103,21 @@ impl MultiProvider {
              return None;
          }
          let (chars, tokens) = Self::estimate_request_input(messages, tools, mode);
@@ -1504,7 +1507,7 @@ index 8213be71c..4ca59810b 100644
          let from_provider = Self::provider_key(from);
          let from_label = self.selected_account_for_provider(from).or_else(|| {
              self.provider_uses_oauth_accounts(from)
-@@ -116,8 +124,6 @@ impl MultiProvider {
+@@ -127,8 +135,6 @@ impl MultiProvider {
              return None;
          }
          let mut candidates: Vec<(String, ActiveProvider, String, String)> = Vec::new();
@@ -1513,7 +1516,7 @@ index 8213be71c..4ca59810b 100644
          let context_only = jcode_provider_core::classify_failover_error_message(&reason)
              == jcode_provider_core::FailoverDecision::RetryNextProvider;
          let required_context = if context_only {
-@@ -134,12 +140,10 @@ impl MultiProvider {
+@@ -145,12 +151,10 @@ impl MultiProvider {
              } else {
                  "claude-oauth"
              };
@@ -1529,7 +1532,7 @@ index 8213be71c..4ca59810b 100644
                      && Self::failover_model_fits(&self.model(), from_provider, required_context)
                  {
                      candidates.push((
-@@ -151,12 +155,11 @@ impl MultiProvider {
+@@ -162,12 +166,11 @@ impl MultiProvider {
                  }
              }
          }
@@ -1546,7 +1549,7 @@ index 8213be71c..4ca59810b 100644
              let spec = selection.routed_model_spec();
              if !Self::is_failover_route_pool_approved(&spec) {
                  continue;
-@@ -175,27 +178,24 @@ impl MultiProvider {
+@@ -186,27 +189,24 @@ impl MultiProvider {
                  jcode_provider_core::RuntimeKey::OpenRouter => ActiveProvider::OpenRouter,
                  _ => continue,
              };
@@ -1583,78 +1586,7 @@ index 8213be71c..4ca59810b 100644
              };
              let display = label
                  .map(|label| format!("{} ({label})", Self::provider_label(target_provider)))
-@@ -220,48 +220,28 @@ impl MultiProvider {
-             order.rotate_left(position + 1);
-         }
-         let configured_model = crate::config::Config::load().provider.default_model;
--        let target = order
--            .into_iter()
--            .filter(|key| *key != source_key)
--            .find_map(|key| {
--                let group: Vec<_> = candidates
--                    .iter()
--                    .filter(|(candidate, _, _, _)| candidate.as_str() == key)
--                    .collect();
--                let first = *group.first()?;
--                let current_model = self.model();
--                if !context_only
--                    && first.1 == from
--                    && let Some(preserved) = group
--                        .iter()
--                        .find(|candidate| candidate_model(candidate) == current_model)
--                {
--                    return Some(*preserved);
--                }
--                if let Some(configured) = configured_model.as_deref()
--                    && let Some(preferred) = group
--                        .iter()
--                        .find(|candidate| candidate_matches_configured_model(candidate, configured))
--                {
--                    return Some(*preferred);
--                }
--                let models: Vec<&str> = group
--                    .iter()
--                    .map(|candidate| candidate_model(candidate))
--                    .collect();
--                if let Some(preferred) = crate::auth::lifecycle::preferred_model_for_provider(
--                    Self::provider_key(first.1),
--                    &models,
--                ) && let Some(flagship) = group
--                    .iter()
--                    .find(|candidate| candidate_model(candidate) == preferred)
--                {
--                    return Some(*flagship);
--                }
--                // Capacity is eligibility, not quality. Never pick an unknown
--                // model by maximum context, catalog position or lexical order.
--                None
--            })?;
-+        let target = order.into_iter().filter(|key| *key != source_key).find_map(|key| {
-+            let group: Vec<_> = candidates.iter().filter(|(candidate, _, _, _)| candidate.as_str() == key).collect();
-+            let first = *group.first()?;
-+            let current_model = self.model();
-+            if !context_only && first.1 == from
-+                && let Some(preserved) = group.iter().find(|candidate| candidate_model(candidate) == current_model)
-+            {
-+                return Some(*preserved);
-+            }
-+            if let Some(configured) = configured_model.as_deref()
-+                && let Some(preferred) = group.iter().find(|candidate| candidate_matches_configured_model(candidate, configured))
-+            {
-+                return Some(*preferred);
-+            }
-+            let models: Vec<&str> = group.iter().map(|candidate| candidate_model(candidate)).collect();
-+            if let Some(preferred) = crate::auth::lifecycle::preferred_model_for_provider(Self::provider_key(first.1), &models)
-+                && let Some(flagship) = group.iter().find(|candidate| candidate_model(candidate) == preferred)
-+            {
-+                return Some(*flagship);
-+            }
-+            None
-+        })?;
-         let mut prompt = self.build_failover_prompt(from, target.1, reason, chars, tokens);
-         prompt.target_route = Some(target.2.clone());
-         prompt.to_label = target.3.clone();
-@@ -273,6 +253,7 @@ impl MultiProvider {
+@@ -298,6 +298,7 @@ impl MultiProvider {
 
      pub(super) async fn try_same_provider_account_failover(
          &self,
@@ -1662,7 +1594,7 @@ index 8213be71c..4ca59810b 100644
          provider: ActiveProvider,
          messages: &[Message],
          tools: &[ToolDefinition],
-@@ -280,14 +261,16 @@ impl MultiProvider {
+@@ -305,14 +306,16 @@ impl MultiProvider {
          initial_reason: &str,
          _notes: &mut Vec<String>,
      ) -> Result<Option<EventStream>> {
@@ -1681,7 +1613,7 @@ index 8213be71c..4ca59810b 100644
          }) {
              // No alternate request, runtime mutation or global override before
              // the caller's cancellable countdown has accepted this exact route.
-@@ -307,7 +290,11 @@ impl MultiProvider {
+@@ -332,7 +335,11 @@ impl MultiProvider {
                      .into_iter()
                      .filter(|target| *target != provider)
                  {
@@ -1695,10 +1627,10 @@ index 8213be71c..4ca59810b 100644
                          initial_reason.to_owned(),
 diff --git a/crates/jcode-base/src/provider/policy_tests.rs b/crates/jcode-base/src/provider/policy_tests.rs
 new file mode 100644
-index 000000000..08daa88b5
+index 000000000..e1278108b
 --- /dev/null
 +++ b/crates/jcode-base/src/provider/policy_tests.rs
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,413 @@
 +use super::*;
 +use crate::provider::jcode::JcodeProvider;
 +
@@ -1730,6 +1662,111 @@ index 000000000..08daa88b5
 +            Some(family),
 +            "{route}"
 +        );
++    }
++}
++
++#[test]
++fn provider_policy_sync_runtime_keys_preserve_concrete_family_identity() {
++    for runtime in [
++        RuntimeKey::JcodeSubscription,
++        RuntimeKey::ClaudeOAuth,
++        RuntimeKey::AnthropicApiKey,
++        RuntimeKey::ClaudeCli,
++        RuntimeKey::OpenAIOAuth,
++        RuntimeKey::OpenAIApiKey,
++        RuntimeKey::ChatGptWeb,
++        RuntimeKey::OpenRouter,
++        RuntimeKey::GrokBuild,
++        RuntimeKey::Copilot,
++        RuntimeKey::Gemini,
++        RuntimeKey::CodeAssistOAuth,
++        RuntimeKey::Antigravity,
++        RuntimeKey::Cursor,
++        RuntimeKey::Bedrock,
++        RuntimeKey::OpenAiCompatible {
++            profile_id: Some("muse-subscription".into()),
++        },
++        RuntimeKey::OpenAiCompatible {
++            profile_id: Some("venice".into()),
++        },
++    ] {
++        let family = runtime
++            .provider_family()
++            .unwrap_or_else(|| panic!("{} must have a known provider family", runtime.stable_id()));
++        let policy = ProviderFamilyPolicy::parse(&[family.canonical_id().into()]);
++        assert!(policy.allows_runtime(&runtime), "{}", runtime.stable_id());
++        for other in ProviderFamily::ALL.into_iter().filter(|other| *other != family) {
++            let policy = ProviderFamilyPolicy::parse(&[other.canonical_id().into()]);
++            assert!(!policy.allows_runtime(&runtime), "{} matched {other}", runtime.stable_id());
++        }
++    }
++
++    for (alias, family) in [
++        ("anthropic", ProviderFamily::Claude),
++        ("chatgpt", ProviderFamily::OpenAi),
++        ("aws-bedrock", ProviderFamily::Bedrock),
++        ("grok", ProviderFamily::GrokBuild),
++    ] {
++        assert_eq!(ProviderFamily::parse(alias), Some(family), "{alias}");
++    }
++    for unknown in [
++        RuntimeKey::RemoteCatalog,
++        RuntimeKey::Current,
++        RuntimeKey::Other {
++            method: "future-provider".into(),
++        },
++    ] {
++        assert!(unknown.provider_family().is_none(), "{}", unknown.stable_id());
++        assert!(!ProviderFamilyPolicy::parse(&["claude".into()]).allows_runtime(&unknown));
++    }
++}
++
++#[derive(Clone)]
++struct PolicyGuardOpenAiRuntime {
++    model: std::sync::Arc<std::sync::Mutex<String>>,
++    dispatches: std::sync::Arc<std::sync::atomic::AtomicUsize>,
++}
++
++#[async_trait::async_trait]
++impl Provider for PolicyGuardOpenAiRuntime {
++    async fn complete(
++        &self,
++        _messages: &[Message],
++        _tools: &[ToolDefinition],
++        _system: &str,
++        _resume_session_id: Option<&str>,
++    ) -> anyhow::Result<EventStream> {
++        self.dispatches
++            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++        anyhow::bail!("denied OpenAI test runtime was dispatched")
++    }
++
++    fn name(&self) -> &str {
++        "OpenAI"
++    }
++
++    fn runtime_key(&self) -> RuntimeKey {
++        RuntimeKey::OpenAIOAuth
++    }
++
++    fn model(&self) -> String {
++        self.model.lock().unwrap().clone()
++    }
++
++    fn set_model(&self, model: &str) -> anyhow::Result<()> {
++        if !ALL_OPENAI_MODELS.contains(&model) {
++            anyhow::bail!("unknown OpenAI test model: {model}");
++        }
++        *self.model.lock().unwrap() = model.to_string();
++        Ok(())
++    }
++
++    fn credential_mode(&self) -> CredentialMode {
++        CredentialMode::OAuth
++    }
++
++    fn fork(&self) -> std::sync::Arc<dyn Provider> {
++        std::sync::Arc::new(self.clone())
 +    }
 +}
 +
@@ -1941,6 +1978,72 @@ index 000000000..08daa88b5
 +        crate::config::invalidate_config_cache();
 +    });
 +}
++
++#[test]
++fn provider_policy_sync_denied_persisted_route_and_resumed_dispatch_are_blocked() {
++    with_clean_provider_test_env(|| {
++        let runtime = enter_test_runtime();
++        let _enter = runtime.enter();
++        save_test_openai_oauth_credentials();
++        crate::env::set_var("JCODE_INITIAL_PROVIDER_EXPLICIT", "true");
++        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openai");
++        let config_path = crate::config::Config::path().expect("config path");
++        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("parent");
++        std::fs::write(&config_path, "[provider]\n").expect("unrestricted config");
++        crate::config::invalidate_config_cache();
++
++        let dispatches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
++        let runtime_model = ALL_OPENAI_MODELS[0].to_string();
++        external::register_external_provider(external::OPENAI_RUNTIME, {
++            let dispatches = std::sync::Arc::clone(&dispatches);
++            move || {
++                std::sync::Arc::new(PolicyGuardOpenAiRuntime {
++                    model: std::sync::Arc::new(std::sync::Mutex::new(runtime_model.clone())),
++                    dispatches: std::sync::Arc::clone(&dispatches),
++                }) as std::sync::Arc<dyn Provider>
++            }
++        });
++        let router = MultiProvider::new_fast();
++        let denied = RouteSelection {
++            model: ALL_OPENAI_MODELS[0].to_string(),
++            runtime_key: RuntimeKey::OpenAIOAuth,
++            api_method: "openai-oauth".to_string(),
++            provider_label: "OpenAI".to_string(),
++            detail: String::new(),
++        };
++        router
++            .set_route_selection(&denied)
++            .expect("persist OpenAI route before policy changes");
++        std::fs::write(&config_path, "[provider]\nallowed_providers = [\"claude\"]\n")
++            .expect("restrict policy");
++        crate::config::invalidate_config_cache();
++
++        let runtime = enter_test_runtime();
++        runtime.block_on(async {
++            for resume_id in [None, Some("existing-session")] {
++                let error = router
++                    .complete(&[], &[], "system", resume_id)
++                    .await;
++                let error = error
++                    .err()
++                    .expect("denied OpenAI must not dispatch or fail over");
++                assert!(error.to_string().contains("disabled by provider policy"));
++            }
++        });
++        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 0);
++
++        let fresh = router.fork_for_new_session();
++        let error = enter_test_runtime().block_on(async {
++            fresh.complete(&[], &[], "system", None).await.err()
++        });
++        assert!(error
++            .expect("fresh session must not dispatch denied OpenAI")
++            .to_string()
++            .contains("disabled by provider policy"));
++        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 0);
++        register_test_external_runtimes();
++    });
++}
 diff --git a/crates/jcode-base/src/provider/selection.rs b/crates/jcode-base/src/provider/selection.rs
 index 55f305ba4..36771360f 100644
 --- a/crates/jcode-base/src/provider/selection.rs
@@ -1982,7 +2085,7 @@ index 55f305ba4..36771360f 100644
                      profile_id: Some(profile_id),
                  } => return format!("{profile_id}:{model}"),
 diff --git a/crates/jcode-base/src/provider/tests.rs b/crates/jcode-base/src/provider/tests.rs
-index c8c23df8f..3d13f4b67 100644
+index 5fdd95e93..11b92e84b 100644
 --- a/crates/jcode-base/src/provider/tests.rs
 +++ b/crates/jcode-base/src/provider/tests.rs
 @@ -1,5 +1,7 @@
@@ -1991,9 +2094,9 @@ index c8c23df8f..3d13f4b67 100644
 +#[path = "policy_tests.rs"]
 +mod policy_tests;
  mod saved_account_selection;
- use crate::provider::models::{ensure_model_allowed_for_subscription, filtered_display_models};
-
-@@ -915,7 +917,9 @@ fn register_test_external_runtimes() {
+ mod session_binding;
+ mod startup_pool;
+@@ -979,7 +981,9 @@ fn register_test_external_runtimes() {
          use jcode_provider_openrouter_runtime::OpenRouterProvider;
          let provider: Arc<dyn Provider> = match spec {
              OpenRouterRuntimeSpec::Default => Arc::new(OpenRouterProvider::new()?),
@@ -2005,10 +2108,20 @@ index c8c23df8f..3d13f4b67 100644
              }
              OpenRouterRuntimeSpec::CompatibleProfile(profile) => Arc::new(
 diff --git a/crates/jcode-base/src/provider/tests/account_failover.rs b/crates/jcode-base/src/provider/tests/account_failover.rs
-index b265d6802..ab36b4368 100644
+index b265d6802..9a6696a08 100644
 --- a/crates/jcode-base/src/provider/tests/account_failover.rs
 +++ b/crates/jcode-base/src/provider/tests/account_failover.rs
-@@ -628,6 +628,7 @@ fn context_failover_never_offers_known_too_small_routes() {
+@@ -44,6 +44,9 @@ impl Provider for AccountRoutingStreamProvider {
+     fn name(&self) -> &str {
+         "OpenAI"
+     }
++    fn runtime_key(&self) -> RuntimeKey {
++        RuntimeKey::OpenAIOAuth
++    }
+     fn model(&self) -> String {
+         "gpt-5.4".into()
+     }
+@@ -628,6 +631,7 @@ fn context_failover_never_offers_known_too_small_routes() {
          assert!(
              provider
                  .cross_provider_pool_prompt(
@@ -2016,19 +2129,64 @@ index b265d6802..ab36b4368 100644
                      ActiveProvider::OpenAI,
                      ActiveProvider::Claude,
                      "context length exceeded".into(),
+@@ -639,6 +643,44 @@ fn context_failover_never_offers_known_too_small_routes() {
+     });
+ }
+
++#[test]
++fn provider_policy_sync_quota_failover_never_offers_a_denied_family() {
++    with_clean_provider_test_env(|| {
++        enter_test_runtime().block_on(async {
++            let (provider, attempts, _cleanup) =
++                account_routing_fixture(&[("openai-otter", "429 quota exhausted")]);
++            crate::env::set_var("ANTHROPIC_API_KEY", "sk-test-policy-failover");
++            let config_path = crate::config::Config::path().expect("config path");
++            std::fs::create_dir_all(config_path.parent().expect("config parent"))
++                .expect("parent");
++            std::fs::write(
++                &config_path,
++                "[provider]\nallowed_providers = [\"openai\"]\n",
++            )
++            .expect("policy config");
++            crate::config::invalidate_config_cache();
++
++            let error = provider
++                .complete(&[], &[], "system", None)
++                .await
++                .err()
++                .expect("quota failure must not dispatch to a denied family");
++            assert!(error.to_string().contains("quota exhausted"));
++            let prompt = parse_failover_prompt_message(&error.to_string())
++                .expect("an allowed OpenAI account fallback may be offered");
++            let route = prompt.target_route.expect("OpenAI fallback route");
++            let method = route.split(':').next().expect("routed fallback method");
++            assert_eq!(
++                ModelRouteApiMethod::parse(method).provider_family(),
++                Some(ProviderFamily::OpenAi),
++                "quota fallback must not choose denied Claude: {route}"
++            );
++            assert!(MultiProvider::is_failover_route_pool_approved(&route));
++            assert_eq!(*attempts.lock().unwrap(), ["openai-otter"]);
++        });
++    });
++}
++
+ #[test]
+ fn pinned_account_prompts_use_session_identity_and_apply_without_global_override() {
+     with_clean_provider_test_env(|| {
 diff --git a/crates/jcode-base/src/provider/tests/agent_failover.rs b/crates/jcode-base/src/provider/tests/agent_failover.rs
-index 993cef03d..6452f22ab 100644
+index 3facff38c..56e68074e 100644
 --- a/crates/jcode-base/src/provider/tests/agent_failover.rs
 +++ b/crates/jcode-base/src/provider/tests/agent_failover.rs
-@@ -40,6 +40,7 @@ fn agent_failover_fixture(models: &[&str]) -> MultiProvider {
- fn agent_failover_target(provider: &MultiProvider, tokens: usize, reason: &str) -> Option<String> {
+@@ -52,6 +52,7 @@ fn agent_failover_target(provider: &MultiProvider, tokens: usize, reason: &str)
+     }
      provider
          .cross_provider_pool_prompt(
 +            &MultiProvider::configured_provider_policy(),
              ActiveProvider::Claude,
              ActiveProvider::OpenAI,
              reason.into(),
-@@ -320,6 +321,7 @@ fn agent_failover_same_model_rotation_precedes_config_and_respects_context() {
+@@ -332,6 +333,7 @@ fn agent_failover_same_model_rotation_precedes_config_and_respects_context() {
          agent_failover_set_default_model("openai-oauth:gpt-6-astra").unwrap();
          let preserved = provider
              .cross_provider_pool_prompt(
@@ -2036,7 +2194,7 @@ index 993cef03d..6452f22ab 100644
                  ActiveProvider::OpenAI,
                  ActiveProvider::OpenAI,
                  "401 unauthorized".into(),
-@@ -334,6 +336,7 @@ fn agent_failover_same_model_rotation_precedes_config_and_respects_context() {
+@@ -346,6 +348,7 @@ fn agent_failover_same_model_rotation_precedes_config_and_respects_context() {
          assert!(
              provider
                  .cross_provider_pool_prompt(
@@ -2045,7 +2203,7 @@ index 993cef03d..6452f22ab 100644
                      ActiveProvider::OpenAI,
                      "401 unauthorized".into(),
 diff --git a/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs b/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs
-index 26e9084e4..ba5c555cb 100644
+index 674dd7f12..eebaf68de 100644
 --- a/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs
 +++ b/crates/jcode-base/src/provider/tests/issue_534_profile_preservation.rs
 @@ -22,7 +22,7 @@ input = ["text"]
@@ -2057,8 +2215,33 @@ index 26e9084e4..ba5c555cb 100644
                      if std::env::var_os("OPENROUTER_API_KEY").is_none() {
                          anyhow::bail!("OPENROUTER_API_KEY is not configured");
                      }
+diff --git a/crates/jcode-base/src/provider/tests/session_binding.rs b/crates/jcode-base/src/provider/tests/session_binding.rs
+index e200d7dec..ec0d8caf5 100644
+--- a/crates/jcode-base/src/provider/tests/session_binding.rs
++++ b/crates/jcode-base/src/provider/tests/session_binding.rs
+@@ -65,11 +65,19 @@ fn session_binding_reaches_prewarm_and_both_dispatch_modes_after_runtime_replace
+             *router.cursor.write().unwrap() = Some(recording.clone());
+             router.prewarm(&[], "static").await;
+             let _stream = router
+-                .complete_on_provider(ActiveProvider::Cursor, &[], &[], "system", None)
++                .complete_on_provider(
++                    &jcode_provider_core::ProviderFamilyPolicy::unrestricted(),
++                    ActiveProvider::Cursor,
++                    &[],
++                    &[],
++                    "system",
++                    None,
++                )
+                 .await
+                 .unwrap();
+             let _split_stream = router
+                 .complete_split_on_provider(
++                    &jcode_provider_core::ProviderFamilyPolicy::unrestricted(),
+                     ActiveProvider::Cursor,
+                     &[],
+                     &[],
 diff --git a/crates/jcode-base/src/sidecar.rs b/crates/jcode-base/src/sidecar.rs
-index d53812173..13a3c3fb6 100644
+index e59ff582e..01a3f61f2 100644
 --- a/crates/jcode-base/src/sidecar.rs
 +++ b/crates/jcode-base/src/sidecar.rs
 @@ -9,6 +9,7 @@
@@ -2170,7 +2353,7 @@ index d53812173..13a3c3fb6 100644
              SidecarBackend::OpenAI => self.complete_openai(system, user_message).await,
              SidecarBackend::Claude => self.complete_claude(system, user_message).await,
              SidecarBackend::Provider => self.complete_via_provider(system, user_message).await,
-@@ -447,6 +474,7 @@ impl Sidecar {
+@@ -454,6 +481,7 @@ impl Sidecar {
                      }
                      Err(OpenAiSidecarError::Api { status, body })
                          if is_openai_model_unavailable(status, &body)
@@ -2178,7 +2361,7 @@ index d53812173..13a3c3fb6 100644
                              && auth::claude::load_credentials().is_ok() =>
                      {
                          // Both GPT-5.6 Luna and the gpt-5.4 OAuth
-@@ -1364,6 +1392,103 @@ mod tests {
+@@ -1399,6 +1427,103 @@ mod tests {
          crate::auth::claude::set_active_account_override(None);
      }
 
@@ -2283,7 +2466,7 @@ index d53812173..13a3c3fb6 100644
      fn test_chatgpt_oauth_uses_luna_with_no_reasoning_when_available() {
          let _guard = crate::storage::lock_test_env();
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index e222616cb..4c4f84d85 100644
+index c05d38953..213007231 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
 @@ -1264,6 +1264,9 @@ pub struct ProviderConfig {
@@ -2312,7 +2495,7 @@ index e222616cb..4c4f84d85 100644
      pub model_picker_providers: Option<Vec<String>>,
      /// Max seconds to wait for streaming data before timing out a request with
      /// no data received. Base budget only: high reasoning efforts scale it up
-@@ -1322,6 +1327,7 @@ impl Default for ProviderConfig {
+@@ -1328,6 +1333,7 @@ impl Default for ProviderConfig {
          Self {
              default_model: None,
              default_provider: None,
@@ -2321,10 +2504,10 @@ index e222616cb..4c4f84d85 100644
              anthropic_reasoning_effort: None,
              anthropic_cache_ttl_1h: true,
 diff --git a/crates/jcode-protocol/src/wire/events.rs b/crates/jcode-protocol/src/wire/events.rs
-index eec31161e..0d7945b9a 100644
+index 1b5da85d8..1276aa4b0 100644
 --- a/crates/jcode-protocol/src/wire/events.rs
 +++ b/crates/jcode-protocol/src/wire/events.rs
-@@ -724,6 +724,8 @@ pub enum ServerEvent {
+@@ -818,6 +818,8 @@ pub enum ServerEvent {
      /// Available models updated (pushed after auth changes)
      #[serde(rename = "available_models_updated")]
      AvailableModelsUpdated {
@@ -2334,10 +2517,10 @@ index eec31161e..0d7945b9a 100644
          provider_name: Option<String>,
          #[serde(default, skip_serializing_if = "Option::is_none")]
 diff --git a/crates/jcode-provider-anthropic-runtime/src/lib.rs b/crates/jcode-provider-anthropic-runtime/src/lib.rs
-index 2173bc433..cb0cacfe6 100644
+index b4361ff8f..75b0d215e 100644
 --- a/crates/jcode-provider-anthropic-runtime/src/lib.rs
 +++ b/crates/jcode-provider-anthropic-runtime/src/lib.rs
-@@ -1312,6 +1312,20 @@ fn log_anthropic_canonical_input(
+@@ -1316,6 +1316,20 @@ fn log_anthropic_canonical_input(
 
  #[async_trait]
  impl Provider for AnthropicProvider {
@@ -2359,7 +2542,7 @@ index 2173bc433..cb0cacfe6 100644
          &self,
          messages: &[Message],
 diff --git a/crates/jcode-provider-antigravity-runtime/src/lib.rs b/crates/jcode-provider-antigravity-runtime/src/lib.rs
-index 187a902bd..5561fa5de 100644
+index 3381acd3f..258ad8242 100644
 --- a/crates/jcode-provider-antigravity-runtime/src/lib.rs
 +++ b/crates/jcode-provider-antigravity-runtime/src/lib.rs
 @@ -443,6 +443,10 @@ impl Default for AntigravityProvider {
@@ -2374,10 +2557,10 @@ index 187a902bd..5561fa5de 100644
          &self,
          messages: &[Message],
 diff --git a/crates/jcode-provider-bedrock/src/lib.rs b/crates/jcode-provider-bedrock/src/lib.rs
-index 48e9de656..b6f09a94b 100644
+index f3432136b..dfc7b380c 100644
 --- a/crates/jcode-provider-bedrock/src/lib.rs
 +++ b/crates/jcode-provider-bedrock/src/lib.rs
-@@ -1148,6 +1148,10 @@ impl Default for BedrockProvider {
+@@ -1237,6 +1237,10 @@ impl Default for BedrockProvider {
 
  #[async_trait]
  impl Provider for BedrockProvider {
@@ -2404,7 +2587,7 @@ index e875ca73c..4276b5c4b 100644
          &self,
          messages: &[ChatMessage],
 diff --git a/crates/jcode-provider-core/src/fallback_pick.rs b/crates/jcode-provider-core/src/fallback_pick.rs
-index e67e79ea1..f00405a41 100644
+index e886a832d..e45b9c63a 100644
 --- a/crates/jcode-provider-core/src/fallback_pick.rs
 +++ b/crates/jcode-provider-core/src/fallback_pick.rs
 @@ -20,7 +20,7 @@ fn api_method_is_oauth(api_method: &ModelRouteApiMethod) -> bool {
@@ -2417,10 +2600,10 @@ index e67e79ea1..f00405a41 100644
  }
 
 diff --git a/crates/jcode-provider-core/src/lib.rs b/crates/jcode-provider-core/src/lib.rs
-index 82837031e..00f5eb788 100644
+index d7fb79611..c35f28070 100644
 --- a/crates/jcode-provider-core/src/lib.rs
 +++ b/crates/jcode-provider-core/src/lib.rs
-@@ -67,6 +67,8 @@ use jcode_message_types::{
+@@ -70,6 +70,8 @@ use jcode_message_types::{
      ContentBlock, Message, Role, StreamEvent, ToolDefinition, messages_with_dynamic_system_context,
  };
  use serde::{Deserialize, Serialize};
@@ -2429,7 +2612,7 @@ index 82837031e..00f5eb788 100644
  use std::pin::Pin;
  use std::sync::Arc;
  use std::time::Duration;
-@@ -138,6 +140,16 @@ pub trait Provider: Send + Sync {
+@@ -146,6 +148,16 @@ pub trait Provider: Send + Sync {
          None
      }
 
@@ -2446,7 +2629,7 @@ index 82837031e..00f5eb788 100644
      /// Get the model identifier being used.
      fn model(&self) -> String {
          "unknown".to_string()
-@@ -820,7 +832,167 @@ pub struct ModelRoute {
+@@ -907,7 +919,167 @@ pub struct ModelRoute {
      pub usage: Option<jcode_usage_types::ModelUsage>,
  }
 
@@ -2545,7 +2728,7 @@ index 82837031e..00f5eb788 100644
 +    pub fn parse(value: &str) -> Option<Self> {
 +        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
 +            "claude" | "anthropic" => Some(Self::Claude),
-+            "openai" | "open-ai" => Some(Self::OpenAi),
++            "openai" | "open-ai" | "chatgpt" => Some(Self::OpenAi),
 +            "openrouter" => Some(Self::OpenRouter),
 +            "openrouter-eu" | "eu-openrouter" => Some(Self::OpenRouterEu),
 +            "jcode" | "jcode-subscription" => Some(Self::Jcode),
@@ -2615,7 +2798,7 @@ index 82837031e..00f5eb788 100644
  ///
  /// A runtime key identifies the concrete endpoint/auth/account slot that will
  /// send requests. It is intentionally more precise than a display provider
-@@ -849,6 +1021,8 @@ pub enum RuntimeKey {
+@@ -936,6 +1108,8 @@ pub enum RuntimeKey {
      RemoteCatalog,
      Current,
      GrokBuild,
@@ -2624,7 +2807,7 @@ index 82837031e..00f5eb788 100644
      /// Catch-all for unrecognized `api_method` strings.
      ///
      /// This must be a struct variant, not `Other(String)`. Serde's internally
-@@ -870,6 +1044,9 @@ impl RuntimeKey {
+@@ -957,6 +1131,9 @@ impl RuntimeKey {
              ModelRouteApiMethod::OpenAIOAuth => Self::OpenAIOAuth,
              ModelRouteApiMethod::OpenAIApiKey => Self::OpenAIApiKey,
              ModelRouteApiMethod::OpenRouter => Self::OpenRouter,
@@ -2634,7 +2817,7 @@ index 82837031e..00f5eb788 100644
              ModelRouteApiMethod::OpenAiCompatible { profile_id } => Self::OpenAiCompatible {
                  profile_id: profile_id.clone(),
              },
-@@ -908,9 +1085,53 @@ impl RuntimeKey {
+@@ -995,9 +1172,53 @@ impl RuntimeKey {
              Self::RemoteCatalog => "remote-catalog".to_string(),
              Self::Current => "current".to_string(),
              Self::GrokBuild => "grok-build".to_string(),
@@ -2688,7 +2871,7 @@ index 82837031e..00f5eb788 100644
  }
 
  /// Structured model route selection.
-@@ -993,6 +1214,7 @@ impl RouteSelection {
+@@ -1080,6 +1301,7 @@ impl RouteSelection {
              RuntimeKey::Bedrock => format!("bedrock:{model}"),
              RuntimeKey::Antigravity => format!("antigravity:{model}"),
              RuntimeKey::GrokBuild => grok_build_model_spec(model),
@@ -2696,7 +2879,7 @@ index 82837031e..00f5eb788 100644
              RuntimeKey::Gemini
              | RuntimeKey::CodeAssistOAuth
              | RuntimeKey::RemoteCatalog
-@@ -1045,6 +1267,9 @@ pub enum ModelRouteApiMethod {
+@@ -1132,6 +1354,9 @@ pub enum ModelRouteApiMethod {
      RemoteCatalog,
      Current,
      GrokBuild,
@@ -2706,7 +2889,7 @@ index 82837031e..00f5eb788 100644
      Other(String),
  }
 
-@@ -1088,7 +1313,10 @@ impl ModelRouteApiMethod {
+@@ -1175,7 +1400,10 @@ impl ModelRouteApiMethod {
          }
          match lower.as_str() {
              "jcode-subscription" => Self::JcodeSubscription,
@@ -2718,7 +2901,7 @@ index 82837031e..00f5eb788 100644
              "openrouter" => Self::OpenRouter,
              "openai-compatible" => Self::OpenAiCompatible { profile_id: None },
              "copilot" => Self::Copilot,
-@@ -1153,6 +1381,50 @@ impl ModelRouteApiMethod {
+@@ -1240,6 +1468,50 @@ impl ModelRouteApiMethod {
          matches!(self, Self::OpenAIOAuth | Self::OpenAIApiKey)
      }
 
@@ -2769,7 +2952,7 @@ index 82837031e..00f5eb788 100644
      pub fn display_label(&self) -> String {
          match self {
              Self::JcodeSubscription => "subscription".to_string(),
-@@ -1167,7 +1439,9 @@ impl ModelRouteApiMethod {
+@@ -1254,7 +1526,9 @@ impl ModelRouteApiMethod {
              Self::AntigravityHttps => "https".to_string(),
              Self::RemoteCatalog => "remote-catalog".to_string(),
              Self::Current => "current".to_string(),
@@ -2780,7 +2963,7 @@ index 82837031e..00f5eb788 100644
              Self::Other(method) => method
                  .split_once(':')
                  .map(|(method, _)| method)
-@@ -1314,6 +1588,8 @@ impl ModelRoute {
+@@ -1401,6 +1675,8 @@ impl ModelRoute {
  /// pass catalog state as this single value instead of loose parallel vectors.
  #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
  pub struct ModelCatalogSnapshot {
@@ -2789,7 +2972,7 @@ index 82837031e..00f5eb788 100644
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub provider_name: Option<String>,
      #[serde(default, skip_serializing_if = "Option::is_none")]
-@@ -1332,6 +1608,7 @@ impl ModelCatalogSnapshot {
+@@ -1419,6 +1695,7 @@ impl ModelCatalogSnapshot {
          model_routes: Vec<ModelRoute>,
      ) -> Self {
          Self {
@@ -2797,7 +2980,7 @@ index 82837031e..00f5eb788 100644
              provider_name,
              provider_model,
              available_models,
-@@ -1349,6 +1626,12 @@ impl ModelCatalogSnapshot {
+@@ -1436,6 +1713,12 @@ impl ModelCatalogSnapshot {
              provider.available_models_display(),
              provider.model_routes(),
          )
@@ -2810,7 +2993,7 @@ index 82837031e..00f5eb788 100644
      }
 
      pub fn has_routes(&self) -> bool {
-@@ -1536,3 +1819,7 @@ mod saved_account_route_tests;
+@@ -1623,3 +1906,7 @@ mod saved_account_route_tests;
  #[cfg(test)]
  #[path = "lib_tests.rs"]
  mod tests;
@@ -2819,10 +3002,10 @@ index 82837031e..00f5eb788 100644
 +#[path = "policy_tests.rs"]
 +mod policy_tests;
 diff --git a/crates/jcode-provider-core/src/lib_tests.rs b/crates/jcode-provider-core/src/lib_tests.rs
-index 90a838bb3..454764972 100644
+index afb3043b9..2d9827676 100644
 --- a/crates/jcode-provider-core/src/lib_tests.rs
 +++ b/crates/jcode-provider-core/src/lib_tests.rs
-@@ -71,7 +71,7 @@ fn model_route_api_method_parser_keeps_profile_identity() {
+@@ -202,7 +202,7 @@ fn model_route_api_method_parser_keeps_profile_identity() {
      );
      assert_eq!(
          ModelRouteApiMethod::parse("grok-build-acp"),
@@ -2924,7 +3107,7 @@ index c6aecd3ba..bf71310a1 100644
          &self,
          messages: &[Message],
 diff --git a/crates/jcode-provider-gemini-runtime/src/lib.rs b/crates/jcode-provider-gemini-runtime/src/lib.rs
-index ab9fc9de6..116668bbd 100644
+index 8d9c96aba..3912cce2f 100644
 --- a/crates/jcode-provider-gemini-runtime/src/lib.rs
 +++ b/crates/jcode-provider-gemini-runtime/src/lib.rs
 @@ -711,6 +711,10 @@ impl Default for GeminiProvider {
@@ -2939,7 +3122,7 @@ index ab9fc9de6..116668bbd 100644
          &self,
          messages: &[Message],
 diff --git a/crates/jcode-provider-grok-build-runtime/src/lib.rs b/crates/jcode-provider-grok-build-runtime/src/lib.rs
-index a15dd7254..1b9186132 100644
+index a15dd7254..8faf16633 100644
 --- a/crates/jcode-provider-grok-build-runtime/src/lib.rs
 +++ b/crates/jcode-provider-grok-build-runtime/src/lib.rs
 @@ -159,6 +159,10 @@ impl Stream for AuthRetryStream {
@@ -2953,12 +3136,23 @@ index a15dd7254..1b9186132 100644
      async fn complete(
          &self,
          messages: &[Message],
+@@ -304,8 +308,9 @@ mod tests {
+         );
+         assert_eq!(
+             jcode_provider_core::ModelRouteApiMethod::parse(ROUTE_API_METHOD),
+-            jcode_provider_core::ModelRouteApiMethod::GrokBuild
++            jcode_provider_core::ModelRouteApiMethod::GrokBuildAcp
+         );
++        assert_eq!(provider.runtime_key(), jcode_provider_core::RuntimeKey::GrokBuild);
+         assert!(!provider.handles_tools_internally());
+         assert!(provider.supports_compaction());
+         assert_eq!(provider.name(), "grok-build");
 diff --git a/crates/jcode-provider-openrouter-runtime/src/lib.rs b/crates/jcode-provider-openrouter-runtime/src/lib.rs
-index 48c954e72..f496f8099 100644
+index 93d5ec598..0ca86ecbd 100644
 --- a/crates/jcode-provider-openrouter-runtime/src/lib.rs
 +++ b/crates/jcode-provider-openrouter-runtime/src/lib.rs
-@@ -29,7 +29,9 @@ use jcode_base::provider_catalog::{
-     openai_compatible_profiles, resolve_openai_compatible_profile,
+@@ -30,7 +30,9 @@ use jcode_base::provider_catalog::{
+     resolve_openai_compatible_profile,
  };
  use jcode_message_types::{CacheControl, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 -use jcode_provider_core::{EventStream, Provider};
@@ -2968,7 +3162,7 @@ index 48c954e72..f496f8099 100644
  pub use jcode_provider_openrouter::{
      EndpointInfo, ModelInfo, ModelPricing, ModelTimestampIndex, ProviderRouting,
      all_model_timestamps, load_endpoints_disk_cache_public, load_model_pricing_disk_cache_public,
-@@ -60,10 +62,11 @@ use request_headers::*;
+@@ -63,10 +65,11 @@ use request_headers::*;
  /// Base delay for exponential backoff (in milliseconds)
  const RETRY_BASE_DELAY_MS: u64 = 1000;
 
@@ -2983,8 +3177,8 @@ index 48c954e72..f496f8099 100644
 +const DEFAULT_ENV_FILE: &str = OPENROUTER_STANDARD.env_file;
  const OPENROUTER_TRANSPORT_STATE_ENV: &str = "JCODE_OPENROUTER_TRANSPORT_STATE";
 
- /// Default model (Claude Sonnet via OpenRouter). Placeholder only: once the
-@@ -1750,22 +1753,19 @@ impl OpenRouterProvider {
+ /// Default model (Claude Opus via OpenRouter). Once the live catalog loads,
+@@ -1789,22 +1792,19 @@ impl OpenRouterProvider {
          }
      }
 
@@ -3015,7 +3209,7 @@ index 48c954e72..f496f8099 100644
              })
          });
          auth()?;
-@@ -1774,7 +1774,7 @@ impl OpenRouterProvider {
+@@ -1813,7 +1813,7 @@ impl OpenRouterProvider {
              client: jcode_provider_core::shared_http_client(),
              model: Arc::new(RwLock::new(DEFAULT_MODEL.to_string())),
              reasoning_effort: Arc::new(RwLock::new(None)),
@@ -3024,7 +3218,7 @@ index 48c954e72..f496f8099 100644
              auth,
              supports_provider_features: true,
              supports_model_catalog: true,
-@@ -1784,7 +1784,7 @@ impl OpenRouterProvider {
+@@ -1823,7 +1823,7 @@ impl OpenRouterProvider {
              disable_reasoning_heuristics: false,
              static_reasoning_config: HashMap::new(),
              max_tokens: Self::configured_max_tokens(None),
@@ -3033,7 +3227,7 @@ index 48c954e72..f496f8099 100644
              static_models: Vec::new(),
              static_context_limits: HashMap::new(),
              static_image_input_support: HashMap::new(),
-@@ -1799,6 +1799,10 @@ impl OpenRouterProvider {
+@@ -1838,6 +1838,10 @@ impl OpenRouterProvider {
          })
      }
 
@@ -3041,11 +3235,11 @@ index 48c954e72..f496f8099 100644
 +        Self::new_official_runtime(OpenRouterDeploymentId::Standard)
 +    }
 +
-     pub fn new_openai_compatible_profile_runtime(
-         profile: jcode_base::provider_catalog::OpenAiCompatibleProfile,
-     ) -> Result<Self> {
+     fn should_background_refresh_model_catalog(&self, cache_age_secs: u64) -> bool {
+         if cache_age_secs < MODEL_CATALOG_SOFT_REFRESH_SECS {
+             return false;
 diff --git a/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs b/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
-index b78f04a58..6e20c8fc3 100644
+index e152c4a87..c09bd9ef8 100644
 --- a/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
 +++ b/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
 @@ -5,6 +5,20 @@ use jcode_base::provider::{ModelCatalogRefreshSummary, summarize_model_catalog_r
@@ -3070,10 +3264,10 @@ index b78f04a58..6e20c8fc3 100644
          OpenRouterProvider::runtime_display_name(self)
      }
 diff --git a/crates/jcode-tui/src/tui/app.rs b/crates/jcode-tui/src/tui/app.rs
-index 67c943e57..61b538ad2 100644
+index 397eb45e5..100fec948 100644
 --- a/crates/jcode-tui/src/tui/app.rs
 +++ b/crates/jcode-tui/src/tui/app.rs
-@@ -1238,6 +1238,7 @@ pub struct App {
+@@ -1305,6 +1305,7 @@ pub struct App {
      remote_client_instance_id: String,
      remote_provider_name: Option<String>,
      remote_provider_model: Option<String>,
@@ -3082,7 +3276,7 @@ index 67c943e57..61b538ad2 100644
      /// catalog snapshot (`AvailableModelsUpdated`). The onboarding readiness
      /// validation uses this to wait for the post-login catalog refresh to land
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index cca955bbf..ae6d20788 100644
+index 22ea65776..883706218 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
 @@ -683,12 +683,14 @@ impl App {
@@ -3114,7 +3308,7 @@ index cca955bbf..ae6d20788 100644
          if let Some(name) = snapshot.provider_name
              && self.remote_provider_name.as_deref() != Some(name.as_str())
          {
-@@ -1158,6 +1165,7 @@ impl App {
+@@ -1160,6 +1167,7 @@ impl App {
      ) -> Vec<crate::provider::ModelRoute> {
          crate::provider::simplified_model_routes_for_picker(
              self.provider.name(),
@@ -3122,7 +3316,7 @@ index cca955bbf..ae6d20788 100644
              current_model,
              self.provider.available_models_display(),
          )
-@@ -2290,9 +2298,13 @@ impl App {
+@@ -2444,9 +2452,13 @@ impl App {
                  self.remote_provider_model.as_deref().unwrap_or("unknown"),
              );
          }
@@ -3137,7 +3331,7 @@ index cca955bbf..ae6d20788 100644
          )
      }
 
-@@ -2300,10 +2312,14 @@ impl App {
+@@ -2454,10 +2466,14 @@ impl App {
          &self,
          current_model: &str,
      ) -> Vec<crate::provider::ModelRoute> {
@@ -3181,10 +3375,10 @@ index a52690a31..d37aeaa60 100644
          | Method::Cursor
          | Method::Bedrock
 diff --git a/crates/jcode-tui/src/tui/app/remote/server_events.rs b/crates/jcode-tui/src/tui/app/remote/server_events.rs
-index df55ee032..9cf440d7e 100644
+index 80aa27419..e87cb5df8 100644
 --- a/crates/jcode-tui/src/tui/app/remote/server_events.rs
 +++ b/crates/jcode-tui/src/tui/app/remote/server_events.rs
-@@ -2450,17 +2450,19 @@ pub(in crate::tui::app) fn handle_server_event(
+@@ -2772,6 +2772,7 @@ pub(in crate::tui::app) fn handle_server_event(
              true
          }
          ServerEvent::AvailableModelsUpdated {
@@ -3192,8 +3386,10 @@ index df55ee032..9cf440d7e 100644
              provider_name,
              provider_model,
              available_models,
-             available_model_routes,
-         } => {
+@@ -2780,12 +2781,13 @@ pub(in crate::tui::app) fn handle_server_event(
+             // Prefetch can hydrate account capabilities after initial History.
+             // This legacy event has no tiers, so request authoritative metadata.
+             app.model_catalog_after_history = true;
 -            let model_catalog_snapshot = jcode_provider_core::ModelCatalogSnapshot::new(
 +            let mut model_catalog_snapshot = jcode_provider_core::ModelCatalogSnapshot::new(
                  provider_name,
@@ -3205,11 +3401,23 @@ index df55ee032..9cf440d7e 100644
              let mut explicit_refresh_summary_shown = false;
              if let Some((before_models, before_routes)) =
                  app.pending_remote_model_refresh_snapshot.take()
+diff --git a/crates/jcode-tui/src/tui/app/remote_tests.rs b/crates/jcode-tui/src/tui/app/remote_tests.rs
+index 2d51aa9d4..737e5875a 100644
+--- a/crates/jcode-tui/src/tui/app/remote_tests.rs
++++ b/crates/jcode-tui/src/tui/app/remote_tests.rs
+@@ -600,6 +600,7 @@ fn history_speed_capabilities_are_authoritative_and_identity_scoped() {
+     handle_server_event(
+         &mut app,
+         ServerEvent::AvailableModelsUpdated {
++            runtime_key: None,
+             provider_name: Some("openai".into()),
+             provider_model: Some("gpt-6-astra".into()),
+             available_models: vec![],
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
-index 73237b555..80e648189 100644
+index 336541711..e63cd262c 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs
-@@ -751,6 +751,7 @@ fn test_available_models_updated_event_surfaces_authed_provider_in_remote_model_
+@@ -794,6 +794,7 @@ fn test_available_models_updated_event_surfaces_authed_provider_in_remote_model_
      app.is_remote = true;
      app.handle_server_event(
          crate::protocol::ServerEvent::AvailableModelsUpdated {
@@ -3217,7 +3425,7 @@ index 73237b555..80e648189 100644
              provider_name: Some("Copilot".to_string()),
              provider_model: Some("claude-opus-4.6".to_string()),
              available_models: vec![
-@@ -818,6 +819,7 @@ fn test_duplicate_available_models_updated_event_is_a_no_op() {
+@@ -891,6 +892,7 @@ fn test_duplicate_available_models_updated_event_is_a_no_op() {
 
          app.is_remote = true;
          let event = || crate::protocol::ServerEvent::AvailableModelsUpdated {
@@ -3225,7 +3433,7 @@ index 73237b555..80e648189 100644
              provider_name: Some("Copilot".to_string()),
              provider_model: Some("claude-opus-4.6".to_string()),
              available_models: vec!["claude-opus-4.6".to_string()],
-@@ -883,6 +885,7 @@ fn test_remote_final_catalog_replaces_post_login_loading_state_in_place() {
+@@ -956,6 +958,7 @@ fn test_remote_final_catalog_replaces_post_login_loading_state_in_place() {
 
      app.handle_server_event(
          crate::protocol::ServerEvent::AvailableModelsUpdated {
@@ -3233,7 +3441,7 @@ index 73237b555..80e648189 100644
              provider_name: Some("Anthropic".to_string()),
              provider_model: Some("claude-opus-4.6".to_string()),
              available_models: vec!["claude-opus-4.6".to_string()],
-@@ -1135,6 +1138,7 @@ fn test_detailed_catalog_replaces_placeholder_routes_after_names_only_update() {
+@@ -1210,6 +1213,7 @@ fn test_detailed_catalog_replaces_placeholder_routes_after_names_only_update() {
          // Names-only frame: same model list, no route expansion.
          app.handle_server_event(
              crate::protocol::ServerEvent::AvailableModelsUpdated {
@@ -3241,7 +3449,7 @@ index 73237b555..80e648189 100644
                  provider_name: Some("Copilot".to_string()),
                  provider_model: Some("claude-opus-4.6".to_string()),
                  available_models: vec!["claude-opus-4.6".to_string()],
-@@ -1146,6 +1150,7 @@ fn test_detailed_catalog_replaces_placeholder_routes_after_names_only_update() {
+@@ -1221,6 +1225,7 @@ fn test_detailed_catalog_replaces_placeholder_routes_after_names_only_update() {
          // Detailed frame with identical model names but real routes.
          let detailed_redraw = app.handle_server_event(
              crate::protocol::ServerEvent::AvailableModelsUpdated {
@@ -3250,7 +3458,7 @@ index 73237b555..80e648189 100644
                  provider_model: Some("claude-opus-4.6".to_string()),
                  available_models: vec!["claude-opus-4.6".to_string()],
 diff --git a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_02.rs b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_02.rs
-index 13c85eef9..3c6380fe0 100644
+index 9b4bbaabc..52925a93f 100644
 --- a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_02.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_02.rs
 @@ -19,6 +19,7 @@ fn test_handle_server_event_available_models_updated_replaces_remote_model_catal
@@ -3285,10 +3493,10 @@ index ca46a7fad..1e787e518 100644
              suggestions
                  .iter()
 diff --git a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-index 367ddcec8..cdec5ce10 100644
+index 49ed8f2a9..a8898655a 100644
 --- a/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
 +++ b/crates/jcode-tui/src/tui/app/tui_lifecycle.rs
-@@ -489,6 +489,7 @@ impl App {
+@@ -492,6 +492,7 @@ impl App {
              remote_client_instance_id: crate::id::new_id("client"),
              remote_provider_name: None,
              remote_provider_model: None,
@@ -3296,7 +3504,7 @@ index 367ddcec8..cdec5ce10 100644
              remote_model_catalog_generation: 0,
              remote_resolved_credential: None,
              remote_provider_oauth_email: None,
-@@ -960,6 +961,7 @@ impl App {
+@@ -977,6 +978,7 @@ impl App {
              remote_client_instance_id: crate::id::new_id("client"),
              remote_provider_name: None,
              remote_provider_model: None,
@@ -3318,10 +3526,10 @@ index 6a70dc5bf..ddf91455a 100644
          ProviderChoice::OpenaiApi => matches!(
              route.api_method_kind(),
 diff --git a/src/cli/commands_tests.rs b/src/cli/commands_tests.rs
-index efdd976bb..ff27e8178 100644
+index 64bc2ce7b..e5b6a6f3e 100644
 --- a/src/cli/commands_tests.rs
 +++ b/src/cli/commands_tests.rs
-@@ -915,12 +915,10 @@ fn cli_provider_choice_filter_uses_typed_api_methods() {
+@@ -976,12 +976,10 @@ fn cli_provider_choice_filter_uses_typed_api_methods() {
          route.api_method_kind(),
          crate::provider::ModelRouteApiMethod::OpenAIOAuth
      )));

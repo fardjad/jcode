@@ -1,4 +1,4 @@
-From cc7e93a8f4520a5f540a85406efd28233d786c8e Mon Sep 17 00:00:00 2001
+From 0aaf1617e33594d3ea76841b1af1e7212116dcc1 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] fix: isolate release installer PATH opt-in
@@ -40,23 +40,25 @@ Validation:
 bash scripts/test_install_release_policy.sh
 bash scripts/test_install_release_metadata.sh
 ---
- README.md                                |  7 +++
+ README.md                                |  9 +++
  scripts/install_release.sh               | 23 +++----
  scripts/lib/install_release_policy.sh    | 49 +++++++++++++++
  scripts/test_install_release_metadata.sh | 12 +++-
  scripts/test_install_release_policy.sh   | 79 ++++++++++++++++++++++++
- 5 files changed, 155 insertions(+), 15 deletions(-)
+ 5 files changed, 157 insertions(+), 15 deletions(-)
  create mode 100644 scripts/lib/install_release_policy.sh
  create mode 100755 scripts/test_install_release_policy.sh
 
 diff --git a/README.md b/README.md
-index 36043d470..81e5401f6 100644
+index 920837df8..36338fc7f 100644
 --- a/README.md
 +++ b/README.md
-@@ -63,6 +63,13 @@ curl -fsSL https://jcode.sh/install | bash
+@@ -51,6 +51,15 @@
+ curl -fsSL https://jcode.sh/install | bash
+ ```
 
- [Windows installation instructions](https://jcode.sh/docs#install).
-
++[Windows installation instructions](https://jcode.sh/docs#install).
++
 +Source release installs do not modify shell startup files by default. Pass
 +`--configure-path` to persist the launcher directory in `PATH`. Automation may
 +instead set `JCODE_CONFIGURE_PATH=1`; the case-insensitive values `1`, `true`,
@@ -66,7 +68,7 @@ index 36043d470..81e5401f6 100644
 +
  <div align="center">
 
- ## Performance & Resource Efficiency
+ ## Benches
 diff --git a/scripts/install_release.sh b/scripts/install_release.sh
 index 074874a51..bdab7011a 100755
 --- a/scripts/install_release.sh

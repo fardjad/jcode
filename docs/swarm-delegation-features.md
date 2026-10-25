@@ -16,11 +16,17 @@ compact summaries instead of raw tool output.
 Available workers:
 
 ```text
-swarm_fixer         One literal mechanical change in coordinator-defined scope
-swarm_investigator  Read-only investigation, shell commands, grep, file search,
-                    file reading, grep, tracing
-swarm_research      Web and documentation research
+swarm_fixer         Exact mechanical change using coordinator-approved tools
+swarm_investigator  Read-only repository investigation and specified commands
+swarm_research      Web and jcode documentation research
 ```
+
+The fixer uses native `edit` for exact replacements in one file. Its `edits`
+array runs in order and all operations for that file succeed or none are
+written. For multi-file changes, native `apply_patch` accepts a Codex patch or
+unified diff, but does not guarantee all-or-none application across files.
+MCP server-tool discovery and invocation use native `mcp` actions `search` and
+`call`.
 
 Configure the swarm model in `~/.jcode/config.toml`:
 

@@ -42,7 +42,8 @@ provider_init.rs. Tool registry construction in jcode-app-core/src/tool
 (compile_remote, integration_tools), sponsors config, onboarding startup and
 import flow in jcode-tui. jcode-base/src/jev.rs, gateway/control.rs,
 jcode-app-core channel.rs, server.rs and server/jade_relay.rs,
-runtime_special_commands.rs, TUI commands_remote.rs, src/cli/args/cloud_sessions.rs.
+runtime_special_commands.rs, TUI commands_remote.rs,
+src/cli/args/cloud_sessions.rs.
 Inactive modules carry allow(dead_code) with a comment naming this patch.
 
 Update guidance:
@@ -62,74 +63,88 @@ cargo test -p jcode-tui --lib gate_
 cargo test -p jcode --lib gate_
 cargo test -p jcode-base --lib policy_
 cargo test -p jcode-app-core --lib tool_descriptions_stay_under_token_cap
+cargo test -p jcode-telemetry-core policy_sync_ --lib
 ---
  crates/jcode-app-core/src/agent.rs            |   5 +-
- crates/jcode-app-core/src/channel.rs          |  56 ++++++-
- crates/jcode-app-core/src/server.rs           |  11 --
- .../jcode-app-core/src/server/jade_relay.rs   |  84 +++++-----
+ crates/jcode-app-core/src/channel.rs          |  56 +++-
+ crates/jcode-app-core/src/server.rs           |  11 -
+ .../jcode-app-core/src/server/jade_relay.rs   |  89 +++---
+ .../src/server/provider_control_tests.rs      |  12 +
  .../src/server/runtime_special_commands.rs    |   3 +-
+ crates/jcode-app-core/src/server/swarm.rs     |   7 +-
  .../jcode-app-core/src/tool/compile_remote.rs |   2 +
- crates/jcode-app-core/src/tool/discover.rs    | 104 +++---------
+ crates/jcode-app-core/src/tool/discover.rs    | 104 ++----
  .../src/tool/discover_secrets.rs              |   2 +
  crates/jcode-app-core/src/tool/mod.rs         |  17 +-
- crates/jcode-app-core/src/tool/tests.rs       |  25 ++-
+ crates/jcode-base/src/config.rs               |   4 +-
  crates/jcode-base/src/config/config_file.rs   |   2 +
- crates/jcode-base/src/config_tests.rs         |  22 +++
- crates/jcode-base/src/gateway/control.rs      |  31 ++--
- crates/jcode-base/src/jev.rs                  |  95 ++++++-----
+ crates/jcode-base/src/config_tests.rs         |  29 ++
+ crates/jcode-base/src/gateway/control.rs      |  31 +-
+ crates/jcode-base/src/jev.rs                  |  98 +++---
+ crates/jcode-base/src/mcp/manager.rs          |   4 +-
+ crates/jcode-base/src/memory_agent_tests.rs   |  26 +-
  crates/jcode-base/src/provider/jcode.rs       |   3 +
  crates/jcode-base/src/provider/mod.rs         |  18 +-
- .../jcode-base/src/provider/policy_tests.rs   |  31 ++++
- .../src/provider/tests/fallback_failover.rs   |  12 ++
- crates/jcode-base/src/provider_catalog.rs     |  56 +++++++
- .../jcode-base/src/provider_catalog_tests.rs  |  26 +++
+ .../jcode-base/src/provider/multi_provider.rs |  12 +-
+ .../jcode-base/src/provider/policy_tests.rs   |  31 ++
+ crates/jcode-base/src/provider/pricing.rs     |   4 +-
+ .../src/provider/tests/agent_failover.rs      |   6 +-
+ .../provider/tests/catalog_subscription.rs    |  63 ++--
+ .../src/provider/tests/fallback_failover.rs   |  12 +
+ crates/jcode-base/src/provider_catalog.rs     |  56 ++++
+ .../jcode-base/src/provider_catalog_tests.rs  |  43 ++-
  crates/jcode-base/src/sponsors.rs             |   4 +-
- crates/jcode-base/src/usage.rs                |  72 +++++++-
+ crates/jcode-base/src/sponsors/provenance.rs  |  55 ++--
+ crates/jcode-base/src/usage.rs                |  72 ++++-
  crates/jcode-base/src/usage/provider_fetch.rs |   3 +
- crates/jcode-config-types/src/lib.rs          |  14 +-
- crates/jcode-provider-core/src/lib.rs         |  51 +++++-
+ crates/jcode-base/src/usage/tests.rs          |  48 +++
+ crates/jcode-config-types/src/lib.rs          |  57 +++-
+ crates/jcode-provider-core/src/lib.rs         |  51 ++-
  .../jcode-provider-core/src/policy_tests.rs   |   5 +-
  .../jcode-telemetry-core/src/concurrency.rs   |   9 +-
- crates/jcode-telemetry-core/src/lib.rs        | 142 +++++++++++++++-
- .../jcode-telemetry-core/src/oauth_account.rs |  35 +++-
- crates/jcode-telemetry-core/src/tests.rs      | 101 +++++++++---
+ crates/jcode-telemetry-core/src/lib.rs        | 298 +++++++++++++++++-
+ .../jcode-telemetry-core/src/oauth_account.rs |  35 +-
+ crates/jcode-telemetry-core/src/tests.rs      | 109 +++++--
  .../tests/session_creation_latency.rs         |   1 +
  crates/jcode-tui/src/tui/app.rs               |   2 +
- .../src/tui/app/auth_account_commands.rs      | 101 ++++++++++--
+ .../src/tui/app/auth_account_commands.rs      | 101 +++++-
  .../src/tui/app/auth_account_picker.rs        |   2 +-
- .../src/tui/app/command_registry_tests.rs     |  25 +++
+ .../src/tui/app/command_registry_tests.rs     |  25 ++
  crates/jcode-tui/src/tui/app/commands.rs      |   6 +-
- .../jcode-tui/src/tui/app/commands_remote.rs  |  58 ++-----
- .../src/tui/app/inline_interactive.rs         |  90 +++++++++-
+ .../jcode-tui/src/tui/app/commands_remote.rs  |  58 +---
+ .../src/tui/app/inline_interactive.rs         | 100 +++++-
  crates/jcode-tui/src/tui/app/input_help.rs    |   8 +-
  crates/jcode-tui/src/tui/app/model_context.rs |  12 +-
- .../jcode-tui/src/tui/app/oauth_telemetry.rs  |  10 ++
- .../jcode-tui/src/tui/app/onboarding_flow.rs  |  35 ++--
- .../src/tui/app/onboarding_flow_control.rs    | 103 ++----------
- .../src/tui/app/state_ui_input_helpers.rs     |  23 ++-
- .../jcode-tui/src/tui/app/subscribe_nudge.rs  | 156 +++++-------------
- .../app/tests/commands_accounts_01/part_02.rs |  23 +--
+ .../jcode-tui/src/tui/app/oauth_telemetry.rs  |  10 +
+ .../jcode-tui/src/tui/app/onboarding_flow.rs  |  35 +-
+ .../src/tui/app/onboarding_flow_control.rs    | 103 +-----
+ .../src/tui/app/state_ui_input_helpers.rs     |  23 +-
+ .../jcode-tui/src/tui/app/subscribe_nudge.rs  | 156 +++------
+ .../app/tests/commands_accounts_01/part_02.rs |  39 +--
  .../src/tui/app/tests/onboarding_eval.rs      |   4 +-
- .../src/tui/app/tests/onboarding_flow.rs      |  93 ++++++++++-
- .../src/tui/app/tests/onboarding_sim.rs       |  44 +++++
+ .../src/tui/app/tests/onboarding_flow.rs      | 118 +++++--
+ .../src/tui/app/tests/onboarding_sim.rs       |  44 +++
+ .../tests/remote_startup_input_02/part_01.rs  |  64 ++--
+ .../app/tests/state_model_poke_02/part_01.rs  |   5 +-
+ .../tui/app/tests/support_failover/part_01.rs |  13 +-
  crates/jcode-tui/src/tui/app/tui_state.rs     |   9 +-
  src/cli/account.rs                            |   2 +
  src/cli/args.rs                               |   6 +
  src/cli/args/cloud_sessions.rs                |   9 +
- src/cli/args/tests.rs                         |  13 ++
+ src/cli/args/tests.rs                         |  13 +
  src/cli/commands.rs                           |   7 +-
  src/cli/dispatch.rs                           |  15 +-
- src/cli/dispatch_tests.rs                     |  27 +++
+ src/cli/dispatch_tests.rs                     |  27 ++
  src/cli/login.rs                              |   2 +
  src/cli/provider_init.rs                      |   8 +-
- src/cli/provider_init_tests.rs                |  21 +--
- 60 files changed, 1284 insertions(+), 672 deletions(-)
+ src/cli/provider_init_tests.rs                |  21 +-
+ 73 files changed, 1754 insertions(+), 790 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 1e3da9528..855ce1678 100644
+index 9ef3a30c6..1ebbc44b7 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -1283,7 +1283,10 @@ impl Agent {
+@@ -1556,7 +1556,10 @@ impl Agent {
      }
 
      fn upload_transcript_telemetry(&mut self, end_reason: crate::telemetry::SessionEndReason) {
@@ -235,10 +250,10 @@ index d88893b9e..b58a8a461 100644
 
      /// Live end-to-end test against the real Jade relay. Ignored by default;
 diff --git a/crates/jcode-app-core/src/server.rs b/crates/jcode-app-core/src/server.rs
-index d82c5faae..92e790469 100644
+index 897c4f891..3970245d5 100644
 --- a/crates/jcode-app-core/src/server.rs
 +++ b/crates/jcode-app-core/src/server.rs
-@@ -1511,17 +1511,6 @@ impl Server {
+@@ -1546,17 +1546,6 @@ impl Server {
              });
          }
 
@@ -257,7 +272,7 @@ index d82c5faae..92e790469 100644
          // server has been quiet for a while.
          let embedding_idle_secs = embedding_idle_unload_secs();
 diff --git a/crates/jcode-app-core/src/server/jade_relay.rs b/crates/jcode-app-core/src/server/jade_relay.rs
-index 6cf0cf8ca..968cea37d 100644
+index 6cf0cf8ca..d63c2d5c6 100644
 --- a/crates/jcode-app-core/src/server/jade_relay.rs
 +++ b/crates/jcode-app-core/src/server/jade_relay.rs
 @@ -1,3 +1,6 @@
@@ -383,11 +398,67 @@ index 6cf0cf8ca..968cea37d 100644
      }
 
      #[test]
+@@ -1366,9 +1370,8 @@ mod tests {
+             jade_relay_launch_working_dir: Some("/tmp/project".to_string()),
+             ..cfg
+         };
+-        let parsed = RelayLaunchConfig::from_safety(&cfg).expect("launch opt-in config");
+-        assert_eq!(parsed.api.api_base, "https://example.com/");
+-        assert_eq!(parsed.default_working_dir.as_deref(), Some("/tmp/project"));
++        let parsed = RelayLaunchConfig::from_safety(&cfg);
++        assert!(parsed.is_none());
+     }
+
+     #[test]
+diff --git a/crates/jcode-app-core/src/server/provider_control_tests.rs b/crates/jcode-app-core/src/server/provider_control_tests.rs
+index 741e4f8ce..ae8636c7b 100644
+--- a/crates/jcode-app-core/src/server/provider_control_tests.rs
++++ b/crates/jcode-app-core/src/server/provider_control_tests.rs
+@@ -718,6 +718,8 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
+     crate::env::set_var("AZURE_OPENAI_MODEL", "azure-deployment");
+     crate::env::set_var("AZURE_OPENAI_API_KEY", "test-key");
+     crate::env::set_var("AZURE_OPENAI_USE_ENTRA", "0");
++    crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openrouter");
++    crate::env::set_var("JCODE_INITIAL_PROVIDER_EXPLICIT", "1");
+
+     crate::bus::reset_models_updated_publish_state_for_tests();
+     let provider = Arc::new(AuthChangeMockProvider::new());
+@@ -787,6 +789,10 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
+         std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+         Ok("openrouter")
+     );
++    assert_eq!(
++        std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
++        Ok("1")
++    );
+     assert_eq!(
+         state.complete_calls.load(Ordering::SeqCst),
+         0,
+@@ -815,6 +821,8 @@ fn cerebras_auth_hint_applies_openai_compatible_runtime_profile() {
+     let request =
+         crate::auth::lifecycle::AuthActivationRequest::new(Some("Cerebras".to_string()), None);
+     assert_eq!(request.provider_id().as_deref(), Some("cerebras"));
++    crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openrouter");
++    crate::env::set_var("JCODE_INITIAL_PROVIDER_EXPLICIT", "1");
+
+     let activation = crate::auth::lifecycle::activate_auth_change(&request);
+     let default_model = activation.activated_model.as_deref();
+@@ -827,6 +835,10 @@ fn cerebras_auth_hint_applies_openai_compatible_runtime_profile() {
+         std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+         Ok("openrouter")
+     );
++    assert_eq!(
++        std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
++        Ok("1")
++    );
+     assert_eq!(
+         std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
+         Ok("https://api.cerebras.ai/v1")
 diff --git a/crates/jcode-app-core/src/server/runtime_special_commands.rs b/crates/jcode-app-core/src/server/runtime_special_commands.rs
-index 90f5a4d20..2f26b593d 100644
+index 34ed18134..8c1b05ac9 100644
 --- a/crates/jcode-app-core/src/server/runtime_special_commands.rs
 +++ b/crates/jcode-app-core/src/server/runtime_special_commands.rs
-@@ -266,9 +266,8 @@ fn remote(args: &[String]) -> Result<(Value, String)> {
+@@ -278,9 +278,8 @@ fn remote(args: &[String]) -> Result<(Value, String)> {
          .context("Invalid remote command")?
          .map_err(anyhow::Error::msg)?;
      match command {
@@ -398,6 +469,24 @@ index 90f5a4d20..2f26b593d 100644
          RemoteCommand::Status => {
              let status = RemoteStatus::load();
              let devices: Vec<_> = status.devices.iter().map(|device| json!({"id": device.id, "name": device.name, "paired_at": device.paired_at, "last_seen": device.last_seen})).collect();
+diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
+index f61b6dcb5..e78c734bd 100644
+--- a/crates/jcode-app-core/src/server/swarm.rs
++++ b/crates/jcode-app-core/src/server/swarm.rs
+@@ -2052,7 +2052,12 @@ mod tests {
+
+         assert!(with_instructions.starts_with(prompt));
+         assert!(with_instructions.contains("SWARM COMPLETION REPORT REQUIRED"));
+-        assert!(with_instructions.contains("swarm tool with action=\"report\""));
++        assert!(with_instructions.contains(
++            "final assistant response that serves as your completion report"
++        ));
++        assert!(with_instructions.contains(
++            "Include a concise summary, validation/tests performed, and blockers or follow-ups."
++        ));
+         assert_eq!(
+             append_swarm_completion_report_instructions(&with_instructions),
+             with_instructions
 diff --git a/crates/jcode-app-core/src/tool/compile_remote.rs b/crates/jcode-app-core/src/tool/compile_remote.rs
 index 8672df3da..7ad6263f4 100644
 --- a/crates/jcode-app-core/src/tool/compile_remote.rs
@@ -592,12 +681,12 @@ index 420432c05..c92aae063 100644
  //!
  //! `discover_tools` sends a model-written `query` and `reason` to a hosted
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 478a0da45..e81a4c58b 100644
+index b747c741d..fd634530c 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -425,12 +425,6 @@ impl Registry {
+@@ -446,12 +446,6 @@ impl Registry {
+                 apply_patch::ApplyPatchTool::new,
              );
-             Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
              Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
 -            Self::insert_tool_timed(
 -                &mut m,
@@ -608,7 +697,7 @@ index 478a0da45..e81a4c58b 100644
              Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
              Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
              #[cfg(target_os = "macos")]
-@@ -562,16 +556,7 @@ impl Registry {
+@@ -582,16 +576,7 @@ impl Registry {
                  codemode::CodemodeTool::new(registry.downgrade()),
              );
          }
@@ -626,68 +715,23 @@ index 478a0da45..e81a4c58b 100644
          let session_tools_ms = session_tools_start.elapsed().as_millis();
 
          // Register generated `swarm_<id>` tools for every valid effective
-diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
-index 3eb4f3717..b0fadf2bd 100644
---- a/crates/jcode-app-core/src/tool/tests.rs
-+++ b/crates/jcode-app-core/src/tool/tests.rs
-@@ -292,18 +292,19 @@ fn test_resolve_skill_aliases_to_skill_manage() {
+diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
+index c27edd73b..cc1e6f5c1 100644
+--- a/crates/jcode-base/src/config.rs
++++ b/crates/jcode-base/src/config.rs
+@@ -997,7 +997,9 @@ mod color_tests;
+ /// the old default into the user's file and permanently disabled discovery even
+ /// after the default flipped. Omitting default sections prevents a repeat.
+ fn sponsors_is_default(sponsors: &SponsorsConfig) -> bool {
+-    sponsors.enabled && is_default_discovery_endpoint(&sponsors.endpoint)
++    !sponsors.enabled
++        && !sponsors.enabled_was_explicit()
++        && is_default_discovery_endpoint(&sponsors.endpoint)
  }
 
- #[tokio::test]
--async fn test_discover_tools_not_registered_when_sponsors_disabled() {
--    // sponsors.enabled is the legacy config key; when false, integration discovery must not exist.
-+async fn gate_tools_hosted_tools_are_never_registered() {
-     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
-     let registry = Registry::new(provider).await;
-     let names = registry.tool_names().await;
--    if crate::config::config().sponsors.enabled {
--        assert!(names.iter().any(|n| n == "integration_tools"));
--    } else {
--        assert!(
--            !names.iter().any(|n| n == "integration_tools"),
--            "integration_tools must not be registered when sponsors are disabled"
--        );
-+    let definitions = registry.definitions(None).await;
-+    for name in ["discover", "compile_remote", "integration_tools"] {
-+        assert!(!names.iter().any(|registered| registered == name), "{name} registered");
-+        assert!(!definitions.iter().any(|definition| definition.name == name), "{name} advertised");
-+        let error = registry
-+            .execute(name, serde_json::json!({}), mcp_test_context(std::path::Path::new(".")))
-+            .await
-+            .expect_err("unregistered hosted tool must fail");
-+        assert!(error.to_string().contains("Unknown tool"), "{name}: {error}");
-     }
- }
-
-@@ -767,8 +768,6 @@ async fn print_tool_definition_token_report() {
- #[tokio::test]
- async fn tool_descriptions_stay_under_token_cap() {
-     const DESCRIPTION_TOKEN_CAP: usize = 20;
--    // integration_tools keeps a deliberate second sentence explaining that catalog
--    // entries integrate directly with the agent.
-     // swarm appends the user-tunable swarm-prompt.md by design.
-     // batch carries a deliberate parallel-call example (2f4abae33, pinned by
-     // batch_tests::description_includes_parallel_tool_call_example).
-@@ -778,16 +777,14 @@ async fn tool_descriptions_stay_under_token_cap() {
-     // user, so planning happens proactively rather than only when prompted.
-     // applet carries the whole view-node vocabulary inline, since the model has
-     // no other way to learn which node types and props the host renders.
--    // codemode documents its sandbox API; compile_remote a credit/consent notice.
-+    // codemode documents its sandbox API.
-     const EXEMPT: &[&str] = &[
--        "integration_tools",
-         "swarm",
-         "batch",
-         "browser",
-         "todo",
-         "applet",
-         "codemode",
--        "compile_remote",
-     ];
-
-     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+ /// Endpoints used by shipped defaults. These may also be explicit user choices.
 diff --git a/crates/jcode-base/src/config/config_file.rs b/crates/jcode-base/src/config/config_file.rs
-index aa95db9c6..a7c69ff41 100644
+index 7ef43f15d..0962fa009 100644
 --- a/crates/jcode-base/src/config/config_file.rs
 +++ b/crates/jcode-base/src/config/config_file.rs
 @@ -23,6 +23,7 @@ impl Config {
@@ -707,10 +751,10 @@ index aa95db9c6..a7c69ff41 100644
      }
 
 diff --git a/crates/jcode-base/src/config_tests.rs b/crates/jcode-base/src/config_tests.rs
-index c4cd89efe..fb1727373 100644
+index 31b2eb1dc..e3a57dbaf 100644
 --- a/crates/jcode-base/src/config_tests.rs
 +++ b/crates/jcode-base/src/config_tests.rs
-@@ -1580,6 +1580,28 @@ fn sponsors_optout_survives_config_save_and_reload() {
+@@ -1642,6 +1642,28 @@ fn sponsors_optout_survives_config_save_and_reload() {
      Config::invalidate_cache();
  }
 
@@ -739,6 +783,20 @@ index c4cd89efe..fb1727373 100644
  #[test]
  fn default_sponsors_section_is_not_written_back() {
      let config = Config::default();
+@@ -1650,6 +1672,13 @@ fn default_sponsors_section_is_not_written_back() {
+         !rendered.contains("[sponsors]"),
+         "default discovery settings must not be baked into config.toml"
+     );
++    let mut configured_value = Config::default();
++    configured_value.sponsors.enabled = true;
++    let rendered = toml::to_string_pretty(&configured_value).expect("serialize explicit value");
++    assert!(
++        rendered.contains("[sponsors]"),
++        "non-default explicit setting must not be hidden by the serializer"
++    );
+ }
+
+ #[test]
 diff --git a/crates/jcode-base/src/gateway/control.rs b/crates/jcode-base/src/gateway/control.rs
 index 795c7c536..783b6c310 100644
 --- a/crates/jcode-base/src/gateway/control.rs
@@ -825,27 +883,28 @@ index 795c7c536..783b6c310 100644
              ("/remote on", RemoteCommand::On),
              ("/remote enable", RemoteCommand::On),
 diff --git a/crates/jcode-base/src/jev.rs b/crates/jcode-base/src/jev.rs
-index b3851863b..99f86f992 100644
+index 17d5bb2fb..cc22119b6 100644
 --- a/crates/jcode-base/src/jev.rs
 +++ b/crates/jcode-base/src/jev.rs
-@@ -429,12 +429,12 @@ fn resolve_voice_with(
-     load: impl FnMut(&str, &str) -> Option<String>,
+@@ -511,12 +511,13 @@ fn client_builder_for(bypass_proxy: bool) -> reqwest::ClientBuilder {
+
+ fn resolve_voice_with(
+     selector: &str,
+-    load: impl FnMut(&str, &str) -> Option<String>,
++    mut load: impl FnMut(&str, &str) -> Option<String>,
  ) -> Result<(JevProvider, String)> {
      match selector.trim().to_ascii_lowercase().as_str() {
 -        "auto" => resolve_providers(&[JevProvider::Jcode, JevProvider::TypeSafe], load),
--        "typesafe" | "jcode" | "subscription" | "jcode-subscription" => {
+-        "typesafe" | "laya" | "jcode" | "subscription" | "jcode-subscription" => {
 -            resolve_with(selector, load)
 +        "auto" | "typesafe" => resolve_providers(&[JevProvider::TypeSafe], load),
++        "laya" => return resolve_laya_with(&mut load),
 +        "jcode" | "subscription" | "jcode-subscription" => {
 +            bail!("Jcode Jev is disabled in this build; select typesafe to use your own provider key")
          }
          _ => bail!(
--            "Invalid voice Jev provider. Choose auto, typesafe, or jcode; voice never uses OpenRouter or AIMLAPI"
-+            "Invalid voice Jev provider. Choose auto or typesafe; voice never uses OpenRouter or AIMLAPI"
-         ),
-     }
- }
-@@ -445,11 +445,7 @@ fn resolve_with(
+             "Invalid voice Jev provider. Choose auto, typesafe, laya, or jcode; voice never uses OpenRouter or AIMLAPI"
+@@ -530,11 +531,7 @@ fn resolve_with(
  ) -> Result<(JevProvider, String)> {
      let providers: &[JevProvider] = match selector.trim().to_ascii_lowercase().as_str() {
          "auto" => &[
@@ -857,12 +916,14 @@ index b3851863b..99f86f992 100644
              JevProvider::TypeSafe,
              JevProvider::OpenRouter,
              JevProvider::Aimlapi,
-@@ -457,8 +453,10 @@ fn resolve_with(
-         "openrouter" => &[JevProvider::OpenRouter],
+@@ -543,10 +540,10 @@ fn resolve_with(
          "typesafe" => &[JevProvider::TypeSafe],
+         "laya" => return resolve_laya_with(&mut load),
          "aimlapi" => &[JevProvider::Aimlapi],
 -        "jcode" | "subscription" | "jcode-subscription" => &[JevProvider::Jcode],
--        _ => bail!("Invalid Jev provider. Choose auto, openrouter, typesafe, aimlapi, or jcode"),
+-        _ => bail!(
+-            "Invalid Jev provider. Choose auto, laya, openrouter, typesafe, aimlapi, or jcode"
+-        ),
 +        "jcode" | "subscription" | "jcode-subscription" => {
 +            bail!("Jcode Jev is disabled in this build; select a BYOK provider to use your own key")
 +        }
@@ -870,7 +931,7 @@ index b3851863b..99f86f992 100644
      };
      resolve_providers(providers, load)
  }
-@@ -750,7 +748,7 @@ mod tests {
+@@ -849,7 +846,7 @@ mod tests {
      }
 
      #[test]
@@ -879,7 +940,7 @@ index b3851863b..99f86f992 100644
          let selector = JevPurpose::Voice
              .selector_with(
                  |key| {
-@@ -773,22 +771,14 @@ mod tests {
+@@ -872,22 +869,14 @@ mod tests {
                  .unwrap(),
              "typesafe"
          );
@@ -907,9 +968,9 @@ index b3851863b..99f86f992 100644
          );
          let (provider, _) = resolve_voice_with("typesafe", |env, file| {
              assert_eq!((env, file), ("TYPESAFE_API_KEY", "typesafe.env"));
-@@ -801,9 +791,9 @@ mod tests {
+@@ -907,9 +896,9 @@ mod tests {
              provider.endpoint("").unwrap(),
-             "https://api.typesafe.ai/v1/systemone"
+             "http://127.0.0.1:8080/v1/systemone"
          );
 -        for selector in ["auto", "typesafe", "jcode"] {
 +        for selector in ["auto", "typesafe"] {
@@ -919,7 +980,7 @@ index b3851863b..99f86f992 100644
                  // Other credentials cannot make this route available.
                  (env == "OPENROUTER_API_KEY" || env == "AIMLAPI_API_KEY")
                      .then(|| "other-account-key".into())
-@@ -812,6 +802,10 @@ mod tests {
+@@ -918,6 +907,10 @@ mod tests {
              assert!(!error.to_string().contains("OPENROUTER_API_KEY"));
              assert!(!error.to_string().contains("AIMLAPI_API_KEY"));
          }
@@ -930,7 +991,7 @@ index b3851863b..99f86f992 100644
          for selector in ["openrouter", "aimlapi", ""] {
              assert!(
                  resolve_voice_with(selector, |_, _| panic!(
-@@ -824,7 +818,7 @@ mod tests {
+@@ -930,7 +923,7 @@ mod tests {
      }
 
      #[test]
@@ -939,7 +1000,7 @@ index b3851863b..99f86f992 100644
          let env = |key: &str| match key {
              PROVIDER_ENV => Ok("typesafe".into()),
              BROWSER_PROVIDER_ENV => Ok("openrouter".into()),
-@@ -852,7 +846,7 @@ mod tests {
+@@ -958,7 +951,7 @@ mod tests {
              resolve_with(&selector, |_, _| Some("present".into()))
                  .unwrap()
                  .0,
@@ -948,7 +1009,7 @@ index b3851863b..99f86f992 100644
          );
          assert_eq!(
              JevPurpose::Memory
-@@ -957,14 +951,6 @@ mod tests {
+@@ -1071,14 +1064,6 @@ mod tests {
                  "https://api.aimlapi.com/v1/decisions",
                  "typesafe/jev",
              ),
@@ -963,7 +1024,7 @@ index b3851863b..99f86f992 100644
          ] {
              let (provider, secret) = resolve_with(selector, |env, env_file| {
                  assert_eq!((env, env_file), (key, file));
-@@ -1001,12 +987,11 @@ mod tests {
+@@ -1155,12 +1140,11 @@ mod tests {
      }
 
      #[test]
@@ -977,7 +1038,7 @@ index b3851863b..99f86f992 100644
          ] {
              let (provider, _) = resolve_with("auto", |env, _| {
                  assert!(!env.starts_with("JCODE_OPENROUTER"));
-@@ -1015,12 +1000,14 @@ mod tests {
+@@ -1169,12 +1153,14 @@ mod tests {
              .unwrap();
              assert_eq!(provider.credentials().0, available);
          }
@@ -998,7 +1059,7 @@ index b3851863b..99f86f992 100644
          // Typesafe direct wins over resellers of the same model.
          assert_eq!(
              resolve_with("auto", |env, _| (env != "JCODE_API_KEY")
-@@ -1037,6 +1024,9 @@ mod tests {
+@@ -1191,6 +1177,9 @@ mod tests {
              JevProvider::OpenRouter
          );
          assert!(resolve_with("auto", |_, _| None).is_err());
@@ -1008,7 +1069,7 @@ index b3851863b..99f86f992 100644
          assert!(
              resolve_with("untrusted-selector", |_, _| panic!(
                  "must not load any credential"
-@@ -1051,6 +1041,23 @@ mod tests {
+@@ -1205,6 +1194,23 @@ mod tests {
          );
      }
 
@@ -1032,8 +1093,81 @@ index b3851863b..99f86f992 100644
      #[test]
      fn empty_and_malformed_credentials_are_rejected_without_echoing() {
          assert!(resolve_with("openrouter", |_, _| Some(" \"\" ".into())).is_err());
+diff --git a/crates/jcode-base/src/mcp/manager.rs b/crates/jcode-base/src/mcp/manager.rs
+index 66e2f4ed6..d01faed4f 100644
+--- a/crates/jcode-base/src/mcp/manager.rs
++++ b/crates/jcode-base/src/mcp/manager.rs
+@@ -1015,12 +1015,14 @@ done
+     // JCODE_HOME/config mutation stays serialized for the whole test.
+     #[allow(clippy::await_holding_lock)]
+     async fn discovery_provenance_end_to_end_with_real_mcp_server() {
++        let _sponsor_consent = crate::sponsors::provenance::TestSponsorConsent::grant();
+         let env_guard = crate::storage::lock_test_env();
++        let _previous_home = std::env::var_os("JCODE_HOME");
+         let temp = tempfile::tempdir().unwrap();
+         crate::env::set_var("JCODE_HOME", temp.path());
+         std::fs::write(
+             temp.path().join("config.toml"),
+-            "[sponsors]\nenabled = true\n",
++            "[provider]\nallowed_providers = [\"jcode\"]\n\n[sponsors]\nenabled = true\n",
+         )
+         .unwrap();
+         crate::config::Config::invalidate_cache();
+diff --git a/crates/jcode-base/src/memory_agent_tests.rs b/crates/jcode-base/src/memory_agent_tests.rs
+index 5da4cbf9c..458a53538 100644
+--- a/crates/jcode-base/src/memory_agent_tests.rs
++++ b/crates/jcode-base/src/memory_agent_tests.rs
+@@ -62,9 +62,9 @@ fn manager_without_working_dir_does_not_infer_process_project() {
+     assert!(manager.load_project_graph().unwrap().memories.is_empty());
+ }
+
+-/// Exercises the real credential resolver, subscription capability check, HTTP
+-/// Decisions adapter, local stores, selection, and pending-injection boundary.
+-/// No provider calls or credentials leave this loopback fixture.
++/// Exercises the real BYOK credential resolver, HTTP Decisions adapter, local
++/// stores, selection, and pending-injection boundary. No provider calls or
++/// credentials leave this loopback fixture.
+ #[tokio::test]
+ async fn retained_recall_pipeline_uses_jev_http_without_embeddings_or_sidecar() {
+     use std::io::{Read, Write};
+@@ -75,9 +75,9 @@ async fn retained_recall_pipeline_uses_jev_http_without_embeddings_or_sidecar()
+     let base = format!("http://{}/v1", listener.local_addr().unwrap());
+     let _env = TestEnv::set(&[
+         ("JCODE_HOME", dir.path().to_str().unwrap()),
+-        ("JCODE_MEMORY_JEV_PROVIDER", "jcode"),
+-        ("JCODE_API_KEY", "jcode_test_only_never_a_real_key"),
+-        ("JCODE_API_BASE", &base),
++        ("JCODE_MEMORY_JEV_PROVIDER", "laya"),
++        ("JCODE_LAYA_BASE_URL", &base),
++        ("LAYA_API_KEY", "jev_test_only_never_a_real_key"),
+     ]);
+     let server = std::thread::spawn(move || {
+         let deadline = Instant::now() + Duration::from_secs(10);
+@@ -122,15 +122,15 @@ async fn retained_recall_pipeline_uses_jev_http_without_embeddings_or_sidecar()
+                 bytes.extend_from_slice(&chunk[..n]);
+             }
+             let headers = String::from_utf8_lossy(&bytes[..header_end]);
+-            let response = if headers.starts_with("GET /v1/me ") {
+-                serde_json::json!({"capabilities":{"memory_jev":true}})
+-            } else {
+-                assert!(headers.starts_with("POST /v1/decisions "));
++            let response = {
++                assert!(headers.starts_with("POST /v1/systemone "));
+                 let body: serde_json::Value =
+                     serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+-                assert_eq!(body["model"], "typesafe/jev-1.13");
+-                let state: serde_json::Value =
+-                    serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
++                assert_eq!(body["model"], "laya-latest");
++                let state: serde_json::Value = match &body["state"] {
++                    serde_json::Value::String(state) => serde_json::from_str(state).unwrap(),
++                    state => state.clone(),
++                };
+                 let mut answers = serde_json::Map::new();
+                 for (id, question) in body["questions"].as_object().unwrap() {
+                     assert_eq!(question["type"], "noul");
 diff --git a/crates/jcode-base/src/provider/jcode.rs b/crates/jcode-base/src/provider/jcode.rs
-index ab1ec6c36..18a65f1e0 100644
+index dd526b100..95ca0522c 100644
 --- a/crates/jcode-base/src/provider/jcode.rs
 +++ b/crates/jcode-base/src/provider/jcode.rs
 @@ -27,6 +27,9 @@ impl JcodeProvider {
@@ -1047,12 +1181,12 @@ index ab1ec6c36..18a65f1e0 100644
          Self::apply_runtime_profile();
          let inner = MultiProvider::new_fast();
 diff --git a/crates/jcode-base/src/provider/mod.rs b/crates/jcode-base/src/provider/mod.rs
-index 25ae0f20e..b6b3ea6f9 100644
+index 4d068a481..3f1d8199a 100644
 --- a/crates/jcode-base/src/provider/mod.rs
 +++ b/crates/jcode-base/src/provider/mod.rs
-@@ -438,14 +438,14 @@ pub struct MultiProvider {
+@@ -462,14 +462,14 @@ impl MultiProvider {
+     }
 
- impl MultiProvider {
      fn provider_family_policy(families: &[String]) -> ProviderFamilyPolicy {
 -    let policy = ProviderFamilyPolicy::parse(families);
 -    if !policy.unknown_values().is_empty() {
@@ -1073,7 +1207,7 @@ index 25ae0f20e..b6b3ea6f9 100644
      }
 
      #[cfg(test)]
-@@ -490,7 +490,7 @@ impl MultiProvider {
+@@ -514,7 +514,7 @@ impl MultiProvider {
              .map(|provider| provider.runtime_key())
      }
 
@@ -1082,8 +1216,31 @@ index 25ae0f20e..b6b3ea6f9 100644
          Self::provider_family_policy(&crate::config::config().provider.allowed_providers)
      }
 
+diff --git a/crates/jcode-base/src/provider/multi_provider.rs b/crates/jcode-base/src/provider/multi_provider.rs
+index 5ef514e4c..bb94d55cb 100644
+--- a/crates/jcode-base/src/provider/multi_provider.rs
++++ b/crates/jcode-base/src/provider/multi_provider.rs
+@@ -189,13 +189,11 @@ impl MultiProvider {
+                 jcode_provider_core::RuntimeKey::OpenRouter => ActiveProvider::OpenRouter,
+                 _ => continue,
+             };
+-            if !self.route_allowed_for_provider(target_provider, policy)
+-                || !Self::failover_model_fits(
+-                    &route.model,
+-                    Self::provider_key(target_provider),
+-                    required_context,
+-                )
+-                || route.detail.contains("no tools")
++            if !Self::failover_model_fits(
++                &route.model,
++                Self::provider_key(target_provider),
++                required_context,
++            ) || route.detail.contains("no tools")
+             {
+                 continue;
+             }
 diff --git a/crates/jcode-base/src/provider/policy_tests.rs b/crates/jcode-base/src/provider/policy_tests.rs
-index 08daa88b5..395a05f08 100644
+index e1278108b..f81a187ac 100644
 --- a/crates/jcode-base/src/provider/policy_tests.rs
 +++ b/crates/jcode-base/src/provider/policy_tests.rs
 @@ -1,6 +1,37 @@
@@ -1124,11 +1281,130 @@ index 08daa88b5..395a05f08 100644
  #[test]
  fn provider_route_policy_family_allowlist_is_legacy_when_empty() {
      assert!(MultiProvider::family_allowed_from_lists("openai-api-key", &[]));
+diff --git a/crates/jcode-base/src/provider/pricing.rs b/crates/jcode-base/src/provider/pricing.rs
+index 85ec2f877..369f24a5d 100644
+--- a/crates/jcode-base/src/provider/pricing.rs
++++ b/crates/jcode-base/src/provider/pricing.rs
+@@ -479,13 +479,13 @@ mod tests {
+         .expect("endpoints");
+         openrouter::save_endpoints_disk_cache(model, &endpoints);
+
+-        let pinned = openrouter_route_pricing("openrouter", &format!("{model}@Sail Research"), "auto")
++        let pinned = openrouter_route_pricing(&namespace, &format!("{model}@Sail Research"), "auto")
+             .expect("pinned endpoint priced");
+         assert_eq!(pinned.source, RouteCostSource::OpenRouterEndpoint);
+         assert_eq!(pinned.input_price_per_mtok_micros, Some(500_000));
+         assert_eq!(pinned.output_price_per_mtok_micros, Some(1_500_000));
+
+-        let bare = openrouter_route_pricing("openrouter", model, "auto").expect("auto route priced");
++        let bare = openrouter_route_pricing(&namespace, model, "auto").expect("auto route priced");
+         assert_eq!(bare.input_price_per_mtok_micros, Some(300_000));
+
+         let _ = std::fs::remove_file(
+diff --git a/crates/jcode-base/src/provider/tests/agent_failover.rs b/crates/jcode-base/src/provider/tests/agent_failover.rs
+index 56e68074e..96c603784 100644
+--- a/crates/jcode-base/src/provider/tests/agent_failover.rs
++++ b/crates/jcode-base/src/provider/tests/agent_failover.rs
+@@ -38,6 +38,10 @@ fn agent_failover_fixture(models: &[&str]) -> MultiProvider {
+ }
+
+ fn agent_failover_target(provider: &MultiProvider, tokens: usize, reason: &str) -> Option<String> {
++    let policy = MultiProvider::configured_provider_policy();
++    // Config reloads advance the route memo scope. Resolve policy first so the
++    // fixture catalog is stamped with the current scope before model_routes()
++    // checks its generation.
+     // Changing the configured default bumps the config generation, which is
+     // part of the memo key. Re-key the fixture catalog so the test keeps
+     // measuring its own routes instead of the real built-in catalog.
+@@ -52,7 +56,7 @@ fn agent_failover_target(provider: &MultiProvider, tokens: usize, reason: &str)
+     }
+     provider
+         .cross_provider_pool_prompt(
+-            &MultiProvider::configured_provider_policy(),
++            &policy,
+             ActiveProvider::Claude,
+             ActiveProvider::OpenAI,
+             reason.into(),
+diff --git a/crates/jcode-base/src/provider/tests/catalog_subscription.rs b/crates/jcode-base/src/provider/tests/catalog_subscription.rs
+index 0c48703a5..aa3934677 100644
+--- a/crates/jcode-base/src/provider/tests/catalog_subscription.rs
++++ b/crates/jcode-base/src/provider/tests/catalog_subscription.rs
+@@ -494,34 +494,43 @@ fn test_filtered_display_models_respects_curated_subscription_catalog() {
+
+ #[test]
+ fn test_remote_jcode_subscription_fallback_keeps_managed_route_identity() {
+-    let models = vec![
+-        "claude-opus-5-5".to_string(),
+-        "claude-sonnet-5-5".to_string(),
+-        "claude-haiku-5-5".to_string(),
+-        "gpt-6.1-sol".to_string(),
+-    ];
+-    let routes = remote_model_routes_fallback(
+-        Some(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME),
+-        &models,
+-    );
++    with_clean_provider_test_env(|| {
++        let config_path = crate::config::Config::path().expect("config path");
++        std::fs::create_dir_all(config_path.parent().expect("config parent"))
++            .expect("config parent");
++        std::fs::write(&config_path, "[provider]\nallowed_providers = [\"jcode\"]\n")
++            .expect("hosted provider policy");
++        crate::config::invalidate_config_cache();
++
++        let models = vec![
++            "claude-opus-5-5".to_string(),
++            "claude-sonnet-5-5".to_string(),
++            "claude-haiku-5-5".to_string(),
++            "gpt-6.1-sol".to_string(),
++        ];
++        let routes = remote_model_routes_fallback(
++            Some(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME),
++            &models,
++        );
+
+-    assert_eq!(
+-        routes
+-            .iter()
+-            .map(|route| route.model.as_str())
+-            .collect::<Vec<_>>(),
+-        vec![
+-            "claude-opus-5-5",
+-            "claude-sonnet-5-5",
+-            "claude-haiku-5-5",
+-            "gpt-6.1-sol",
+-        ]
+-    );
+-    assert!(routes.iter().all(|route| {
+-        route.provider == crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
+-            && route.api_method == crate::subscription_catalog::JCODE_ROUTE_API_METHOD
+-            && route.available
+-    }));
++        assert_eq!(
++            routes
++                .iter()
++                .map(|route| route.model.as_str())
++                .collect::<Vec<_>>(),
++            vec![
++                "claude-opus-5-5",
++                "claude-sonnet-5-5",
++                "claude-haiku-5-5",
++                "gpt-6.1-sol",
++            ]
++        );
++        assert!(routes.iter().all(|route| {
++            route.provider == crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
++                && route.api_method == crate::subscription_catalog::JCODE_ROUTE_API_METHOD
++                && route.available
++        }));
++    });
+ }
+
+ #[test]
 diff --git a/crates/jcode-base/src/provider/tests/fallback_failover.rs b/crates/jcode-base/src/provider/tests/fallback_failover.rs
-index a0afae35d..994f57141 100644
+index 23419b167..b9fe3fe64 100644
 --- a/crates/jcode-base/src/provider/tests/fallback_failover.rs
 +++ b/crates/jcode-base/src/provider/tests/fallback_failover.rs
-@@ -236,6 +236,18 @@ fn test_auto_default_prefers_copilot_when_zero_premium_mode_enabled() {
+@@ -237,6 +237,18 @@ fn test_auto_default_prefers_copilot_when_zero_premium_mode_enabled() {
      assert_eq!(active, ActiveProvider::Copilot);
  }
 
@@ -1148,7 +1424,7 @@ index a0afae35d..994f57141 100644
  fn test_should_failover_on_403_forbidden() {
      let err = anyhow::anyhow!(
 diff --git a/crates/jcode-base/src/provider_catalog.rs b/crates/jcode-base/src/provider_catalog.rs
-index ab558d72e..e7cfdf546 100644
+index d0f8ce76c..55436461e 100644
 --- a/crates/jcode-base/src/provider_catalog.rs
 +++ b/crates/jcode-base/src/provider_catalog.rs
 @@ -6,6 +6,62 @@ pub use jcode_provider_env::{
@@ -1215,7 +1491,7 @@ index ab558d72e..e7cfdf546 100644
  pub const MINIMAX_CHINA_API_BASE: &str = "https://api.minimaxi.com/v1";
  pub const MINIMAX_CHINA_SETUP_URL: &str = "https://platform.minimaxi.com/docs/llms.txt";
 diff --git a/crates/jcode-base/src/provider_catalog_tests.rs b/crates/jcode-base/src/provider_catalog_tests.rs
-index 7ef62c584..ba162d2e6 100644
+index a59b9c8cb..8464a78b2 100644
 --- a/crates/jcode-base/src/provider_catalog_tests.rs
 +++ b/crates/jcode-base/src/provider_catalog_tests.rs
 @@ -511,6 +511,32 @@ fn matrix_login_provider_ids_and_aliases_are_unique() {
@@ -1251,6 +1527,40 @@ index 7ef62c584..ba162d2e6 100644
  #[test]
  fn matrix_tui_login_selection_supports_numbers_and_names() {
      let providers = tui_login_providers();
+@@ -555,6 +581,17 @@ fn matrix_tui_login_selection_supports_numbers_and_names() {
+
+ #[test]
+ fn matrix_cli_login_selection_preserves_existing_order() {
++    let _lock = crate::storage::lock_test_env();
++    let home = tempfile::tempdir().unwrap();
++    let _guard = EnvGuard::save(&["JCODE_HOME"]);
++    crate::env::set_var("JCODE_HOME", home.path());
++    std::fs::write(
++        home.path().join("config.toml"),
++        "productionprivacydefault = true\n\
++[provider]\nallowed_providers = [\"jcode\"]\n",
++    )
++    .unwrap();
++    crate::config::invalidate_config_cache();
+     let providers = cli_login_providers();
+     assert_eq!(
+         resolve_login_selection("1", &providers).map(|provider| provider.id),
+@@ -579,10 +616,14 @@ fn matrix_cli_login_selection_preserves_existing_order() {
+     );
+     assert_eq!(
+         resolve_login_selection("8", &providers).map(|provider| provider.id),
+-        Some("bedrock")
++        Some("openrouter-eu")
+     );
+     assert_eq!(
+         resolve_login_selection("9", &providers).map(|provider| provider.id),
++        Some("bedrock")
++    );
++    assert_eq!(
++        resolve_login_selection("10", &providers).map(|provider| provider.id),
+         Some("azure")
+     );
+     assert_eq!(
 diff --git a/crates/jcode-base/src/sponsors.rs b/crates/jcode-base/src/sponsors.rs
 index b7e6d9b15..1feb13b55 100644
 --- a/crates/jcode-base/src/sponsors.rs
@@ -1266,11 +1576,119 @@ index b7e6d9b15..1feb13b55 100644
 +        assert!(!config.sponsors.enabled);
      }
  }
+diff --git a/crates/jcode-base/src/sponsors/provenance.rs b/crates/jcode-base/src/sponsors/provenance.rs
+index 9f0579536..753c7c8f1 100644
+--- a/crates/jcode-base/src/sponsors/provenance.rs
++++ b/crates/jcode-base/src/sponsors/provenance.rs
+@@ -50,6 +50,37 @@ struct UsageCounts {
+
+ static STATE: Mutex<Option<ProvenanceState>> = Mutex::new(None);
+
++#[cfg(test)]
++thread_local! {
++    static TEST_SPONSOR_CONSENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++fn sponsors_enabled() -> bool {
++    #[cfg(test)]
++    if TEST_SPONSOR_CONSENT.with(std::cell::Cell::get) {
++        return true;
++    }
++    crate::config::config().sponsors.enabled
++}
++
++#[cfg(test)]
++pub(crate) struct TestSponsorConsent(bool);
++
++#[cfg(test)]
++impl TestSponsorConsent {
++    pub(crate) fn grant() -> Self {
++        let previous = TEST_SPONSOR_CONSENT.with(|consent| consent.replace(true));
++        Self(previous)
++    }
++}
++
++#[cfg(test)]
++impl Drop for TestSponsorConsent {
++    fn drop(&mut self) {
++        TEST_SPONSOR_CONSENT.with(|consent| consent.set(self.0));
++    }
++}
++
+ const FLUSH_INTERVAL: Duration = Duration::from_secs(60 * 60);
+ const FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
+@@ -83,7 +114,7 @@ pub fn record_discovered_setups(setups: Vec<DiscoveredSetup>) {
+ /// discovered setup, tag it and count the connect. Returns the sponsor
+ /// name when tagged so the caller can render the disclosure line.
+ pub fn on_server_connected(server_name: &str, command: &str, args: &[String]) -> Option<String> {
+-    if !crate::config::config().sponsors.enabled {
++    if !sponsors_enabled() {
+         return None;
+     }
+     with_state(|state| {
+@@ -108,7 +139,7 @@ pub fn on_server_connected(server_name: &str, command: &str, args: &[String]) ->
+ /// Called after every MCP tool call. Counts calls/errors for
+ /// provenance-tagged servers only; everything else is a no-op.
+ pub fn on_tool_call(server_name: &str, is_error: bool) {
+-    if !crate::config::config().sponsors.enabled {
++    if !sponsors_enabled() {
+         return;
+     }
+     let flush_body = with_state(|state| {
+@@ -199,7 +230,7 @@ fn spawn_flush(reports: Vec<UsageReport>) {
+ /// Flush pending aggregates immediately (best effort). Called on shutdown
+ /// so short sessions still report.
+ pub fn flush_now() {
+-    if !crate::config::config().sponsors.enabled {
++    if !sponsors_enabled() {
+         return;
+     }
+     let reports = with_state(|state| {
+@@ -224,22 +255,9 @@ pub(crate) fn drain_pending_for_tests() -> Vec<UsageReport> {
+ mod tests {
+     use super::*;
+
+-    fn enable_sponsors() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+-        let guard = crate::storage::lock_test_env();
+-        let temp = tempfile::tempdir().unwrap();
+-        crate::env::set_var("JCODE_HOME", temp.path());
+-        std::fs::write(
+-            temp.path().join("config.toml"),
+-            "[sponsors]\nenabled = true\n",
+-        )
+-        .unwrap();
+-        crate::config::Config::invalidate_cache();
+-        (guard, temp)
+-    }
+-
+     #[test]
+     fn connect_matching_discovered_setup_tags_and_counts() {
+-        let _env = enable_sponsors();
++        let _sponsor_consent = TestSponsorConsent::grant();
+         reset_for_tests();
+         record_discovered_setups(vec![DiscoveredSetup {
+             sponsor: "agentcard".into(),
+@@ -268,7 +286,7 @@ mod tests {
+
+     #[test]
+     fn non_discovered_servers_are_never_tagged_or_metered() {
+-        let _env = enable_sponsors();
++        let _sponsor_consent = TestSponsorConsent::grant();
+         reset_for_tests();
+         record_discovered_setups(vec![DiscoveredSetup {
+             sponsor: "agentcard".into(),
+@@ -316,4 +334,5 @@ mod tests {
+         let reports = with_state(drain_reports);
+         assert!(reports.is_empty());
+     }
++
+ }
 diff --git a/crates/jcode-base/src/usage.rs b/crates/jcode-base/src/usage.rs
-index da1510a96..58a1b4ad3 100644
+index 0e7773158..0a5a83fdb 100644
 --- a/crates/jcode-base/src/usage.rs
 +++ b/crates/jcode-base/src/usage.rs
-@@ -204,18 +204,27 @@ where
+@@ -283,18 +283,27 @@ where
      let openai_generation = openai_usage_generation();
 
      let now = Instant::now();
@@ -1303,7 +1721,7 @@ index da1510a96..58a1b4ad3 100644
      } else {
          false
      };
-@@ -401,7 +410,9 @@ fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<Provider
+@@ -480,7 +489,9 @@ fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<Provider
          total += 1;
      }
 
@@ -1314,7 +1732,7 @@ index da1510a96..58a1b4ad3 100644
          tasks.spawn(async {
              fetch_jcode_usage_report().await.map(|mut report| {
                  attach_activity(&mut report, "jcode");
-@@ -416,6 +427,55 @@ fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<Provider
+@@ -495,6 +506,55 @@ fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<Provider
      total
  }
 
@@ -1371,10 +1789,10 @@ index da1510a96..58a1b4ad3 100644
  /// sweeper skips these so used-but-unreported logins (Cursor, Bedrock,
  /// Azure, jcode subscription, ...) still show recency + local spend without
 diff --git a/crates/jcode-base/src/usage/provider_fetch.rs b/crates/jcode-base/src/usage/provider_fetch.rs
-index ae5de729d..6d60d9eec 100644
+index c6e629d35..5d64fb606 100644
 --- a/crates/jcode-base/src/usage/provider_fetch.rs
 +++ b/crates/jcode-base/src/usage/provider_fetch.rs
-@@ -877,6 +877,9 @@ pub(super) async fn fetch_jcode_usage_report() -> Option<ProviderUsage> {
+@@ -933,6 +933,9 @@ pub(super) async fn fetch_jcode_usage_report() -> Option<ProviderUsage> {
  pub(crate) const JCODE_UPGRADE_HINT_PERCENT: f32 = 80.0;
 
  pub(crate) fn jcode_usage_report(me: &crate::subscription_api::SubscriptionMe) -> ProviderUsage {
@@ -1384,11 +1802,138 @@ index ae5de729d..6d60d9eec 100644
      let mut limits = Vec::new();
      let mut extra_info = vec![(
          "Plan".to_string(),
+diff --git a/crates/jcode-base/src/usage/tests.rs b/crates/jcode-base/src/usage/tests.rs
+index 5a6d9198c..274671485 100644
+--- a/crates/jcode-base/src/usage/tests.rs
++++ b/crates/jcode-base/src/usage/tests.rs
+@@ -1,5 +1,41 @@
+ use super::*;
+
++fn with_hosted_jcode_usage<T>(f: impl FnOnce() -> T) -> T {
++    let _lock = crate::storage::lock_test_env();
++    let home = tempfile::tempdir().expect("hosted usage test home");
++    let home_restore = TestJcodeHome::new(home.path());
++    std::fs::write(
++        home.path().join("config.toml"),
++        "[provider]\nallowed_providers = [\"jcode\"]\n",
++    )
++    .expect("write hosted provider fixture");
++    crate::config::invalidate_config_cache();
++    let result = f();
++    drop(home_restore);
++    result
++}
++
++struct TestJcodeHome(Option<std::ffi::OsString>);
++
++impl TestJcodeHome {
++    fn new(path: &std::path::Path) -> Self {
++        let previous_home = std::env::var_os("JCODE_HOME");
++        crate::env::set_var("JCODE_HOME", path);
++        Self(previous_home)
++    }
++}
++
++impl Drop for TestJcodeHome {
++    fn drop(&mut self) {
++        if let Some(previous_home) = self.0.take() {
++            crate::env::set_var("JCODE_HOME", previous_home);
++        } else {
++            crate::env::remove_var("JCODE_HOME");
++        }
++        crate::config::invalidate_config_cache();
++    }
++}
++
+ #[test]
+ fn test_usage_data_default() {
+     let data = UsageData::default();
+@@ -946,6 +982,7 @@ fn jcode_me(memory_used: u64, upgrade: bool) -> crate::subscription_api::Subscri
+
+ #[test]
+ fn jcode_usage_shows_monthly_inference_spending_and_remaining() {
++    with_hosted_jcode_usage(|| {
+     let mut me = jcode_me(100, true);
+     me.usage.used_usd = 12.5;
+     me.usage.budget_usd = 50.0;
+@@ -969,10 +1006,12 @@ fn jcode_usage_shows_monthly_inference_spending_and_remaining() {
+     assert_eq!(report.limits[1].name, "Memory recall (daily)");
+     assert!(!report.hard_limit_reached);
+     assert!(report.extra_info.iter().all(|(key, _)| key != "Upgrade"));
++    });
+ }
+
+ #[test]
+ fn jcode_usage_monthly_limit_exhaustion_clamps_remaining() {
++    with_hosted_jcode_usage(|| {
+     for used in [50.0, 60.0] {
+         let mut me = jcode_me(100, false);
+         me.usage.used_usd = used;
+@@ -986,10 +1025,12 @@ fn jcode_usage_monthly_limit_exhaustion_clamps_remaining() {
+                 .contains(&("Inference spending limit remaining".into(), "$0.00".into()))
+         );
+     }
++    });
+ }
+
+ #[test]
+ fn jcode_usage_unknown_monthly_budget_is_not_exhausted() {
++    with_hosted_jcode_usage(|| {
+     for budget in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+         let mut me = jcode_me(100, false);
+         me.usage.used_usd = 10.0;
+@@ -1006,10 +1047,12 @@ fn jcode_usage_unknown_monthly_budget_is_not_exhausted() {
+         me.jev_usage.as_mut().unwrap().memory.used = 1000;
+         assert!(jcode_usage_report(&me).hard_limit_reached);
+     }
++    });
+ }
+
+ #[test]
+ fn jcode_usage_shows_daily_allowances_without_upsell_when_low() {
++    with_hosted_jcode_usage(|| {
+     let report = jcode_usage_report(&jcode_me(100, true));
+     assert_eq!(report.provider_name, "Jcode subscription");
+     assert_eq!(report.limits.len(), 2);
+@@ -1017,10 +1060,12 @@ fn jcode_usage_shows_daily_allowances_without_upsell_when_low() {
+     assert!((report.limits[0].usage_percent - 10.0).abs() < 0.01);
+     assert!(!report.hard_limit_reached);
+     assert!(report.extra_info.iter().all(|(key, _)| key != "Upgrade"));
++    });
+ }
+
+ #[test]
+ fn jcode_usage_suggests_upgrade_near_and_at_the_limit() {
++    with_hosted_jcode_usage(|| {
+     let near = jcode_usage_report(&jcode_me(850, true));
+     let hint = near
+         .extra_info
+@@ -1034,10 +1079,12 @@ fn jcode_usage_suggests_upgrade_near_and_at_the_limit() {
+     // The top plan has nowhere to upgrade, so no hint is shown.
+     let top = jcode_usage_report(&jcode_me(1000, false));
+     assert!(top.extra_info.iter().all(|(key, _)| key != "Upgrade"));
++    });
+ }
+
+ #[test]
+ fn jcode_usage_tolerates_older_gateways_without_jev_usage() {
++    with_hosted_jcode_usage(|| {
+     let me: crate::subscription_api::SubscriptionMe = serde_json::from_value(serde_json::json!({
+         "account_id": "a", "email": "e", "tier": "pro", "status": "active"
+     }))
+@@ -1045,6 +1092,7 @@ fn jcode_usage_tolerates_older_gateways_without_jev_usage() {
+     let report = jcode_usage_report(&me);
+     assert!(report.limits.is_empty());
+     assert_eq!(report.extra_info[0].0, "Plan");
++    });
+ }
+
+ #[test]
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 81dc1b72f..aa28421ea 100644
+index 49fb3bac1..ae3c73cfc 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1077,18 +1077,12 @@ pub struct AutoReviewConfig {
+@@ -1078,32 +1078,65 @@ pub struct AutoReviewConfig {
 
  /// Integration discovery configuration (legacy `[sponsors]` section name).
  ///
@@ -1397,10 +1942,11 @@ index 81dc1b72f..aa28421ea 100644
 -/// providers may share revenue with Jcode when a referred user becomes a
 -/// customer, but partnership status never influences recommendations.
 -/// See <https://jcode.sh/discovery-tools>.
+-#[derive(Debug, Clone, Serialize, Deserialize)]
+-#[serde(default)]
 +/// Hosted integration discovery is hard-disabled; the config field remains for
 +/// compatibility but its effective value is always false.
- #[derive(Debug, Clone, Serialize, Deserialize)]
- #[serde(default)]
++#[derive(Debug, Clone, Serialize)]
  pub struct SponsorsConfig {
 -    /// Enable integration discovery. Enabled by default; set to false to opt
 -    /// out. When false, no discovery categories are added to the prompt, the
@@ -1410,20 +1956,66 @@ index 81dc1b72f..aa28421ea 100644
      pub enabled: bool,
      /// Base URL of the discovery endpoint.
      pub endpoint: String,
-@@ -1097,7 +1091,7 @@ pub struct SponsorsConfig {
++    #[serde(skip)]
++    enabled_was_explicit: bool,
+ }
+
  impl Default for SponsorsConfig {
      fn default() -> Self {
          Self {
 -            enabled: true,
 +            enabled: false,
++            endpoint: "https://api.jcode.sh/v1/discovery".to_string(),
++            enabled_was_explicit: false,
++        }
++    }
++}
++
++impl SponsorsConfig {
++    /// Whether the config file explicitly included the legacy enable flag.
++    pub fn enabled_was_explicit(&self) -> bool {
++        self.enabled_was_explicit
++    }
++}
++
++#[derive(Deserialize)]
++#[serde(default)]
++struct SponsorsConfigDeserialize {
++    enabled: Option<bool>,
++    endpoint: String,
++}
++
++impl Default for SponsorsConfigDeserialize {
++    fn default() -> Self {
++        Self {
++            enabled: None,
              endpoint: "https://api.jcode.sh/v1/discovery".to_string(),
          }
      }
+ }
+
++impl<'de> Deserialize<'de> for SponsorsConfig {
++    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
++    where
++        D: serde::Deserializer<'de>,
++    {
++        let config = SponsorsConfigDeserialize::deserialize(deserializer)?;
++        Ok(Self {
++            enabled: config.enabled.unwrap_or(false),
++            endpoint: config.endpoint,
++            enabled_was_explicit: config.enabled.is_some(),
++        })
++    }
++}
++
+ /// Automatic end-of-turn execution judging configuration.
+ #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+ #[serde(default)]
 diff --git a/crates/jcode-provider-core/src/lib.rs b/crates/jcode-provider-core/src/lib.rs
-index f53b8e9ad..edfecd0d0 100644
+index ef4137374..7227bb3fb 100644
 --- a/crates/jcode-provider-core/src/lib.rs
 +++ b/crates/jcode-provider-core/src/lib.rs
-@@ -962,22 +962,41 @@ impl fmt::Display for ProviderFamily {
+@@ -1049,22 +1049,41 @@ impl fmt::Display for ProviderFamily {
      }
  }
 
@@ -1469,7 +2061,7 @@ index f53b8e9ad..edfecd0d0 100644
          let mut allowed = HashSet::new();
          let mut unknown = Vec::new();
          for raw in values {
-@@ -988,19 +1007,33 @@ impl ProviderFamilyPolicy {
+@@ -1075,19 +1094,33 @@ impl ProviderFamilyPolicy {
          }
          unknown.sort();
          unknown.dedup();
@@ -1525,10 +2117,10 @@ index 6308dd40d..bc89efeee 100644
      }));
 
 diff --git a/crates/jcode-telemetry-core/src/concurrency.rs b/crates/jcode-telemetry-core/src/concurrency.rs
-index b63cd7177..262d604da 100644
+index 943b63bc9..f36406e2a 100644
 --- a/crates/jcode-telemetry-core/src/concurrency.rs
 +++ b/crates/jcode-telemetry-core/src/concurrency.rs
-@@ -340,13 +340,18 @@ pub fn begin_concurrency_session(
+@@ -346,14 +346,19 @@ pub fn begin_concurrency_session(
      session_id: &str,
      parent_session_id: Option<&str>,
  ) -> ConcurrencySession {
@@ -1542,6 +2134,7 @@ index b63cd7177..262d604da 100644
 +            String::new()
 +        },
          child: parent_session_id.is_some(),
+         pending: None,
          lease: None,
          at_start: Counts::default(),
 -        active: is_enabled(),
@@ -1550,20 +2143,31 @@ index b63cd7177..262d604da 100644
      if !guard.active {
          return guard;
 diff --git a/crates/jcode-telemetry-core/src/lib.rs b/crates/jcode-telemetry-core/src/lib.rs
-index 6b674c908..332c725f4 100644
+index 6cb7c5019..279497cd0 100644
 --- a/crates/jcode-telemetry-core/src/lib.rs
 +++ b/crates/jcode-telemetry-core/src/lib.rs
-@@ -37,7 +37,9 @@ use std::sync::mpsc::TrySendError;
+@@ -40,9 +40,12 @@ use std::sync::mpsc::TrySendError;
  use std::sync::mpsc::{SyncSender, sync_channel};
  use std::time::{Duration, Instant};
 
 +#[cfg(test)]
  const TELEMETRY_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/event";
 +#[cfg(test)]
+ const TELEMETRY_USAGE_ENDPOINT: &str = "https://telemetry.jcode.sh/v2/usage";
+
++#[cfg(test)]
+ fn telemetry_endpoint(payload: &serde_json::Value) -> &'static str {
+     // An old worker must reject new retryable usage without mutating legacy
+     // aggregates. Never fall back to /v1/event when this endpoint is absent.
+@@ -52,6 +55,7 @@ fn telemetry_endpoint(payload: &serde_json::Value) -> &'static str {
+         TELEMETRY_ENDPOINT
+     }
+ }
++#[cfg(test)]
  const TRANSCRIPT_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/transcript";
  #[cfg(not(test))]
  const ASYNC_SEND_TIMEOUT: Duration = Duration::from_secs(5);
-@@ -60,6 +62,10 @@ static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new
+@@ -74,6 +78,10 @@ static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new
  static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
  #[cfg(test)]
  static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
@@ -1574,7 +2178,7 @@ index 6b674c908..332c725f4 100644
 
  #[derive(Debug, Clone)]
  pub struct DiscoveryTelemetry<'a> {
-@@ -468,14 +474,18 @@ pub fn opt_out_source() -> Option<TelemetryOptOutSource> {
+@@ -482,14 +490,18 @@ pub fn opt_out_source() -> Option<TelemetryOptOutSource> {
  pub fn status() -> TelemetryStatus {
      let opt_out_source = opt_out_source();
      TelemetryStatus {
@@ -1594,7 +2198,7 @@ index 6b674c908..332c725f4 100644
      match opt_out_source() {
          Some(TelemetryOptOutSource::Environment) => {
              logging::debug("telemetry disabled by environment");
-@@ -489,6 +499,33 @@ pub fn is_enabled() -> bool {
+@@ -503,6 +515,33 @@ pub fn is_enabled() -> bool {
      }
  }
 
@@ -1617,7 +2221,7 @@ index 6b674c908..332c725f4 100644
 +    TEST_FORCE_TELEMETRY_OFF.with(|forced| forced.set(disabled));
 +}
 +
-+fn telemetry_endpoint() -> Option<&'static str> {
++fn telemetry_upload_endpoint() -> Option<&'static str> {
 +    None
 +}
 +
@@ -1628,7 +2232,7 @@ index 6b674c908..332c725f4 100644
  /// Marker file recording that the user opted out of anonymous usage telemetry.
  /// Its presence is equivalent to setting `JCODE_NO_TELEMETRY=1`, but persists
  /// across shells so the onboarding "Telemetry settings" screen can honor the
-@@ -516,6 +553,9 @@ pub fn opt_out_forced_by_env() -> bool {
+@@ -530,6 +569,9 @@ pub fn opt_out_forced_by_env() -> bool {
  /// writes the `no_telemetry` marker; `true` removes it. Returns whether the
  /// change was persisted (an env-var opt-out still overrides at runtime).
  pub fn set_usage_telemetry_enabled(enabled: bool) -> bool {
@@ -1638,7 +2242,7 @@ index 6b674c908..332c725f4 100644
      let Some(path) = opt_out_marker_path() else {
          return false;
      };
-@@ -552,6 +592,9 @@ pub fn set_usage_telemetry_enabled(enabled: bool) -> bool {
+@@ -572,6 +614,9 @@ pub fn set_usage_telemetry_enabled(enabled: bool) -> bool {
  }
 
  fn emit_telemetry_opt_out() {
@@ -1648,7 +2252,7 @@ index 6b674c908..332c725f4 100644
      let Some(id) = get_or_create_id() else {
          return;
      };
-@@ -606,6 +649,9 @@ pub fn content_sharing_enabled() -> bool {
+@@ -626,6 +671,9 @@ pub fn content_sharing_enabled() -> bool {
  /// Persist the user's prompt/transcript content-sharing choice. Writing the
  /// marker opts in; removing it opts out. Returns whether the write succeeded.
  pub fn set_content_sharing_enabled(enabled: bool) -> bool {
@@ -1658,7 +2262,7 @@ index 6b674c908..332c725f4 100644
      let Some(path) = share_content_marker_path() else {
          return false;
      };
-@@ -645,6 +691,9 @@ pub fn record_transcript(
+@@ -665,6 +713,9 @@ pub fn record_transcript(
      end_reason: SessionEndReason,
      messages: Value,
  ) -> bool {
@@ -1668,7 +2272,7 @@ index 6b674c908..332c725f4 100644
      if !content_sharing_enabled() {
          return false;
      }
-@@ -1204,6 +1253,9 @@ fn mark_tool_success_side_effects(state: &mut SessionTelemetry, name: &str, inpu
+@@ -1224,6 +1275,9 @@ fn mark_tool_success_side_effects(state: &mut SessionTelemetry, name: &str, inpu
  }
 
  pub fn record_command_family(command: &str) {
@@ -1678,26 +2282,26 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -1217,6 +1269,9 @@ pub fn record_command_family(command: &str) {
+@@ -1237,6 +1291,9 @@ pub fn record_command_family(command: &str) {
 
  #[cfg(not(test))]
  fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
-+    let Some(endpoint) = telemetry_endpoint() else {
++    let Some(endpoint) = telemetry_upload_endpoint() else {
 +        return false;
 +    };
-     if TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
+     if payload["event"] == "usage_report" && !is_enabled() {
          return false;
      }
-@@ -1230,7 +1285,7 @@ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
+@@ -1255,7 +1312,7 @@ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
              .expect("telemetry HTTP client should build")
      });
      match client
--        .post(TELEMETRY_ENDPOINT)
+-        .post(telemetry_endpoint(&payload))
 +        .post(endpoint)
          .timeout(timeout)
          .json(&payload)
          .send()
-@@ -1277,6 +1332,9 @@ fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> boo
+@@ -1310,6 +1367,9 @@ fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> boo
 
  #[cfg(not(test))]
  fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> bool {
@@ -1707,7 +2311,7 @@ index 6b674c908..332c725f4 100644
      let client = TELEMETRY_HTTP_CLIENT.get_or_init(|| {
          reqwest::blocking::Client::builder()
              .user_agent(jcode_provider_core::JCODE_USER_AGENT)
-@@ -1284,7 +1342,7 @@ fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> boo
+@@ -1317,7 +1377,7 @@ fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> boo
              .expect("telemetry HTTP client should build")
      });
      match client
@@ -1716,7 +2320,17 @@ index 6b674c908..332c725f4 100644
          .timeout(timeout)
          .json(&payload)
          .send()
-@@ -1370,6 +1428,9 @@ fn transcript_background_sender() -> &'static SyncSender<Value> {
+@@ -1357,6 +1417,9 @@ static TELEMETRY_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::
+ /// elapses. For short-lived processes, such as `jcode-desktop --update`, that
+ /// exit right after recording an event.
+ pub fn flush_pending(timeout: std::time::Duration) {
++    if !is_enabled() {
++        return;
++    }
+     let deadline = std::time::Instant::now() + timeout;
+     #[cfg(not(test))]
+     usage_outbox::wake();
+@@ -1417,6 +1480,9 @@ fn transcript_background_sender() -> &'static SyncSender<Value> {
 
  #[cfg(test)]
  fn send_transcript_payload(payload: Value) -> bool {
@@ -1726,7 +2340,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
          emitted.push(payload);
      }
-@@ -1378,6 +1439,9 @@ fn send_transcript_payload(payload: Value) -> bool {
+@@ -1425,6 +1491,9 @@ fn send_transcript_payload(payload: Value) -> bool {
 
  #[cfg(not(test))]
  fn send_transcript_payload(payload: Value) -> bool {
@@ -1736,7 +2350,7 @@ index 6b674c908..332c725f4 100644
      match transcript_background_sender().try_send(payload) {
          Ok(()) => true,
          Err(TrySendError::Full(_)) => {
-@@ -1393,6 +1457,9 @@ fn send_transcript_payload(payload: Value) -> bool {
+@@ -1440,6 +1509,9 @@ fn send_transcript_payload(payload: Value) -> bool {
 
  #[cfg(test)]
  fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
@@ -1746,17 +2360,17 @@ index 6b674c908..332c725f4 100644
      concurrency::mark_legacy_concurrency_unavailable(&mut payload);
      tests::TEST_DELIVERY_MODES.lock().unwrap().push(mode);
      if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
-@@ -1403,6 +1470,9 @@ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
-
- #[cfg(not(test))]
- fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
-+    if telemetry_endpoint().is_none() {
+@@ -1453,6 +1525,9 @@ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
+     if !categories::payload_allowed(&payload) {
+         return false;
+     }
++    if telemetry_upload_endpoint().is_none() {
 +        return false;
 +    }
      concurrency::mark_legacy_concurrency_unavailable(&mut payload);
-     match mode {
-         DeliveryMode::Background => {
-@@ -1837,6 +1907,9 @@ pub fn record_provider_selected(provider: &str) {
+     // Usage events bypass the volatile activity queue. A process exit, queue
+     // overflow, or retry exhaustion must not discard the authoritative spend.
+@@ -1893,6 +1968,9 @@ pub fn record_provider_selected(provider: &str) {
  }
 
  pub fn record_auth_started(provider: &str, method: &str) {
@@ -1766,7 +2380,7 @@ index 6b674c908..332c725f4 100644
      jcode_logging::auth_event("auth_started", provider, &[("method", method)]);
      emit_onboarding_step("auth_started", Some(provider), Some(method), None);
  }
-@@ -1846,6 +1919,9 @@ pub fn record_auth_failed(provider: &str, method: &str) {
+@@ -1902,6 +1980,9 @@ pub fn record_auth_failed(provider: &str, method: &str) {
  }
 
  pub fn record_auth_failed_reason(provider: &str, method: &str, reason: &str) {
@@ -1776,7 +2390,7 @@ index 6b674c908..332c725f4 100644
      jcode_logging::auth_event(
          "auth_failed",
          provider,
-@@ -1855,16 +1931,25 @@ pub fn record_auth_failed_reason(provider: &str, method: &str, reason: &str) {
+@@ -1911,16 +1992,25 @@ pub fn record_auth_failed_reason(provider: &str, method: &str, reason: &str) {
  }
 
  pub fn record_auth_cancelled(provider: &str, method: &str) {
@@ -1802,7 +2416,7 @@ index 6b674c908..332c725f4 100644
      jcode_logging::auth_event(
          "auth_surface_blocked",
          provider,
-@@ -1879,10 +1964,10 @@ pub fn record_auth_surface_blocked_reason(provider: &str, method: &str, reason:
+@@ -1935,10 +2025,10 @@ pub fn record_auth_surface_blocked_reason(provider: &str, method: &str, reason:
  }
 
  pub fn record_auth_success(provider: &str, method: &str) {
@@ -1814,17 +2428,17 @@ index 6b674c908..332c725f4 100644
      let Some(id) = get_or_create_id() else {
          return;
      };
-@@ -1932,6 +2017,9 @@ fn begin_session_with_mode(
-     resumed_session: bool,
- ) {
+@@ -1990,6 +2080,9 @@ fn begin_session_with_mode(
      if !is_enabled() {
+         #[cfg(not(test))]
+         usage_outbox::clear_pending();
 +        if let Ok(mut guard) = SESSION_STATE.lock() {
 +            *guard = None;
 +        }
          return;
      }
      logging::info(&format!(
-@@ -2098,6 +2186,9 @@ fn begin_session_with_mode(
+@@ -2156,6 +2249,9 @@ fn begin_session_with_mode(
  }
 
  pub fn record_turn() {
@@ -1834,7 +2448,7 @@ index 6b674c908..332c725f4 100644
      let id = get_or_create_id();
      let mut prompt_event = None;
      let mut first_prompt = false;
-@@ -2162,6 +2253,9 @@ pub fn record_turn() {
+@@ -2220,6 +2316,9 @@ pub fn record_turn() {
  }
 
  pub fn record_assistant_response() {
@@ -1844,7 +2458,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2184,6 +2278,9 @@ pub fn record_assistant_response() {
+@@ -2242,6 +2341,9 @@ pub fn record_assistant_response() {
  }
 
  pub fn record_memory_injected(_count: usize, _age_ms: u64) {
@@ -1854,7 +2468,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2197,6 +2294,9 @@ pub fn record_memory_injected(_count: usize, _age_ms: u64) {
+@@ -2255,6 +2357,9 @@ pub fn record_memory_injected(_count: usize, _age_ms: u64) {
  }
 
  pub fn record_tool_call() {
@@ -1864,7 +2478,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2217,6 +2317,9 @@ pub fn record_tool_call() {
+@@ -2275,6 +2380,9 @@ pub fn record_tool_call() {
  }
 
  pub fn record_tool_failure() {
@@ -1874,7 +2488,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2230,6 +2333,9 @@ pub fn record_tool_failure() {
+@@ -2288,6 +2396,9 @@ pub fn record_tool_failure() {
  }
 
  pub fn record_connection_type(connection: &str) {
@@ -1884,7 +2498,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2393,6 +2499,9 @@ pub fn record_token_usage(
+@@ -2494,6 +2605,9 @@ pub fn record_token_usage(
      cache_read_input_tokens: Option<u64>,
      cache_creation_input_tokens: Option<u64>,
  ) {
@@ -1894,7 +2508,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2426,6 +2535,9 @@ pub fn record_token_usage(
+@@ -2527,6 +2641,9 @@ pub fn record_token_usage(
  }
 
  pub fn record_error(category: ErrorCategory) {
@@ -1904,7 +2518,7 @@ index 6b674c908..332c725f4 100644
      /// Per-session ceiling for each error counter. A runaway retry loop once
      /// logged 18k+ auth failures in one session, which distorted daily sums
      /// (one session looked like a fleet-wide auth outage). Past a few hundred
-@@ -2464,6 +2576,9 @@ pub fn record_error(category: ErrorCategory) {
+@@ -2565,6 +2682,9 @@ pub fn record_error(category: ErrorCategory) {
  }
 
  pub fn record_provider_switch() {
@@ -1914,7 +2528,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2476,6 +2591,9 @@ pub fn record_provider_switch() {
+@@ -2577,6 +2697,9 @@ pub fn record_provider_switch() {
  }
 
  pub fn record_model_switch() {
@@ -1924,7 +2538,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2488,6 +2606,9 @@ pub fn record_model_switch() {
+@@ -2589,6 +2712,9 @@ pub fn record_model_switch() {
  }
 
  pub fn record_user_cancelled() {
@@ -1934,7 +2548,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2524,6 +2645,9 @@ pub enum TodoGateKind {
+@@ -2625,6 +2751,9 @@ pub enum TodoGateKind {
 
  /// Record a todo quality-gate firing (session- and turn-scoped counters).
  pub fn record_todo_gate(kind: TodoGateKind) {
@@ -1944,7 +2558,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2559,6 +2683,9 @@ pub fn record_todo_gate(kind: TodoGateKind) {
+@@ -2660,6 +2789,9 @@ pub fn record_todo_gate(kind: TodoGateKind) {
  }
 
  pub fn record_tool_execution(name: &str, input: &Value, succeeded: bool, latency_ms: u64) {
@@ -1954,7 +2568,7 @@ index 6b674c908..332c725f4 100644
      if let Ok(mut guard) = SESSION_STATE.lock()
          && let Some(ref mut state) = *guard
      {
-@@ -2651,6 +2778,9 @@ pub fn current_provider_model() -> Option<(String, String)> {
+@@ -2752,6 +2884,9 @@ pub fn current_provider_model() -> Option<(String, String)> {
  }
 
  fn show_first_run_notice() {
@@ -1964,7 +2578,7 @@ index 6b674c908..332c725f4 100644
      // This can print before any terminal setup enables VT processing. Legacy
      // Windows consoles (conhost without ENABLE_VIRTUAL_TERMINAL_PROCESSING,
      // exactly the double-click-the-exe path) render raw escapes as `←[90m`
-@@ -2670,5 +2800,9 @@ fn show_first_run_notice() {
+@@ -2771,5 +2906,160 @@ fn show_first_run_notice() {
      eprintln!("{reset}");
  }
 
@@ -1974,8 +2588,159 @@ index 6b674c908..332c725f4 100644
 +
  #[cfg(test)]
  mod tests;
++
++#[cfg(test)]
++mod policy_sync_tests {
++    use super::*;
++    use std::process::Command;
++
++    fn run_in_isolated_test_process(test_name: &str) -> bool {
++        if std::env::var_os("JCODE_POLICY_SYNC_TEST_CHILD").is_some() {
++            return false;
++        }
++        let home = tempfile::tempdir().expect("create isolated telemetry test home");
++        let status = Command::new(std::env::current_exe().expect("current test executable"))
++            .args(["--exact", test_name])
++            .env("JCODE_HOME", home.path())
++            .env_remove("JCODE_NO_TELEMETRY")
++            .env_remove("DO_NOT_TRACK")
++            .env("JCODE_POLICY_SYNC_TEST_CHILD", "1")
++            .status()
++            .expect("run isolated policy_sync telemetry test");
++        assert!(status.success(), "isolated test process failed: {test_name}");
++        true
++    }
++
++    #[test]
++    fn policy_sync_disabled_producers_leave_no_identity_or_outbox() {
++        if run_in_isolated_test_process(
++            "policy_sync_tests::policy_sync_disabled_producers_leave_no_identity_or_outbox",
++        ) {
++            return;
++        }
++        let home = storage::jcode_dir().expect("isolated jcode home");
++
++        set_category_settings([true; 6]);
++        assert!(TelemetryCategory::Features.enabled());
++        assert!(TelemetryCategory::Cost.enabled());
++        assert!(TelemetryCategory::Accounts.enabled());
++        assert!(content_sharing_enabled());
++
++        // Use the persisted opt-out, not just the test-only force-off switch.
++        // Suppress the one-time opt-out notice while establishing the fixture.
++        force_test_telemetry_off(true);
++        assert!(set_usage_telemetry_enabled(false));
++        force_test_telemetry_off(false);
++        assert!(home.join("no_telemetry").exists());
++        assert!(home.join("telemetry_share_transcripts_v1").exists());
++        assert!(!is_enabled());
++        assert_eq!(status().telemetry_id, None);
++
++        record_setup_step_once("policy_sync_disabled");
++        record_feedback("must remain local");
++        record_provider_usage(
++            Some("disabled-session"),
++            "openai",
++            "test-model",
++            UsageSource::Agent,
++            ProviderUsage {
++                input_tokens: 10,
++                output_tokens: 5,
++                ..Default::default()
++            },
++        );
++        assert!(!record_transcript(
++            "openai",
++            "test-model",
++            SessionEndReason::NormalExit,
++            serde_json::json!([{"role": "user", "content": "private"}]),
++        ));
++        begin_session("openai", "test-model");
++        record_turn();
++        flush_pending(Duration::from_millis(10));
++
++        assert_eq!(status().telemetry_id, None);
++        assert!(!home.join("telemetry_id").exists());
++        assert!(!home.join("telemetry_usage_outbox").exists());
++        assert!(home.join("telemetry_share_transcripts_v1").exists());
++        assert!(TEST_EMITTED_PAYLOADS.lock().unwrap().is_empty());
++    }
++
++    #[test]
++    fn policy_sync_explicit_hosted_allow_retains_producer_behavior() {
++        use jcode_provider_core::{ModelRouteApiMethod, ProviderFamilyPolicy, RuntimeKey};
++
++        if run_in_isolated_test_process(
++            "policy_sync_tests::policy_sync_explicit_hosted_allow_retains_producer_behavior",
++        ) {
++            return;
++        }
++        let home = storage::jcode_dir().expect("isolated jcode home");
++
++        let hosted = ProviderFamilyPolicy::parse(&["jcode".to_string()]);
++        assert!(hosted.allows_runtime(&RuntimeKey::JcodeSubscription));
++        assert!(hosted.allows_api_method(&ModelRouteApiMethod::JcodeSubscription));
++
++        let direct = ProviderFamilyPolicy::default();
++        for runtime in [
++            RuntimeKey::ClaudeOAuth,
++            RuntimeKey::AnthropicApiKey,
++            RuntimeKey::OpenAIOAuth,
++            RuntimeKey::OpenAIApiKey,
++        ] {
++            assert!(direct.allows_runtime(&runtime), "{}", runtime.stable_id());
++        }
++        for method in [
++            ModelRouteApiMethod::ClaudeOAuth,
++            ModelRouteApiMethod::AnthropicApiKey,
++            ModelRouteApiMethod::OpenAIOAuth,
++            ModelRouteApiMethod::OpenAIApiKey,
++        ] {
++            assert!(direct.allows_api_method(&method), "{method:?}");
++        }
++
++        // The explicit hosted provider allowlist retains route capability; it
++        // does not enable telemetry or bypass local consent/delivery guards.
++        force_test_telemetry_off(true);
++        assert!(set_usage_telemetry_enabled(false));
++        force_test_telemetry_off(false);
++        assert!(!is_enabled());
++        assert!(!set_content_sharing_enabled(true));
++        assert!(!TelemetryCategory::Content.enabled());
++        assert!(!TelemetryCategory::Usage.enabled());
++        assert!(!TelemetryCategory::Cost.enabled());
++        assert!(telemetry_upload_endpoint().is_none());
++        assert!(transcript_endpoint().is_none());
++        assert_eq!(status().telemetry_id, None);
++
++        record_provider_usage(
++            Some("allowed-hosted-session"),
++            "hosted",
++            "test-model",
++            UsageSource::Agent,
++            ProviderUsage {
++                input_tokens: 10,
++                output_tokens: 5,
++                ..Default::default()
++            },
++        );
++        assert!(!record_transcript(
++            "hosted",
++            "test-model",
++            SessionEndReason::NormalExit,
++            serde_json::json!([{"role": "user", "content": "locally queued"}]),
++        ));
++        flush_pending(Duration::from_millis(10));
++
++        let emitted = TEST_EMITTED_PAYLOADS.lock().unwrap().clone();
++        assert!(emitted.is_empty());
++        assert_eq!(status().telemetry_id, None);
++        assert!(!home.join("telemetry_id").exists());
++        assert!(!home.join("telemetry_usage_outbox").exists());
++    }
++}
 diff --git a/crates/jcode-telemetry-core/src/oauth_account.rs b/crates/jcode-telemetry-core/src/oauth_account.rs
-index be2b31b44..d57fe2069 100644
+index 36bef719a..bbe33aedf 100644
 --- a/crates/jcode-telemetry-core/src/oauth_account.rs
 +++ b/crates/jcode-telemetry-core/src/oauth_account.rs
 @@ -86,6 +86,9 @@ pub fn pending_oauth_account_notice() -> Option<OAuthAccountNotice> {
@@ -2065,7 +2830,7 @@ index be2b31b44..d57fe2069 100644
      #[test]
      fn mock_new_tracked_and_failed_preflight() {
 diff --git a/crates/jcode-telemetry-core/src/tests.rs b/crates/jcode-telemetry-core/src/tests.rs
-index b9ff5c836..3b46c1ecc 100644
+index 0be8ea4e5..3f25092fa 100644
 --- a/crates/jcode-telemetry-core/src/tests.rs
 +++ b/crates/jcode-telemetry-core/src/tests.rs
 @@ -122,28 +122,25 @@ fn transcript_upload_requires_separate_content_consent() {
@@ -2126,7 +2891,7 @@ index b9ff5c836..3b46c1ecc 100644
 +    assert!(!home.join("no_telemetry").exists());
 +    assert!(!is_enabled());
 +    assert!(!production_is_enabled());
-+    assert!(telemetry_endpoint().is_none());
++    assert!(telemetry_upload_endpoint().is_none());
 +    assert!(transcript_endpoint().is_none());
 +
 +    record_setup_step_once("gate_test");
@@ -2214,7 +2979,7 @@ index b9ff5c836..3b46c1ecc 100644
      TEST_EMITTED_PAYLOADS.lock().unwrap().clear();
      if let Ok(mut session) = SESSION_STATE.lock() {
          *session = None;
-@@ -1080,8 +1128,9 @@ fn test_install_conversion_id_is_removed_when_telemetry_is_disabled() {
+@@ -1182,8 +1230,9 @@ fn test_install_conversion_id_is_removed_when_telemetry_is_disabled() {
      write_private_file(&path, "11111111-2222-4333-8444-555555555555\n");
 
      jcode_core::env::set_var("JCODE_NO_TELEMETRY", "1");
@@ -2225,6 +2990,49 @@ index b9ff5c836..3b46c1ecc 100644
      assert!(!path.exists());
 
      if let Some(prev_home) = prev_home {
+@@ -1582,6 +1631,7 @@ fn concurrency_guard_emits_versioned_runtime_events_without_counting_legacy_tui_
+ #[test]
+ fn concurrency_guard_opt_out_is_inert_and_opt_out_after_start_still_releases_ownership() {
+     let _guard = lock_telemetry_test_state();
++    use_test_telemetry(true);
+     TEST_EMITTED_PAYLOADS.lock().unwrap().clear();
+     jcode_core::env::set_var("JCODE_NO_TELEMETRY", "1");
+     let mut disabled = begin_concurrency_session("disabled-session", None);
+@@ -1597,6 +1647,7 @@ fn concurrency_guard_opt_out_is_inert_and_opt_out_after_start_still_releases_own
+     assert!(TEST_EMITTED_PAYLOADS.lock().unwrap().is_empty());
+     jcode_core::env::remove_var("JCODE_NO_TELEMETRY");
+     let mut active = begin_concurrency_session("active", None);
++    active.wait_registered();
+     jcode_core::env::set_var("DO_NOT_TRACK", "1");
+     active.finish();
+     jcode_core::env::remove_var("DO_NOT_TRACK");
+@@ -1606,6 +1657,7 @@ fn concurrency_guard_opt_out_is_inert_and_opt_out_after_start_still_releases_own
+     assert_eq!(payloads.len(), 3, "opted-out end must not emit");
+     assert_eq!(payloads[1]["active_sessions_at_start"], 1);
+     assert_eq!(payloads[2]["max_concurrent_sessions"], 1);
++    use_test_telemetry(false);
+ }
+
+ #[test]
+@@ -1813,6 +1865,9 @@ fn desktop_update_sanitizes_tokens() {
+ #[test]
+ fn telemetry_categories_gate_events_independently() {
+     let _guard = lock_test_env();
++    use_test_telemetry(true);
++    set_category_settings([true; 6]);
++    assert!(content_sharing_enabled());
+     set_category_settings([false, true, false, true, true, true]);
+     assert!(is_enabled());
+     assert!(!TelemetryCategory::Crashes.enabled());
+@@ -1828,8 +1883,6 @@ fn telemetry_categories_gate_events_independently() {
+     ));
+     assert_eq!(category_settings(), [false, true, false, true, true, true]);
+
+-    set_category_settings([false; 6]);
+-    assert!(!is_enabled());
+     set_category_settings([true; 6]);
+     assert!(content_sharing_enabled());
+     assert_eq!(category_settings(), [true; 6]);
 diff --git a/crates/jcode-telemetry-core/tests/session_creation_latency.rs b/crates/jcode-telemetry-core/tests/session_creation_latency.rs
 index 63f2b9733..64ba8bd13 100644
 --- a/crates/jcode-telemetry-core/tests/session_creation_latency.rs
@@ -2238,10 +3046,10 @@ index 63f2b9733..64ba8bd13 100644
      const CHILD: &str = "JCODE_TEST_SESSION_LATENCY_CHILD";
      if std::env::var_os(CHILD).is_some() {
 diff --git a/crates/jcode-tui/src/tui/app.rs b/crates/jcode-tui/src/tui/app.rs
-index 61b538ad2..acb928ce7 100644
+index 100fec948..34c267d4c 100644
 --- a/crates/jcode-tui/src/tui/app.rs
 +++ b/crates/jcode-tui/src/tui/app.rs
-@@ -1595,6 +1595,8 @@ pub struct App {
+@@ -1689,6 +1689,8 @@ pub struct App {
      terminal_setup_hint_shown_this_session: bool,
      // Whether the swarm-config-is-a-prompt hint has been surfaced this session.
      swarm_hint_shown_this_session: bool,
@@ -2251,7 +3059,7 @@ index 61b538ad2..acb928ce7 100644
      // Inline hotkey feedback: "pressed X → does Y" for rare known chords or
      // "X isn't bound · nearest: ..." for unknown; same slot as learn_hint.
 diff --git a/crates/jcode-tui/src/tui/app/auth_account_commands.rs b/crates/jcode-tui/src/tui/app/auth_account_commands.rs
-index d7babdbb4..01f68e49e 100644
+index fa55ceb4e..efe8b4f84 100644
 --- a/crates/jcode-tui/src/tui/app/auth_account_commands.rs
 +++ b/crates/jcode-tui/src/tui/app/auth_account_commands.rs
 @@ -1,6 +1,12 @@
@@ -2310,7 +3118,7 @@ index d7babdbb4..01f68e49e 100644
      let rest = trimmed
          .strip_prefix("/accounts")
          .or_else(|| trimmed.strip_prefix("/account"))?;
-@@ -617,6 +651,11 @@ fn execute_account_add_local(app: &mut App, provider_id: &str, label: Option<&st
+@@ -613,6 +647,11 @@ fn execute_account_add_local(app: &mut App, provider_id: &str, label: Option<&st
  pub(crate) fn resolve_account_provider_descriptor(
      input: &str,
  ) -> Option<crate::provider_catalog::LoginProviderDescriptor> {
@@ -2322,7 +3130,7 @@ index d7babdbb4..01f68e49e 100644
      crate::provider_catalog::resolve_login_provider(input)
  }
 
-@@ -1175,22 +1214,52 @@ mod tests {
+@@ -1171,22 +1210,52 @@ mod tests {
 
      #[test]
      fn parse_native_jcode_account_actions() {
@@ -2392,7 +3200,7 @@ index d7babdbb4..01f68e49e 100644
 
      #[test]
 diff --git a/crates/jcode-tui/src/tui/app/auth_account_picker.rs b/crates/jcode-tui/src/tui/app/auth_account_picker.rs
-index f866df561..eba2e7a94 100644
+index 44d0805d8..6a8ec0fcf 100644
 --- a/crates/jcode-tui/src/tui/app/auth_account_picker.rs
 +++ b/crates/jcode-tui/src/tui/app/auth_account_picker.rs
 @@ -27,7 +27,7 @@ impl App {
@@ -2405,10 +3213,10 @@ index f866df561..eba2e7a94 100644
 
          let mut items = Vec::new();
 diff --git a/crates/jcode-tui/src/tui/app/command_registry_tests.rs b/crates/jcode-tui/src/tui/app/command_registry_tests.rs
-index bcd10b8a7..8793edec8 100644
+index 1e1de2983..72a0688b1 100644
 --- a/crates/jcode-tui/src/tui/app/command_registry_tests.rs
 +++ b/crates/jcode-tui/src/tui/app/command_registry_tests.rs
-@@ -35,3 +35,28 @@ fn known_aliases_are_registered() {
+@@ -36,3 +36,28 @@ fn known_aliases_are_registered() {
          assert!(names.contains(alias), "{alias} is not registered");
      }
  }
@@ -2438,10 +3246,10 @@ index bcd10b8a7..8793edec8 100644
 +    assert!(app.command_help("hosted").is_none());
 +}
 diff --git a/crates/jcode-tui/src/tui/app/commands.rs b/crates/jcode-tui/src/tui/app/commands.rs
-index 38df968c9..1374a458d 100644
+index 873ccc296..64c0986ef 100644
 --- a/crates/jcode-tui/src/tui/app/commands.rs
 +++ b/crates/jcode-tui/src/tui/app/commands.rs
-@@ -3731,8 +3731,10 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
+@@ -3802,8 +3802,10 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
          return true;
      }
 
@@ -2563,10 +3371,10 @@ index 3ae12eda7..9908549f5 100644
 +    }
  }
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index 80cd76310..148db9935 100644
+index a0c3ee3b0..b6d63c204 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-@@ -393,6 +393,84 @@ fn remote_catalog_api_method_is_safe(api_method: &str) -> bool {
+@@ -393,6 +393,87 @@ fn remote_catalog_api_method_is_safe(api_method: &str) -> bool {
      }
  }
 
@@ -2575,6 +3383,22 @@ index 80cd76310..148db9935 100644
 +) {
 +    if crate::provider_catalog::hosted_provider_allowed() {
 +        return;
++    }
++
++    let provider_is_not_jcode_subscription = snapshot.provider_name.as_deref().is_none_or(|name| {
++        !name.eq_ignore_ascii_case(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME)
++    });
++    let poisoned_by_jcode_subscription = provider_is_not_jcode_subscription
++        && !snapshot.model_routes.is_empty()
++        && snapshot.model_routes.iter().all(|route| {
++            crate::provider::ModelRouteApiMethod::parse(&route.api_method)
++                == crate::provider::ModelRouteApiMethod::JcodeSubscription
++        });
++    if poisoned_by_jcode_subscription {
++        snapshot.model_routes = crate::provider::remote_model_routes_fallback(
++            snapshot.provider_name.as_deref(),
++            &snapshot.available_models,
++        );
 +    }
 +
 +    let jcode_only_models = snapshot
@@ -2599,12 +3423,6 @@ index 80cd76310..148db9935 100644
 +    snapshot
 +        .available_models
 +        .retain(|model| !jcode_only_models.contains(model));
-+    if snapshot.provider_name.as_deref().is_some_and(|name| {
-+        name.eq_ignore_ascii_case(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME)
-+    }) {
-+        snapshot.available_models.clear();
-+        snapshot.model_routes.clear();
-+    }
 +}
 +
 +#[cfg(test)]
@@ -2616,42 +3434,35 @@ index 80cd76310..148db9935 100644
 +        let mut snapshot = jcode_provider_core::ModelCatalogSnapshot {
 +            provider_name: Some("OpenRouter".to_string()),
 +            provider_model: Some("gpt-5.5".to_string()),
-+            available_models: vec!["claude-opus-4-8".to_string(), "gpt-5.5".to_string()],
-+            model_routes: vec![
-+                crate::provider::ModelRoute {
-+                    model: "claude-opus-4-8".to_string(),
-+                    provider: "Jcode Subscription".to_string(),
-+                    api_method: "jcode-subscription".to_string(),
-+                    available: true,
-+                    detail: String::new(),
-+                    usage: None,
-+                    cheapness: None,
-+                },
-+                crate::provider::ModelRoute {
-+                    model: "gpt-5.5".to_string(),
-+                    provider: "OpenAI".to_string(),
-+                    api_method: "openai-oauth".to_string(),
-+                    available: true,
-+                    detail: String::new(),
-+                    usage: None,
-+                    cheapness: None,
-+                },
-+            ],
++            available_models: vec!["deepseek/deepseek-v4-pro".to_string()],
++            model_routes: vec![crate::provider::ModelRoute {
++                model: "deepseek/deepseek-v4-pro".to_string(),
++                provider: "jcode".to_string(),
++                api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
++                available: true,
++                detail: "poisoned version 1 cache".to_string(),
++                usage: None,
++                cheapness: None,
++            }],
 +            ..Default::default()
 +        };
 +        filter_disabled_jcode_model_catalog(&mut snapshot);
 +        assert!(snapshot
 +            .model_routes
 +            .iter()
++            .any(|route| route.model == "deepseek/deepseek-v4-pro"
++                && route.api_method == "openrouter"));
++        assert!(snapshot
++            .model_routes
++            .iter()
 +            .all(|route| route.api_method != "jcode-subscription"));
-+        assert_eq!(snapshot.available_models, vec!["gpt-5.5"]);
 +    }
 +}
 +
  fn remote_model_catalog_snapshot_is_safe(
      snapshot: &jcode_provider_core::ModelCatalogSnapshot,
  ) -> bool {
-@@ -696,8 +774,9 @@ impl App {
+@@ -696,8 +777,9 @@ impl App {
 
      pub(super) fn replace_remote_model_catalog_snapshot(
          &mut self,
@@ -2662,7 +3473,18 @@ index 80cd76310..148db9935 100644
          let mut provider_meta_changed = false;
          let mut provider_name_changed = false;
          if snapshot.runtime_key != self.remote_runtime_key {
-@@ -958,8 +1037,9 @@ impl App {
+@@ -854,6 +936,10 @@ impl App {
+         // because a curated model also belongs to one of those upstreams.
+         let provider_is_jcode_subscription = remote_provider_name.is_some_and(|name| {
+             name.eq_ignore_ascii_case(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME)
++                && routes.iter().all(|route| {
++                    crate::provider::ModelRouteApiMethod::parse(&route.api_method)
++                        == crate::provider::ModelRouteApiMethod::JcodeSubscription
++                })
+         });
+         if provider_is_jcode_subscription {
+             routes.clear();
+@@ -960,8 +1046,9 @@ impl App {
 
      fn hydrate_remote_model_catalog_snapshot(
          &mut self,
@@ -2673,21 +3495,24 @@ index 80cd76310..148db9935 100644
          if !snapshot.has_routes() {
              return false;
          }
-@@ -1648,6 +1728,12 @@ impl App {
+@@ -1789,6 +1876,15 @@ impl App {
              routes
          };
          let mut routes = crate::provider::dedupe_model_routes(routes);
 +        if !crate::provider_catalog::hosted_provider_allowed() {
++            // An explicitly identified upstream route (for example OpenRouter)
++            // must survive even when its display label is `jcode`. Older poisoned
++            // caches used that label for every route but retained route methods.
 +            routes.retain(|route| {
 +                crate::provider::ModelRouteApiMethod::parse(&route.api_method)
 +                    != crate::provider::ModelRouteApiMethod::JcodeSubscription
 +            });
 +        }
-         if !self.is_remote {
+         if !is_remote {
              crate::model_usage::enrich_routes(&mut routes);
          }
 diff --git a/crates/jcode-tui/src/tui/app/input_help.rs b/crates/jcode-tui/src/tui/app/input_help.rs
-index 270bb6af8..c018cc6f4 100644
+index aef9e3a27..bc77e8b94 100644
 --- a/crates/jcode-tui/src/tui/app/input_help.rs
 +++ b/crates/jcode-tui/src/tui/app/input_help.rs
 @@ -177,12 +177,6 @@ impl App {
@@ -2703,7 +3528,7 @@ index 270bb6af8..c018cc6f4 100644
              "version" => "/version\nShow jcode version/build details.",
              "changelog" => "/changelog\nShow recent changes embedded in this build.",
              "quit" => "/quit\nExit jcode.",
-@@ -202,7 +196,7 @@ impl App {
+@@ -205,7 +199,7 @@ impl App {
                  "/tool-call-details\nShow whether the dimmed technical detail (command, path, args) renders next to the model-provided intent on tool rows.\n\n/tool-call-details on\nShow the technical detail after the intent, e.g. `bash · Run tests · $ cargo test`.\n\n/tool-call-details off\nShow only the intent on tool rows that have one. Rows without an intent still show the technical detail, and error summaries always render."
              }
              "auth" | "login" => {
@@ -2713,10 +3538,10 @@ index 270bb6af8..c018cc6f4 100644
              "reset" => {
                  "/reset  or  /reset usage limits openai\nCheck available banked OpenAI resets without spending one. Repeating this command shows the same pending confirmation.\n\n/reset usage limits openai confirm\nSpend the reviewed reset. This cannot be undone. On an uncertain error, confirm again to retry the same request safely.\n\n/reset usage limits openai cancel\nClear the pending confirmation. An already submitted reset cannot be cancelled."
 diff --git a/crates/jcode-tui/src/tui/app/model_context.rs b/crates/jcode-tui/src/tui/app/model_context.rs
-index 181e74bbf..1da772230 100644
+index 4c6fd7e1f..8a54c714a 100644
 --- a/crates/jcode-tui/src/tui/app/model_context.rs
 +++ b/crates/jcode-tui/src/tui/app/model_context.rs
-@@ -1502,7 +1502,10 @@ impl App {
+@@ -1594,7 +1594,10 @@ impl App {
          self.run_compaction_retry_turn(terminal, event_stream).await
      }
 
@@ -2728,7 +3553,7 @@ index 181e74bbf..1da772230 100644
          self.usage_report_refreshing = false;
          self.clear_usage_transient_ui();
          self.upsert_usage_display_card(Self::format_usage_display_card(
-@@ -1521,8 +1524,13 @@ impl App {
+@@ -1613,8 +1616,13 @@ impl App {
 
      pub(super) fn handle_usage_report_progress(
          &mut self,
@@ -2772,7 +3597,7 @@ index 0ee45c883..25e050035 100644
      fn oauth_notice_readable_interval_does_not_require_pending_upload() {
          let now = std::time::Instant::now();
 diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
-index fe3d3cf5b..145160417 100644
+index 712e623ca..97bb9e2bc 100644
 --- a/crates/jcode-tui/src/tui/app/onboarding_flow.rs
 +++ b/crates/jcode-tui/src/tui/app/onboarding_flow.rs
 @@ -21,10 +21,7 @@
@@ -2787,7 +3612,7 @@ index fe3d3cf5b..145160417 100644
  pub(crate) const DECISION_TIMEOUT: Duration = Duration::from_secs(60);
 
  /// Which external CLI an OAuth login was detected for.
-@@ -359,19 +356,16 @@ impl ImportReview {
+@@ -349,19 +346,16 @@ impl ImportReview {
          self.checked.iter().filter(|&&c| c).count()
      }
 
@@ -2810,7 +3635,7 @@ index fe3d3cf5b..145160417 100644
      }
  }
 
-@@ -403,10 +397,8 @@ pub(crate) enum OnboardingPhase {
+@@ -393,10 +387,8 @@ pub(crate) enum OnboardingPhase {
      /// New onboarding skips explicit model selection and uses the default route;
      /// users can still run `/model` later.
      ModelSelect,
@@ -2823,7 +3648,7 @@ index fe3d3cf5b..145160417 100644
      ContinuePrompt {
          cli: ExternalCli,
          /// Which option is highlighted (true = "Yes, continue").
-@@ -493,6 +485,8 @@ impl OnboardingFlow {
+@@ -483,6 +475,8 @@ impl OnboardingFlow {
      /// Start the post-login flow. The app immediately advances this legacy
      /// phase to continue/suggestions so first-run onboarding no longer blocks on
      /// choosing a model.
@@ -2832,7 +3657,7 @@ index fe3d3cf5b..145160417 100644
      pub(crate) fn begin() -> Self {
          Self {
              phase: OnboardingPhase::ModelSelect,
-@@ -521,13 +515,10 @@ impl OnboardingFlow {
+@@ -511,13 +505,10 @@ impl OnboardingFlow {
          !matches!(self.phase, OnboardingPhase::Done)
      }
 
@@ -2848,7 +3673,7 @@ index fe3d3cf5b..145160417 100644
              OnboardingPhase::ContinuePrompt { shown_at, .. } => Some(
                  DECISION_TIMEOUT
                      .saturating_sub(shown_at.elapsed())
-@@ -541,9 +532,6 @@ impl OnboardingFlow {
+@@ -531,9 +522,6 @@ impl OnboardingFlow {
      /// auto-select its default.
      pub(crate) fn decision_timed_out(&self) -> bool {
          match &self.phase {
@@ -2858,7 +3683,7 @@ index fe3d3cf5b..145160417 100644
              OnboardingPhase::ContinuePrompt { shown_at, .. } => {
                  shown_at.elapsed() >= DECISION_TIMEOUT
              }
-@@ -686,8 +674,7 @@ mod tests {
+@@ -676,8 +664,7 @@ mod tests {
                  shown_at: past,
              },
          };
@@ -2869,7 +3694,7 @@ index fe3d3cf5b..145160417 100644
          assert!(flow.decision_timed_out());
      }
 diff --git a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
-index 7b454d3cf..2d4ee0935 100644
+index f741d6d63..68bb44c23 100644
 --- a/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
 +++ b/crates/jcode-tui/src/tui/app/onboarding_flow_control.rs
 @@ -74,82 +74,19 @@ impl App {
@@ -2970,7 +3795,7 @@ index 7b454d3cf..2d4ee0935 100644
      fn is_new_user_for_onboarding(&self) -> bool {
          Self::is_new_user_install()
      }
-@@ -223,6 +162,8 @@ impl App {
+@@ -224,6 +163,8 @@ impl App {
      /// model picker; the default route is used and `/model` remains available.
      ///
      /// No-op if a flow is already running or the user is experienced.
@@ -2979,14 +3804,14 @@ index 7b454d3cf..2d4ee0935 100644
      pub(super) fn begin_onboarding_flow(&mut self) {
          if self.onboarding_flow.is_some() {
              return;
-@@ -793,13 +734,12 @@ impl App {
+@@ -812,13 +753,12 @@ impl App {
          if let Some(review) = self.onboarding_import_review_mut() {
              let checked = review.checked_count();
              let total = review.total();
 -            let secs = review.seconds_remaining();
              let notice = if !review.choosing {
                  if review.telemetry.is_some() {
-                     "Telemetry settings - arrows move, Enter chooses, Esc goes back".to_string()
+                     "Telemetry settings - arrows move, Space toggles, Enter on Continue saves, Esc goes back".to_string()
                  } else {
                      format!(
 -                        "Found {total} login{} - Enter imports all (auto in {secs}s), or pick \"Import less\"",
@@ -2994,7 +3819,7 @@ index 7b454d3cf..2d4ee0935 100644
                          if total == 1 { "" } else { "s" },
                      )
                  }
-@@ -1691,11 +1631,8 @@ impl App {
+@@ -1743,11 +1683,8 @@ impl App {
      /// Drive auto-advancing phases. Call once per tick/redraw. Returns true if
      /// the flow state changed (so the caller can request a redraw).
      pub(super) fn onboarding_tick(&mut self) -> bool {
@@ -3008,7 +3833,7 @@ index 7b454d3cf..2d4ee0935 100644
          let mut changed = false;
          if !self.onboarding_startup_checked {
              self.maybe_begin_onboarding_flow_on_startup();
-@@ -1736,24 +1673,16 @@ impl App {
+@@ -1788,24 +1725,16 @@ impl App {
              changed = true;
          }
 
@@ -3037,10 +3862,10 @@ index 7b454d3cf..2d4ee0935 100644
                  return true;
              }
 diff --git a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-index 5d79e74a6..db588111c 100644
+index 390df49c8..738891454 100644
 --- a/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
 +++ b/crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs
-@@ -169,8 +169,11 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
+@@ -173,8 +173,11 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
      RegisteredCommand::public("/feedback", "Send feedback about jcode"),
      RegisteredCommand::public("/telemetry", "Show or change what jcode sends"),
      RegisteredCommand::public("/support", "Email support with diagnostics prefilled"),
@@ -3054,7 +3879,7 @@ index 5d79e74a6..db588111c 100644
      RegisteredCommand::public("/config", "Show or edit configuration"),
      RegisteredCommand::public("/log", "Mark the current location in the jcode logs"),
      RegisteredCommand::public(
-@@ -945,6 +948,9 @@ impl App {
+@@ -942,6 +945,9 @@ impl App {
          }
 
          if prefix.starts_with("/login ") || prefix.starts_with("/auth ") {
@@ -3064,7 +3889,7 @@ index 5d79e74a6..db588111c 100644
              let base = if prefix.starts_with("/auth ") {
                  "/auth"
              } else {
-@@ -963,6 +969,9 @@ impl App {
+@@ -960,6 +966,9 @@ impl App {
          }
 
          if prefix.starts_with("/account ") || prefix.starts_with("/accounts ") {
@@ -3074,7 +3899,7 @@ index 5d79e74a6..db588111c 100644
              let mut suggestions = vec![
                  ("/account list".into(), "Open all provider/account actions"),
                  ("/account switch".into(), "Switch active account by label"),
-@@ -983,7 +992,7 @@ impl App {
+@@ -980,7 +989,7 @@ impl App {
                      "Set custom OpenAI-compatible API base",
                  ),
              ];
@@ -3083,7 +3908,7 @@ index 5d79e74a6..db588111c 100644
                  suggestions.push((
                      format!("/account {}", provider.id),
                      "Open this provider's account/settings actions",
-@@ -1115,11 +1124,8 @@ impl App {
+@@ -1112,11 +1121,8 @@ impl App {
              );
          }
 
@@ -3097,7 +3922,7 @@ index 5d79e74a6..db588111c 100644
          }
 
          if prefix.starts_with("/alignment ") {
-@@ -1792,7 +1798,6 @@ impl App {
+@@ -1788,7 +1794,6 @@ impl App {
                  | "/account openai remove"
                  | "/usage"
                  | "/reset"
@@ -3322,10 +4147,10 @@ index bb6e91ff4..dd68eb245 100644
 
      #[test]
 diff --git a/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs b/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs
-index 4229869c1..def79ea3e 100644
+index fddde8ec2..8b95ea26c 100644
 --- a/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_02.rs
-@@ -233,19 +233,7 @@ fn test_subscription_command_shows_jcode_status_scaffold() {
+@@ -233,20 +233,22 @@ fn test_subscription_command_shows_jcode_status_scaffold() {
          .display_messages()
          .last()
          .expect("missing /subscription response");
@@ -3335,18 +4160,34 @@ index 4229869c1..def79ea3e 100644
 -    assert!(msg.content.contains("monthly spending limit"));
 -    assert!(msg.content.contains("progressively larger tranches"));
 -    assert!(msg.content.contains("/login jcode"));
--    assert!(msg.content.contains("Claude Opus 4.8"));
--    assert!(msg.content.contains("GPT-5.5"));
--    assert!(msg.content.contains("Claude Fable 5"));
--    assert!(msg.content.contains("GPT-5.6 Sol"));
+-    assert!(msg.content.contains("Claude Opus 5.5"));
+-    assert!(msg.content.contains("Claude Sonnet 5.5"));
+-    assert!(msg.content.contains("Claude Haiku 5.5"));
+-    assert!(msg.content.contains("GPT-6.1 Sol"));
 -    assert!(!msg.content.contains("$10/mo"));
 -    assert!(!msg.content.contains("usable inference budget"));
--    assert!(!msg.content.contains("Claude Fable 5 - claude-fable-5 [Ultra]"));
+-    assert!(!msg.content.contains("Claude Opus 4.8"));
+-    assert!(!msg.content.contains("GPT-5.5"));
 +    assert!(msg.content.contains("jcode hosted accounts are disabled in this build"));
++}
++
++#[test]
++fn gate_hosted_subscription_help_and_suggestions_stay_hidden_even_when_allowlisted() {
++    with_test_jcode_home(true, || {
++        let app = create_test_app();
++        assert!(app
++            .get_suggestions_for("/sub")
++            .iter()
++            .all(|(command, _)| command != "/subscription"));
++        assert!(app
++            .get_suggestions_for("/")
++            .iter()
++            .all(|(command, _)| command != "/subscribe"));
++    });
  }
 
  #[test]
-@@ -258,14 +246,7 @@ fn test_subscribe_command_shows_hosted_pitch_and_next_step() {
+@@ -259,14 +261,7 @@ fn test_subscribe_command_shows_hosted_pitch_and_next_step() {
          .display_messages()
          .last()
          .expect("missing /subscribe response");
@@ -3378,7 +4219,7 @@ index ca2e961cc..a84f7f328 100644
          LoginRecovery => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
          // Transient: auto-advances, the user never chooses here.
 diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
-index 004a35ed6..08b5316ea 100644
+index 004a35ed6..6699e26c2 100644
 --- a/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs
 @@ -419,20 +419,17 @@ fn login_openai_arrows_toggle_highlight() {
@@ -3429,7 +4270,71 @@ index 004a35ed6..08b5316ea 100644
  #[test]
  fn startup_check_skips_when_session_already_has_activity() {
      with_temp_jcode_home(|| {
-@@ -1392,6 +1404,69 @@ fn import_failure_h_key_is_inert_without_a_recorded_error() {
+@@ -748,6 +760,9 @@ fn startup_check_ignores_synthetic_scaffolding_messages() {
+         let mut app = create_test_app();
+         app.onboarding_flow = None;
+         app.onboarding_startup_checked = false;
++        let mut legacy_hints = crate::setup_hints::SetupHintsState::default();
++        legacy_hints.launch_count = 1;
++        legacy_hints.save().expect("save legacy first-run metadata");
+         // Fresh sessions still carry a synthetic system-reminder (role=user) and
+         // assorted system scaffolding. These must not count as real activity.
+         app.push_display_message(DisplayMessage::user(
+@@ -757,21 +772,14 @@ fn startup_check_ignores_synthetic_scaffolding_messages() {
+
+         app.maybe_begin_onboarding_flow_on_startup();
+
+-        // The guard must not be tripped by scaffolding alone. In a temp home with
+-        // no working credentials the flow begins at the in-TUI Login phase (the
+-        // fresh-install path no longer logs in at the CLI before the TUI).
+-        // Parallel tests can leak credential env vars (ANTHROPIC_API_KEY etc.),
+-        // which legitimately routes the fresh install through the credentialed
+-        // post-login path instead. Either way, the flow must have *started*:
+-        // scaffolding messages must not be mistaken for real activity.
+         assert!(
+             !app.display_messages.is_empty(),
+             "precondition: scaffolding messages present"
+         );
+         assert!(app.onboarding_startup_checked);
+         assert!(
+-            app.onboarding_flow_active(),
+-            "scaffolding-only sessions must still enter first-run onboarding"
++            app.onboarding_flow.is_none(),
++            "scaffolding-only sessions must not automatically enter onboarding"
+         );
+     });
+ }
+@@ -1018,8 +1026,8 @@ fn startup_check_skips_user_with_established_session_history() {
+ #[test]
+ fn startup_check_imported_transcripts_do_not_count_as_history() {
+     with_temp_jcode_home(|| {
+-        // Imported Codex/Claude transcripts exist on genuinely fresh installs
+-        // that chose to import history; they must not suppress onboarding.
++        // Imported Codex/Claude transcripts must not change the disabled
++        // automatic-onboarding policy, even if legacy first-run metadata remains.
+         let sessions_dir = crate::storage::jcode_dir()
+             .expect("jcode dir")
+             .join("sessions");
+@@ -1035,13 +1043,16 @@ fn startup_check_imported_transcripts_do_not_count_as_history() {
+         let mut app = create_test_app();
+         app.onboarding_flow = None;
+         app.onboarding_startup_checked = false;
++        let mut legacy_hints = crate::setup_hints::SetupHintsState::default();
++        legacy_hints.launch_count = 1;
++        legacy_hints.save().expect("save legacy first-run metadata");
+
+         app.maybe_begin_onboarding_flow_on_startup();
+
+         assert!(app.onboarding_startup_checked);
+         assert!(
+-            app.onboarding_flow.is_some(),
+-            "imported transcripts alone should still onboard a fresh install"
++            app.onboarding_flow.is_none(),
++            "imported transcripts and legacy metadata must not auto-start onboarding"
+         );
+     });
+ }
+@@ -1392,6 +1403,69 @@ fn import_failure_h_key_is_inert_without_a_recorded_error() {
      });
  }
 
@@ -3499,7 +4404,7 @@ index 004a35ed6..08b5316ea 100644
  #[test]
  fn import_summary_defaults_to_continue_and_enter_imports_all() {
      use crate::external_auth::ExternalAuthReviewCandidate;
-@@ -1657,7 +1732,7 @@ fn import_less_enter_on_row_toggles_instead_of_committing() {
+@@ -1657,7 +1731,7 @@ fn import_less_enter_on_row_toggles_instead_of_committing() {
              }) => {
                  assert!(review.choosing, "still on the Import less list");
                  assert_eq!(review.checked, vec![true, false, true]);
@@ -3509,7 +4414,7 @@ index 004a35ed6..08b5316ea 100644
                  stale.shown_at = std::time::Instant::now()
                      - crate::tui::app::onboarding_flow::DECISION_TIMEOUT
 diff --git a/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs b/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
-index 2df6ec5c1..b69a26ec8 100644
+index ae5140fb9..e5792849c 100644
 --- a/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
 +++ b/crates/jcode-tui/src/tui/app/tests/onboarding_sim.rs
 @@ -113,6 +113,50 @@ fn rehearsal_keys_drive_the_real_import_summary() {
@@ -3563,12 +4468,202 @@ index 2df6ec5c1..b69a26ec8 100644
  #[test]
  fn rehearsal_telemetry_choice_is_not_saved() {
      with_temp_jcode_home(|| {
+diff --git a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs
+index b263ffc6c..a37be8c9a 100644
+--- a/crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs
++++ b/crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs
+@@ -427,7 +427,7 @@ fn test_remote_cached_oauth_only_claude_route_gains_api_key_route_in_picker() {
+
+ #[test]
+ fn test_remote_jcode_subscription_catalog_is_not_augmented_with_local_auth_routes() {
+-    with_temp_jcode_home(|| {
++    with_test_jcode_home(true, || {
+         let previous_anthropic_key = std::env::var_os("ANTHROPIC_API_KEY");
+         crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-key");
+         crate::auth::AuthStatus::invalidate_cache();
+@@ -437,14 +437,15 @@ fn test_remote_jcode_subscription_catalog_is_not_augmented_with_local_auth_route
+         app.remote_provider_name =
+             Some(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string());
+         app.remote_available_entries = vec![
+-            "claude-opus-4-8".to_string(),
+-            "gpt-5.5".to_string(),
+-            "gpt-5.6-sol".to_string(),
++            "claude-opus-5-5".to_string(),
++            "claude-sonnet-5-5".to_string(),
++            "claude-haiku-5-5".to_string(),
++            "gpt-6.1-sol".to_string(),
+         ];
+         app.remote_model_options = vec![crate::provider::ModelRoute {
+-            model: "claude-opus-4-8".to_string(),
+-            provider: "Anthropic".to_string(),
+-            api_method: "claude-api".to_string(),
++            model: "claude-opus-5-5".to_string(),
++            provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
++            api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
+             available: true,
+             detail: "stale cached route".to_string(),
+             usage: None,
+@@ -498,7 +499,7 @@ fn test_remote_mixed_catalog_keeps_jcode_subscription_separate_from_other_provid
+     // `with_temp_jcode_home` takes the shared env lock and points auth at an
+     // empty home, which is what the sibling subscription-catalog test already
+     // does for exactly this reason.
+-    with_temp_jcode_home(|| {
++    with_test_jcode_home(true, || {
+         crate::auth::AuthStatus::invalidate_cache();
+         clear_persisted_test_ui_state();
+         crate::tui::ui::clear_test_render_state_for_tests();
+@@ -602,7 +603,7 @@ fn test_remote_mixed_catalog_keeps_jcode_subscription_separate_from_other_provid
+
+ #[test]
+ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
+-    with_temp_jcode_home(|| {
++    with_test_jcode_home(true, || {
+         let previous_key = std::env::var_os(crate::subscription_catalog::JCODE_API_KEY_ENV);
+         let previous_tier = std::env::var_os(crate::subscription_catalog::JCODE_TIER_ENV);
+         crate::env::set_var(
+@@ -715,26 +716,24 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
+
+ #[test]
+ fn test_remote_non_jcode_catalog_repairs_poisoned_all_jcode_routes() {
+-    with_temp_jcode_home(|| {
++    with_test_jcode_home(false, || {
+         let previous_tier = std::env::var_os(crate::subscription_catalog::JCODE_TIER_ENV);
+         crate::env::set_var(crate::subscription_catalog::JCODE_TIER_ENV, "plus");
+
+         let mut app = create_test_app();
+         app.is_remote = true;
+-        app.remote_provider_name = Some("OpenAI".to_string());
+-        app.remote_available_entries = vec![
++        let available_entries = vec![
+             "claude-haiku-5-5".to_string(),
+             "claude-opus-5-5".to_string(),
+             "claude-sonnet-5-5".to_string(),
+             "gpt-6.1-sol".to_string(),
+             "deepseek/deepseek-v4-pro".to_string(),
+         ];
+-        app.remote_model_options = app
+-            .remote_available_entries
++        let poisoned_routes = available_entries
+             .iter()
+             .map(|model| crate::provider::ModelRoute {
+                 model: model.clone(),
+-                provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
++                provider: "jcode".to_string(),
+                 api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
+                 available: true,
+                 detail: "poisoned version 1 cache".to_string(),
+@@ -742,6 +741,17 @@ fn test_remote_non_jcode_catalog_repairs_poisoned_all_jcode_routes() {
+                 cheapness: None,
+             })
+             .collect();
++        app.replace_remote_model_catalog_snapshot(
++            jcode_provider_core::ModelCatalogSnapshot::new(
++                Some("OpenAI".to_string()),
++                None,
++                available_entries,
++                poisoned_routes,
++            ),
++        );
++        assert!(app.remote_model_options.iter().any(|route| {
++            route.model == "deepseek/deepseek-v4-pro" && route.api_method == "openrouter"
++        }));
+
+         app.open_model_picker();
+
+@@ -754,32 +764,16 @@ fn test_remote_non_jcode_catalog_repairs_poisoned_all_jcode_routes() {
+             .remote_model_options
+             .iter()
+             .filter(|route| {
+-                route.provider == crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
+-                    && route.api_method == crate::subscription_catalog::JCODE_ROUTE_API_METHOD
++                route.api_method == crate::subscription_catalog::JCODE_ROUTE_API_METHOD
+             })
+             .collect::<Vec<_>>();
+-        assert_eq!(
+-            jcode_routes
+-                .iter()
+-                .map(|route| route.model.as_str())
+-                .collect::<std::collections::BTreeSet<_>>(),
+-            std::collections::BTreeSet::from([
+-                "claude-opus-5-5",
+-                "claude-haiku-5-5",
+-                "claude-sonnet-5-5",
+-                "gpt-6.1-sol",
+-            ])
+-        );
++        assert!(jcode_routes.is_empty(), "off-policy Jcode routes are excluded");
+         assert!(app.remote_model_options.iter().any(|route| {
+             route.model == "deepseek/deepseek-v4-pro"
+-                && route.provider != crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
++                && route.api_method == "openrouter"
+         }));
+         assert!(app.remote_model_options.iter().all(|route| {
+-            route.provider != crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
+-                || matches!(
+-                    route.model.as_str(),
+-                    "claude-haiku-5-5" | "claude-opus-5-5" | "claude-sonnet-5-5" | "gpt-6.1-sol"
+-                )
++            route.api_method != crate::subscription_catalog::JCODE_ROUTE_API_METHOD
+         }));
+     });
+ }
+diff --git a/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_01.rs b/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_01.rs
+index b9c655d42..2ad391d87 100644
+--- a/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_01.rs
++++ b/crates/jcode-tui/src/tui/app/tests/state_model_poke_02/part_01.rs
+@@ -1011,7 +1011,10 @@ fn test_top_level_command_suggestions_include_config_and_subscription() {
+     assert!(suggestions.iter().any(|(cmd, _)| cmd == "/alignment"));
+
+     let suggestions = app.get_suggestions_for("/sub");
+-    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/subscription"));
++    assert!(
++        suggestions.iter().all(|(cmd, _)| cmd != "/subscription"),
++        "subscription stays unavailable while hosted routing is disabled"
++    );
+ }
+
+ #[test]
+diff --git a/crates/jcode-tui/src/tui/app/tests/support_failover/part_01.rs b/crates/jcode-tui/src/tui/app/tests/support_failover/part_01.rs
+index ef3331803..897abc5d0 100644
+--- a/crates/jcode-tui/src/tui/app/tests/support_failover/part_01.rs
++++ b/crates/jcode-tui/src/tui/app/tests/support_failover/part_01.rs
+@@ -441,11 +441,18 @@ impl Drop for EnvRestoreGuard {
+     }
+ }
+
+-fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
++fn with_test_jcode_home<T>(allow_hosted: bool, f: impl FnOnce() -> T) -> T {
+     let _guard = crate::storage::lock_test_env();
+     let temp = tempfile::tempdir().expect("tempdir");
+     let _env_guard = EnvRestoreGuard::capture(["JCODE_HOME"]);
+     crate::env::set_var("JCODE_HOME", temp.path());
++    if allow_hosted {
++        std::fs::write(
++            temp.path().join("config.toml"),
++            "[provider]\nallowed_providers = [\"jcode\"]\n",
++        )
++        .expect("write hosted provider fixture");
++    }
+     // Preserve inherited telemetry opt-out env. In this crate telemetry-core is
+     // a dependency, so cfg(test) does not stub its HTTP delivery path; inherited
+     // opt-out must keep blocking delivery for tests that exercise onboarding.
+@@ -469,6 +476,10 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
+     result
+ }
+
++fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
++    with_test_jcode_home(false, f)
++}
++
+ /// Run `f` in a hermetic `JCODE_HOME` with reasoning display pinned to
+ /// `current`.
+ ///
 diff --git a/crates/jcode-tui/src/tui/app/tui_state.rs b/crates/jcode-tui/src/tui/app/tui_state.rs
-index 3c917fa47..e32b5f262 100644
+index b0748c23b..6edd080fe 100644
 --- a/crates/jcode-tui/src/tui/app/tui_state.rs
 +++ b/crates/jcode-tui/src/tui/app/tui_state.rs
-@@ -978,10 +978,11 @@ impl crate::tui::TuiState for App {
-     fn status_notice(&self) -> Option<String> {
+@@ -1192,10 +1192,11 @@ impl crate::tui::TuiState for App {
+         }
          // This priority notice is owned by the telemetry handshake, not the
          // expiring general status slot. Other notices cannot clobber it.
 -        if crate::telemetry::pending_oauth_account_notice().is_some()
@@ -3594,7 +4689,7 @@ index 0ff42c556..b170f4f5b 100644
 
  use crate::subscription_api::{self, AccountApiError};
 diff --git a/src/cli/args.rs b/src/cli/args.rs
-index 1f39f76b6..0eb24a8e2 100644
+index 1cb7918bc..6304deb74 100644
 --- a/src/cli/args.rs
 +++ b/src/cli/args.rs
 @@ -272,6 +272,7 @@ pub(crate) enum Command {
@@ -3739,7 +4834,7 @@ index dfeead84a..0962b7225 100644
  fn quiet_global_flag_parses() {
      let args = Args::try_parse_from(["jcode", "--quiet", "model", "list"]).unwrap();
 diff --git a/src/cli/commands.rs b/src/cli/commands.rs
-index 2098f1725..24c4f7440 100644
+index de2b81d03..40819cb42 100644
 --- a/src/cli/commands.rs
 +++ b/src/cli/commands.rs
 @@ -1,3 +1,5 @@
@@ -3761,7 +4856,7 @@ index 2098f1725..24c4f7440 100644
 
  fn run_cloud_sessions_command(action: CloudSessionsSubcommand) -> Result<()> {
 diff --git a/src/cli/dispatch.rs b/src/cli/dispatch.rs
-index 04eaa4a30..86db0920c 100644
+index d638fdca0..83e344389 100644
 --- a/src/cli/dispatch.rs
 +++ b/src/cli/dispatch.rs
 @@ -73,6 +73,12 @@ fn arm_debug_client_parent_death_signal() {}
@@ -3832,10 +4927,10 @@ index cf2cc1814..d1961854c 100644
  fn only_file_controlled_debug_clients_need_parent_lifetime_binding() {
      let _lock = crate::storage::lock_test_env();
 diff --git a/src/cli/login.rs b/src/cli/login.rs
-index 39cd09a54..8d1030d2f 100644
+index 9e606dfb9..f78da8eac 100644
 --- a/src/cli/login.rs
 +++ b/src/cli/login.rs
-@@ -573,6 +573,8 @@ async fn login_jcode_flow(no_browser: bool) -> Result<()> {
+@@ -586,6 +586,8 @@ async fn login_jcode_flow(no_browser: bool) -> Result<()> {
      Ok(())
  }
 
@@ -3845,10 +4940,10 @@ index 39cd09a54..8d1030d2f 100644
      login_jcode_flow(no_browser).await
  }
 diff --git a/src/cli/provider_init.rs b/src/cli/provider_init.rs
-index e71689954..2b5cb5524 100644
+index 13215170a..44e219315 100644
 --- a/src/cli/provider_init.rs
 +++ b/src/cli/provider_init.rs
-@@ -150,7 +150,7 @@ pub enum ProviderChoice {
+@@ -157,7 +157,7 @@ pub enum ProviderChoice {
  impl ProviderChoice {
      #[allow(deprecated)]
      pub fn as_arg_value(&self) -> &'static str {
@@ -3857,7 +4952,7 @@ index e71689954..2b5cb5524 100644
              Self::Jcode => "jcode",
              Self::Claude => "claude",
              Self::AnthropicApi => "anthropic-api",
-@@ -1539,6 +1539,12 @@ async fn init_provider_with_model_policy(
+@@ -1558,6 +1558,12 @@ async fn init_provider_with_model_policy(
      // OpenRouter/OpenAI-compatible factory) and their model-picker routes.
      super::startup::register_external_provider_runtimes();
 
@@ -3871,10 +4966,10 @@ index e71689954..2b5cb5524 100644
 
      if let Ok(profile_name) = std::env::var("JCODE_PROVIDER_PROFILE_NAME")
 diff --git a/src/cli/provider_init_tests.rs b/src/cli/provider_init_tests.rs
-index bba8e7126..b5f9f38d5 100644
+index ba6123ace..44399d1e6 100644
 --- a/src/cli/provider_init_tests.rs
 +++ b/src/cli/provider_init_tests.rs
-@@ -240,6 +240,8 @@ requires_api_key = false
+@@ -244,6 +244,8 @@ requires_api_key = false
 
  #[test]
  fn test_server_bootstrap_login_selection_preserves_order() {
@@ -3883,7 +4978,7 @@ index bba8e7126..b5f9f38d5 100644
      let providers = provider_catalog::server_bootstrap_login_providers();
      assert_eq!(
          resolve_login_selection("1", &providers).map(|provider| provider.id),
-@@ -251,16 +253,14 @@ fn test_server_bootstrap_login_selection_preserves_order() {
+@@ -255,16 +257,14 @@ fn test_server_bootstrap_login_selection_preserves_order() {
      );
      assert_eq!(
          resolve_login_selection("4", &providers).map(|provider| provider.id),
@@ -3902,7 +4997,7 @@ index bba8e7126..b5f9f38d5 100644
      let providers = provider_catalog::auto_init_login_providers();
      assert_eq!(
          resolve_login_selection("1", &providers).map(|provider| provider.id),
-@@ -271,32 +271,33 @@ fn test_auto_init_login_selection_preserves_order() {
+@@ -275,32 +275,33 @@ fn test_auto_init_login_selection_preserves_order() {
          Some("anthropic-api")
      );
      assert_eq!(

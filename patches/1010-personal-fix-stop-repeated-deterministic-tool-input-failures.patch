@@ -73,7 +73,7 @@ scripts/cargo_exec.sh test -p jcode-app-core retry_guard --lib
 scripts/cargo_exec.sh test -p jcode-app-core response_recovery --lib
 scripts/cargo_exec.sh test -p jcode-app-core tool::batch_tests --lib
 ---
- .../src/agent/response_recovery.rs            | 252 ++++++++
+ .../src/agent/response_recovery.rs            | 261 ++++++++
  crates/jcode-app-core/src/agent/turn_loops.rs |  12 +-
  .../src/agent/turn_streaming_mpsc.rs          |  11 +-
  crates/jcode-app-core/src/tool/applet.rs      | 104 +++-
@@ -82,11 +82,11 @@ scripts/cargo_exec.sh test -p jcode-app-core tool::batch_tests --lib
  crates/jcode-app-core/src/tool/panel.rs       |  87 ++-
  crates/jcode-app-core/src/tool/panel_tests.rs | 229 +++++++
  crates/jcode-app-core/src/tool/retry_guard.rs | 580 ++++++++++++++++++
- 9 files changed, 1726 insertions(+), 82 deletions(-)
+ 9 files changed, 1735 insertions(+), 82 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/retry_guard.rs
 
 diff --git a/crates/jcode-app-core/src/agent/response_recovery.rs b/crates/jcode-app-core/src/agent/response_recovery.rs
-index 0c5601aef..d8fb1788d 100644
+index 0c5601aef..23bec512c 100644
 --- a/crates/jcode-app-core/src/agent/response_recovery.rs
 +++ b/crates/jcode-app-core/src/agent/response_recovery.rs
 @@ -882,6 +882,35 @@ mod malformed_tool_call_recovery_tests {
@@ -166,7 +166,7 @@ index 0c5601aef..d8fb1788d 100644
      /// One malformed plus one valid capture call in a single round.
      fn mixed_round(bad_id: &str, good_id: &str) -> Vec<StreamEvent> {
          vec![
-@@ -988,6 +1051,46 @@ mod malformed_tool_call_recovery_tests {
+@@ -988,6 +1051,47 @@ mod malformed_tool_call_recovery_tests {
          (agent, session_ids, exec_log)
      }
 
@@ -177,6 +177,7 @@ index 0c5601aef..d8fb1788d 100644
 +            session_ids: Arc::clone(&session_ids),
 +        });
 +        let registry = Registry::new(Arc::clone(&provider)).await;
++        registry.set_desktop_ui_enabled(true).await;
 +        let mut agent = Agent::new(provider, registry);
 +        agent.add_message(
 +            Role::User,
@@ -213,10 +214,18 @@ index 0c5601aef..d8fb1788d 100644
      fn correction_reminders(agent: &Agent) -> Vec<String> {
          agent
              .session
-@@ -1201,6 +1304,155 @@ mod malformed_tool_call_recovery_tests {
+@@ -1201,6 +1305,163 @@ mod malformed_tool_call_recovery_tests {
          }
      }
 
++    fn applet_args(title: &str, intent: &str) -> Value {
++        json!({
++            "title": title,
++            "intent": intent,
++            "view": {"type":"image", "source":{"asset":"missing"}, "alt":"x"}
++        })
++    }
++
 +    #[tokio::test]
 +    async fn ui_errors_nudge_both_turn_loops_across_changed_inputs_and_suppress_only_repeats() {
 +        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
@@ -235,10 +244,10 @@ index 0c5601aef..d8fb1788d 100644
 +                (
 +                    "applet",
 +                    vec![
-+                        json!({"title":"first","intent":"first view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
-+                        json!({"title":"second","intent":"second view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
-+                        json!({"title":"third","intent":"third view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
-+                        json!({"title":"second","intent":"second view","view":{"type":"image","source":{"path":"bad"},"alt":"x"}}),
++                        applet_args("first", "first view"),
++                        applet_args("second", "second view"),
++                        applet_args("third", "third view"),
++                        applet_args("second", "second view"),
 +                    ],
 +                    json!({"title":"fixed","intent":"fixed","view":{"type":"markdown","text":"Good"}}),
 +                ),
@@ -370,19 +379,19 @@ index 0c5601aef..d8fb1788d 100644
      async fn valid_tool_calls_reset_the_malformed_round_bound() {
          let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
 diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
-index 7eeea3e3f..4366751ee 100644
+index 7d27ee84b..01035b1f6 100644
 --- a/crates/jcode-app-core/src/agent/turn_loops.rs
 +++ b/crates/jcode-app-core/src/agent/turn_loops.rs
-@@ -53,6 +53,8 @@ impl Agent {
-
+@@ -56,6 +56,8 @@ impl Agent {
      pub(super) async fn run_turn(&mut self, print_output: bool) -> Result<String> {
+         let _runtime_activity = crate::runtime_activity::global().try_enter()?;
          self.ensure_session_lease()?;
 +        let retry_guard = self.registry.retry_guard_handle();
 +        retry_guard.reset();
          self.set_log_context();
          let usage_turn_id = self.model_usage_turn_id();
          crate::session_metrics::record_turn(&self.session.id);
-@@ -1219,7 +1221,15 @@ impl Agent {
+@@ -1239,7 +1241,15 @@ impl Agent {
                      model: Some(self.provider.model()),
                  }));
 
@@ -400,19 +409,19 @@ index 7eeea3e3f..4366751ee 100644
                  self.unlock_tools_if_needed(&tc.name);
                  let tool_elapsed = tool_start.elapsed();
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index 0ce8aa842..03ec562d6 100644
+index be4e35f0f..b0c64505a 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-@@ -60,6 +60,8 @@ impl Agent {
-         event_tx: mpsc::UnboundedSender<ServerEvent>,
+@@ -61,6 +61,8 @@ impl Agent {
      ) -> Result<()> {
+         let _runtime_activity = crate::runtime_activity::global().try_enter()?;
          self.ensure_session_lease()?;
 +        let retry_guard = self.registry.retry_guard_handle();
 +        retry_guard.reset();
          self.set_log_context();
          let usage_turn_id = self.model_usage_turn_id();
          // Mark this session as actively streaming for presence UIs (e.g. the
-@@ -1669,14 +1671,19 @@ impl Agent {
+@@ -1655,14 +1657,19 @@ impl Agent {
 
                  // Spawn tool in its own task so we can detach it to background on Alt+B
                  let registry_clone = self.registry.clone();
@@ -662,10 +671,10 @@ index 52dfe6e30..54e9234c3 100644
 
          let revision = snapshot
 diff --git a/crates/jcode-app-core/src/tool/applet_tests.rs b/crates/jcode-app-core/src/tool/applet_tests.rs
-index 99914722b..f9cd4fc74 100644
+index 928dea08b..ed6c61559 100644
 --- a/crates/jcode-app-core/src/tool/applet_tests.rs
 +++ b/crates/jcode-app-core/src/tool/applet_tests.rs
-@@ -130,6 +130,122 @@ async fn mount_patch_wait_and_close() {
+@@ -168,6 +168,122 @@ async fn mount_patch_wait_and_close() {
      );
  }
 
@@ -789,18 +798,18 @@ index 99914722b..f9cd4fc74 100644
  fn action_message_is_compact() {
      let msg = format_action_message(
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index e81a4c58b..128a66bee 100644
+index fd634530c..cf4747e2b 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -44,6 +44,7 @@ mod panel;
+@@ -41,6 +41,7 @@ mod open;
+ mod panel;
  mod patch;
  mod read;
- mod replace;
 +pub(crate) mod retry_guard;
  pub(crate) mod sdk;
  pub mod selfdev;
  pub(crate) mod serde_coerce;
-@@ -65,6 +66,7 @@ use jcode_message_types::ToolDefinition;
+@@ -62,6 +63,7 @@ use jcode_message_types::ToolDefinition;
  use serde_json::Value;
  use std::collections::{HashMap, HashSet};
  use std::sync::Arc;
@@ -808,7 +817,7 @@ index e81a4c58b..128a66bee 100644
  use std::sync::atomic::{AtomicU64, Ordering};
 
  pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
-@@ -293,6 +295,20 @@ pub struct Registry {
+@@ -312,6 +314,20 @@ pub struct Registry {
      compaction: Arc<RwLock<CompactionManager>>,
  }
 
@@ -829,7 +838,7 @@ index e81a4c58b..128a66bee 100644
  /// Non-owning handle used by tools stored inside a registry.
  ///
  /// A tool cannot strongly own the registry containing it without creating an
-@@ -344,6 +360,24 @@ impl Registry {
+@@ -368,6 +384,24 @@ impl Registry {
          }
      }
 
@@ -854,7 +863,7 @@ index e81a4c58b..128a66bee 100644
      fn downgrade(&self) -> WeakRegistry {
          WeakRegistry {
              tools: Arc::downgrade(&self.tools),
-@@ -1008,8 +1042,56 @@ impl Registry {
+@@ -1030,9 +1064,57 @@ impl Registry {
          }
      }
 
@@ -862,6 +871,7 @@ index e81a4c58b..128a66bee 100644
 +    /// Execute a tool by name, sharing repeat state with nested dispatches such
 +    /// as batch calls while keeping cloned registries independent.
      pub async fn execute(&self, name: &str, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+         let _runtime_activity = crate::runtime_activity::global().try_enter()?;
 +        let guard = ACTIVE_RETRY_DISPATCH
 +            .try_with(|active| Arc::clone(&active.guard))
 +            .unwrap_or_else(|_| self.retry_guard());
@@ -912,7 +922,7 @@ index e81a4c58b..128a66bee 100644
          // Mark this call in-flight for the whole execution so the missing
          // tool-output repair paths do not mistake a slow tool for an
          // interrupted one and inject a duplicate synthetic result. See
-@@ -1017,6 +1099,10 @@ impl Registry {
+@@ -1040,6 +1122,10 @@ impl Registry {
          let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
          let tools = self.tools.read().await;
          let resolved_name = Self::resolve_tool_name_for_session(&ctx.session_id, name);
@@ -923,7 +933,7 @@ index e81a4c58b..128a66bee 100644
          let is_custom = sdk::custom(&ctx.session_id, resolved_name);
          if is_custom && let Some(config) = sdk::config(&ctx.session_id) {
              let disabled = config.disabled.into_iter().collect();
-@@ -1064,25 +1150,10 @@ impl Registry {
+@@ -1087,25 +1173,10 @@ impl Registry {
                  return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
              }
          }
@@ -952,7 +962,7 @@ index e81a4c58b..128a66bee 100644
          };
 
          // Drop the lock before executing
-@@ -1099,6 +1170,48 @@ impl Registry {
+@@ -1122,6 +1193,48 @@ impl Registry {
              input,
          )
          .await;
@@ -1001,7 +1011,7 @@ index e81a4c58b..128a66bee 100644
 
          // User-configured pre_tool gate: external policy hook that can block
          // this call (exit 2). Skipped entirely when not configured.
-@@ -1890,3 +2003,269 @@ mod mcp_allow_list_tests {
+@@ -1979,3 +2092,269 @@ mod mcp_allow_list_tests {
 
  #[cfg(test)]
  mod tests;
@@ -1414,7 +1424,7 @@ index 920285ae6..e304ee4f5 100644
          legacy["page_id"] = json!(panel_id);
          let session_id = ctx.session_id.clone();
 diff --git a/crates/jcode-app-core/src/tool/panel_tests.rs b/crates/jcode-app-core/src/tool/panel_tests.rs
-index a0bd9d64c..e761b099f 100644
+index 625c29c4e..9fae3d5cb 100644
 --- a/crates/jcode-app-core/src/tool/panel_tests.rs
 +++ b/crates/jcode-app-core/src/tool/panel_tests.rs
 @@ -1,5 +1,6 @@
@@ -1424,7 +1434,7 @@ index a0bd9d64c..e761b099f 100644
  use crate::side_panel::SidePanelSnapshot;
 
  fn context(dir: &std::path::Path, session: &str) -> ToolContext {
-@@ -205,3 +206,231 @@ async fn panel_registered_lifecycle_and_validation() {
+@@ -236,3 +237,231 @@ async fn panel_registered_lifecycle_and_validation() {
              .expect("framework-injected fields must be accepted");
      }
  }
