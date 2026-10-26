@@ -5524,7 +5524,7 @@ index 9c19010ee..31b2eb1dc 100644
  fn mermaid_feature_defaults_on_and_parses_false() {
      assert!(Config::default().features.mermaid);
 diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
-index d2784bcfe..fd136698f 100644
+index 09b5c08f8..8c5c3c795 100644
 --- a/crates/jcode-base/src/hooks.rs
 +++ b/crates/jcode-base/src/hooks.rs
 @@ -119,6 +119,8 @@ pub struct SwarmContext {
@@ -5576,7 +5576,7 @@ index d2784bcfe..fd136698f 100644
      }
  }
 
-@@ -944,12 +958,16 @@ mod tests {
+@@ -970,12 +984,16 @@ mod tests {
              mode: Some("background".to_string()),
              role: ProcessRole::Worker,
              worker_id: Some("worker-1".to_string()),
@@ -5593,7 +5593,7 @@ index d2784bcfe..fd136698f 100644
      }
 
      #[test]
-@@ -959,6 +977,8 @@ mod tests {
+@@ -985,6 +1003,8 @@ mod tests {
              mode: Some("foreground".to_string()),
              role: ProcessRole::Coordinator,
              worker_id: Some("worker-2".to_string()),
@@ -5602,7 +5602,7 @@ index d2784bcfe..fd136698f 100644
          };
          let mut command = std::process::Command::new("true");
          context.apply_env(&mut command);
-@@ -989,6 +1009,8 @@ mod tests {
+@@ -1015,6 +1035,8 @@ mod tests {
              env.get("JCODE_HOOK_WORKER_ID").map(String::as_str),
              Some("worker-2")
          );
@@ -5611,7 +5611,7 @@ index d2784bcfe..fd136698f 100644
          assert!(!env.contains_key("JCODE_HOOK_UNKNOWN"));
      }
 
-@@ -1005,6 +1027,8 @@ mod tests {
+@@ -1031,6 +1053,8 @@ mod tests {
              mode: Some("test".to_string()),
              role: ProcessRole::Worker,
              worker_id: Some("worker".to_string()),
@@ -5620,7 +5620,7 @@ index d2784bcfe..fd136698f 100644
          };
          with_swarm_context(context.clone(), async move {
              assert_eq!(current_swarm_context().role, ProcessRole::Worker);
-@@ -1025,6 +1049,8 @@ mod tests {
+@@ -1051,6 +1075,8 @@ mod tests {
              mode: None,
              role: ProcessRole::Coordinator,
              worker_id: None,
@@ -5629,7 +5629,7 @@ index d2784bcfe..fd136698f 100644
          };
          let captured = context.clone();
          let handle = tokio::spawn(async move {
-@@ -1051,6 +1077,8 @@ mod tests {
+@@ -1077,6 +1103,8 @@ mod tests {
              mode: None,
              role: ProcessRole::Coordinator,
              worker_id: None,

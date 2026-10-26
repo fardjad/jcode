@@ -2,8 +2,9 @@
 
 These rules apply to worker blueprints, real-code scenarios, fixtures, and
 worker-specific evaluation configuration. Generic runner code belongs in
-`evaluator/`; worker-specific assets stay here. Follow the root catalog rules
-for patch ownership, isolation, and upstream learning. Use the project-local
+`tools/evaluator/`; worker-specific assets stay here. Follow the root catalog
+rules for patch ownership, isolation, and upstream learning. Use the
+project-local
 `/evaluate-worker-blueprints` skill to run and review live evaluations.
 
 ## Outcomes before orchestration

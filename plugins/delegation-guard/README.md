@@ -18,16 +18,14 @@ configured TTL cleanup.
 
 ## Install and configure
 
-Run `just ensure-personal-assets` from the catalog root. It symlinks
-`~/.jcode/plugins` to the catalog `plugins/` directory, then fails unless
-`~/.jcode/config.toml` configures the hook below. The plugin files alone do
-nothing: without `post_tool_transform` the guard never runs. The
-`/ensure-personal-jcode-setup` skill applies this configuration safely.
+Follow the [get started guide](../../docs/get-started.md) to install the assets,
+then merge the hooks below into `~/.jcode/config.toml`. Without
+`post_tool_transform`, the guard does not run. Setup never changes your config.
 
 ```toml
 [hooks]
-pre_tool_transform = ["~/.jcode/plugins/rtk/rtk-transform"]
-post_tool_transform = ["~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
+pre_tool_transform = ["python3 ~/.jcode/plugins/rtk/rtk-transform"]
+post_tool_transform = ["python3 ~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
 post_tool_transform_timeout_ms = 500
 ```
 

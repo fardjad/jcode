@@ -1,20 +1,13 @@
 # Custom jcode plugins
 
-This directory is the complete, versioned plugin installation. Symlink it once
-instead of copying individual executables or plugin projects:
+This directory is the complete, versioned plugin installation. Follow the
+[get started guide](../docs/get-started.md) for portable installation and
+upgrades with `python3 tools/scripts/setup_assets.py`. It links plugins and worker
+blueprints together, or copies them when symlinks are unavailable.
 
-```bash
-mkdir -p ~/.jcode
-ln -sfn "$(pwd)/plugins" ~/.jcode/plugins
-```
-
-Run the command from the catalog repository root. Every configured plugin path
-below is relative to that symlink.
-
-`just ensure-personal-assets` maintains this symlink together with the worker
-blueprint symlink and verifies the configured plugin executables. The plugins
-use only Python's standard library, so no `uv sync`, virtual environment, or
-compilation is needed.
+Run setup from the catalog repository root, then configure the hooks below.
+Asset setup and plugins require plain Python 3.14 or newer as `python3` on PATH.
+They do not require uv.
 
 ## RTK command transformer
 
@@ -35,13 +28,13 @@ Configure transformer in jcode config:
 
 ```toml
 [hooks]
-pre_tool_transform = ["~/.jcode/plugins/rtk/rtk-transform"]
+pre_tool_transform = ["python3 ~/.jcode/plugins/rtk/rtk-transform"]
 ```
 
 Run isolated contract tests from repository root:
 
 ```bash
-python3 scripts/isolate_config.py -- python3 plugins/rtk/test_rtk_transform.py
+python3 tools/scripts/isolate_config.py -- python3 plugins/rtk/test_rtk_transform.py
 ```
 
 jcode-side generic pre-tool transformer implementation is supplied by the
@@ -66,12 +59,12 @@ Configure transformer in jcode config:
 
 ```toml
 [hooks]
-post_tool_transform = ["~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
+post_tool_transform = ["python3 ~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
 post_tool_transform_timeout_ms = 500
 ```
 
 Run isolated contract tests from repository root:
 
 ```bash
-python3 scripts/isolate_config.py -- python3 plugins/delegation-guard/test_transform.py
+python3 tools/scripts/isolate_config.py -- python3 plugins/delegation-guard/test_transform.py
 ```

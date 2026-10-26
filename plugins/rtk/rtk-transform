@@ -10,6 +10,10 @@ import os
 import subprocess
 import sys
 
+if sys.version_info < (3, 14):
+    print("rtk plugin requires Python 3.14 or newer", file=sys.stderr)
+    sys.exit(1)
+
 try:
     tool_input = json.load(sys.stdin)
 except (json.JSONDecodeError, OSError):

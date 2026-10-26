@@ -8,18 +8,26 @@ The goal is to make upstream updates routine: sync to the latest jcode release
 or a chosen version, then use AI assistance to carry personal patches forward
 when upstream changes affect them.
 
+## Get started
+
+Follow the [get started guide](docs/get-started.md) to clone this catalog into
+`~/.jcode/source`, install a release, set up plugins and worker blueprints, and
+adapt an example configuration. The guide includes Windows commands, copy
+fallback when symlinks are unavailable, and steps to upgrade the binary and
+assets together.
+
 ## Install a patched release
 
 **macOS or Linux**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fardjad/jcode/personalized/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/fardjad/jcode/personalized/tools/scripts/install.sh | bash
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://raw.githubusercontent.com/fardjad/jcode/personalized/install.ps1 | iex
+irm https://raw.githubusercontent.com/fardjad/jcode/personalized/tools/scripts/install.ps1 | iex
 ```
 
 <details>
@@ -29,13 +37,13 @@ Download the installer to choose a specific release version or pass installer
 flags such as a custom installation directory.
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/fardjad/jcode/personalized/install.sh
+curl -fsSLO https://raw.githubusercontent.com/fardjad/jcode/personalized/tools/scripts/install.sh
 bash install.sh vX.Y.Z
 # JCODE_INSTALL_DIR="$HOME/bin" bash install.sh
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/fardjad/jcode/personalized/install.ps1 -OutFile install.ps1
+irm https://raw.githubusercontent.com/fardjad/jcode/personalized/tools/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1 vX.Y.Z
 .\install.ps1 -InstallDir "$HOME\bin"
 ```
@@ -61,6 +69,25 @@ Potential upstream contributions use `candidate-` in their patch filename and
 have the `upstream-candidate` kind. Keep them focused and suitable for
 submitting to jcode independently of personal changes.
 
+## Developer tools
+
+Install uv, then run `uv sync --project tools/catalog` from this checkout.
+Developer workflows use Python 3.14 through
+`uv run --project tools/catalog jcode-catalog`; `just` provides thin shortcuts.
+User asset setup and plugins use plain `python3` 3.14 or newer, without uv.
+
+```bash
+uv run --project tools/catalog jcode-catalog --help
+uv run --project tools/catalog jcode-catalog test
+uv run --project tools/catalog jcode-catalog patches check
+uv run --project tools/catalog jcode-catalog patches test patches/<name>.patch
+uv run --project tools/catalog jcode-catalog patches test --all
+```
+
+Developer commands isolate user configuration before checks and builds. Paid
+worker evaluation, installation, publishing, and version changes run only when
+explicitly invoked. Tests are colocated with their modules using `_test.py`.
+
 ## Workflows
 
 Run `just help` to see every command.
@@ -71,8 +98,9 @@ Repository workflows and tests must not access the user's real
 `~/.jcode/config.toml` unless that access is expressly requested. Validation
 commands, compatibility tests, and the patched-workspace compile check use
 disposable `HOME`, `JCODE_HOME`, and XDG directories through
-`scripts/isolate_config.py`. Keep new commands behind the same boundary when
-they can execute jcode or load configuration. This repository does not inspect
+`tools/scripts/isolate_config.py`. Keep new commands behind the same boundary
+when they can execute jcode or load configuration. This repository does not
+inspect
 or modify personal configuration as part of normal workflows.
 
 ### 1. Sync jcode and carry patches forward
@@ -139,7 +167,7 @@ just list-patches                 # see which commit maps to which patch
 # commit or amend the relevant commit there
 just snapshot-patches             # regenerate and normalize personal patch hashes
 just validate-patch-files         # confirm patches apply cleanly
-just test-catalog                 # after changing scripts/, plugins/, or the justfile
+just test-catalog                 # after changing tools/, plugins/, or the justfile
 just test-patch-file patches/<name>.patch   # run the patch's validation
 ```
 

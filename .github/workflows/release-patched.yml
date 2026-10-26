@@ -117,6 +117,11 @@ jobs:
         with:
           tool: just
 
+      - name: Set up uv for catalog development tools
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+
       - name: Materialize patched source tree
         shell: bash
         run: just create-patched-copy

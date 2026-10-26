@@ -11,7 +11,7 @@ its parent directory) from repository work, tests, validation commands, or
 agent workflows unless the user expressly directs that specific access. Every
 validation or test command must use disposable `HOME` and
 `XDG_CONFIG_HOME` values, and should use the repository's
-`scripts/isolate_config.py` wrapper, which also provides disposable
+`tools/scripts/isolate_config.py` wrapper, which also provides disposable
 `JCODE_HOME` and other XDG directories. `just` validation runs declared patch
 commands and compatibility tests through this isolation, and the
 patched-workspace compile check is isolated as well. Do not weaken this
@@ -65,8 +65,9 @@ unchanged patches that already passed.
 `just eval-workers [scenario]` runs paid live real-code coordinator/worker,
 simulated-user, and judge calls outside normal catalog tests. Its build gate uses the exact pinned
 base plus every current patch and never resets or implicitly uses
-`.patched-jcode`. Follow `workers/AGENTS.md` and `evaluator/AGENTS.md`, and use
-the project-local `/evaluate-worker-blueprints` skill for run/review procedures.
+`.patched-jcode`. Follow `workers/AGENTS.md` and `tools/evaluator/AGENTS.md`, and
+use the project-local `/evaluate-worker-blueprints` skill for run/review
+procedures.
 
 Tests that already fail on clean upstream are learned, never hand-coded. `just
 learn-upstream-exclusions` records them for the compatibility suite and for
@@ -368,7 +369,7 @@ now fingerprints dependency closure, validation tooling, exclusions, and Rust
 version. Run this no-build current-result audit:
 
 ```text
-python3 scripts/isolate_config.py -- python3 scripts/run_all_patch_tests.py --audit
+uv run --project tools/catalog jcode-catalog patches test --all --audit
 ```
 
 Legacy records lack the stronger fingerprint and are not upgraded to passes
@@ -383,7 +384,7 @@ or bypass manual coordination with other source users.
 
 Before reporting a sync complete, record a final intent/code/test review for
 all retained patches under `sync-scratch/reviews/`. Use
-`python3 scripts/isolate_config.py -- python3 scripts/check_patch_reviews.py init`
+`uv run --project tools/catalog jcode-catalog patches reviews init`
 to create pending templates, then fill them from actual review. Never mark a
 record reviewed solely because tests passed. Each claim needs code locations,
 actual test functions, findings, and a supported outcome or explicitly
@@ -400,8 +401,35 @@ require explicit approval for that change, not incidental cleanup. Review
 questionable assumptions separately. Distinguish proposed rules, implemented
 checks, and behavior actually verified by a live harness.
 
+## Developer CLI and test conventions
+
+Developer workflows live in `tools/catalog/src/jcode_catalog/`, a Python 3.14
+project managed by uv. Use
+`uv run --project tools/catalog jcode-catalog --help` to discover commands.
+`just` recipes are thin aliases only. Isolation is enforced inside the CLI
+before checks or builds, and `tools/scripts/isolate_config.py` remains the
+standalone bootstrap for validation commands launched outside the CLI. Do not
+add workflow logic to recipes or new standalone developer scripts.
+
+User-facing asset setup and shipped plugins use vanilla Python 3.14 or newer,
+with `python3` on PATH, and must not require uv or developer dependencies.
+
+Keep tests beside the implementation they exercise in
+`tools/catalog/src/jcode_catalog/` or `tools/scripts/`. Name Python tests
+`<implementation_stem>_test.py` and shell
+tests `<implementation_stem>_test.sh`, not `test_<name>`. For cross-module or
+recipe tests, use a descriptive workflow name with the same suffix. Update
+pytest discovery and references when adding or renaming tests. Existing
+component-specific conventions in plugins, workers, and evaluator stay intact.
+
 ## Plugins
 
 Plugin source is external catalog content under `plugins/`. Keep each plugin in
 its own directory, document its upstream source and update procedure, and avoid
 mixing plugin implementation changes with mail-patch changes unless required.
+
+`plugins/.gitignore` ignores plugin directories by default so users can keep
+local plugins in their checkout without adding them to the catalog. Whenever
+adding a shipped plugin under `plugins/`, add its directory to the explicit
+allowlist in `plugins/.gitignore` too, and verify asset setup copies it while
+continuing to exclude unlisted local plugin directories.

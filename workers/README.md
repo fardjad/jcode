@@ -31,8 +31,9 @@ existing debug binary is not accepted. Build logs/stamps live under
 provenance alongside binary, blueprint, plugin, and scenario identities.
 
 Generic runner code and the harness API client live under
-[`../evaluator/`](../evaluator/README.md). Bundled workers are examples discovered
-dynamically at runtime, not an evaluator registry: adding, removing, or renaming
+[`../tools/evaluator/`](../tools/evaluator/README.md). Bundled workers are examples
+discovered dynamically at runtime, not an evaluator registry: adding, removing,
+or renaming
 a worker requires no runner or judge change. Only `coordinator` is reserved.
 
 ## Bundled blueprints
@@ -85,17 +86,11 @@ override.
 
 ## Install
 
-`just ensure-personal-assets` symlinks this complete blueprint directory and
-the catalog's `plugins/` directory into their default jcode locations, then
-checks plugin readiness. To create only the blueprint symlink manually:
+Follow the [get started guide](../docs/get-started.md) to install plugins and
+worker blueprints with `python3 tools/scripts/setup_assets.py`, including copy
+fallback and upgrade steps.
 
-```bash
-mkdir -p ~/.jcode
-ln -sfn "$(pwd)/workers/blueprints" ~/.jcode/worker-blueprints
-```
-
-This makes `coordinator.md` available alongside worker blueprints without a
-separate prompt-overlay installer.
+Setup includes `coordinator.md` alongside the worker blueprints.
 
 ### Fixer delegation contract
 

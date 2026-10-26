@@ -6,9 +6,9 @@ description: Run and review paid real-code jcode coordinator/worker blueprint sc
 # Evaluate worker blueprints
 
 Use this procedure from the catalog workspace. Follow root `AGENTS.md`,
-`workers/AGENTS.md`, and `evaluator/AGENTS.md`; those hold the rules. The
-`evaluator/README.md` documents formats. This skill is operational guidance, not
-another source of blueprint or patch intent.
+`workers/AGENTS.md`, and `tools/evaluator/AGENTS.md`; those hold the rules. The
+`tools/evaluator/README.md` documents formats. This skill is operational guidance,
+not another source of blueprint or patch intent.
 
 ## 1. Confirm scope and paid calls
 
@@ -31,8 +31,8 @@ verification, run the isolated helper twice and inspect the persistent log,
 status, stamp, and `built`/`reused` provenance:
 
 ```sh
-python3 scripts/isolate_config.py -- python3 scripts/prepare_worker_eval_build.py
-python3 scripts/isolate_config.py -- python3 scripts/prepare_worker_eval_build.py
+uv run --project tools/catalog jcode-catalog workers build
+uv run --project tools/catalog jcode-catalog workers build
 ```
 
 The second result should prove reuse of identical binaries. Inspect reported
@@ -96,5 +96,4 @@ citations with the prior run. One clean stochastic run is a smoke signal, not
 universal proof.
 
 This skill must not weaken acceptance, modify learned upstream exclusions, or
-commit/push. It must not invoke the personal-configuration exception from
-`ensure-personal-jcode-setup`.
+commit/push. It must not access or modify the user's personal configuration.

@@ -1,0 +1,266 @@
+From cb4c83788faff9acf22aef6d003fbe62a3e62306 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Mon, 26 Oct 2026 08:54:10 +0100
+Subject: [PATCH] fix: expand home-relative hook arguments
+
+X-Jcode-Patch-Intent: expand a leading ~ in hook arguments like the program path
+X-Jcode-Patch-Kind: upstream-candidate
+X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 0005-candidate-expand-home-relative-hook-arguments.patch
+
+Patch intent:
+Hook commands are executed directly without a shell, so home-relative
+arguments previously only worked for the program itself. Every parsed
+hook argument now receives the same leading-`~/` expansion the program
+path already received, preserving argv boundaries: quoted paths with
+spaces stay single arguments, and `--path=~/x`, `$VAR`, `~user`, and a
+bare `~` pass through untouched.
+
+Why it exists:
+Users configure hooks like `python3 ~/scripts/lint.py ~/data/in.json`
+with home-relative script and data arguments. Without expansion those
+arguments point at a literal `~/...` path that only a shell would
+resolve, so the hook failed to find its files. Non-goal is general path
+rewriting: no environment interpolation, no `~user` lookup, and no
+expansion of embedded substrings.
+
+Upstream integration points:
+crates/jcode-base/src/hooks.rs applies expand_home to every parsed hook
+argument in build_hook_process and documents the leading-`~/`-only
+semantics. The tests in the same module are cross-platform: they
+construct commands through the `_with_home` variants with a temp-dir
+injected home instead of setting `HOME`, so they run on every platform
+(no Unix gating, and `dirs::home_dir()` ignoring `HOME` on Windows does
+not matter), including a real python3 run against a home-relative
+script under the injected home (skipped when python3 is unavailable).
+
+Update guidance:
+Keep expansion limited to a whole-argument leading `~/` resolved through
+dirs::home_dir. Never add shell execution, environment interpolation, or
+`~user` expansion here; hooks that need those should wrap their command
+in a shell themselves.
+
+Validation:
+scripts/cargo_exec.sh test -p jcode-base hook_command_ --lib
+---
+ crates/jcode-base/src/hooks.rs | 188 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 185 insertions(+), 3 deletions(-)
+
+diff --git a/crates/jcode-base/src/hooks.rs b/crates/jcode-base/src/hooks.rs
+index d2784bcfe..09b5c08f8 100644
+--- a/crates/jcode-base/src/hooks.rs
++++ b/crates/jcode-base/src/hooks.rs
+@@ -433,9 +433,21 @@ fn hooks_suppressed() -> bool {
+     std::env::var_os("JCODE_HOOKS_DISABLED").is_some()
+ }
+
++/// Expand a leading `~/` in a hook program path or argument to the user's
++/// home directory, since hooks run directly (no shell) and a literal
++/// `~/...` path would otherwise fail. Only a whole-argument leading `~/`
++/// expands: `~user`, a bare `~`, embedded substrings such as
++/// `--path=~/x`, and `$VAR` references pass through untouched.
+ fn expand_home(program: &str) -> PathBuf {
++    expand_home_with_home(program, dirs::home_dir().as_deref())
++}
++
++/// Same expansion with an injected home directory, so tests can cover the
++/// expansion on every platform without environment mutation (on Windows
++/// `dirs::home_dir()` ignores `HOME`, so tests cannot override it there).
++fn expand_home_with_home(program: &str, home: Option<&std::path::Path>) -> PathBuf {
+     if let Some(rest) = program.strip_prefix("~/")
+-        && let Some(home) = dirs::home_dir()
++        && let Some(home) = home
+     {
+         return home.join(rest);
+     }
+@@ -612,13 +624,27 @@ fn apply_event_env(cmd: &mut std::process::Command, event: &HookEvent) {
+ fn build_hook_process(
+     command_line: &str,
+     event: &HookEvent,
++) -> anyhow::Result<std::process::Command> {
++    build_hook_process_with_home(command_line, event, dirs::home_dir().as_deref())
++}
++
++/// Same construction with an injected home directory for the leading-`~/`
++/// expansion of the program and arguments, so tests never depend on the
++/// process environment.
++fn build_hook_process_with_home(
++    command_line: &str,
++    event: &HookEvent,
++    home: Option<&std::path::Path>,
+ ) -> anyhow::Result<std::process::Command> {
+     let parts = crate::terminal_launch::parse_hook_command(command_line)?;
+     let (program, args) = parts
+         .split_first()
+         .expect("parse_hook_command guarantees at least one part");
+-    let mut cmd = std::process::Command::new(expand_home(program));
+-    cmd.args(args);
++    let mut cmd = std::process::Command::new(expand_home_with_home(program, home));
++    // Arguments get the same leading-`~/` expansion as the program; mapping
++    // one-to-one keeps argv boundaries exactly as parsed (quoted paths with
++    // spaces remain single arguments).
++    cmd.args(args.iter().map(|arg| expand_home_with_home(arg, home)));
+     if let Some(cwd) = event.cwd.as_deref().filter(|cwd| !cwd.is_empty())
+         && std::path::Path::new(cwd).is_dir()
+     {
+@@ -1984,4 +2010,160 @@ mod tests {
+             "client-pane-b|herdr-pane-b|client-pane-b|herdr-pane-b"
+         );
+     }
++
++    /// Run `body` with a disposable home directory that tests inject
++    /// directly through `build_hook_process_with_home`, so the hook-command
++    /// tests stay cross-platform and never probe or mutate the process
++    /// environment (`dirs::home_dir()` ignores `HOME` on Windows).
++    fn with_test_home<F>(body: F)
++    where
++        F: FnOnce(&std::path::Path),
++    {
++        let temp = tempfile::TempDir::new().expect("temp home");
++        body(temp.path());
++    }
++
++    fn hook_command_args(command: &std::process::Command) -> Vec<PathBuf> {
++        command.get_args().map(PathBuf::from).collect()
++    }
++
++    #[test]
++    fn hook_command_expands_leading_home_in_arguments() {
++        with_test_home(|home| {
++            let command = build_hook_process_with_home(
++                "python3 ~/scripts/hook.py --input ~/data/in.json",
++                &HookEvent::new("turn_start"),
++                Some(home),
++            )
++            .expect("hook command");
++            assert_eq!(command.get_program(), std::ffi::OsStr::new("python3"));
++            assert_eq!(
++                hook_command_args(&command),
++                vec![
++                    home.join("scripts/hook.py"),
++                    PathBuf::from("--input"),
++                    home.join("data/in.json"),
++                ]
++            );
++        });
++    }
++
++    #[test]
++    fn hook_command_preserves_quoted_paths_and_argument_boundaries() {
++        with_test_home(|home| {
++            let command = build_hook_process_with_home(
++                r#"python3 "~/my tools/run tool.py" --path "~/my dir/data.json""#,
++                &HookEvent::new("turn_start"),
++                Some(home),
++            )
++            .expect("hook command");
++            let args = hook_command_args(&command);
++            assert_eq!(args.len(), 3, "quoted words must stay one argument");
++            assert_eq!(args[0], home.join("my tools/run tool.py"));
++            assert_eq!(args[1], PathBuf::from("--path"));
++            assert_eq!(args[2], home.join("my dir/data.json"));
++        });
++    }
++
++    #[test]
++    fn hook_command_leaves_non_home_arguments_untouched() {
++        with_test_home(|_home| {
++            let command = build_hook_process_with_home(
++                "python3 script.py --path=~/data $VARNAME ~user/note ~",
++                &HookEvent::new("turn_start"),
++                Some(_home),
++            )
++            .expect("hook command");
++            assert_eq!(command.get_program(), std::ffi::OsStr::new("python3"));
++            let args: Vec<String> = command
++                .get_args()
++                .map(|arg| arg.to_string_lossy().into_owned())
++                .collect();
++            assert_eq!(
++                args,
++                vec![
++                    "script.py".to_string(),
++                    "--path=~/data".to_string(),
++                    "$VARNAME".to_string(),
++                    "~user/note".to_string(),
++                    "~".to_string(),
++                ]
++            );
++        });
++    }
++
++    #[test]
++    fn hook_command_rejects_malformed_command_lines() {
++        with_test_home(|home| {
++            let event = HookEvent::new("turn_start");
++            assert!(build_hook_process_with_home("", &event, Some(home)).is_err());
++            assert!(build_hook_process_with_home("   ", &event, Some(home)).is_err());
++            assert!(build_hook_process_with_home("hook 'unterminated", &event, Some(home)).is_err());
++            assert!(build_hook_process_with_home(r"hook trailing\", &event, Some(home)).is_err());
++        });
++    }
++
++    #[test]
++    fn hook_command_never_routes_through_a_shell() {
++        with_test_home(|home| {
++            let command = build_hook_process_with_home(
++                r#"python3 ~/script.py "a | b && c; d""#,
++                &HookEvent::new("turn_start"),
++                Some(home),
++            )
++            .expect("hook command");
++            assert_eq!(command.get_program(), std::ffi::OsStr::new("python3"));
++            let args: Vec<String> = command
++                .get_args()
++                .map(|arg| arg.to_string_lossy().into_owned())
++                .collect();
++            assert!(!args.iter().any(|arg| arg == "-c"), "args: {args:?}");
++            assert_eq!(
++                args,
++                vec![
++                    home.join("script.py").to_string_lossy().into_owned(),
++                    "a | b && c; d".to_string(),
++                ]
++            );
++        });
++    }
++
++    #[test]
++    fn hook_command_runs_python3_with_home_relative_script_and_args() {
++        // python3 is optional on some hosts; when absent the argv-level
++        // coverage above already pins the expansion semantics.
++        let probe = std::process::Command::new("python3").arg("-c").arg("pass").output();
++        if !matches!(probe, Ok(output) if output.status.success()) {
++            return;
++        }
++        with_test_home(|home| {
++            let script = home.join("hook-args-test.py");
++            std::fs::write(
++                &script,
++                "import sys\nwith open(sys.argv[1], 'w') as handle:\n    handle.write('\\n'.join(sys.argv))\n",
++            )
++            .expect("write python script");
++            let output = build_hook_process_with_home(
++                "python3 ~/hook-args-test.py ~/argv-record.txt",
++                &HookEvent::new("turn_start"),
++                Some(home),
++            )
++            .expect("hook command")
++            .output()
++            .expect("run hook");
++            assert!(
++                output.status.success(),
++                "python3 should run the home-relative script: {}",
++                String::from_utf8_lossy(&output.stderr)
++            );
++            // The record file only exists if the second `~/` argument was
++            // expanded and handed to python as one argv entry.
++            let recorded = std::fs::read_to_string(home.join("argv-record.txt"))
++                .expect("hook should record its argv");
++            let argv: Vec<String> = recorded.lines().map(str::to_string).collect();
++            assert_eq!(argv.len(), 2, "recorded argv: {argv:?}");
++            assert_eq!(PathBuf::from(&argv[0]), home.join("hook-args-test.py"));
++            assert_eq!(PathBuf::from(&argv[1]), home.join("argv-record.txt"));
++        });
++    }
+ }

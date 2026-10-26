@@ -48,8 +48,9 @@ instructions, and independently verify consequential findings.
    tag/hash, and ordered patch filenames/content hashes. These identify reviewed
    inputs, not a second definition of intent.
 
-All validation and test commands run through `scripts/isolate_config.py` or the
-existing isolated recipes (see Configuration isolation in `AGENTS.md`). Inspect
+All validation and test commands run through `tools/scripts/isolate_config.py`
+or the existing isolated recipes (see Configuration isolation in `AGENTS.md`).
+Inspect
 commands before running them; do not incur meaningful cost or consequential
 effects beyond the approved scope.
 
@@ -190,7 +191,7 @@ Start only after the user explicitly approves execution of this plan.
 4. `just create-patched-copy`. Patches apply with `git am --3way`. If a patch
    fails to apply, the copy stops at that patch. Resolve it in `.patched-jcode`,
    `git add` the files, and run
-   `python3 scripts/isolate_config.py -- git -C .patched-jcode am --continue`,
+   `python3 tools/scripts/isolate_config.py -- git -C .patched-jcode am --continue`,
    which applies the remaining patches. Recreating the copy later needs
    `just snapshot-patches` first.
 5. Carry all patches forward in plan order before running full validation:
@@ -227,7 +228,7 @@ Start only after the user explicitly approves execution of this plan.
    before changing code or dependencies. Fix the owner, regenerate, and rerun
    affected combined, isolation, and individual checks. Apply Validation
    execution discipline in `AGENTS.md` rather than launching overlapping runs.
-   Run `python3 scripts/isolate_config.py -- python3 scripts/run_all_patch_tests.py --audit`
+   Run `uv run --project tools/catalog jcode-catalog patches test --all --audit`
    after the last regeneration to check all current validation fingerprints.
    Complete final review records with the source commit and closure identities
    as required by Review evidence and instruction changes in `AGENTS.md`.

@@ -11,7 +11,7 @@ FORBIDDEN_CATALOG_PROCEDURES = (
     ".patched-jcode",
     "sync-scratch/",
     "VERSION.txt",
-    "just ensure-personal-assets",
+    "tools/scripts/setup_assets.py",
     "just snapshot-patches",
     "X-Jcode-Patch-",
 )
