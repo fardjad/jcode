@@ -16,7 +16,9 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-VERSION = "0.9.143"
+from . import nextest_updates
+
+VERSION = "0.9.149"
 RELEASES_URL = "https://get.nexte.st/releases.json"
 USER_AGENT = "jcode-nextest-bootstrap/1.0"
 
@@ -105,6 +107,7 @@ def main() -> int:
         target = target_name()
         executable = "cargo-nextest.exe" if platform.system() == "Windows" else "cargo-nextest"
         root = Path(__file__).resolve().parents[4]
+        nextest_updates.check(root, VERSION)
         cached = root / ".tools" / "nextest" / VERSION / target / executable
         if not cached.exists():
             url, expected = find_asset(releases(), target)
@@ -125,7 +128,8 @@ def main() -> int:
             finally:
                 temporary.unlink(missing_ok=True)
         version = subprocess.run([str(cached), "--version"], capture_output=True, text=True, check=True).stdout
-        if VERSION not in version:
+        reported = version.split()
+        if len(reported) < 2 or reported[0] != "cargo-nextest" or reported[1] != VERSION:
             raise RuntimeError(f"cached cargo-nextest reports unexpected version: {version.strip()}")
         print(cached)
         return 0

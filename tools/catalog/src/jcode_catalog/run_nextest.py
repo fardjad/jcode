@@ -11,10 +11,9 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from .bootstrap_nextest import VERSION as NEXTEST_VERSION
 from .validation_state import exclusive_lock, source_cache
 from .isolate_config import isolated_environment
-
-NEXTEST_VERSION = "0.9.143"
 
 
 def config_path(root: Path, base: str) -> Path:

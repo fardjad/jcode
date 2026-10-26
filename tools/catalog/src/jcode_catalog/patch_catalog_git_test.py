@@ -36,7 +36,7 @@ class GitDiagnosticsTests(unittest.TestCase):
 
     def test_legacy_exclusions_load_without_validation_key_and_round_trip(self):
         import json
-        from .run_nextest import config_path, load_names, load_validation_names
+        from .run_nextest import NEXTEST_VERSION, config_path, load_names, load_validation_names
         from .validate_patch_commands import write_validation_names
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -45,7 +45,7 @@ class GitDiagnosticsTests(unittest.TestCase):
             path = config_path(root, base)
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps({
-                "nextest_version": "0.9.143", "nextest_pin": "0.9.143",
+                "nextest_version": NEXTEST_VERSION, "nextest_pin": NEXTEST_VERSION,
                 "base_commit": base, "failed_tests": ["compat::fails"],
             }), encoding="utf-8")
             self.assertEqual(load_names(root, base), ["compat::fails"])

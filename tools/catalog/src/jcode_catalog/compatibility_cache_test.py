@@ -6,13 +6,13 @@ import tempfile
 import unittest
 
 from .validate_patch_commands import validate
-from .run_nextest import run
+from .run_nextest import NEXTEST_VERSION, run
 
 
 class CompatibilityCacheTests(unittest.TestCase):
     def test_real_nextest_preserves_public_report_with_separated_cache(self):
         catalog = Path(__file__).resolve().parents[4]
-        binaries = list((catalog / ".tools/nextest/0.9.143").glob("*/cargo-nextest"))
+        binaries = list((catalog / ".tools" / "nextest" / NEXTEST_VERSION).glob("*/cargo-nextest"))
         if not binaries:
             self.skipTest("pinned nextest not cached, full workflow bootstraps it")
         with tempfile.TemporaryDirectory(prefix="catalog-nextest-smoke-") as temporary:

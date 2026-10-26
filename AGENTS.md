@@ -80,8 +80,9 @@ state lives at `.tools/nextest/exclusions/<base-commit>.json`, keyed by base
 commit and pinned nextest version. Patched failures are not learned or hidden:
 they remain test failures. Delete that directory to reset learned state.
 
-Compatibility tests pin cargo-nextest `0.9.143`, bootstrapped on demand and
-cached under ignored `.tools/nextest/<version>/<target>/`.
+Compatibility tests use the cargo-nextest version declared in
+`tools/catalog/src/jcode_catalog/bootstrap_nextest.py`, bootstrapped on demand
+and cached under ignored `.tools/nextest/<version>/<target>/`.
 JUnit reports live at `target/nextest/compat/junit.xml` inside each materialized
 worktree. Learned exclusions are sorted exact `test(=...)` filters and apply
 only when base commit and nextest pin match.

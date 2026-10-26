@@ -88,6 +88,10 @@ Developer commands isolate user configuration before checks and builds. Paid
 worker evaluation, installation, publishing, and version changes run only when
 explicitly invoked. Tests are colocated with their modules using `_test.py`.
 
+When a workflow needs cargo-nextest, it checks for a newer stable release at
+most once every 24 hours. The notice is informational: workflows keep using
+the pinned version, and network failures never prevent testing.
+
 ## Workflows
 
 Run `just help` to see every command.
