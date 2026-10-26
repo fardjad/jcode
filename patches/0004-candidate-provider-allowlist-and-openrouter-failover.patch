@@ -1,12 +1,12 @@
-From c9176f2e249ee4b36534996853cf3199d179b6b3 Mon Sep 17 00:00:00 2001
+From 6ee5ee9dfdc89e80a4d36eb186cd49dcf8e23dc2 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:49 +0200
-Subject: [PATCH] feat: add provider family execution allowlist
+Subject: [PATCH] fix: provider allowlist and OpenRouter failover
 
 X-Jcode-Patch-Intent: expose and enforce provider-family execution allowlist
 X-Jcode-Patch-Kind: upstream-candidate
 X-Jcode-Patch-Depends-On: none
-X-Jcode-Patch-File: 0004-candidate-add-provider-family-execution-allowlist.patch
+X-Jcode-Patch-File: 0004-candidate-provider-allowlist-and-openrouter-failover.patch
 
 Patch intent:
 Add a provider-family execution allowlist that gates model switching,

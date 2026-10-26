@@ -7,7 +7,7 @@ delegate token-heavy work to workers configured with task-appropriate models.
 
 ## Worker blueprints
 
-Patch `1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
+Patch `1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
 enables reusable worker blueprints with coordinator delegation. Each blueprint
 declares its enabled tools, effort level, and communication policy. A blueprint
 can pin a model that may cost less than the coordinator's model. Workers return

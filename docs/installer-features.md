@@ -10,7 +10,7 @@ shell profile unless explicitly requested.
 
 ## Self-update repository selection
 
-Patch `1002-personal-feature-configure-fork-updates-and-identity.patch`
+Patch `1002-personal-feature-fork-updates-identity-and-instructions.patch`
 lets fork builds check and install updates from a selected GitHub repository.
 The default repository is `fardjad/jcode`; set `JCODE_UPDATE_REPO` to override it.
 For example, configure the update repository in the environment:

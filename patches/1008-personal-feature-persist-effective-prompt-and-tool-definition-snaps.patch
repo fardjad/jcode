@@ -5,7 +5,7 @@ Subject: [PATCH] feat: persist effective prompt and tool definition snapshots
 
 X-Jcode-Patch-Intent: persist effective request prompts and tools alongside assistant replies
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch, 1006-personal-feature-configure-session-picker-sort-order.patch
+X-Jcode-Patch-Depends-On: 1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch, 1006-personal-feature-configure-session-picker-sort-order.patch
 X-Jcode-Patch-File: 1008-personal-feature-persist-effective-prompt-and-tool-definition-snaps.patch
 
 Patch intent:
@@ -1000,7 +1000,7 @@ index 770558e2b..5ab929cb0 100644
 
      assert!(!restored_session_was_interrupted(
 diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
-index c04fe7a10..08207b0c3 100644
+index 817ff996e..99898a506 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
 +++ b/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
 @@ -17,6 +17,7 @@ async fn handle_resume_session_allows_live_attach_when_existing_agent_is_busy()
@@ -1012,10 +1012,10 @@ index c04fe7a10..08207b0c3 100644
 
      let provider: Arc<dyn Provider> = Arc::new(MockProvider);
 diff --git a/crates/jcode-app-core/src/server/client_state_tests.rs b/crates/jcode-app-core/src/server/client_state_tests.rs
-index 899dd27d4..5a8aac7c6 100644
+index b8e4af6bb..574ba91ca 100644
 --- a/crates/jcode-app-core/src/server/client_state_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_state_tests.rs
-@@ -531,6 +531,7 @@ async fn assert_history_service_tier_and_pdf_capability(
+@@ -533,6 +533,7 @@ async fn assert_history_service_tier_and_pdf_capability(
          timestamp: None,
          tool_duration_ms: None,
          token_usage: None,

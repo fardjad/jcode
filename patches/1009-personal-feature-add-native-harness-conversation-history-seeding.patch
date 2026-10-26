@@ -126,7 +126,7 @@ index 1ad36b942..d7bdd0a51 100644
          serde_json::from_value::<ServerEvent>(json)?,
          ServerEvent::Pong {
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index 3e2d341f1..040163678 100644
+index 7a03b42d1..c5c8466ea 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
 @@ -49,8 +49,9 @@ use super::{
@@ -220,7 +220,7 @@ index 3e2d341f1..040163678 100644
  struct ProcessingMessage {
      id: u64,
      content: String,
-@@ -741,6 +814,13 @@ pub(super) async fn handle_client(
+@@ -742,6 +815,13 @@ pub(super) async fn handle_client(
      // otherwise monopolize the select loop before the initial subscribe/read.
      let mut client_subscribed = false;
      let mut provisional_session = true;
@@ -234,7 +234,7 @@ index 3e2d341f1..040163678 100644
      let mut pending_request = Some(initial_request);
 
      let connection_result: Result<()> = async {
-@@ -1177,6 +1257,7 @@ pub(super) async fn handle_client(
+@@ -1178,6 +1258,7 @@ pub(super) async fn handle_client(
                  active_skill,
                  no_reply,
              } => {
@@ -242,7 +242,7 @@ index 3e2d341f1..040163678 100644
                  if no_reply {
                      append_context_message(
                          id,
-@@ -1312,6 +1393,7 @@ pub(super) async fn handle_client(
+@@ -1313,6 +1394,7 @@ pub(super) async fn handle_client(
                      start
                  };
                  if start_idle_turn {
@@ -250,7 +250,7 @@ index 3e2d341f1..040163678 100644
                      // The interrupt becomes the new turn's prompt, so the
                      // model sees it before anything else. A caller tracking it
                      // by id must still learn that it was picked up.
-@@ -1560,7 +1642,15 @@ pub(super) async fn handle_client(
+@@ -1561,7 +1643,15 @@ pub(super) async fn handle_client(
              }
 
              Request::Ping { id } => {
@@ -267,7 +267,7 @@ index 3e2d341f1..040163678 100644
                  let json = encode_event(&event);
                  let mut w = writer.lock().await;
                  if w.write_all(json.as_bytes()).await.is_err() {
-@@ -1568,6 +1658,83 @@ pub(super) async fn handle_client(
+@@ -1569,6 +1659,83 @@ pub(super) async fn handle_client(
                  }
              }
 
@@ -351,7 +351,7 @@ index 3e2d341f1..040163678 100644
              Request::PrepareDisconnect { id } => {
                  drop(crate::tool::sdk::ConnectionGuard(client_connection_id.clone()));
                  let json = encode_event(&ServerEvent::Done { id });
-@@ -1610,6 +1777,12 @@ pub(super) async fn handle_client(
+@@ -1611,6 +1778,12 @@ pub(super) async fn handle_client(
                  continue_on_disconnect: requested_continuation,
                  terminal_env,
              } => {
@@ -447,10 +447,10 @@ index 4c03dedb2..7882ae6f5 100644
          return Ok(());
      }
 diff --git a/crates/jcode-app-core/src/server/debug.rs b/crates/jcode-app-core/src/server/debug.rs
-index b1b84e633..e2fbad69b 100644
+index 548c7bb3f..9f10e855c 100644
 --- a/crates/jcode-app-core/src/server/debug.rs
 +++ b/crates/jcode-app-core/src/server/debug.rs
-@@ -315,12 +315,15 @@ pub(super) async fn handle_debug_client(
+@@ -321,12 +321,15 @@ pub(super) async fn handle_debug_client(
          };
          match request {
              Request::Ping { id } => {

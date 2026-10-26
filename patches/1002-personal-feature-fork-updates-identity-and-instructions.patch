@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:50 +0200
-Subject: [PATCH] feat: allow selecting the self-update repository
+Subject: [PATCH] feat: fork updates, identity, and instructions
 
 X-Jcode-Patch-Intent: let fork builds check and install updates from a selected GitHub repository and state fork identity in the default system prompt
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
-X-Jcode-Patch-File: 1002-personal-feature-configure-fork-updates-and-identity.patch
+X-Jcode-Patch-File: 1002-personal-feature-fork-updates-identity-and-instructions.patch
 
 Patch intent:
 Add a validated JCODE_UPDATE_REPO override for GitHub release, main-channel,

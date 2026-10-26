@@ -6,7 +6,7 @@ Subject: [PATCH] feat: keep hosted services and telemetry inactive
 X-Jcode-Patch-Intent: Keep hosted services, telemetry, promotional content,
 sponsored discovery, and automatic onboarding present but never active
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 1001-personal-provider-add-typed-openrouter-eu-provider.patch, 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
+X-Jcode-Patch-Depends-On: 1001-personal-provider-openrouter-eu-and-auth-provider-selection.patch, 1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch
 X-Jcode-Patch-File: 1007-personal-feature-disable-hosted-services-telemetry-and-promotions.patch
 
 Patch intent:

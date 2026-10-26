@@ -1,4 +1,4 @@
-From 2914a8236b0aa0416af292e40647364ff8ff345d Mon Sep 17 00:00:00 2001
+From caf8b06c24e034a075d27b28e58fe4d413511857 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:47 +0200
 Subject: [PATCH] feat: add swarm-scoped hook context and post-tool transforms

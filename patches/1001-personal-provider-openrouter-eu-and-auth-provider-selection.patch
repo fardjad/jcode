@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:50 +0200
-Subject: [PATCH] feat: add typed OpenRouter EU provider
+Subject: [PATCH] feat: OpenRouter EU and auth provider selection
 
 X-Jcode-Patch-Intent: typed EU deployment identity, auth, caches, and pricing
 X-Jcode-Patch-Kind: personal-provider
-X-Jcode-Patch-Depends-On: 0004-candidate-add-provider-family-execution-allowlist.patch
-X-Jcode-Patch-File: 1001-personal-provider-add-typed-openrouter-eu-provider.patch
+X-Jcode-Patch-Depends-On: 0004-candidate-provider-allowlist-and-openrouter-failover.patch
+X-Jcode-Patch-File: 1001-personal-provider-openrouter-eu-and-auth-provider-selection.patch
 
 Patch intent:
 Add OpenRouter EU as a first-class typed deployment with an EU endpoint,

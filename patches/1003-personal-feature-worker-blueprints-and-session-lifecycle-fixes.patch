@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:51 +0200
-Subject: [PATCH] feat: add worker blueprints with runtime integration
+Subject: [PATCH] feat: worker blueprints and session lifecycle fixes
 
 X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch, 1001-personal-provider-add-typed-openrouter-eu-provider.patch
-X-Jcode-Patch-File: 1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch
+X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch, 1001-personal-provider-openrouter-eu-and-auth-provider-selection.patch
+X-Jcode-Patch-File: 1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch
 
 Patch intent:
 Add a worker blueprint system that lets a jcode user define reusable,
@@ -29,6 +29,18 @@ in session snapshots, startup projections, journals, and forks. Agents own
 the runtime policy registration for their lifetime. Visible and headless
 spawn, session restoration, wake, and revival restore the saved policy before
 worker execution, without expanding authority or restoring obsolete tools.
+
+ ride with this series because both were found by
+using blueprint workers. When a comm access check fails, the server
+now distinguishes a target session that is no longer a swarm member
+(it exited, crashed, or was stopped and was removed during cleanup)
+from a genuine swarm mismatch, and from a requester that is not in any
+swarm. A client that attached to an agent already living in the server
+(a popped-out swarm worker window, or any resume attach to a live
+session) detaches on disconnect without stopping the agent, the
+session, or its swarm membership. The TUI signal path no longer
+relabels sessions on termination signals; the server remains the sole
+authority for session status on disconnect.
 
 Why it exists:
 Worker blueprints let a user specialize subagents without code changes.
@@ -53,6 +65,22 @@ at execution, the root coordinator has no coordinator-specific tool limit
 or prompt applied, and swarm-specific agent settings are omitted from
 the config summary. Runtime toggles remove and restore that coordinator
 policy and prompt while preserving global tool limits.
+
+ were observed live with spawned blueprint workers. A worker
+removed from the swarm during cleanup made the coordinator's follow-up
+read fail with a misleading "not in the same swarm" error, sending the
+coordinator hunting for a swarm split that never happened. Separately,
+closing the popped-out terminal window of a running inline worker
+delivered SIGHUP to the viewer TUI, which marked the worker's session
+Crashed from a stale client copy, and the disconnect cleanup then
+force-stopped the agent and removed the swarm member, so the
+coordinator's report fetch failed. Before the viewer attached, the
+member existed without any client at all, so a viewer leaving must
+restore exactly that state. Intentional non-goals: which reads are
+allowed is unchanged and removed members are not restored; a
+connection that drove its own unfinished turn keeps the existing
+Crashed cleanup; idle unsaved empty-root sessions keep their
+reconnect-grace behavior.
 
 Upstream integration points:
 - crates/jcode-app-core/src/tool/mod.rs: blueprint tool registration.
@@ -113,6 +141,21 @@ nonexistent swarm report tool.
 - crates/jcode-app-core/src/tool/communicate/transport.rs:
   send_request and send_request_with_timeout made pub(crate).
 
+:
+  ensure_same_swarm_access distinguishes the three comm access failure
+  modes for CommSummary, CommStatus, and CommReadContext; the
+  both-members-present mismatch message is preserved verbatim because
+  callers may match on it.
+- crates/jcode-app-core/src/server/debug.rs: attached_to_live_agent
+  field on ClientConnectionInfo, set only by claim_live_target_agent.
+- crates/jcode-app-core/src/server/client_disconnect_cleanup.rs: a
+  pure-viewer disconnect skips destructive cleanup; all other
+  dispositions and the successor-attached check are unchanged.
+- src/cli/terminal.rs: the TUI signal handler no longer calls
+  mark_current_session_crashed, per the #599 principle that a dying
+  client must not relabel a server-owned session or clobber its newer
+  snapshot.
+
 Update guidance:
 Preserve the documented ~/.jcode/worker-blueprints/ default, including
 symlinked directories and Markdown files. The reserved coordinator ID
@@ -140,6 +183,15 @@ must use the same final_report text so summary offsets stay valid.
 Transcript scope must stay newest-first and label its direction. Protocol
 validation must include provider-core tests to exercise upstream Tokio macro
 feature unification.
+
+ must stay distinct, with the
+historical mismatch message preserved verbatim for the
+both-members-present case. The viewer skip in disconnect cleanup must
+stay after the successor-attached check and gated on the Closed
+disposition, so viewer-owned turns keep crashing on disconnect, and
+attached_to_live_agent must only be set when the claimed agent
+pre-existed in the sessions map. If a future TUI mode hosts the agent
+in-process, reintroduce session relabeling for that mode only.
 
 Validation:
 cargo test -p jcode-swarm-core append_swarm_completion_report_instructions_is_idempotent --lib
@@ -179,6 +231,11 @@ cargo test -p jcode-app-core persisted_headless_session_is_registered_with_its_w
 cargo test -p jcode-app-core blueprint_native_sync_ --lib
 cargo test -p jcode-base blueprint_policy_persistence_ --lib
 cargo test -p jcode-app-core worker_blueprint_policy --lib
+
+cargo test -p jcode-app-core same_swarm_access_tests --lib
+cargo test -p jcode-app-core viewer_disconnect_keeps_live_agent_and_swarm_member --lib
+cargo test -p jcode-app-core owner_idle_disconnect_without_viewer_flag_still_removes_member --lib
+cargo test -p jcode-app-core viewer_that_started_its_own_turn_still_stops_on_disconnect --lib
 ---
  crates/jcode-app-core/src/agent.rs            |  255 +-
  crates/jcode-app-core/src/agent/prompting.rs  |   21 +-
@@ -186,25 +243,38 @@ cargo test -p jcode-app-core worker_blueprint_policy --lib
  crates/jcode-app-core/src/agent_tests.rs      |  517 ++++
  .../src/protocol_tests/comm_requests.rs       |    1 +
  .../src/server/client_actions.rs              |    6 +
- .../src/server/client_actions_tests.rs        |   30 +
+ .../src/server/client_actions_tests.rs        |   43 +-
  .../src/server/client_comm_message.rs         |   19 +
- .../src/server/client_comm_tests.rs           |   13 +
- .../server/client_disconnect_grace_tests.rs   |    1 +
- .../src/server/client_lifecycle.rs            |    2 +
+ .../src/server/client_comm_tests.rs           |   15 +
+ .../src/server/client_disconnect_cleanup.rs   |   22 +
+ .../server/client_disconnect_grace_tests.rs   |   96 +
+ .../src/server/client_lifecycle.rs            |    3 +
  .../src/server/client_lifecycle_tests.rs      |    1 +
  .../src/server/client_lightweight_control.rs  |    4 +
- .../src/server/client_session.rs              |    1 +
- .../src/server/client_session_tests.rs        |    1 +
+ .../src/server/client_session.rs              |    4 +
+ .../src/server/client_session_tests.rs        |    2 +
+ .../src/server/client_session_tests/clear.rs  |    1 +
+ .../client_session_tests/concurrency.rs       |    1 +
  .../src/server/client_session_tests/reload.rs |    2 +
- .../resume/live_events_before_history.rs      |    1 +
+ .../resume/attach_without_local_history.rs    |    2 +
+ .../resume/busy_existing_attach.rs            |    2 +
+ .../resume/different_client_attach.rs         |    2 +
+ .../resume/live_events_before_history.rs      |    2 +
+ .../resume/multiple_live_attach.rs            |    2 +
+ .../resume/reconnect_takeover_with_history.rs |    2 +
+ .../resume/same_client_takeover.rs            |    2 +
+ .../src/server/client_state_tests.rs          |    2 +
  .../src/server/client_target_attach_tests.rs  |    1 +
  .../jcode-app-core/src/server/comm_control.rs |    1 +
  .../src/server/comm_control_tests.rs          |    1 +
+ .../client_attached_dispatch.rs               |    1 +
  .../src/server/comm_plan_tests.rs             |    1 +
  .../jcode-app-core/src/server/comm_session.rs |  155 +-
  .../src/server/comm_session_tests.rs          |  195 +-
+ crates/jcode-app-core/src/server/comm_sync.rs |  148 +-
+ crates/jcode-app-core/src/server/debug.rs     |    6 +
  .../src/server/debug_session_admin.rs         |    1 +
- .../jcode-app-core/src/server/debug_tests.rs  |    1 +
+ .../jcode-app-core/src/server/debug_tests.rs  |    2 +
  crates/jcode-app-core/src/server/headless.rs  |    7 +-
  .../jcode-app-core/src/server/reload_tests.rs |    1 +
  .../src/server/session_connections.rs         |    1 +
@@ -214,7 +284,7 @@ cargo test -p jcode-app-core worker_blueprint_policy --lib
  .../src/server/swarm_persistence_tests.rs     |    9 +
  .../src/server/swarm_watchdog_tests.rs        |    1 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  565 +++++
+ crates/jcode-app-core/src/tool/blueprint.rs   |  569 +++++
  .../src/tool/blueprint_tests.rs               | 1241 +++++++++
  crates/jcode-app-core/src/tool/communicate.rs |   10 +-
  .../src/tool/communicate/transport.rs         |    4 +-
@@ -236,7 +306,8 @@ cargo test -p jcode-app-core worker_blueprint_policy --lib
  crates/jcode-protocol/src/wire.rs             |    7 +
  crates/jcode-swarm-core/src/lib.rs            |    9 +-
  docs/HOOKS.md                                 |    2 +
- 56 files changed, 5858 insertions(+), 78 deletions(-)
+ src/cli/terminal.rs                           |   20 +-
+ 70 files changed, 6173 insertions(+), 97 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
@@ -1319,7 +1390,7 @@ index 383d0ca3b..4054d02e0 100644
      child.model = parent.model.clone();
      child.provider_key = parent.provider_key.clone();
 diff --git a/crates/jcode-app-core/src/server/client_actions_tests.rs b/crates/jcode-app-core/src/server/client_actions_tests.rs
-index adf3a068f..676a285ce 100644
+index adf3a068f..b004cd8ca 100644
 --- a/crates/jcode-app-core/src/server/client_actions_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_actions_tests.rs
 @@ -120,6 +120,11 @@ fn clone_split_session_uses_persisted_session_state() {
@@ -1334,15 +1405,18 @@ index adf3a068f..676a285ce 100644
      parent.add_message(
          Role::User,
          vec![ContentBlock::Text {
-@@ -152,6 +157,7 @@ fn clone_split_session_uses_persisted_session_state() {
+@@ -152,6 +157,10 @@ fn clone_split_session_uses_persisted_session_state() {
 
      assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
      assert_eq!(child.system_prompt, parent.system_prompt);
-+    assert_eq!(child.worker_blueprint_policy, parent.worker_blueprint_policy);
++    assert_eq!(
++        child.worker_blueprint_policy,
++        parent.worker_blueprint_policy
++    );
      assert_eq!(
          child.messages.len(),
          parent.messages.len() + 1,
-@@ -377,6 +383,23 @@ fn transfer_preserves_system_prompt_including_empty_override() {
+@@ -377,6 +386,26 @@ fn transfer_preserves_system_prompt_including_empty_override() {
      }
  }
 
@@ -1357,16 +1431,19 @@ index adf3a068f..676a285ce 100644
 +        disabled_tools: Some(Vec::new()),
 +    });
 +
-+    let (child_id, _) = create_transfer_child_session(&parent.id, &parent, None)
-+        .expect("create transfer session");
++    let (child_id, _) =
++        create_transfer_child_session(&parent.id, &parent, None).expect("create transfer session");
 +    let child = crate::session::Session::load(&child_id).expect("load transfer session");
-+    assert_eq!(child.worker_blueprint_policy, parent.worker_blueprint_policy);
++    assert_eq!(
++        child.worker_blueprint_policy,
++        parent.worker_blueprint_policy
++    );
 +}
 +
  #[test]
  fn split_corrupt_persisted_parent_is_not_hidden_by_live_fallback() {
      let _guard = crate::storage::lock_test_env();
-@@ -420,6 +443,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
+@@ -420,6 +449,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1374,7 +1451,7 @@ index adf3a068f..676a285ce 100644
          },
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
-@@ -528,6 +552,7 @@ async fn rename_session_event_uses_agent_session_id_even_when_client_id_is_stale
+@@ -528,6 +558,7 @@ async fn rename_session_event_uses_agent_session_id_even_when_client_id_is_stale
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1382,7 +1459,15 @@ index adf3a068f..676a285ce 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -630,6 +655,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
+@@ -603,6 +634,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx: mpsc::unbounded_channel().0,
+         },
+     )])));
+@@ -630,6 +662,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1390,7 +1475,15 @@ index adf3a068f..676a285ce 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -748,6 +774,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
+@@ -721,6 +754,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx: mpsc::unbounded_channel().0,
+         },
+     )])));
+@@ -748,6 +782,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1398,15 +1491,15 @@ index adf3a068f..676a285ce 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -834,6 +861,7 @@ fn live_member(session_id: &str) -> (SwarmMember, mpsc::UnboundedReceiver<Server
+@@ -834,6 +869,7 @@ fn live_member(session_id: &str) -> (SwarmMember, mpsc::UnboundedReceiver<Server
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++        communication_policy: None,
      };
      (member, attach_rx)
  }
-@@ -1127,6 +1155,8 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
+@@ -1127,6 +1163,8 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
          mode: Some("parallel".to_string()),
          role: crate::hooks::ProcessRole::Coordinator,
          worker_id: None,
@@ -1415,6 +1508,18 @@ index adf3a068f..676a285ce 100644
      };
 
      crate::hooks::with_swarm_context(context, async {
+@@ -1154,10 +1192,7 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
+     timeout(Duration::from_secs(2), async {
+         let mut completed = 0;
+         loop {
+-            if matches!(
+-                rx.recv().await,
+-                Some(ServerEvent::Done { id: 73 | 74 })
+-            ) {
++            if matches!(rx.recv().await, Some(ServerEvent::Done { id: 73 | 74 })) {
+                 completed += 1;
+                 if completed == 2 {
+                     break;
 diff --git a/crates/jcode-app-core/src/server/client_comm_message.rs b/crates/jcode-app-core/src/server/client_comm_message.rs
 index 61ac32eda..d4a403519 100644
 --- a/crates/jcode-app-core/src/server/client_comm_message.rs
@@ -1446,14 +1551,14 @@ index 61ac32eda..d4a403519 100644
          let friendly_name = friendly_name_for_session(&from_session, swarm_members).await;
 
 diff --git a/crates/jcode-app-core/src/server/client_comm_tests.rs b/crates/jcode-app-core/src/server/client_comm_tests.rs
-index 8e3ada839..834f2a5b1 100644
+index 8e3ada839..e42b0aec7 100644
 --- a/crates/jcode-app-core/src/server/client_comm_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_comm_tests.rs
 @@ -86,6 +86,7 @@ async fn comm_message_default_does_not_queue_soft_interrupt_for_connected_sessio
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
@@ -1461,91 +1566,107 @@ index 8e3ada839..834f2a5b1 100644
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -252,6 +254,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
+@@ -142,6 +144,7 @@ async fn comm_message_default_does_not_queue_soft_interrupt_for_connected_sessio
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx: mpsc::unbounded_channel().0,
+         },
+     )])));
+@@ -252,6 +255,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -277,6 +280,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
+@@ -277,6 +281,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -407,6 +411,7 @@ async fn comm_list_includes_member_status_and_detail() {
+@@ -302,6 +307,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx: mpsc::unbounded_channel().0,
+         },
+     )])));
+@@ -407,6 +413,7 @@ async fn comm_list_includes_member_status_and_detail() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -432,6 +437,7 @@ async fn comm_list_includes_member_status_and_detail() {
+@@ -432,6 +439,7 @@ async fn comm_list_includes_member_status_and_detail() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -515,6 +521,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
+@@ -515,6 +523,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -540,6 +547,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
+@@ -540,6 +549,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -652,6 +660,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+@@ -652,6 +662,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -677,6 +686,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+@@ -677,6 +688,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -702,6 +712,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+@@ -702,6 +714,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
          ),
-@@ -791,6 +802,7 @@ async fn comm_broadcast_reaches_only_senders_spawned_subtree() {
+@@ -791,6 +804,7 @@ async fn comm_broadcast_reaches_only_senders_spawned_subtree() {
                  todo_progress: None,
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++                communication_policy: None,
                  task_label: None,
              },
              event_rx,
-@@ -953,6 +965,7 @@ async fn comm_message_cross_swarm_dm_by_label() {
+@@ -953,6 +967,7 @@ async fn comm_message_cross_swarm_dm_by_label() {
                  todo_items: Vec::new(),
                  runtime: crate::protocol::SwarmMemberRuntime::default(),
                  task_label: None,
@@ -1553,8 +1674,48 @@ index 8e3ada839..834f2a5b1 100644
              },
              event_rx,
          )
+diff --git a/crates/jcode-app-core/src/server/client_disconnect_cleanup.rs b/crates/jcode-app-core/src/server/client_disconnect_cleanup.rs
+index 3240779e3..f2d70340a 100644
+--- a/crates/jcode-app-core/src/server/client_disconnect_cleanup.rs
++++ b/crates/jcode-app-core/src/server/client_disconnect_cleanup.rs
+@@ -132,6 +132,12 @@ pub(super) async fn cleanup_client_connection(
+         false
+     };
+     let originally_registered = swarm_members.read().await.contains_key(client_session_id);
++    // Read before detach_client_attachment removes the connection info.
++    let attached_to_live_agent = client_connections
++        .read()
++        .await
++        .get(client_connection_id)
++        .is_some_and(|info| info.attached_to_live_agent);
+
+     detach_client_attachment(
+         client_session_id,
+@@ -218,6 +224,22 @@ pub(super) async fn cleanup_client_connection(
+         return Ok(None);
+     }
+
++    // A connection that attached to an agent already living in the server
++    // (pop-out window on an inline swarm worker, or any resume attach to a
++    // live session) is a pure viewer while it never drove work itself. Its
++    // disconnect must not stop the live agent, the session, or the swarm
++    // member: before the viewer attached, the member existed without any
++    // client at all. The owner path below still applies when this
++    // connection started its own unfinished turn (Crashed disposition).
++    if attached_to_live_agent && !allow_reconnect && disposition == DisconnectDisposition::Closed {
++        event_handle.abort();
++        crate::logging::info(&format!(
++            "Viewer disconnect for live session {}; keeping agent and swarm member running",
++            client_session_id
++        ));
++        return Ok(None);
++    }
++
+     // A live processing task owns the agent mutex. Abort it before trying to
+     // persist the disconnect disposition; otherwise cleanup waits two seconds,
+     // times out, and leaves the durable session `Active` precisely when an
 diff --git a/crates/jcode-app-core/src/server/client_disconnect_grace_tests.rs b/crates/jcode-app-core/src/server/client_disconnect_grace_tests.rs
-index d6e8921ef..455483942 100644
+index d6e8921ef..9f65bb912 100644
 --- a/crates/jcode-app-core/src/server/client_disconnect_grace_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_disconnect_grace_tests.rs
 @@ -98,6 +98,7 @@ impl Fixture {
@@ -1565,11 +1726,125 @@ index d6e8921ef..455483942 100644
              },
          )])));
          let sessions = Arc::new(RwLock::new(HashMap::from([(id.clone(), agent.clone())])));
+@@ -197,6 +198,7 @@ fn connection(name: &str, id: &str) -> ClientConnectionInfo {
+         is_processing: false,
+         current_tool_name: None,
+         terminal_env: vec![],
++        attached_to_live_agent: false,
+         disconnect_tx,
+     }
+ }
+@@ -380,3 +382,97 @@ async fn busy_without_successor_aborts_owner_and_marks_crashed() {
+         SessionStatus::Crashed { .. }
+     ));
+ }
++
++#[tokio::test]
++async fn viewer_disconnect_keeps_live_agent_and_swarm_member() {
++    let _lock = crate::storage::lock_test_env();
++    let _home = Home::new();
++    let fixture = Fixture::new(true).await;
++    fixture
++        .connections
++        .write()
++        .await
++        .get_mut("original")
++        .unwrap()
++        .attached_to_live_agent = true;
++
++    timeout(
++        Duration::from_secs(1),
++        fixture.cleanup(false, Duration::ZERO),
++    )
++    .await
++    .unwrap();
++
++    // Pure viewer detach: the live agent, the session entry, and the swarm
++    // member all survive the disconnect, and the durable session is not
++    // relabeled.
++    assert!(!fixture.connections.read().await.contains_key("original"));
++    assert!(fixture.sessions.read().await.contains_key(&fixture.id));
++    let member = fixture
++        .members
++        .read()
++        .await
++        .get(&fixture.id)
++        .cloned()
++        .expect("swarm member must survive a viewer disconnect");
++    assert_eq!(member.status, "ready");
++    assert!(!member.event_txs.contains_key("original"));
++    assert!(matches!(
++        fixture.agent.lock().await.session_for_split().status,
++        SessionStatus::Active
++    ));
++    assert_eq!(
++        Session::load(&fixture.id).unwrap().status,
++        SessionStatus::Active
++    );
++}
++
++#[tokio::test]
++async fn owner_idle_disconnect_without_viewer_flag_still_removes_member() {
++    let _lock = crate::storage::lock_test_env();
++    let _home = Home::new();
++    let fixture = Fixture::new(true).await;
++
++    timeout(
++        Duration::from_secs(1),
++        fixture.cleanup(false, Duration::ZERO),
++    )
++    .await
++    .unwrap();
++
++    // Connections that did not attach to a pre-existing live agent keep the
++    // historical destructive cleanup for idle disconnects.
++    assert!(fixture.sessions.read().await.is_empty());
++    assert!(!fixture.members.read().await.contains_key(&fixture.id));
++}
++
++#[tokio::test]
++async fn viewer_that_started_its_own_turn_still_stops_on_disconnect() {
++    let _lock = crate::storage::lock_test_env();
++    let _home = Home::new();
++    crate::server::clear_reload_marker();
++    let fixture = Fixture::new(true).await;
++    fixture
++        .connections
++        .write()
++        .await
++        .get_mut("original")
++        .unwrap()
++        .attached_to_live_agent = true;
++
++    timeout(
++        Duration::from_secs(1),
++        fixture.cleanup(true, Duration::ZERO),
++    )
++    .await
++    .unwrap();
++
++    // A viewer that drove its own unfinished turn is an owner, not a
++    // spectator: the historical Crashed cleanup applies.
++    assert!(fixture.sessions.read().await.is_empty());
++    assert!(!fixture.members.read().await.contains_key(&fixture.id));
++    assert!(matches!(
++        fixture.agent.lock().await.session_for_split().status,
++        SessionStatus::Crashed { .. }
++    ));
++}
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index b543fa53f..3e2d341f1 100644
+index b543fa53f..7a03b42d1 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
-@@ -2725,6 +2725,7 @@ pub(super) async fn handle_client(
+@@ -582,6 +582,7 @@ pub(super) async fn handle_client(
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: active_terminal_env.clone(),
++                attached_to_live_agent: false,
+                 disconnect_tx: disconnect_tx.clone(),
+             },
+         );
+@@ -2725,6 +2726,7 @@ pub(super) async fn handle_client(
                  model,
                  effort,
                  label,
@@ -1577,7 +1852,7 @@ index b543fa53f..3e2d341f1 100644
              } => {
                  let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                      Some(spawn_mode) => spawn_mode,
-@@ -2740,6 +2741,7 @@ pub(super) async fn handle_client(
+@@ -2740,6 +2742,7 @@ pub(super) async fn handle_client(
                      model,
                      effort,
                      label,
@@ -1634,7 +1909,7 @@ index 91c3dea19..4c03dedb2 100644
          assert!(
              swarms
 diff --git a/crates/jcode-app-core/src/server/client_session.rs b/crates/jcode-app-core/src/server/client_session.rs
-index dc6ac6691..7c8e048c8 100644
+index dc6ac6691..9e8526c5a 100644
 --- a/crates/jcode-app-core/src/server/client_session.rs
 +++ b/crates/jcode-app-core/src/server/client_session.rs
 @@ -406,6 +406,7 @@ async fn ensure_client_swarm_member(
@@ -1645,18 +1920,60 @@ index dc6ac6691..7c8e048c8 100644
                  },
              );
              inserted = true;
+@@ -1383,6 +1384,9 @@ async fn claim_live_target_agent(
+     info.session_id = session_id.to_string();
+     info.client_instance_id = client_instance_id.map(str::to_string);
+     info.last_seen = Instant::now();
++    // The target agent already lives in the server, so this connection is a
++    // viewer of a live session unless it goes on to drive its own turn.
++    info.attached_to_live_agent = true;
+     Some(target)
+ }
+
 diff --git a/crates/jcode-app-core/src/server/client_session_tests.rs b/crates/jcode-app-core/src/server/client_session_tests.rs
-index 4f76a0b72..df364f165 100644
+index 4f76a0b72..15fdba564 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_session_tests.rs
 @@ -168,6 +168,7 @@ fn test_swarm_member(session_id: &str, status: &str) -> SwarmMember {
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
-+            communication_policy: None,
++        communication_policy: None,
      }
  }
 
+@@ -367,6 +368,7 @@ async fn live_target_claim_is_atomic_with_detached_source_cleanup() {
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx,
+             },
+         )])));
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/clear.rs b/crates/jcode-app-core/src/server/client_session_tests/clear.rs
+index 9ad73abd2..e96bf3e91 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/clear.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/clear.rs
+@@ -54,6 +54,7 @@ async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_regi
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx: mpsc::unbounded_channel().0,
+         },
+     )])));
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/concurrency.rs b/crates/jcode-app-core/src/server/client_session_tests/concurrency.rs
+index adf22a67d..16d45567d 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/concurrency.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/concurrency.rs
+@@ -59,6 +59,7 @@ async fn restore_for_concurrency_test(
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx: mpsc::unbounded_channel().0,
+         },
+     )])));
 diff --git a/crates/jcode-app-core/src/server/client_session_tests/reload.rs b/crates/jcode-app-core/src/server/client_session_tests/reload.rs
 index d6ce56885..770558e2b 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests/reload.rs
@@ -1677,11 +1994,79 @@ index d6ce56885..770558e2b 100644
                  },
              ),
          ])));
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/attach_without_local_history.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/attach_without_local_history.rs
+index 93fbd1c9f..533afd3f3 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/resume/attach_without_local_history.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/resume/attach_without_local_history.rs
+@@ -51,6 +51,7 @@ async fn handle_resume_session_allows_attach_without_local_history() -> Result<(
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx,
+             },
+         ),
+@@ -66,6 +67,7 @@ async fn handle_resume_session_allows_attach_without_local_history() -> Result<(
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
+index c04fe7a10..817ff996e 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/resume/busy_existing_attach.rs
+@@ -56,6 +56,7 @@ async fn handle_resume_session_allows_live_attach_when_existing_agent_is_busy()
+                 is_processing: true,
+                 current_tool_name: Some("bash".to_string()),
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
+@@ -71,6 +72,7 @@ async fn handle_resume_session_allows_live_attach_when_existing_agent_is_busy()
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/different_client_attach.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/different_client_attach.rs
+index 8a61f5204..03abab70d 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/resume/different_client_attach.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/resume/different_client_attach.rs
+@@ -51,6 +51,7 @@ async fn handle_resume_session_allows_attach_from_different_client_instance() ->
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx,
+             },
+         ),
+@@ -66,6 +67,7 @@ async fn handle_resume_session_allows_attach_from_different_client_instance() ->
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
 diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
-index 404866b6c..fb8a4e8de 100644
+index 404866b6c..662cc7a4b 100644
 --- a/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
 +++ b/crates/jcode-app-core/src/server/client_session_tests/resume/live_events_before_history.rs
-@@ -69,6 +69,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() ->
+@@ -41,6 +41,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() ->
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx: mpsc::unbounded_channel().0,
+         },
+     )])));
+@@ -69,6 +70,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() ->
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -1689,6 +2074,86 @@ index 404866b6c..fb8a4e8de 100644
          },
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/multiple_live_attach.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/multiple_live_attach.rs
+index 0c9ee140e..b4788dde2 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/resume/multiple_live_attach.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/resume/multiple_live_attach.rs
+@@ -43,6 +43,7 @@ async fn handle_resume_session_allows_multiple_live_tui_attach() -> Result<()> {
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
+@@ -58,6 +59,7 @@ async fn handle_resume_session_allows_multiple_live_tui_attach() -> Result<()> {
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/reconnect_takeover_with_history.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/reconnect_takeover_with_history.rs
+index 718626c5f..3ca2c94b2 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/resume/reconnect_takeover_with_history.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/resume/reconnect_takeover_with_history.rs
+@@ -51,6 +51,7 @@ async fn handle_resume_session_allows_reconnect_takeover_with_local_history() ->
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx,
+             },
+         ),
+@@ -66,6 +67,7 @@ async fn handle_resume_session_allows_reconnect_takeover_with_local_history() ->
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
+diff --git a/crates/jcode-app-core/src/server/client_session_tests/resume/same_client_takeover.rs b/crates/jcode-app-core/src/server/client_session_tests/resume/same_client_takeover.rs
+index 6314afb56..3dd3dbd55 100644
+--- a/crates/jcode-app-core/src/server/client_session_tests/resume/same_client_takeover.rs
++++ b/crates/jcode-app-core/src/server/client_session_tests/resume/same_client_takeover.rs
+@@ -53,6 +53,7 @@ async fn handle_resume_session_allows_same_client_instance_takeover_without_loca
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx,
+             },
+         ),
+@@ -68,6 +69,7 @@ async fn handle_resume_session_allows_same_client_instance_takeover_without_loca
+                 is_processing: false,
+                 current_tool_name: None,
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
+diff --git a/crates/jcode-app-core/src/server/client_state_tests.rs b/crates/jcode-app-core/src/server/client_state_tests.rs
+index 899dd27d4..b8e4af6bb 100644
+--- a/crates/jcode-app-core/src/server/client_state_tests.rs
++++ b/crates/jcode-app-core/src/server/client_state_tests.rs
+@@ -289,6 +289,7 @@ async fn session_activity_snapshot_prefers_live_tool_name_for_target_session() {
+                 is_processing: true,
+                 current_tool_name: Some("bash".to_string()),
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
+@@ -304,6 +305,7 @@ async fn session_activity_snapshot_prefers_live_tool_name_for_target_session() {
+                 is_processing: true,
+                 current_tool_name: Some("batch".to_string()),
+                 terminal_env: Vec::new(),
++                attached_to_live_agent: false,
+                 disconnect_tx: mpsc::unbounded_channel().0,
+             },
+         ),
 diff --git a/crates/jcode-app-core/src/server/client_target_attach_tests.rs b/crates/jcode-app-core/src/server/client_target_attach_tests.rs
 index 02bf78ebc..8a2393787 100644
 --- a/crates/jcode-app-core/src/server/client_target_attach_tests.rs
@@ -1725,6 +2190,18 @@ index 57a94e45a..dd7729aec 100644
          task_label: None,
      }
  }
+diff --git a/crates/jcode-app-core/src/server/comm_control_tests/client_attached_dispatch.rs b/crates/jcode-app-core/src/server/comm_control_tests/client_attached_dispatch.rs
+index e3312077a..08033558f 100644
+--- a/crates/jcode-app-core/src/server/comm_control_tests/client_attached_dispatch.rs
++++ b/crates/jcode-app-core/src/server/comm_control_tests/client_attached_dispatch.rs
+@@ -43,6 +43,7 @@ async fn assign_task_to_client_attached_session_skips_server_side_run() {
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx,
+         },
+     )])));
 diff --git a/crates/jcode-app-core/src/server/comm_plan_tests.rs b/crates/jcode-app-core/src/server/comm_plan_tests.rs
 index b6444a039..35d87f44c 100644
 --- a/crates/jcode-app-core/src/server/comm_plan_tests.rs
@@ -2274,6 +2751,189 @@ index daf18c8e4..88ab4d3a0 100644
              &sessions,
              &Arc::new(RwLock::new(String::new())),
              &provider,
+diff --git a/crates/jcode-app-core/src/server/comm_sync.rs b/crates/jcode-app-core/src/server/comm_sync.rs
+index a39ad949b..52e07d9fb 100644
+--- a/crates/jcode-app-core/src/server/comm_sync.rs
++++ b/crates/jcode-app-core/src/server/comm_sync.rs
+@@ -169,12 +169,29 @@ async fn ensure_same_swarm_access(
+     if req_swarm.is_some() && req_swarm == target_swarm {
+         true
+     } else {
+-        let _ = client_event_tx.send(ServerEvent::Error {
+-            id,
+-            message: format!(
++        // A missing member record is a different situation from a swarm
++        // mismatch: workers are removed from the swarm when they exit, crash,
++        // or are stopped, and telling the coordinator they "changed swarms"
++        // sends it hunting for a split that never happened (observed when a
++        // spawned worker's window closed and cleanup removed it before the
++        // coordinator fetched its report).
++        let message = match (&req_swarm, &target_swarm) {
++            (Some(_), None) => format!(
++                "Session '{}' is not a swarm member; it may have exited, crashed, or been stopped",
++                target_session
++            ),
++            (None, _) => format!(
++                "Requester '{}' is not in a swarm",
++                req_session_id
++            ),
++            (Some(_), Some(_)) => format!(
+                 "Session '{}' is not in the same swarm as requester '{}'",
+                 target_session, req_session_id
+             ),
++        };
++        let _ = client_event_tx.send(ServerEvent::Error {
++            id,
++            message,
+             retry_after_secs: None,
+         });
+         false
+@@ -507,3 +524,128 @@ pub(super) async fn handle_comm_resync_plan(
+         });
+     }
+ }
++
++#[cfg(test)]
++mod same_swarm_access_tests {
++    use super::*;
++
++    fn member(session_id: &str, swarm_id: Option<&str>) -> SwarmMember {
++        let (event_tx, _event_rx) = mpsc::unbounded_channel();
++        SwarmMember {
++            session_id: session_id.to_string(),
++            event_tx,
++            event_txs: HashMap::new(),
++            working_dir: None,
++            swarm_id: swarm_id.map(str::to_string),
++            swarm_enabled: true,
++            status: "ready".to_string(),
++            detail: None,
++            task_label: None,
++            friendly_name: None,
++            report_back_to_session_id: None,
++            latest_completion_report: None,
++            role: "agent".to_string(),
++            joined_at: std::time::Instant::now(),
++            last_status_change: std::time::Instant::now(),
++            is_headless: true,
++            output_tail: None,
++            todo_progress: None,
++            todo_items: Vec::new(),
++            runtime: crate::protocol::SwarmMemberRuntime::default(),
++            communication_policy: None,
++        }
++    }
++
++    async fn check(
++        members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
++        req: &str,
++        target: &str,
++    ) -> (bool, Option<ServerEvent>) {
++        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
++        let ok = ensure_same_swarm_access(1, req, target, members, &event_tx).await;
++        // Drop the sender before awaiting: on the success path no event is
++        // ever sent, and holding the sender open would deadlock recv().
++        drop(event_tx);
++        (ok, event_rx.recv().await)
++    }
++
++    #[tokio::test]
++    async fn removed_member_reports_absence_not_swarm_mismatch() {
++        let members: HashMap<String, SwarmMember> = HashMap::from([(
++            "coordinator".to_string(),
++            member("coordinator", Some("session:coordinator")),
++        )]);
++        let members = Arc::new(RwLock::new(members));
++
++        let (ok, event) = check(&members, "coordinator", "gone-worker").await;
++
++        assert!(!ok);
++        let Some(ServerEvent::Error { message, .. }) = event else {
++            panic!("expected an error event");
++        };
++        assert_eq!(
++            message,
++            "Session 'gone-worker' is not a swarm member; it may have exited, crashed, or been stopped"
++        );
++    }
++
++    #[tokio::test]
++    async fn requester_without_swarm_reports_missing_requester_swarm() {
++        let members: HashMap<String, SwarmMember> = HashMap::from([(
++            "worker".to_string(),
++            member("worker", Some("session:worker")),
++        )]);
++        let members = Arc::new(RwLock::new(members));
++
++        let (ok, event) = check(&members, "outsider", "worker").await;
++
++        assert!(!ok);
++        let Some(ServerEvent::Error { message, .. }) = event else {
++            panic!("expected an error event");
++        };
++        assert_eq!(message, "Requester 'outsider' is not in a swarm");
++    }
++
++    #[tokio::test]
++    async fn distinct_swarms_keep_the_mismatch_message() {
++        let members: HashMap<String, SwarmMember> = HashMap::from([
++            (
++                "coordinator".to_string(),
++                member("coordinator", Some("session:coordinator")),
++            ),
++            ("worker".to_string(), member("worker", Some("session:worker"))),
++        ]);
++        let members = Arc::new(RwLock::new(members));
++
++        let (ok, event) = check(&members, "coordinator", "worker").await;
++
++        assert!(!ok);
++        let Some(ServerEvent::Error { message, .. }) = event else {
++            panic!("expected an error event");
++        };
++        assert_eq!(
++            message,
++            "Session 'worker' is not in the same swarm as requester 'coordinator'"
++        );
++    }
++
++    #[tokio::test]
++    async fn shared_swarm_is_allowed_without_error() {
++        let members: HashMap<String, SwarmMember> = HashMap::from([
++            (
++                "coordinator".to_string(),
++                member("coordinator", Some("session:coordinator")),
++            ),
++            (
++                "worker".to_string(),
++                member("worker", Some("session:coordinator")),
++            ),
++        ]);
++        let members = Arc::new(RwLock::new(members));
++
++        let (ok, event) = check(&members, "coordinator", "worker").await;
++
++        assert!(ok);
++        assert!(event.is_none());
++    }
++}
+diff --git a/crates/jcode-app-core/src/server/debug.rs b/crates/jcode-app-core/src/server/debug.rs
+index b1b84e633..548c7bb3f 100644
+--- a/crates/jcode-app-core/src/server/debug.rs
++++ b/crates/jcode-app-core/src/server/debug.rs
+@@ -56,6 +56,12 @@ pub(super) struct ClientConnectionInfo {
+     /// kitty/DISPLAY/...). Used to route spawn/focus hooks to the client's
+     /// terminal instead of the long-lived server's stale startup env (#405).
+     pub(super) terminal_env: Vec<(String, String)>,
++    /// Set when this connection attached to an agent that already lived in
++    /// the server (resume/pop-out attach to a live session) instead of
++    /// creating the session's agent itself. A disconnecting connection with
++    /// this flag and no own in-flight turn is a pure viewer: cleanup must
++    /// keep the live agent, session, and swarm member running.
++    pub(super) attached_to_live_agent: bool,
+     pub(super) disconnect_tx: mpsc::UnboundedSender<()>,
+ }
+
 diff --git a/crates/jcode-app-core/src/server/debug_session_admin.rs b/crates/jcode-app-core/src/server/debug_session_admin.rs
 index 555730c99..d7b360178 100644
 --- a/crates/jcode-app-core/src/server/debug_session_admin.rs
@@ -2287,7 +2947,7 @@ index 555730c99..d7b360178 100644
          )
          .await?;
 diff --git a/crates/jcode-app-core/src/server/debug_tests.rs b/crates/jcode-app-core/src/server/debug_tests.rs
-index 6ee5d53e0..cc680fb05 100644
+index 6ee5d53e0..658cd0c92 100644
 --- a/crates/jcode-app-core/src/server/debug_tests.rs
 +++ b/crates/jcode-app-core/src/server/debug_tests.rs
 @@ -132,6 +132,7 @@ mod transcript_routing_tests {
@@ -2296,6 +2956,14 @@ index 6ee5d53e0..cc680fb05 100644
              runtime: crate::protocol::SwarmMemberRuntime::default(),
 +            communication_policy: None,
              task_label: None,
+         }
+     }
+@@ -151,6 +152,7 @@ mod transcript_routing_tests {
+             is_processing: false,
+             current_tool_name: None,
+             terminal_env: Vec::new(),
++            attached_to_live_agent: false,
+             disconnect_tx: mpsc::unbounded_channel().0,
          }
      }
 diff --git a/crates/jcode-app-core/src/server/headless.rs b/crates/jcode-app-core/src/server/headless.rs
@@ -2527,10 +3195,10 @@ index f8272fa9c..113483ee7 100644
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
 new file mode 100644
-index 000000000..1e212cfc8
+index 000000000..e5a1d0a95
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
-@@ -0,0 +1,565 @@
+@@ -0,0 +1,569 @@
 +//! Generated coordinator-visible tools for worker blueprints.
 +//!
 +//! Every valid effective blueprint generates a tool named `swarm_<id>`. The
@@ -3039,6 +3707,10 @@ index 000000000..1e212cfc8
 +                    ))),
 +                }
 +            }
++            Ok(ServerEvent::Error { message, .. }) => Err(anyhow::anyhow!(
++                "Blueprint worker '{}' completed but its output could not be read: {}",
++                self.blueprint_id, message
++            )),
 +            Ok(_) => Ok(ToolOutput::new(format!(
 +                "Blueprint '{}' worker completed (could not fetch output).\n\n\
 +                 Worker session: {new_session_id}",
@@ -7626,3 +8298,36 @@ index 510a47beb..ac002c01b 100644
 
  The `post_tool_transform` stdin envelope includes a `swarm` object with the
  same fields. Unknown optional values are explicit JSON `null`.
+diff --git a/src/cli/terminal.rs b/src/cli/terminal.rs
+index 0ecf3ae04..44fc34cef 100644
+--- a/src/cli/terminal.rs
++++ b/src/cli/terminal.rs
+@@ -605,20 +605,16 @@ pub fn signal_name(_sig: i32) -> &'static str {
+     "unknown"
+ }
+
+-#[cfg(unix)]
+-fn signal_crash_reason(sig: i32) -> String {
+-    match sig {
+-        libc::SIGHUP => "Terminal or window closed (SIGHUP)".to_string(),
+-        libc::SIGTERM => "Terminated (SIGTERM)".to_string(),
+-        libc::SIGINT => "Interrupted (SIGINT)".to_string(),
+-        libc::SIGQUIT => "Quit signal (SIGQUIT)".to_string(),
+-        _ => format!("Terminated by signal {} ({})", signal_name(sig), sig),
+-    }
+-}
+-
+ #[cfg(unix)]
+ fn handle_termination_signal(sig: i32) -> ! {
+-    mark_current_session_crashed(signal_crash_reason(sig));
++    // The TUI is a remote client: the server owns the agent and the session
++    // file. A dying client must not relabel a session the server still owns
++    // or clobber the server's newer snapshot with a stale local copy (issue
++    // #599 principle). Observed harm: closing a popped-out window on a
++    // running inline swarm worker marked the worker's session Crashed from
++    // the viewer's stale copy. The server's disconnect cleanup records the
++    // authoritative status, including Crashed when an owned turn is
++    // interrupted.
+
+     // Record termination before the terminal cleanup runs. The cleanup may
+     // skip its restore while an editor owns the terminal and then release the

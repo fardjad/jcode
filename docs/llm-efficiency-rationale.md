@@ -27,7 +27,7 @@ to measure the resulting trade-offs.
 ## Worker blueprints and delegated roles
 
 Patch
-`1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
+`1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
 adds reusable Markdown blueprints and the reserved `coordinator.md` blueprint.
 A regular blueprint has durable role instructions and can declare its model,
 reasoning effort, enabled and disabled tools, communication policy, and
@@ -66,7 +66,7 @@ placing its raw investigation and tool output in the coordinator context.
 ## Bounded spawn summaries and incremental inspection
 
 Patch
-`1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
+`1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
 makes the initial `swarm_<id>` tool response a compact summary, bounded to
 2,000 characters. Worker report instructions do not impose a character limit;
 reports can include the detail needed to hand off the work. Deterministic,
@@ -166,7 +166,7 @@ failure rate is not automatically an efficiency improvement.
 
 ## Source map
 
-- `1003-personal-feature-add-worker-blueprints-with-runtime-integration.patch`
+- `1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
 - `1004-personal-feature-completion-quality-gates-respect-review.patch`
 - `1006-personal-feature-configure-session-picker-sort-order.patch`
 - `0002-candidate-add-hook-context-and-post-tool-transform.patch`
