@@ -1,4 +1,4 @@
-From cb4c83788faff9acf22aef6d003fbe62a3e62306 Mon Sep 17 00:00:00 2001
+From 68f79c4fb357950d0a78713a3eb91b95dd1a84a5 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <public@fardjad.com>
 Date: Mon, 26 Oct 2026 08:54:10 +0100
 Subject: [PATCH] fix: expand home-relative hook arguments
@@ -41,7 +41,7 @@ dirs::home_dir. Never add shell execution, environment interpolation, or
 in a shell themselves.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-base hook_command_ --lib
+cargo test -p jcode-base hook_command_ --lib
 ---
  crates/jcode-base/src/hooks.rs | 188 ++++++++++++++++++++++++++++++++-
  1 file changed, 185 insertions(+), 3 deletions(-)

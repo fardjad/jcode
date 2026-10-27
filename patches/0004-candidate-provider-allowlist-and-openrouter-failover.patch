@@ -1,4 +1,4 @@
-From 6ee5ee9dfdc89e80a4d36eb186cd49dcf8e23dc2 Mon Sep 17 00:00:00 2001
+From c1be176c47c6d9caef5e0d91b410bbdc1846c764 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:49 +0200
 Subject: [PATCH] fix: provider allowlist and OpenRouter failover
@@ -21,6 +21,15 @@ Keeps sessions inside explicit provider allowlists, including auxiliary
 sidecar calls that would otherwise bypass main-provider dispatch. Non-goal is
 restricting picker visibility only; the picker narrowing is a separate config
 field that cannot grant execution the allowlist denies.
+
+Tests that register the process-global active provider could leak that
+registration into later tests in the same process. A cfg(test)
+ActiveProviderTestGuard RAII captures and clears the exact stored
+registration and restores it on drop, including during unwinds, so guarded
+tests get a deterministic provider state and clean up even when they fail.
+The caller must already hold the test-state lock
+(crate::storage::lock_test_env()), which serializes access to the global.
+The guard is test-only support; production provider behavior is unchanged.
 
 Upstream integration points:
 crates/jcode-config-types/src/lib.rs adds the allowed_providers field.
@@ -46,11 +55,20 @@ names-only catalog events. crates/jcode-base/src/config/default_file.rs
 documents
 the policy.
 
+Test isolation uses the cfg(test) ActiveProviderTestGuard in
+crates/jcode-base/src/provider/mod.rs; policy_tests.rs and sidecar.rs tests
+use it instead of leaving a registered provider behind, and
+sidecar_provider_backend_delegates_to_main_dispatch_for_policy clears it to
+get a deterministic no-provider window.
+
 Update guidance:
 Keep ProviderFamily taxonomy exhaustive. OpenRouterEu is a forward-compatible
 variant that the OpenRouter EU patch maps a runtime to. Apply this policy to
 all direct provider clients, not just main dispatch. The policy must fail
-closed for unknown entries and preserve empty-list legacy behavior.
+closed for unknown entries and preserve empty-list legacy behavior. Keep
+ActiveProviderTestGuard cfg(test)-only: it must restore the exact previous
+registration on drop, including during unwinds, and require the caller to
+hold crate::storage::lock_test_env(). Never add a production clear API.
 
 Validation:
 cargo test -p jcode-base provider_route_ --lib
@@ -63,6 +81,8 @@ cargo test -p jcode-base policy_blocks_persisted --lib
 cargo test -p jcode-base policy_blocks_set_model_for_all_provider_families --lib
 cargo test -p jcode-base jcode_auth_and_import_cannot_bypass_provider_family_allowlist --lib
 cargo test -p jcode-base provider_policy_sync_ --lib
+cargo test -p jcode-base active_provider_test_guard_isolates_and_restores_provider_state --lib
+cargo test -p jcode-base sidecar:: --lib
 ---
  crates/jcode-app-core/src/agent/provider.rs   |   1 +
  .../src/server/available_models_cache.rs      |  27 +-
@@ -79,16 +99,16 @@ cargo test -p jcode-base provider_policy_sync_ --lib
  crates/jcode-base/src/provider/dispatch.rs    |  65 +++
  crates/jcode-base/src/provider/external.rs    |   5 +-
  crates/jcode-base/src/provider/jcode.rs       |  72 +++
- crates/jcode-base/src/provider/mod.rs         | 293 +++++++++++--
+ crates/jcode-base/src/provider/mod.rs         | 328 ++++++++++++--
  .../jcode-base/src/provider/multi_provider.rs |  61 +--
- .../jcode-base/src/provider/policy_tests.rs   | 413 ++++++++++++++++++
+ .../jcode-base/src/provider/policy_tests.rs   | 415 ++++++++++++++++++
  crates/jcode-base/src/provider/selection.rs   |   8 +-
  crates/jcode-base/src/provider/tests.rs       |   6 +-
  .../src/provider/tests/account_failover.rs    |  42 ++
  .../src/provider/tests/agent_failover.rs      |   3 +
  .../tests/issue_534_profile_preservation.rs   |   2 +-
  .../src/provider/tests/session_binding.rs     |  10 +-
- crates/jcode-base/src/sidecar.rs              | 151 ++++++-
+ crates/jcode-base/src/sidecar.rs              | 233 +++++++++-
  crates/jcode-config-types/src/lib.rs          |  12 +-
  crates/jcode-protocol/src/wire/events.rs      |   2 +
  .../src/lib.rs                                |  14 +
@@ -117,7 +137,7 @@ cargo test -p jcode-base provider_policy_sync_ --lib
  src/cli/commands/model_routes.rs              |   2 +-
  src/cli/commands_tests.rs                     |  10 +-
  src/cli/startup.rs                            |   4 +-
- 53 files changed, 1764 insertions(+), 161 deletions(-)
+ 53 files changed, 1883 insertions(+), 161 deletions(-)
  create mode 100644 crates/jcode-base/src/provider/policy_tests.rs
  create mode 100644 crates/jcode-provider-core/src/policy_tests.rs
 
@@ -948,7 +968,7 @@ index d4f46411f..dd526b100 100644
      fn jcode_provider_exposes_only_explicit_subscription_routes() {
          use crate::subscription_catalog::JcodeTier;
 diff --git a/crates/jcode-base/src/provider/mod.rs b/crates/jcode-base/src/provider/mod.rs
-index 9a2f2588e..8f8b3a4fd 100644
+index 9a2f2588e..5daa668a1 100644
 --- a/crates/jcode-base/src/provider/mod.rs
 +++ b/crates/jcode-base/src/provider/mod.rs
 @@ -52,8 +52,10 @@ pub use account_failover::{has_alternate_account_in_pool, has_eligible_alternate
@@ -979,7 +999,49 @@ index 9a2f2588e..8f8b3a4fd 100644
      inferred_reasoning_efforts, model_name_for_provider, normalize_copilot_model_name,
      oauth_account_label, provider_from_model_key, shared_http_client,
      summarize_model_catalog_refresh,
-@@ -457,6 +461,75 @@ impl MultiProvider {
+@@ -151,6 +155,41 @@ pub fn active_provider_fork() -> Option<Arc<dyn Provider>> {
+         .map(|p| p.fork())
+ }
+
++/// Test-only RAII guard for the process-global [`ACTIVE_PROVIDER`].
++///
++/// Captures the exact stored `Option<Arc<dyn Provider>>`, clears the global on
++/// creation, and restores the exact previous value on drop (including during
++/// unwinds), so tests that register a provider cannot leak it into later tests
++/// in the same process. The caller must already hold
++/// [`crate::storage::lock_test_env()`], which serializes access to this global.
++/// This is intentionally not a production clear API: only tests may reset the
++/// registered provider.
++#[cfg(test)]
++pub(crate) struct ActiveProviderTestGuard {
++    previous: Option<Arc<dyn Provider>>,
++}
++
++#[cfg(test)]
++impl ActiveProviderTestGuard {
++    /// Capture and clear the currently registered active provider.
++    pub(crate) fn clear() -> Self {
++        let previous = ACTIVE_PROVIDER
++            .write()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .take();
++        Self { previous }
++    }
++}
++
++#[cfg(test)]
++impl Drop for ActiveProviderTestGuard {
++    fn drop(&mut self) {
++        *ACTIVE_PROVIDER
++            .write()
++            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.previous.take();
++    }
++}
++
+ /// Provider-agnostic streaming idle-timeout budgets. See
+ /// [`stream_timeout`] for the base budget and the reasoning-effort scaling that
+ /// keeps long silent thinks from looking like dead connections (issue #434).
+@@ -457,6 +496,75 @@ impl MultiProvider {
          }
      }
 
@@ -1055,7 +1117,7 @@ index 9a2f2588e..8f8b3a4fd 100644
      #[cfg(test)]
      fn same_provider_account_candidates(provider: ActiveProvider) -> Vec<String> {
          account_failover::same_provider_account_candidates(provider)
-@@ -470,6 +543,10 @@ impl MultiProvider {
+@@ -470,6 +578,10 @@ impl MultiProvider {
          resume_session_id: Option<&str>,
      ) -> Result<EventStream> {
          self.bind_auto_account_for_request(self.active_provider())?;
@@ -1066,7 +1128,7 @@ index 9a2f2588e..8f8b3a4fd 100644
          self.spawn_anthropic_catalog_refresh_if_needed();
          self.spawn_openai_catalog_refresh_if_needed();
 
-@@ -523,6 +600,7 @@ impl MultiProvider {
+@@ -523,6 +635,7 @@ impl MultiProvider {
                  models::provider_unavailability_detail_for_account_label(key, Some(&bound_label))
              {
                  self.try_same_provider_account_failover(
@@ -1074,7 +1136,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                      active,
                      messages,
                      tools,
-@@ -540,7 +618,14 @@ impl MultiProvider {
+@@ -540,7 +653,14 @@ impl MultiProvider {
              }
              let attempt = match mode {
                  CompletionMode::Unified { system } => {
@@ -1090,7 +1152,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                          .await
                  }
                  CompletionMode::Split {
-@@ -548,6 +633,7 @@ impl MultiProvider {
+@@ -548,6 +668,7 @@ impl MultiProvider {
                      system_dynamic,
                  } => {
                      self.complete_split_on_provider(
@@ -1098,7 +1160,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                          active,
                          messages,
                          tools,
-@@ -588,6 +674,7 @@ impl MultiProvider {
+@@ -588,6 +709,7 @@ impl MultiProvider {
                              );
                          }
                          self.try_same_provider_account_failover(
@@ -1106,7 +1168,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                              active,
                              messages,
                              tools,
-@@ -608,6 +695,10 @@ impl MultiProvider {
+@@ -608,6 +730,10 @@ impl MultiProvider {
              Self::estimate_request_input(messages, tools, mode);
 
          for candidate in sequence {
@@ -1117,7 +1179,7 @@ index 9a2f2588e..8f8b3a4fd 100644
              let label = Self::provider_label(candidate);
              let key = self.provider_runtime_cooldown_key(candidate);
 
-@@ -624,6 +715,7 @@ impl MultiProvider {
+@@ -624,6 +750,7 @@ impl MultiProvider {
                      reason
                  };
                  if let Some(prompt) = self.cross_provider_pool_prompt(
@@ -1125,7 +1187,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                      active,
                      candidate,
                      reason,
-@@ -670,7 +762,7 @@ impl MultiProvider {
+@@ -670,7 +797,7 @@ impl MultiProvider {
                  if candidate == active
                      && let Some(stream) = self
                          .try_same_provider_account_failover(
@@ -1134,7 +1196,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                          )
                          .await?
                  {
-@@ -681,22 +773,53 @@ impl MultiProvider {
+@@ -681,22 +808,53 @@ impl MultiProvider {
 
              let attempt = match mode {
                  CompletionMode::Unified { system } => {
@@ -1198,7 +1260,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                  }
              };
              let attempt = self.await_account_stream_start(candidate, attempt).await;
-@@ -704,9 +827,8 @@ impl MultiProvider {
+@@ -704,9 +862,8 @@ impl MultiProvider {
              match attempt {
                  Ok(stream) => {
                      clear_provider_unavailable_for_account(key);
@@ -1209,7 +1271,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                          let from_label = Self::provider_label(active);
                          let to_label = Self::provider_label(candidate);
                          crate::logging::info(&format!(
-@@ -723,6 +845,7 @@ impl MultiProvider {
+@@ -723,6 +880,7 @@ impl MultiProvider {
                                  from_label, to_label
                              ));
                      }
@@ -1217,7 +1279,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                      return Ok(stream);
                  }
                  Err(err) => {
-@@ -750,7 +873,7 @@ impl MultiProvider {
+@@ -750,7 +908,7 @@ impl MultiProvider {
                              && decision.should_mark_provider_unavailable()
                              && let Some(stream) = self
                                  .try_same_provider_account_failover(
@@ -1226,7 +1288,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                                  )
                                  .await?
                          {
-@@ -828,12 +951,9 @@ impl MultiProvider {
+@@ -828,12 +986,9 @@ impl MultiProvider {
              ActiveProvider::OpenRouter => {
                  // The OpenRouter slot multiplexes the public aggregator, the
                  // jcode subscription, and direct OpenAI-compatible profiles.
@@ -1242,7 +1304,7 @@ index 9a2f2588e..8f8b3a4fd 100644
              }
              other => Self::provider_key(other).to_string(),
          }
-@@ -955,6 +1075,17 @@ impl MultiProvider {
+@@ -955,6 +1110,17 @@ impl MultiProvider {
              .get(profile_name)
              .cloned()
              .ok_or_else(|| anyhow::anyhow!("Unknown provider profile '{}'", profile_name))?;
@@ -1260,7 +1322,7 @@ index 9a2f2588e..8f8b3a4fd 100644
 
          if matches!(
              config.provider_type,
-@@ -1017,10 +1148,14 @@ impl MultiProvider {
+@@ -1017,10 +1183,14 @@ impl MultiProvider {
      /// model name: doing so lets `set_model`'s family heuristic spend the
      /// user's unrelated provider credentials instead of their subscription.
      fn set_model_on_jcode_subscription(&self, model: &str) -> Result<()> {
@@ -1275,7 +1337,7 @@ index 9a2f2588e..8f8b3a4fd 100644
          models::ensure_model_allowed_for_subscription(model)?;
          crate::subscription_catalog::apply_runtime_env();
          crate::provider::activation::ProviderActivation::jcode_subscription(model).apply_env()?;
-@@ -1061,6 +1196,23 @@ impl MultiProvider {
+@@ -1061,6 +1231,23 @@ impl MultiProvider {
              anyhow::bail!("Model cannot be empty");
          }
 
@@ -1299,7 +1361,7 @@ index 9a2f2588e..8f8b3a4fd 100644
          self.reconcile_auth_if_provider_missing(provider);
 
          match provider {
-@@ -1236,7 +1388,9 @@ impl MultiProvider {
+@@ -1236,7 +1423,9 @@ impl MultiProvider {
                  };
                  let (openrouter, install_openrouter) = if needs_rebind {
                      let openrouter = external::instantiate_openrouter_runtime(
@@ -1310,7 +1372,7 @@ index 9a2f2588e..8f8b3a4fd 100644
                      )?;
                      (openrouter, true)
                  } else {
-@@ -1266,6 +1420,12 @@ impl MultiProvider {
+@@ -1266,6 +1455,12 @@ impl MultiProvider {
          profile: crate::provider_catalog::OpenAiCompatibleProfile,
          model: &str,
      ) -> Result<()> {
@@ -1323,7 +1385,7 @@ index 9a2f2588e..8f8b3a4fd 100644
          let model = model.trim();
          if model.is_empty() {
              anyhow::bail!("Model cannot be empty");
-@@ -1790,6 +1950,11 @@ impl Provider for MultiProvider {
+@@ -1790,6 +1985,11 @@ impl Provider for MultiProvider {
          }
      }
 
@@ -1335,7 +1397,7 @@ index 9a2f2588e..8f8b3a4fd 100644
      fn display_name(&self) -> String {
          // The OpenRouter slot multiplexes the public aggregator and every
          // direct OpenAI-compatible profile (NVIDIA NIM, DeepSeek, ...). Ask the
-@@ -2062,6 +2227,37 @@ impl Provider for MultiProvider {
+@@ -2062,6 +2262,37 @@ impl Provider for MultiProvider {
              anyhow::bail!("Model cannot be empty");
          }
 
@@ -1373,7 +1435,7 @@ index 9a2f2588e..8f8b3a4fd 100644
          if let Some((prefix, target_model)) = requested_model.split_once(':')
              && let Some((method, label)) = prefix.split_once('@')
              && matches!(method, "claude-oauth" | "openai-oauth")
-@@ -2084,6 +2280,9 @@ impl Provider for MultiProvider {
+@@ -2084,6 +2315,9 @@ impl Provider for MultiProvider {
          }
 
          if let Some(target_model) = requested_model.strip_prefix("grok-build:") {
@@ -1383,7 +1445,7 @@ index 9a2f2588e..8f8b3a4fd 100644
              let target_model = target_model.trim();
              if target_model.is_empty() {
                  anyhow::bail!("Grok Build model cannot be empty");
-@@ -2130,6 +2329,19 @@ impl Provider for MultiProvider {
+@@ -2130,6 +2364,19 @@ impl Provider for MultiProvider {
          if let Some((target, prefix, target_model)) =
              explicit_model_provider_prefix(requested_model)
          {
@@ -1403,7 +1465,7 @@ index 9a2f2588e..8f8b3a4fd 100644
              // The single canonical parser decides whether this prefix pins a
              // dual-auth credential (and which provider/mode). Bare `claude:` /
              // `openai:` prefixes route without pinning a credential.
-@@ -2224,6 +2436,14 @@ impl Provider for MultiProvider {
+@@ -2224,6 +2471,14 @@ impl Provider for MultiProvider {
              anyhow::bail!("Model cannot be empty");
          }
 
@@ -1418,7 +1480,7 @@ index 9a2f2588e..8f8b3a4fd 100644
          // The subscription is a distinct endpoint/auth runtime, not a model
          // alias. Handle its structured identity before converting other routes
          // back into their legacy string specs.
-@@ -2239,12 +2459,21 @@ impl Provider for MultiProvider {
+@@ -2239,12 +2494,21 @@ impl Provider for MultiProvider {
 
      fn available_models(&self) -> Vec<&'static str> {
          let mut models = Vec::new();
@@ -1442,7 +1504,7 @@ index 9a2f2588e..8f8b3a4fd 100644
          match self.active_provider() {
              ActiveProvider::Claude => {
                  if let Some(anthropic) = self.anthropic_provider() {
-@@ -2289,6 +2518,9 @@ impl Provider for MultiProvider {
+@@ -2289,6 +2553,9 @@ impl Provider for MultiProvider {
      }
 
      fn available_providers_for_model(&self, model: &str) -> Vec<String> {
@@ -1452,7 +1514,7 @@ index 9a2f2588e..8f8b3a4fd 100644
          if let Some(model) = openrouter_catalog_model_id(model)
              && let Some(openrouter) = self.openrouter_provider()
          {
-@@ -2298,6 +2530,9 @@ impl Provider for MultiProvider {
+@@ -2298,6 +2565,9 @@ impl Provider for MultiProvider {
      }
 
      fn provider_details_for_model(&self, model: &str) -> Vec<(String, String)> {
@@ -1627,10 +1689,10 @@ index 57027f509..5ef514e4c 100644
                          initial_reason.to_owned(),
 diff --git a/crates/jcode-base/src/provider/policy_tests.rs b/crates/jcode-base/src/provider/policy_tests.rs
 new file mode 100644
-index 000000000..e1278108b
+index 000000000..bbd13f98c
 --- /dev/null
 +++ b/crates/jcode-base/src/provider/policy_tests.rs
-@@ -0,0 +1,413 @@
+@@ -0,0 +1,415 @@
 +use super::*;
 +use crate::provider::jcode::JcodeProvider;
 +
@@ -1914,6 +1976,9 @@ index 000000000..e1278108b
 +#[test]
 +fn jcode_auth_and_import_cannot_bypass_provider_family_allowlist() {
 +    with_clean_provider_test_env(|| {
++        // Restore the pre-test active provider on drop instead of leaking a
++        // registered provider into later tests in this process.
++        let _active_provider = crate::provider::ActiveProviderTestGuard::clear();
 +        crate::subscription_catalog::clear_runtime_env();
 +        let config_path = crate::config::Config::path().expect("config path");
 +        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("parent");
@@ -1974,7 +2039,6 @@ index 000000000..e1278108b
 +        assert!(crate::subscription_catalog::has_credentials());
 +        crate::subscription_catalog::clear_account_credentials().expect("clear test credential");
 +        crate::subscription_catalog::clear_runtime_env();
-+        crate::provider::set_active_provider(std::sync::Arc::new(crate::provider::MultiProvider::new_fast()));
 +        crate::config::invalidate_config_cache();
 +    });
 +}
@@ -2241,7 +2305,7 @@ index e200d7dec..ec0d8caf5 100644
                      &[],
                      &[],
 diff --git a/crates/jcode-base/src/sidecar.rs b/crates/jcode-base/src/sidecar.rs
-index e59ff582e..01a3f61f2 100644
+index e59ff582e..ac17ad0d2 100644
 --- a/crates/jcode-base/src/sidecar.rs
 +++ b/crates/jcode-base/src/sidecar.rs
 @@ -9,6 +9,7 @@
@@ -2361,7 +2425,7 @@ index e59ff582e..01a3f61f2 100644
                              && auth::claude::load_credentials().is_ok() =>
                      {
                          // Both GPT-5.6 Luna and the gpt-5.4 OAuth
-@@ -1399,6 +1427,103 @@ mod tests {
+@@ -1399,6 +1427,105 @@ mod tests {
          crate::auth::claude::set_active_account_override(None);
      }
 
@@ -2424,6 +2488,8 @@ index e59ff582e..01a3f61f2 100644
 +    #[test]
 +    fn sidecar_provider_backend_delegates_to_main_dispatch_for_policy() {
 +        let _guard = crate::storage::lock_test_env();
++        // Known no-provider state regardless of what earlier tests registered.
++        let _active_provider = crate::provider::ActiveProviderTestGuard::clear();
 +        let temp = tempfile::TempDir::new().expect("create temp jcode home");
 +        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
 +        let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
@@ -2465,6 +2531,121 @@ index e59ff582e..01a3f61f2 100644
      #[test]
      fn test_chatgpt_oauth_uses_luna_with_no_reasoning_when_available() {
          let _guard = crate::storage::lock_test_env();
+@@ -1553,6 +1680,9 @@ mod tests {
+     #[test]
+     fn session_sidecar_uses_session_memory_model_override() {
+         let _guard = crate::storage::lock_test_env();
++        // Restore the previous registration on drop so the process global
++        // cannot leak into later tests.
++        let _active_provider = crate::provider::ActiveProviderTestGuard::clear();
+         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+         std::fs::write(
+@@ -1586,6 +1716,9 @@ mod tests {
+     #[test]
+     fn sidecar_uses_active_provider_when_no_oauth_creds() {
+         let _guard = crate::storage::lock_test_env();
++        // Restore the previous registration on drop so the process global
++        // cannot leak into later tests.
++        let _active_provider = crate::provider::ActiveProviderTestGuard::clear();
+         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+         let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
+@@ -1616,6 +1749,9 @@ mod tests {
+     #[test]
+     fn provider_sidecar_keeps_the_route_selected_at_construction() {
+         let _guard = crate::storage::lock_test_env();
++        // Restore the previous registration on drop so the process global
++        // cannot leak into later tests.
++        let _active_provider = crate::provider::ActiveProviderTestGuard::clear();
+         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+         let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
+@@ -1652,6 +1788,9 @@ mod tests {
+     #[test]
+     fn sidecar_provider_path_works_for_all_providers() {
+         let _guard = crate::storage::lock_test_env();
++        // Restore the previous registration on drop so the process global
++        // cannot leak into later tests.
++        let _active_provider = crate::provider::ActiveProviderTestGuard::clear();
+         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+         let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
+@@ -1688,6 +1827,74 @@ mod tests {
+         }
+     }
+
++    /// The RAII guard must (a) give a test a deterministic no-provider window
++    /// even when an earlier test leaked a registered provider, (b) restore the
++    /// exact previous registration on drop, and (c) restore it even when the
++    /// guarded region panics, so later tests are never contaminated.
++    #[test]
++    fn active_provider_test_guard_isolates_and_restores_provider_state() {
++        let _guard = crate::storage::lock_test_env();
++        let _active_provider = crate::provider::ActiveProviderTestGuard::clear();
++
++        // Contaminate the global the way an unguarded test would.
++        crate::provider::set_active_provider(std::sync::Arc::new(StubProvider {
++            name: "guard-sentinel",
++            reply: String::new(),
++        }));
++
++        {
++            let scoped = crate::provider::ActiveProviderTestGuard::clear();
++            assert!(
++                crate::provider::active_provider_fork().is_none(),
++                "guard creation must clear the registered provider"
++            );
++        }
++        assert_eq!(
++            crate::provider::active_provider_fork().map(|p| p.name().to_string()),
++            Some("guard-sentinel".to_string()),
++            "guard drop must restore the exact previous registration"
++        );
++
++        // Restoration must also survive a panic inside the guarded region.
++        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            let scoped = crate::provider::ActiveProviderTestGuard::clear();
++            assert!(crate::provider::active_provider_fork().is_none());
++            panic!("simulated failure while the provider guard is held");
++        }));
++        assert!(panicked.is_err(), "the guarded region must panic");
++        assert_eq!(
++            crate::provider::active_provider_fork().map(|p| p.name().to_string()),
++            Some("guard-sentinel".to_string()),
++            "guard drop during unwind must restore the previous registration"
++        );
++
++        // No-provider dispatch stays deterministic under the guard, exactly as
++        // sidecar_provider_backend_delegates_to_main_dispatch_for_policy
++        // requires, regardless of what earlier tests registered.
++        let temp = tempfile::TempDir::new().expect("create temp jcode home");
++        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
++        let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
++        let config_path = crate::config::Config::path().expect("config path");
++        std::fs::create_dir_all(config_path.parent().expect("config parent"))
++            .expect("create config parent");
++        std::fs::write(
++            &config_path,
++            "[provider]\nallowed_providers = [\"openrouter-eu\"]\n",
++        )
++        .expect("write provider policy");
++        crate::config::invalidate_config_cache();
++        let _isolated = crate::provider::ActiveProviderTestGuard::clear();
++        let sidecar = Sidecar::with_configured_model(None);
++        assert_eq!(sidecar.backend, SidecarBackend::Provider);
++        let error = futures::executor::block_on(sidecar.complete("system", "user"))
++            .expect_err("no-provider dispatch must fail");
++        assert!(
++            error.to_string().contains("No active provider"),
++            "guard must give the sidecar a no-provider state: {error}"
++        );
++        crate::config::invalidate_config_cache();
++    }
++
+     #[test]
+     fn test_is_anthropic_oauth_forbidden() {
+         // The exact error string the sidecar surfaces from a forbidden OAuth org.
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
 index c05d38953..213007231 100644
 --- a/crates/jcode-config-types/src/lib.rs

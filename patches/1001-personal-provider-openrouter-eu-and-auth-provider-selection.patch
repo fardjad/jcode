@@ -1193,10 +1193,10 @@ index 92cd73d82..5293196cf 100644
 +    }
  }
 diff --git a/crates/jcode-base/src/provider/mod.rs b/crates/jcode-base/src/provider/mod.rs
-index 8f8b3a4fd..4d068a481 100644
+index 5daa668a1..1dd853192 100644
 --- a/crates/jcode-base/src/provider/mod.rs
 +++ b/crates/jcode-base/src/provider/mod.rs
-@@ -1534,9 +1534,29 @@ impl MultiProvider {
+@@ -1569,9 +1569,29 @@ impl MultiProvider {
                  .map(|pin| format!("{model}@{pin}"))
                  .unwrap_or(model)
          });
@@ -1228,7 +1228,7 @@ index 8f8b3a4fd..4d068a481 100644
                  Ok(provider) => {
                      let should_install = if preserve_existing_openrouter_profile {
                          self.openrouter_provider()
-@@ -1832,6 +1852,12 @@ impl MultiProvider {
+@@ -1867,6 +1887,12 @@ impl MultiProvider {
              ActiveProvider::Cursor => "cursor",
              ActiveProvider::Bedrock => "bedrock",
              ActiveProvider::OpenRouter => {
@@ -1241,7 +1241,7 @@ index 8f8b3a4fd..4d068a481 100644
                  if let Some(openrouter) = self.active_openrouter_execution_provider()
                      && let Some((_provider, api_method, _detail)) =
                          openrouter.direct_openai_compatible_route_parts()
-@@ -2237,9 +2263,8 @@ impl Provider for MultiProvider {
+@@ -2272,9 +2298,8 @@ impl Provider for MultiProvider {
                      method => method.provider_family().map(|family| match family {
                          ProviderFamily::Claude => RuntimeKey::ClaudeOAuth,
                          ProviderFamily::OpenAi => RuntimeKey::OpenAIOAuth,
@@ -1253,7 +1253,7 @@ index 8f8b3a4fd..4d068a481 100644
                          ProviderFamily::Jcode => RuntimeKey::JcodeSubscription,
                          ProviderFamily::OpenAiCompatible => RuntimeKey::OpenAiCompatible {
                              profile_id: None,
-@@ -2313,6 +2338,46 @@ impl Provider for MultiProvider {
+@@ -2348,6 +2373,46 @@ impl Provider for MultiProvider {
              return self.set_model_on_openai_compatible_profile(profile, target_model);
          }
 
@@ -1300,7 +1300,7 @@ index 8f8b3a4fd..4d068a481 100644
          // User-defined named provider profiles from config (`[providers.<name>]`).
          // The model picker emits `<name>:<model>` specs for their routes
          // (issue #444), so the switch must bind that profile's runtime instead
-@@ -3189,7 +3254,17 @@ impl Provider for MultiProvider {
+@@ -3224,7 +3289,17 @@ impl Provider for MultiProvider {
              .unwrap_or_else(|poisoned| poisoned.into_inner())
              .is_some()
          {

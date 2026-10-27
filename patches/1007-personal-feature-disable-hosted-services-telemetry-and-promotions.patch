@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <public@fardjad.com>
 Date: Sun, 18 Oct 2026 04:01:39 +0200
-Subject: [PATCH] feat: keep hosted services and telemetry inactive
+Subject: [PATCH] fix: keep hosted services and telemetry inactive
 
 X-Jcode-Patch-Intent: Keep hosted services, telemetry, promotional content,
 sponsored discovery, and automatic onboarding present but never active
@@ -26,6 +26,13 @@ Why it exists:
 The personal build runs without hosted accounts, tiers, billing, telemetry,
 ads, sponsors, or nudges. Gating at chokepoints instead of deleting code keeps
 the patch small and the rebase cost low.
+
+The swarm completion-report instruction test in server/swarm.rs pins the
+shared text jcode-swarm-core appends to worker prompts. Its expected string
+now matches that shared wording verbatim (otherwise include a concise
+summary, validation/tests performed, and blockers or follow-ups) instead of
+a mis-cased paraphrase, and the idempotence assertions are unchanged. The
+appended instruction text itself does not change.
 
 Upstream integration points:
 crates/jcode-telemetry-core/src/lib.rs is_enabled (false outside tests),
@@ -64,6 +71,7 @@ cargo test -p jcode --lib gate_
 cargo test -p jcode-base --lib policy_
 cargo test -p jcode-app-core --lib tool_descriptions_stay_under_token_cap
 cargo test -p jcode-telemetry-core policy_sync_ --lib
+cargo test -p jcode-app-core append_swarm_completion_report_instructions_is_idempotent --lib
 ---
  crates/jcode-app-core/src/agent.rs            |   5 +-
  crates/jcode-app-core/src/channel.rs          |  56 +++-
@@ -109,10 +117,10 @@ cargo test -p jcode-telemetry-core policy_sync_ --lib
  crates/jcode-tui/src/tui/app.rs               |   2 +
  .../src/tui/app/auth_account_commands.rs      | 101 +++++-
  .../src/tui/app/auth_account_picker.rs        |   2 +-
- .../src/tui/app/command_registry_tests.rs     |  25 ++
+ .../src/tui/app/command_registry_tests.rs     |  40 +++
  crates/jcode-tui/src/tui/app/commands.rs      |   6 +-
  .../jcode-tui/src/tui/app/commands_remote.rs  |  58 +---
- .../src/tui/app/inline_interactive.rs         | 100 +++++-
+ .../src/tui/app/inline_interactive.rs         | 115 ++++++-
  crates/jcode-tui/src/tui/app/input_help.rs    |   8 +-
  crates/jcode-tui/src/tui/app/model_context.rs |  12 +-
  .../jcode-tui/src/tui/app/oauth_telemetry.rs  |  10 +
@@ -138,7 +146,7 @@ cargo test -p jcode-telemetry-core policy_sync_ --lib
  src/cli/login.rs                              |   2 +
  src/cli/provider_init.rs                      |   8 +-
  src/cli/provider_init_tests.rs                |  21 +-
- 73 files changed, 1754 insertions(+), 790 deletions(-)
+ 73 files changed, 1784 insertions(+), 790 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
 index f4769491b..4c8d2f64e 100644
@@ -470,7 +478,7 @@ index 34ed18134..8c1b05ac9 100644
              let status = RemoteStatus::load();
              let devices: Vec<_> = status.devices.iter().map(|device| json!({"id": device.id, "name": device.name, "paired_at": device.paired_at, "last_seen": device.last_seen})).collect();
 diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
-index f61b6dcb5..e78c734bd 100644
+index f61b6dcb5..cc8ffa731 100644
 --- a/crates/jcode-app-core/src/server/swarm.rs
 +++ b/crates/jcode-app-core/src/server/swarm.rs
 @@ -2052,7 +2052,12 @@ mod tests {
@@ -482,7 +490,7 @@ index f61b6dcb5..e78c734bd 100644
 +            "final assistant response that serves as your completion report"
 +        ));
 +        assert!(with_instructions.contains(
-+            "Include a concise summary, validation/tests performed, and blockers or follow-ups."
++            "otherwise include a concise summary, validation/tests performed, and blockers or follow-ups."
 +        ));
          assert_eq!(
              append_swarm_completion_report_instructions(&with_instructions),
@@ -1181,10 +1189,10 @@ index dd526b100..95ca0522c 100644
          Self::apply_runtime_profile();
          let inner = MultiProvider::new_fast();
 diff --git a/crates/jcode-base/src/provider/mod.rs b/crates/jcode-base/src/provider/mod.rs
-index 4d068a481..3f1d8199a 100644
+index 1dd853192..20af273aa 100644
 --- a/crates/jcode-base/src/provider/mod.rs
 +++ b/crates/jcode-base/src/provider/mod.rs
-@@ -462,14 +462,14 @@ impl MultiProvider {
+@@ -497,14 +497,14 @@ impl MultiProvider {
      }
 
      fn provider_family_policy(families: &[String]) -> ProviderFamilyPolicy {
@@ -1207,7 +1215,7 @@ index 4d068a481..3f1d8199a 100644
      }
 
      #[cfg(test)]
-@@ -514,7 +514,7 @@ impl MultiProvider {
+@@ -549,7 +549,7 @@ impl MultiProvider {
              .map(|provider| provider.runtime_key())
      }
 
@@ -1240,7 +1248,7 @@ index 5ef514e4c..bb94d55cb 100644
                  continue;
              }
 diff --git a/crates/jcode-base/src/provider/policy_tests.rs b/crates/jcode-base/src/provider/policy_tests.rs
-index e1278108b..f81a187ac 100644
+index bbd13f98c..776bb253a 100644
 --- a/crates/jcode-base/src/provider/policy_tests.rs
 +++ b/crates/jcode-base/src/provider/policy_tests.rs
 @@ -1,6 +1,37 @@
@@ -3213,16 +3221,25 @@ index 44d0805d8..6a8ec0fcf 100644
 
          let mut items = Vec::new();
 diff --git a/crates/jcode-tui/src/tui/app/command_registry_tests.rs b/crates/jcode-tui/src/tui/app/command_registry_tests.rs
-index 1e1de2983..72a0688b1 100644
+index 1e1de2983..6f8cdd6dc 100644
 --- a/crates/jcode-tui/src/tui/app/command_registry_tests.rs
 +++ b/crates/jcode-tui/src/tui/app/command_registry_tests.rs
-@@ -36,3 +36,28 @@ fn known_aliases_are_registered() {
+@@ -36,3 +36,43 @@ fn known_aliases_are_registered() {
          assert!(names.contains(alias), "{alias} is not registered");
      }
  }
 +
 +#[test]
 +fn gate_hosted_help_and_slash_completion_hide_jcode_account_entries() {
++    // Isolate from the user's real JCODE_HOME and from other tests that
++    // mutate it in parallel: the hosted-entry gating reads the process-global
++    // config under the current JCODE_HOME.
++    let _env_lock = crate::storage::lock_test_env();
++    let temp = tempfile::tempdir().expect("tempdir");
++    let saved_home = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", temp.path());
++    crate::config::invalidate_config_cache();
++
 +    let mut app = crate::tui::app::tests::create_test_app();
 +    for (input, hidden) in [
 +        ("/", ["/hosted", "/subscribe", "/subscription", "/hosted status", "/subscription status"].as_slice()),
@@ -3244,6 +3261,12 @@ index 1e1de2983..72a0688b1 100644
 +    assert!(app.command_help("subscription").is_none());
 +    assert!(app.command_help("subscribe").is_none());
 +    assert!(app.command_help("hosted").is_none());
++
++    match saved_home {
++        Some(value) => crate::env::set_var("JCODE_HOME", value),
++        None => crate::env::remove_var("JCODE_HOME"),
++    }
++    crate::config::invalidate_config_cache();
 +}
 diff --git a/crates/jcode-tui/src/tui/app/commands.rs b/crates/jcode-tui/src/tui/app/commands.rs
 index 873ccc296..64c0986ef 100644
@@ -3371,10 +3394,10 @@ index 3ae12eda7..9908549f5 100644
 +    }
  }
 diff --git a/crates/jcode-tui/src/tui/app/inline_interactive.rs b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-index a0c3ee3b0..b6d63c204 100644
+index a0c3ee3b0..6163350e8 100644
 --- a/crates/jcode-tui/src/tui/app/inline_interactive.rs
 +++ b/crates/jcode-tui/src/tui/app/inline_interactive.rs
-@@ -393,6 +393,87 @@ fn remote_catalog_api_method_is_safe(api_method: &str) -> bool {
+@@ -393,6 +393,102 @@ fn remote_catalog_api_method_is_safe(api_method: &str) -> bool {
      }
  }
 
@@ -3431,6 +3454,15 @@ index a0c3ee3b0..b6d63c204 100644
 +
 +    #[test]
 +    fn gate_hosted_remote_jcode_model_catalog_is_hidden_by_policy() {
++        // Isolate from the user's real JCODE_HOME and from other tests that
++        // mutate it in parallel: the policy check reads the process-global
++        // config under the current JCODE_HOME.
++        let _env_lock = crate::storage::lock_test_env();
++        let temp = tempfile::tempdir().expect("tempdir");
++        let saved_home = std::env::var_os("JCODE_HOME");
++        crate::env::set_var("JCODE_HOME", temp.path());
++        crate::config::invalidate_config_cache();
++
 +        let mut snapshot = jcode_provider_core::ModelCatalogSnapshot {
 +            provider_name: Some("OpenRouter".to_string()),
 +            provider_model: Some("gpt-5.5".to_string()),
@@ -3456,13 +3488,19 @@ index a0c3ee3b0..b6d63c204 100644
 +            .model_routes
 +            .iter()
 +            .all(|route| route.api_method != "jcode-subscription"));
++
++        match saved_home {
++            Some(value) => crate::env::set_var("JCODE_HOME", value),
++            None => crate::env::remove_var("JCODE_HOME"),
++        }
++        crate::config::invalidate_config_cache();
 +    }
 +}
 +
  fn remote_model_catalog_snapshot_is_safe(
      snapshot: &jcode_provider_core::ModelCatalogSnapshot,
  ) -> bool {
-@@ -696,8 +777,9 @@ impl App {
+@@ -696,8 +792,9 @@ impl App {
 
      pub(super) fn replace_remote_model_catalog_snapshot(
          &mut self,
@@ -3473,7 +3511,7 @@ index a0c3ee3b0..b6d63c204 100644
          let mut provider_meta_changed = false;
          let mut provider_name_changed = false;
          if snapshot.runtime_key != self.remote_runtime_key {
-@@ -854,6 +936,10 @@ impl App {
+@@ -854,6 +951,10 @@ impl App {
          // because a curated model also belongs to one of those upstreams.
          let provider_is_jcode_subscription = remote_provider_name.is_some_and(|name| {
              name.eq_ignore_ascii_case(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME)
@@ -3484,7 +3522,7 @@ index a0c3ee3b0..b6d63c204 100644
          });
          if provider_is_jcode_subscription {
              routes.clear();
-@@ -960,8 +1046,9 @@ impl App {
+@@ -960,8 +1061,9 @@ impl App {
 
      fn hydrate_remote_model_catalog_snapshot(
          &mut self,
@@ -3495,7 +3533,7 @@ index a0c3ee3b0..b6d63c204 100644
          if !snapshot.has_routes() {
              return false;
          }
-@@ -1789,6 +1876,15 @@ impl App {
+@@ -1789,6 +1891,15 @@ impl App {
              routes
          };
          let mut routes = crate::provider::dedupe_model_routes(routes);

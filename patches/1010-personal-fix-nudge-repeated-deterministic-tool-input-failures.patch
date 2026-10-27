@@ -29,6 +29,15 @@ text. Panel and applet deterministic input failures are categorized; unknown
 tool names are typed but uncategorized. Runtime and other untyped tool errors
 remain unclassified. This adds no global provider-loop cap.
 
+Panel descriptions are shortened to fit the shared always-on prompt budgets
+without losing guidance: the panel tool description keeps the static-text and
+compact-UI applet markdown guidance, and the content parameter description
+keeps the content/file_path exclusivity requirement. The 20-token description
+cap and 25-token parameter-description cap are unchanged and now live as
+shared consts in tool::tests, so the new focused
+panel_descriptions_stay_within_shared_token_caps test pins the panel
+definition against the same budgets with one source of truth.
+
 Upstream integration points:
 The change extends tool::retry_guard and wraps Registry::execute dispatches,
 including nested BatchTool calls. Per-effective-input async permits serialize
@@ -55,7 +64,10 @@ concurrency for distinct inputs and release permits when calls are canceled.
 Keep both turn loops free of repeat-guard-specific aborts. Do not add a global
 provider-loop cap or classify runtime failures. Keep the UI tool schemas aligned
 with their deserializers, nullable panel fields accepted, and dynamic applet
-fields permissive. The focused guard tests include
+fields permissive. Keep the panel description within the shared token budgets
+while preserving the applet markdown guidance and the content/file_path
+exclusivity requirement, and keep the caps defined once in tool::tests with
+focused per-tool budget tests reusing them. The focused guard tests include
 three_matching_typed_failures_nudge_and_block_only_observed_input and
 categorized_failures_ignore_arguments_and_error_text_but_not_category. The batch
 suite includes batch_retry_guard_suppresses_repeated_subcall_and_keeps_siblings
@@ -67,11 +79,12 @@ and repeated_deterministic_input_errors_nudge_without_stopping_both_turn_loops
 cover both loop implementations, corrected inputs, and suppression feedback.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-app-core panel --lib
-scripts/cargo_exec.sh test -p jcode-app-core applet --lib
-scripts/cargo_exec.sh test -p jcode-app-core retry_guard --lib
-scripts/cargo_exec.sh test -p jcode-app-core response_recovery --lib
-scripts/cargo_exec.sh test -p jcode-app-core tool::batch_tests --lib
+cargo test -p jcode-app-core panel --lib
+cargo test -p jcode-app-core applet --lib
+cargo test -p jcode-app-core retry_guard --lib
+cargo test -p jcode-app-core response_recovery --lib
+cargo test -p jcode-app-core tool::batch_tests --lib
+cargo test -p jcode-app-core panel_descriptions_stay_within_shared_token_caps --lib
 ---
  .../src/agent/response_recovery.rs            | 261 ++++++++
  crates/jcode-app-core/src/agent/turn_loops.rs |  12 +-
@@ -80,9 +93,10 @@ scripts/cargo_exec.sh test -p jcode-app-core tool::batch_tests --lib
  .../jcode-app-core/src/tool/applet_tests.rs   | 116 ++++
  crates/jcode-app-core/src/tool/mod.rs         | 417 ++++++++++++-
  crates/jcode-app-core/src/tool/panel.rs       |  87 ++-
- crates/jcode-app-core/src/tool/panel_tests.rs | 229 +++++++
+ crates/jcode-app-core/src/tool/panel_tests.rs | 286 ++++++++-
  crates/jcode-app-core/src/tool/retry_guard.rs | 580 ++++++++++++++++++
- 9 files changed, 1735 insertions(+), 82 deletions(-)
+ crates/jcode-app-core/src/tool/tests.rs       |   9 +-
+ 10 files changed, 1797 insertions(+), 86 deletions(-)
  create mode 100644 crates/jcode-app-core/src/tool/retry_guard.rs
 
 diff --git a/crates/jcode-app-core/src/agent/response_recovery.rs b/crates/jcode-app-core/src/agent/response_recovery.rs
@@ -1282,7 +1296,7 @@ index 3c466376c..f6905537c 100644
 +    }
 +}
 diff --git a/crates/jcode-app-core/src/tool/panel.rs b/crates/jcode-app-core/src/tool/panel.rs
-index 920285ae6..e304ee4f5 100644
+index 920285ae6..dc4f541fa 100644
 --- a/crates/jcode-app-core/src/tool/panel.rs
 +++ b/crates/jcode-app-core/src/tool/panel.rs
 @@ -1,6 +1,6 @@
@@ -1298,7 +1312,7 @@ index 920285ae6..e304ee4f5 100644
      }
      fn description(&self) -> &str {
 -        "Open and manage desktop panels from Markdown content or a Markdown/PDF file."
-+        "Open and manage desktop panels from Markdown content or a Markdown/PDF file. For static text or compact UI, prefer an applet with a markdown view."
++        "Show Markdown/PDF. For static text or compact UI, prefer an applet markdown view."
      }
      fn parameters_schema(&self) -> Value {
          json!({
@@ -1315,7 +1329,7 @@ index 920285ae6..e304ee4f5 100644
 +                    "action": {"type":"string", "enum":["spawn","update","focus","close","list"], "default":"spawn", "description":"Default spawn. Spawn/update need exactly one of content or file_path. Focus/close need panel_id."},
 +                    "panel_id": {"type":"string", "description":"Same-session panel ID for update/focus/close. Omit for spawn."},
 +                    "title": {"type":"string", "description":"Panel title for spawn/update."},
-+                    "content": {"type":"string", "description":"Markdown for spawn/update, mutually exclusive with file_path. Example: {\"action\":\"spawn\",\"title\":\"Notes\",\"content\":\"# Notes\\nHello\"}."},
++                    "content": {"type":"string", "description":"Markdown content. Use this or file_path, not both."},
 +                    "file_path": {"type":"string", "description":"Markdown/PDF path for spawn/update, relative to cwd. Exclusive with content."},
 +                    "focus": {"type":"boolean", "description":"Focus after spawn/update. Defaults true for spawn and false for update."}
              }
@@ -1424,7 +1438,7 @@ index 920285ae6..e304ee4f5 100644
          legacy["page_id"] = json!(panel_id);
          let session_id = ctx.session_id.clone();
 diff --git a/crates/jcode-app-core/src/tool/panel_tests.rs b/crates/jcode-app-core/src/tool/panel_tests.rs
-index 625c29c4e..9fae3d5cb 100644
+index 625c29c4e..187dff581 100644
 --- a/crates/jcode-app-core/src/tool/panel_tests.rs
 +++ b/crates/jcode-app-core/src/tool/panel_tests.rs
 @@ -1,5 +1,6 @@
@@ -1434,10 +1448,71 @@ index 625c29c4e..9fae3d5cb 100644
  use crate::side_panel::SidePanelSnapshot;
 
  fn context(dir: &std::path::Path, session: &str) -> ToolContext {
-@@ -236,3 +237,231 @@ async fn panel_registered_lifecycle_and_validation() {
+@@ -72,7 +73,13 @@ async fn panel_registered_lifecycle_and_validation() {
+         .iter()
+         .find(|d| d.name == "panel")
+         .expect("model-visible panel definition");
+-    assert!(definition.description.contains("desktop panels"));
++    assert!(
++        definition
++            .description
++            .contains("prefer an applet"),
++        "panel description must keep the applet markdown guidance: {}",
++        definition.description
++    );
+     let mut events = crate::bus::Bus::global().subscribe();
+     // Another session's event may arrive before this test's panel write.
+     crate::bus::Bus::global().publish(crate::bus::BusEvent::SidePanelUpdated(
+@@ -236,3 +243,280 @@ async fn panel_registered_lifecycle_and_validation() {
              .expect("framework-injected fields must be accepted");
      }
  }
++
++/// The shared budget tests in `tool::tests` only see the registry names their
++/// filters enumerate, so pin the panel definition directly against the same
++/// caps using the same counters.
++#[tokio::test]
++async fn panel_descriptions_stay_within_shared_token_caps() {
++    let registry = super::super::Registry::empty();
++    registry
++        .register(
++            "panel".into(),
++            std::sync::Arc::new(PanelTool::new()),
++        )
++        .await;
++    let allowed = ["panel".to_string()].into_iter().collect();
++    let definition = registry
++        .definitions(Some(&allowed))
++        .await
++        .into_iter()
++        .find(|definition| definition.name == "panel")
++        .expect("model-visible panel definition");
++
++    let description_tokens = definition.description_token_estimate();
++    assert!(
++        description_tokens <= super::super::tests::DESCRIPTION_TOKEN_CAP,
++        "panel tool description over the shared cap: ~{description_tokens} tokens: {}",
++        definition.description
++    );
++
++    let mut descriptions = Vec::new();
++    super::super::tests::collect_param_descriptions(
++        &definition.input_schema,
++        "$",
++        &mut descriptions,
++    );
++    assert!(
++        !descriptions.is_empty(),
++        "panel schema must expose parameter descriptions"
++    );
++    for (path, description) in descriptions {
++        let tokens = crate::util::estimate_tokens(&description);
++        assert!(
++            tokens <= super::super::tests::PARAM_DESCRIPTION_TOKEN_CAP,
++            "panel parameter {path} over the shared cap: ~{tokens} tokens: {description}"
++        );
++    }
++}
 +
 +#[tokio::test]
 +async fn panel_provider_input_errors_are_categorized_and_success_accepts_nulls() {
@@ -1582,10 +1657,13 @@ index 625c29c4e..9fae3d5cb 100644
 +    assert!(registry.retry_guard_handle().terminal_error().is_none());
 +
 +    let definition = tool.parameters_schema();
-+    assert!(definition["properties"]["content"]["description"]
++    let content_description = definition["properties"]["content"]["description"]
 +        .as_str()
-+        .unwrap()
-+        .contains("Example:"));
++        .unwrap();
++    assert!(
++        content_description.contains("file_path") && content_description.contains("not both"),
++        "content description must state the file_path exclusivity requirement: {content_description}"
++    );
 +    let compatible = jcode_provider_core::openai_schema::openai_compatible_schema(&definition);
 +    assert!(jcode_provider_core::openai_schema::schema_supports_strict(&compatible));
 +    let strict_schema = jcode_provider_core::openai_schema::strict_normalize_schema(&compatible);
@@ -2252,3 +2330,42 @@ index 000000000..e954e3c21
 +        assert!(guard.repeated_failure_feedback().is_none());
 +    }
 +}
+diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
+index 31d67bb56..3e6a872c5 100644
+--- a/crates/jcode-app-core/src/tool/tests.rs
++++ b/crates/jcode-app-core/src/tool/tests.rs
+@@ -855,12 +855,16 @@ async fn print_tool_definition_token_report() {
+     }
+ }
+
++/// Shared with focused per-tool budget tests (panel_tests) so the caps have a
++/// single source of truth. Never increase these values here.
++pub(crate) const DESCRIPTION_TOKEN_CAP: usize = 20;
++pub(crate) const PARAM_DESCRIPTION_TOKEN_CAP: usize = 25;
++
+ /// Tool descriptions are always-on prompt cost, so they are capped at ~20
+ /// estimated tokens. Behavioral guidance belongs in parameter descriptions.
+ /// Exemptions must be justified inline.
+ #[tokio::test]
+ async fn tool_descriptions_stay_under_token_cap() {
+-    const DESCRIPTION_TOKEN_CAP: usize = 20;
+     // swarm appends the user-tunable swarm-prompt.md by design.
+     // batch carries a deliberate parallel-call example (2f4abae33, pinned by
+     // batch_tests::description_includes_parallel_tool_call_example).
+@@ -916,7 +920,7 @@ async fn tool_descriptions_stay_under_token_cap() {
+     );
+ }
+
+-fn collect_param_descriptions(schema: &Value, path: &str, out: &mut Vec<(String, String)>) {
++pub(crate) fn collect_param_descriptions(schema: &Value, path: &str, out: &mut Vec<(String, String)>) {
+     match schema {
+         Value::Object(map) => {
+             if path != "$"
+@@ -946,7 +950,6 @@ fn collect_param_descriptions(schema: &Value, path: &str, out: &mut Vec<(String,
+ /// the gate continuation messages in jcode-base::todo).
+ #[tokio::test]
+ async fn tool_parameter_descriptions_stay_under_token_cap() {
+-    const PARAM_DESCRIPTION_TOKEN_CAP: usize = 25;
+     // The feedback-loop relevance rubric defines every enum state inline
+     // (abb0baabc, d21916db5) and todo::tests pins each concept, so it is
+     // deliberately longer than the cap.
