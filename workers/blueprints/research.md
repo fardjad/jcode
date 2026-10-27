@@ -1,7 +1,6 @@
 ---
 name: research
 description: Read-only web and jcode documentation research specialist that returns prioritized, sourced findings.
-effort: xhigh
 enabled-tools:
   - websearch
   - webfetch

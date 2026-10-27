@@ -1,7 +1,6 @@
 ---
 name: investigator
 description: Read-only investigation and shell execution specialist that runs commands, compares results against baselines, and returns factual evidence.
-effort: xhigh
 enabled-tools:
   - read
   - agentgrep
