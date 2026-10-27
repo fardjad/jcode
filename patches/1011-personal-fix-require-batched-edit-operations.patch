@@ -29,9 +29,9 @@ top-level shorthand fields. Keep empty new_string values valid so edits can
 delete matched text. Avoid claims of OS-level write atomicity.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-app-core edit::tests --lib
-scripts/cargo_exec.sh test -p jcode-app-core tool::file_diff --lib
-scripts/cargo_exec.sh test -p jcode-app-core tool::edit_stats --lib
+cargo test -p jcode-app-core edit::tests --lib
+cargo test -p jcode-app-core tool::file_diff --lib
+cargo test -p jcode-app-core tool::edit_stats --lib
 ---
  crates/jcode-app-core/src/tool/edit.rs       | 284 +++++++++++++------
  crates/jcode-app-core/src/tool/edit_stats.rs |   4 +-

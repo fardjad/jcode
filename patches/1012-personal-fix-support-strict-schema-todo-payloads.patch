@@ -36,7 +36,7 @@ patch array (`update`, `add`, or `remove`) are supplied. Keep `update` and `add`
 item property schemas aligned with `todos` item properties.
 
 Validation:
-scripts/cargo_exec.sh test -p jcode-app-core tool::todo::tests --lib
+cargo test -p jcode-app-core tool::todo::tests --lib
 ---
  crates/jcode-app-core/src/tool/todo.rs | 130 +++++++++++++++++++++++--
  1 file changed, 123 insertions(+), 7 deletions(-)
