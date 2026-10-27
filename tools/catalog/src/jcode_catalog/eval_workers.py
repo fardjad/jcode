@@ -28,7 +28,7 @@ def main() -> int:
         + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         + f"-{os.getpid()}"
     )
-    output = root / "workers" / "results" / run_id
+    output = root / "customizations" / "workers" / "results" / run_id
     provenance = (
         evaluation_directory(root) / "provenance" / f"{run_id}.json"
     )
@@ -58,13 +58,13 @@ def main() -> int:
                 "--bridge",
                 build["binary_paths"]["jcode-harness-api-bridge"],
                 "--settings",
-                str(root / "workers" / ".eval-settings.toml"),
+                str(root / "customizations" / "workers" / ".eval-settings.toml"),
                 "--scenarios",
-                str(root / "workers" / "scenarios"),
+                str(root / "customizations" / "workers" / "scenarios"),
                 "--blueprints",
-                str(root / "workers" / "blueprints"),
+                str(root / "customizations" / "workers" / "blueprints"),
                 "--plugins",
-                str(root / "plugins"),
+                str(root / "customizations" / "plugins"),
                 "--build-provenance",
                 str(provenance),
                 "--output",

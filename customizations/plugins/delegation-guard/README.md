@@ -18,7 +18,7 @@ configured TTL cleanup.
 
 ## Install and configure
 
-Follow the [get started guide](../../docs/get-started.md) to install the assets,
+Follow the [get started guide](../../../docs/get-started.md) to install the assets,
 then merge the hooks below into `~/.jcode/config.toml`. Without
 `post_tool_transform`, the guard does not run. Setup never changes your config.
 
@@ -57,5 +57,5 @@ cleanup.
 Run the isolated contract tests from the repository root:
 
 ```bash
-python3 plugins/delegation-guard/test_transform.py
+python3 customizations/plugins/delegation-guard/test_transform.py
 ```

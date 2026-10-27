@@ -74,7 +74,7 @@ project-local
 - Do not rebuild, reset, or rebase a source tree while an evaluation uses it.
   Give each output run a fresh directory and each result ledger/shared mutable
   build cache one active runner. Build logs and stamps are under
-  `.tools/worker-eval/`; run evidence is under ignored `workers/results/`.
+  `.tools/worker-eval/`; run evidence is under ignored `customizations/workers/results/`.
 - Make required toolchain executables available to isolated subprocesses without
   user-specific PATH shims or configuration. Do not inherit personal
   jcode/XDG configuration or provider routing. Preserve only explicitly allowed

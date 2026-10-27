@@ -172,7 +172,9 @@ def test_fixture_symlink_is_rejected(tmp_path: Path) -> None:
 
 
 def test_all_bundled_scenarios_are_outcome_only_and_harness_focused() -> None:
-    scenarios = Path(__file__).resolve().parents[3] / "workers" / "scenarios"
+    scenarios = (
+        Path(__file__).resolve().parents[3] / "customizations" / "workers" / "scenarios"
+    )
     loaded = load_scenarios(scenarios)
     assert len(loaded) == 3
     for scenario in loaded:

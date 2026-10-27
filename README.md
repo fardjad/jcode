@@ -53,7 +53,7 @@ irm https://raw.githubusercontent.com/fardjad/jcode/personalized/tools/scripts/i
 ## Repository structure
 
 - [`patches/`](patches/) contains the ordered source changes applied to jcode.
-- [`plugins/`](plugins/) contains personal plugins kept separately from source
+- [`customizations/plugins/`](customizations/plugins/) contains personal plugins kept separately from source
   patches.
 - [`docs/`](docs/) documents features added by patches.
 
@@ -171,7 +171,7 @@ just list-patches                 # see which commit maps to which patch
 # commit or amend the relevant commit there
 just snapshot-patches             # regenerate and normalize personal patch hashes
 just validate-patch-files         # confirm patches apply cleanly
-just test-catalog                 # after changing tools/, plugins/, or the justfile
+just test-catalog                 # after changing tools/, customizations/plugins/, or the justfile
 just test-patch-file patches/<name>.patch   # run the patch's validation
 ```
 

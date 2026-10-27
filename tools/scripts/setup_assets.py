@@ -1,38 +1,54 @@
-"""Install jcode catalog plugins, worker blueprints, and skills into the jcode
-home.
+"""Install jcode catalog plugins, worker blueprints, skills, and the
+config.toml template into the jcode home.
 
-Default mode creates directory symlinks from this catalog checkout into the
-target jcode home. When
-directory symlinks are unsupported or refused by the filesystem, the tool
-falls back to copying the catalog payload and records what it installed in a
-state file so later runs can refresh pristine copies.
+Sources live under customizations/ in this catalog checkout (plugins/,
+workers/blueprints/, skills/, and config.toml). Default mode creates
+directory symlinks from this checkout into the target jcode home, plus a
+file symlink for config.toml. When directory symlinks are unsupported or
+refused by the filesystem, the tool falls back to copying the catalog
+payload and records what it installed in a state file so later runs can
+refresh pristine copies.
 
-Copies stay in copy mode on subsequent runs. Change modes only by backing up
-and moving the existing destinations, then installing again.
-Copied assets update only when this tool is rerun. Inside a managed directory any local
-edit or extra file blocks the update until the directory is backed up or
-moved, so local changes are never overwritten or deleted. This includes
+Copies stay in copy mode on subsequent runs. Change modes only by backing
+up and moving the existing destinations, then installing again. Copied
+assets update only when this tool is rerun. Inside a managed directory any
+local edit or extra file blocks the update until the directory is backed up
+or moved, so local changes are never overwritten or deleted. This includes
 files the repository ignores, such as editor swap files, __pycache__
 directories, and caches. Each asset is refreshed as one staged unit that is
 rolled back on failure; a failure affecting a later asset leaves assets
 refreshed earlier in the same run updated (the whole run is not atomic).
-Top-level entries
-that are not part of the managed payload (for example a local plugin or
-skill directory, or one that upstream no longer ships) are preserved
-untouched during updates and reported in the output. Local content ignored
-by the repository (for example plugin directories without an allowlist
-entry in plugins/.gitignore, such as the local plugins/agent-sudo plugin,
-or skill directories without an entry in skills/.gitignore, plus
-__pycache__, editor files, and test caches) is never copied. Existing
-unmanaged files and unrelated symlinks are never replaced. config.toml is
-never read or written. The tool never requests elevation.
+Top-level entries that are not part of the managed payload (for example a
+local plugin or skill directory, or one that upstream no longer ships) are
+preserved untouched during updates and reported in the output. Local
+content ignored by the repository (for example plugin directories without
+an allowlist entry in customizations/plugins/.gitignore, such as the local
+customizations/plugins/agent-sudo plugin, or skill directories without an
+entry in customizations/skills/.gitignore, plus __pycache__, editor files,
+and test caches) is never copied. Existing unmanaged files and unrelated
+symlinks are never replaced.
+
+config.toml is installed as a managed symlink or copy of
+customizations/config.toml. An existing config.toml that this tool did not
+install (a regular file, a directory, or any other symlink, even one with
+identical contents) is never read, adopted, or replaced: it is left
+untouched, reported, and never blocks the other assets. A managed config
+copy is refreshed only while it still matches the digest recorded in the
+state file; local edits to a managed copy reject the update without
+touching the file. A directory symlink that already points at this
+checkout's source is accepted and left in place; a broken or unrelated
+directory symlink is refused and never replaced, and a non-symlink
+destination blocks the install. In copy mode any existing directory
+symlink is refused rather than converted to a copy. config.private.toml
+is never probed, read, or written. The tool never requests elevation.
 
 Runtime requirements of the installed assets: the plugin adapters are
 python3 scripts that use only the Python standard library, so a ``python3``
 on PATH is required to run them. The rtk plugin additionally requires the
 external ``rtk`` CLI on PATH and fails open when it is absent. Plugins only
 take effect when config.toml [hooks] points at the installed executables;
-this tool never edits that configuration.
+this tool only installs the template, it never merges or edits an existing
+configuration.
 
 Usage:
     python3 tools/scripts/setup_assets.py [--copy]
@@ -86,7 +102,11 @@ class Asset:
     name: str
     source_rel: Path
     required: tuple[str, ...]
+    kind: str = "dir"  # "dir" for a directory payload, "file" for one file
 
+
+# Every asset source lives under customizations/ in this checkout.
+CUSTOMIZATIONS_DIR = Path("customizations")
 
 ASSETS = (
     Asset(
@@ -104,7 +124,17 @@ ASSETS = (
         source_rel=Path("skills"),
         required=("author-plan/SKILL.md",),
     ),
+    Asset(
+        name="config.toml",
+        source_rel=Path("config.toml"),
+        required=(),
+        kind="file",
+    ),
 )
+
+
+def asset_source(repo: Path, asset: Asset) -> Path:
+    return repo / CUSTOMIZATIONS_DIR / asset.source_rel
 
 
 def fail(message: str) -> None:
@@ -473,12 +503,90 @@ def install_copy_update(
     return moved
 
 
+def install_file_copy_fresh(
+    source: Path, dest: Path, meta_path: Path, metadata: dict
+) -> None:
+    """Install one managed file copy, rolling back on failure."""
+    tmp = unique_sibling(dest, "staging")
+    try:
+        shutil.copy2(source, tmp)
+        os.replace(tmp, dest)
+    except BaseException:
+        if tmp.is_symlink() or tmp.exists():
+            tmp.unlink()
+        raise
+    try:
+        write_metadata(meta_path, metadata)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+
+
+def install_file_copy_update(
+    source: Path, dest: Path, meta_path: Path, metadata: dict
+) -> None:
+    """Refresh one managed file copy, restoring the previous file and the
+    previous metadata on failure."""
+    tmp = unique_sibling(dest, "staging")
+    backup = unique_sibling(dest, "backup")
+    try:
+        shutil.copy2(source, tmp)
+        os.rename(dest, backup)
+    except BaseException:
+        if tmp.is_symlink() or tmp.exists():
+            tmp.unlink()
+        raise
+    try:
+        os.replace(tmp, dest)
+        write_metadata(meta_path, metadata)
+    except BaseException as exc:
+        try:
+            if dest.exists() or dest.is_symlink():
+                os.replace(dest, tmp)
+            os.rename(backup, dest)
+            if tmp.is_symlink() or tmp.exists():
+                tmp.unlink()
+        except BaseException as undo_exc:
+            fail(f"rollback of {dest} failed: {undo_exc}")
+        if not isinstance(exc, OSError):
+            raise
+        raise OSError(f"failed to install updated copy at {dest}: {exc}") from exc
+    backup.unlink()
+
+
 def install_all_copies(repo: Path, home: Path, metadata: dict) -> int:
     problems: list[str] = []
-    plans: list[tuple[Asset, Path, Path, dict[str, str], list]] = []
+    plans: list[tuple] = []
     for asset in ASSETS:
-        source = repo / asset.source_rel
+        source = asset_source(repo, asset)
         dest = home / asset.name
+        if asset.kind == "file":
+            recorded = recorded_files(metadata, asset.name).get(asset.name)
+            if dest.is_symlink():
+                if os.path.realpath(dest) == str(source.resolve()):
+                    plans.append(("file-already-link", asset, source, dest, None, None))
+                else:
+                    # Any other symlink (even a dangling one) was not created
+                    # by this tool; never adopt or replace it.
+                    plans.append(("file-skip", asset, source, dest, None, None))
+            elif dest.is_dir():
+                plans.append(("file-skip", asset, source, dest, None, None))
+            elif dest.exists():
+                on_disk = content_hash(dest)
+                if recorded is None:
+                    plans.append(("file-skip", asset, source, dest, None, None))
+                elif on_disk != recorded:
+                    problems.append(
+                        f"{dest}: managed config copy changed since it was "
+                        "copied; refusing to overwrite it"
+                    )
+                elif on_disk != content_hash(source):
+                    plans.append(("file-update", asset, source, dest, None, None))
+                else:
+                    plans.append(("file-already-copy", asset, source, dest, None, None))
+            else:
+                plans.append(("file-fresh", asset, source, dest, None, None))
+            continue
         rules = load_gitignore_rules(source)
         desired = inventory(source, rules)
         recorded = recorded_files(metadata, asset.name)
@@ -492,19 +600,27 @@ def install_all_copies(repo: Path, home: Path, metadata: dict) -> int:
                 f"would follow instead of preserving: {', '.join(symlinked)}"
             )
         if dest.is_symlink():
-            problems.append(
-                f"{dest}: refusing to replace an existing symlink; "
-                "remove it first or run without --copy"
-            )
+            if os.path.realpath(dest) == str(source.resolve()):
+                problems.append(
+                    f"{dest}: refusing to replace an existing symlink; "
+                    "remove it first or run without --copy"
+                )
+            else:
+                problems.append(
+                    f"{dest}: unrelated symlink to {os.readlink(dest)}; refusing to replace"
+                )
         elif dest.exists():
             if recorded:
                 details = find_problems(dest, recorded, desired, rules)
                 if details:
                     problems.append(f"{dest}: installed copy is not pristine:")
                     problems.extend(f"  {detail}" for detail in details)
+                else:
+                    plans.append(("dir-update", asset, source, dest, desired, rules))
             else:
                 problems.append(f"{dest}: unmanaged path already exists")
-        plans.append((asset, source, dest, desired, rules))
+        else:
+            plans.append(("dir-fresh", asset, source, dest, desired, rules))
 
     if problems:
         for problem in problems:
@@ -516,37 +632,65 @@ def install_all_copies(repo: Path, home: Path, metadata: dict) -> int:
         )
         return 1
 
-    for asset, source, dest, desired, rules in plans:
-        staging = unique_sibling(dest, "staging")
-        staging.mkdir()
-        meta_path = metadata_path(home)
-        recorded = recorded_files(metadata, asset.name)
-        had_dest = dest.exists()
-        # Only the refreshed payload's top-level names are managed during the
-        # swap; every other backup entry is preserved, so a plugin that
-        # upstream stops shipping (or an allowlisted local directory) is
-        # never silently deleted.
-        managed_tops = {rel.split("/", 1)[0] for rel in desired}
-        metadata["assets"][asset.name] = {"source": str(source), "files": dict(desired)}
+    meta_path = metadata_path(home)
+    for action, asset, source, dest, desired, rules in plans:
         try:
-            stage_tree(source, desired, staging)
-            if had_dest:
-                moved = install_copy_update(dest, staging, meta_path, metadata, managed_tops)
-                removed = len(recorded) - len(set(desired) & set(recorded))
+            if action == "file-skip":
                 note(
-                    f"refreshed copy at {dest} "
-                    f"({len(set(desired) - set(recorded))} added, {removed} removed)"
+                    f"{dest}: existing config.toml is not managed by this "
+                    "tool; leaving it untouched"
                 )
-                if moved:
-                    note(
-                        f"preserved unmanaged top-level entries at {dest}: "
-                        f"{', '.join(moved)}"
+                continue
+            if action == "file-already-link":
+                note(f"already linked {dest} -> {source.resolve()}")
+                continue
+            if action == "file-already-copy":
+                note(f"copy at {dest} already matches {source.resolve()}")
+                continue
+            if action in ("file-fresh", "file-update"):
+                metadata["assets"][asset.name] = {
+                    "source": str(source),
+                    "files": {asset.name: content_hash(source)},
+                }
+                if action == "file-fresh":
+                    install_file_copy_fresh(source, dest, meta_path, metadata)
+                    note(f"copied config template to {dest}")
+                else:
+                    install_file_copy_update(source, dest, meta_path, metadata)
+                    note(f"refreshed managed config copy at {dest}")
+                continue
+            staging = unique_sibling(dest, "staging")
+            staging.mkdir()
+            recorded = recorded_files(metadata, asset.name)
+            # Only the refreshed payload's top-level names are managed during
+            # the swap; every other backup entry is preserved, so a plugin
+            # that upstream stops shipping (or an allowlisted local
+            # directory) is never silently deleted.
+            managed_tops = {rel.split("/", 1)[0] for rel in desired}
+            metadata["assets"][asset.name] = {"source": str(source), "files": dict(desired)}
+            try:
+                stage_tree(source, desired, staging)
+                if action == "dir-update":
+                    moved = install_copy_update(
+                        dest, staging, meta_path, metadata, managed_tops
                     )
-            else:
-                install_copy_fresh(dest, staging, meta_path, metadata)
-                note(f"copied {len(desired)} files to {dest}")
+                    removed = len(recorded) - len(set(desired) & set(recorded))
+                    note(
+                        f"refreshed copy at {dest} "
+                        f"({len(set(desired) - set(recorded))} added, {removed} removed)"
+                    )
+                    if moved:
+                        note(
+                            f"preserved unmanaged top-level entries at {dest}: "
+                            f"{', '.join(moved)}"
+                        )
+                else:
+                    install_copy_fresh(dest, staging, meta_path, metadata)
+                    note(f"copied {len(desired)} files to {dest}")
+            except BaseException:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
         except OSError as exc:
-            shutil.rmtree(staging, ignore_errors=True)
             fail(str(exc))
             return 1
     return 0
@@ -579,22 +723,35 @@ def symlinks_supported(home: Path) -> tuple[bool | None, str | None]:
 
 def install_all_symlinks(repo: Path, home: Path, metadata: dict) -> int:
     problems: list[str] = []
-    actions: list[tuple[str, Asset, Path, Path]] = []
+    actions: list[tuple] = []
     for asset in ASSETS:
-        source = (repo / asset.source_rel).resolve()
+        source = asset_source(repo, asset).resolve()
         dest = home / asset.name
+        if asset.kind == "file":
+            if dest.is_symlink():
+                if os.path.realpath(dest) == str(source):
+                    actions.append(("already", asset, source, dest))
+                else:
+                    # Any other symlink (even a dangling one) was not created
+                    # by this tool; never adopt or replace it.
+                    actions.append(("file-skip", asset, source, dest))
+            elif dest.exists():
+                actions.append(("file-skip", asset, source, dest))
+            else:
+                actions.append(("create", asset, source, dest))
+            continue
         if dest.is_symlink():
-            if not dest.exists():
+            target = os.path.realpath(dest)
+            if target == str(source):
+                actions.append(("already", asset, source, dest))
+            elif not dest.exists():
                 problems.append(
                     f"{dest}: broken symlink; remove it and rerun this command"
                 )
-                continue
-            if dest.resolve() != source:
+            else:
                 problems.append(
                     f"{dest}: unrelated symlink to {os.readlink(dest)}; refusing to replace"
                 )
-                continue
-            actions.append(("already", asset, source, dest))
         elif dest.exists():
             problems.append(f"{dest}: unmanaged or copied path already exists")
         else:
@@ -614,9 +771,15 @@ def install_all_symlinks(repo: Path, home: Path, metadata: dict) -> int:
         if action == "already":
             note(f"already linked {dest} -> {source}")
             continue
+        if action == "file-skip":
+            note(
+                f"{dest}: existing config.toml is not managed by this tool; "
+                "leaving it untouched"
+            )
+            continue
         if action == "create":
             try:
-                os.symlink(str(source), dest, target_is_directory=True)
+                os.symlink(str(source), dest, target_is_directory=asset.kind == "dir")
             except OSError as exc:
                 fail(f"cannot create symlink {dest} -> {source}: {exc}")
                 return 1
@@ -632,7 +795,11 @@ def install_all_symlinks(repo: Path, home: Path, metadata: dict) -> int:
 def validate_sources(repo: Path) -> list[str]:
     errors: list[str] = []
     for asset in ASSETS:
-        source = repo / asset.source_rel
+        source = asset_source(repo, asset)
+        if asset.kind == "file":
+            if not source.is_file():
+                errors.append(f"missing config template file: {source}")
+            continue
         if not source.is_dir():
             errors.append(f"missing asset source directory: {source}")
             continue
@@ -650,37 +817,50 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="setup_assets.py",
         description=(
-            "Link or copy the catalog plugins, worker blueprints, and skills "
-            "into the target jcode home (JCODE_HOME or ~/.jcode)."
+            "Link or copy the catalog plugins, worker blueprints, skills, and "
+            "the config.toml template into the target jcode home "
+            "(JCODE_HOME or ~/.jcode)."
         ),
         epilog=(
-            "Limitations: the default mode symlinks whole directories, so the "
-            "installation always reflects this repository exactly. With --copy "
-            "the catalog payload is duplicated instead; copies are snapshots, "
-            "so upstream updates only appear when this tool is rerun. Inside a "
-            "managed directory any local edit or extra file blocks the update "
-            "until you back up or move that directory. That includes ignored names such "
-            "as swap files and __pycache__. Each asset is refreshed as one "
-            "rolled-back unit; if a later asset fails, assets refreshed "
-            "earlier in the same run stay updated. Top-level entries that "
-            "are not part of the managed payload (a local plugin or skill "
-            "directory, or one upstream no longer ships) are preserved "
-            "untouched and reported during updates. Content ignored by the "
-            "repository (such as plugin directories without an allowlist "
-            "entry in plugins/.gitignore, for example the local "
-            "plugins/agent-sudo plugin, or skill directories without an "
-            "entry in skills/.gitignore, plus __pycache__, editor files, and "
-            "test caches) is never "
-            "copied. Existing unmanaged files and unrelated symlinks are never "
-            "replaced. config.toml is never read or written, and the tool "
-            "never requests elevation.\n"
+            "Limitations: the default mode symlinks whole directories (and "
+            "the config.toml template file), so the installation always "
+            "reflects this repository exactly. With --copy the catalog "
+            "payload is duplicated instead; copies are snapshots, so "
+            "upstream updates only appear when this tool is rerun. Inside a "
+            "managed directory any local edit or extra file blocks the "
+            "update until you back up or move that directory. That includes "
+            "ignored names such as swap files and __pycache__. Each asset is "
+            "refreshed as one rolled-back unit; if a later asset fails, "
+            "assets refreshed earlier in the same run stay updated. "
+            "Top-level entries that are not part of the managed payload (a "
+            "local plugin or skill directory, or one upstream no longer "
+            "ships) are preserved untouched and reported during updates. "
+            "Content ignored by the repository (such as plugin directories "
+            "without an allowlist entry in customizations/plugins/.gitignore, "
+            "for example the local customizations/plugins/agent-sudo plugin, "
+            "or skill directories without an entry in "
+            "customizations/skills/.gitignore, plus __pycache__, editor "
+            "files, and test caches) is never copied. Existing unmanaged "
+            "files and unrelated symlinks are never replaced. In the "
+            "default mode an existing directory symlink that already "
+            "points at this checkout is accepted; a broken or unrelated "
+            "symlink is refused, and with --copy any existing symlink is "
+            "refused rather than converted to a copy. config.toml is "
+            "installed only when absent or already managed by this tool: an "
+            "existing config.toml this tool did not install (any regular "
+            "file or other symlink, even one with identical contents) is "
+            "left untouched and reported, and a managed config copy with "
+            "local edits is never overwritten. config.private.toml is never "
+            "probed, read, or written, and the tool never requests "
+            "elevation.\n"
             "\n"
             "Runtime requirements: the plugin adapters are python3 scripts "
             "using only the Python standard library, so a python3 on PATH is "
             "required to run them. The rtk plugin additionally requires the "
             "external rtk CLI on PATH and fails open when it is absent. "
             "Plugins only take effect when config.toml [hooks] points at the "
-            "installed executables; this tool never edits that configuration."
+            "installed executables; this tool only installs the template, it "
+            "never merges or edits an existing configuration."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

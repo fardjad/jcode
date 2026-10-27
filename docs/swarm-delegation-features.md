@@ -2,7 +2,7 @@
 
 These patches add reusable worker blueprints and runtime hook integration for
 swarm-based delegation. The coordinator prompt in
-`workers/blueprints/coordinator.md` guides the coordinator on when and how to
+`customizations/workers/blueprints/coordinator.md` guides the coordinator on when and how to
 delegate token-heavy work to workers configured with task-appropriate models.
 
 ## Worker blueprints
@@ -57,7 +57,7 @@ post_tool_transform = ["~/.jcode/plugins/delegation-guard/delegation-guard-trans
 post_tool_transform_timeout_ms = 500
 ```
 
-The `delegation-guard` plugin (see `plugins/delegation-guard/`) uses this hook
+The `delegation-guard` plugin (see `customizations/plugins/delegation-guard/`) uses this hook
 to replace oversized coordinator tool results with a compact delegation nudge,
 keeping the coordinator's context small.
 
@@ -66,7 +66,7 @@ keeping the coordinator's context small.
 Upstream jcode (since v0.89, merged from the former candidate patch
 `0001-candidate-pre-tool-input-transformers.patch`) provides a generic
 pre-tool transformer hook that lets plugins modify tool inputs before
-execution. The `rtk-transform` plugin (see `plugins/rtk/`) uses this to
+execution. The `rtk-transform` plugin (see `customizations/plugins/rtk/`) uses this to
 rewrite bash commands through RTK.
 
 Configure a pre-tool transformer in `~/.jcode/config.toml`:

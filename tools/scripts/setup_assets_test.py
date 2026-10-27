@@ -1,7 +1,8 @@
 """Tests for tools/scripts/setup_assets.py.
 
-The suite exercises symlink installs, copy installs, metadata tracking,
-refusals, and rollback using disposable fake repositories and jcode homes.
+The suite exercises symlink installs, copy installs, the managed
+config.toml template, metadata tracking, refusals, and rollback using
+disposable fake repositories and jcode homes.
 Best-effort Windows path behavior is asserted via os-agnostic relative path
 keys; this suite does not claim native Windows validation.
 """
@@ -30,7 +31,7 @@ SCRIPT = SCRIPT_DIR / "setup_assets.py"
 
 BLUEPRINTS = ("coordinator.md", "fixer.md", "investigator.md", "research.md")
 
-# Exact copy of the real catalog plugins/.gitignore (asserted by
+# Exact copy of the real catalog customizations/plugins/.gitignore (asserted by
 # IgnoreRuleTests.test_fixture_uses_exact_real_gitignore_form).
 GITIGNORE_TEXT = (
     "# Python bytecode generated when validating or running plugin adapters.\n"
@@ -49,7 +50,7 @@ GITIGNORE_TEXT = (
     "!/delegation-guard/\n"
 )
 
-# Exact copy of the real catalog skills/.gitignore (asserted by
+# Exact copy of the real catalog customizations/skills/.gitignore (asserted by
 # IgnoreRuleTests.test_skills_fixture_gitignore_matches_real).
 SKILLS_GITIGNORE_TEXT = (
     "# Python bytecode generated when validating or running skills.\n"
@@ -67,15 +68,26 @@ SKILLS_GITIGNORE_TEXT = (
 )
 
 
+# Fake config.toml template installed by make_repo; the real template lives
+# at customizations/config.toml in the catalog checkout.
+CONFIG_TEMPLATE_TEXT = (
+    "# jcode customization defaults (fake template)\n"
+    "[display]\n"
+    "tool_call_details = true\n"
+)
+
+
 def make_executable(path: Path) -> None:
     if os.name == "posix":
         os.chmod(path, 0o755)
 
 
 def make_repo(root: Path) -> Path:
-    """Build a fake catalog with shipped plugins and skills, un-allowlisted
-    local plugin and skill directories, and junk."""
-    plugins = root / "plugins"
+    """Build a fake catalog under customizations/ with the config.toml
+    template, shipped plugins and skills, un-allowlisted local plugin and
+    skill directories, and junk."""
+    catalog = root / "customizations"
+    plugins = catalog / "plugins"
     (plugins / "rtk").mkdir(parents=True)
     (plugins / "rtk" / "rtk-transform").write_text("#!/bin/sh\necho rtk\n")
     make_executable(plugins / "rtk" / "rtk-transform")
@@ -97,11 +109,11 @@ def make_repo(root: Path) -> Path:
     (plugins / "local-tool" / "local-tool-transform").write_text("ignored plugin\n")
     (plugins / "__pycache__").mkdir()
     (plugins / "__pycache__" / "junk.cpython-311.pyc").write_text("junk\n")
-    blueprints = root / "workers" / "blueprints"
+    blueprints = catalog / "workers" / "blueprints"
     blueprints.mkdir(parents=True)
     for name in BLUEPRINTS:
         (blueprints / name).write_text(f"{name} blueprint\n")
-    skills = root / "skills"
+    skills = catalog / "skills"
     skills.mkdir()
     (skills / "author-plan").mkdir()
     (skills / "author-plan" / "SKILL.md").write_text("author-plan skill\n")
@@ -111,6 +123,7 @@ def make_repo(root: Path) -> Path:
     (skills / "local-skill" / "SKILL.md").write_text("ignored skill\n")
     (skills / "__pycache__").mkdir()
     (skills / "__pycache__" / "junk.cpython-311.pyc").write_text("junk\n")
+    (catalog / "config.toml").write_text(CONFIG_TEMPLATE_TEXT)
     return root
 
 
@@ -174,17 +187,26 @@ class SymlinkInstallTests(SetupAssetsTestCase):
         blueprints = self.home / "worker-blueprints"
         self.assertTrue(plugins.is_symlink())
         self.assertTrue(blueprints.is_symlink())
-        self.assertEqual((self.repo / "plugins").resolve(), plugins.resolve())
+        self.assertEqual((self.repo / "customizations" / "plugins").resolve(), plugins.resolve())
         self.assertEqual(
-            (self.repo / "workers" / "blueprints").resolve(), blueprints.resolve()
+            (self.repo / "customizations" / "workers" / "blueprints").resolve(), blueprints.resolve()
         )
         self.assert_plugins_payload(plugins)
         self.assert_blueprints_payload(blueprints)
+        config = self.home / "config.toml"
+        self.assertTrue(config.is_symlink())
+        self.assertEqual(
+            (self.repo / "customizations" / "config.toml").resolve(),
+            config.resolve(),
+        )
+        self.assertEqual(CONFIG_TEMPLATE_TEXT, config.read_text())
         first_target = os.readlink(plugins)
+        first_config_target = os.readlink(config)
         # Rerun is idempotent and leaves the same symlinks in place.
         self.assertEqual(0, self.run_setup([]))
         self.assertTrue(plugins.is_symlink())
         self.assertEqual(first_target, os.readlink(plugins))
+        self.assertEqual(first_config_target, os.readlink(config))
         self.assertIn("already linked", self.out.getvalue())
 
     def test_symlink_unsupported_falls_back_to_copy_for_all_assets(self):
@@ -201,6 +223,9 @@ class SymlinkInstallTests(SetupAssetsTestCase):
         self.assert_plugins_payload(self.home / "plugins")
         self.assert_blueprints_payload(self.home / "worker-blueprints")
         self.assert_skills_payload(self.home / "skills")
+        self.assertEqual(
+            CONFIG_TEMPLATE_TEXT, (self.home / "config.toml").read_text()
+        )
         self.assertTrue((self.home / setup_assets.METADATA_NAME).is_file())
         self.assert_plugins_copy_excludes_ignored(self.home / "plugins")
         self.assertFalse((self.home / "skills" / "local-skill").exists())
@@ -246,19 +271,28 @@ class CopyInstallTests(SetupAssetsTestCase):
             self.assertTrue(os.access(plugins / "rtk" / "rtk-transform", os.X_OK))
         metadata = self.copy_mode_metadata()
         self.assertEqual(
-            {"plugins", "worker-blueprints", "skills"}, set(metadata["assets"])
+            {"plugins", "worker-blueprints", "skills", "config.toml"},
+            set(metadata["assets"]),
         )
         expected_sources = {
             "plugins": "plugins",
             "worker-blueprints": "workers/blueprints",
             "skills": "skills",
+            "config.toml": "config.toml",
         }
         for name, asset in metadata["assets"].items():
-            self.assertEqual(str(self.repo / expected_sources[name]), asset["source"])
+            self.assertEqual(
+                str(self.repo / "customizations" / expected_sources[name]),
+                asset["source"],
+            )
             self.assertTrue(asset["files"])
             for rel, digest in asset["files"].items():
                 self.assertNotIn("\\", rel)
                 self.assertEqual(64, len(digest))
+        self.assertEqual(
+            CONFIG_TEMPLATE_TEXT, (self.home / "config.toml").read_text()
+        )
+        self.assertFalse((self.home / "config.toml").is_symlink())
         self.assertEqual(
             plugins / "rtk" / "rtk-transform",
             self.home / "plugins" / "rtk" / "rtk-transform",
@@ -272,14 +306,14 @@ class CopyInstallTests(SetupAssetsTestCase):
         # Upstream adds a plugin file and a nested file (with the required
         # allowlist entry), removes a tracked (non-required) file, and changes
         # a managed file's content.
-        new_plugin = self.repo / "plugins" / "newplugin"
+        new_plugin = self.repo / "customizations" / "plugins" / "newplugin"
         (new_plugin / "sub").mkdir(parents=True)
         (new_plugin / "tool.sh").write_text("new tool\n")
         (new_plugin / "sub" / "inner.txt").write_text("inner\n")
-        gitignore = self.repo / "plugins" / ".gitignore"
+        gitignore = self.repo / "customizations" / "plugins" / ".gitignore"
         gitignore.write_text(gitignore.read_text() + "!/newplugin/\n")
-        (self.repo / "plugins" / "rtk" / "test_rtk_transform.py").unlink()
-        (self.repo / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
+        (self.repo / "customizations" / "plugins" / "rtk" / "test_rtk_transform.py").unlink()
+        (self.repo / "customizations" / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
         self.assertEqual(0, self.run_setup(["--copy"]))
         plugins = self.home / "plugins"
         self.assertTrue((plugins / "newplugin" / "tool.sh").is_file())
@@ -329,7 +363,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         (self.home / "plugins" / "rtk" / ".DS_Store").write_text("mac meta\n")
         before = self.copy_mode_metadata()
         blueprints_before = (self.home / "worker-blueprints" / "fixer.md").read_text()
-        (self.repo / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
+        (self.repo / "customizations" / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
         self.reset_capture()
         code = self.run_setup(["--copy"])
         self.assertNotEqual(0, code)
@@ -361,7 +395,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         (unmanaged / "notes.swp").write_text("scratch\n")
         (unmanaged / "__pycache__").mkdir()
         (unmanaged / "__pycache__" / "x.pyc").write_text("bytecode\n")
-        (self.repo / "plugins" / "README.md").write_text("updated docs\n")
+        (self.repo / "customizations" / "plugins" / "README.md").write_text("updated docs\n")
         self.reset_capture()
         self.assertEqual(0, self.run_setup(["--copy"]))
         self.assertEqual("scratch\n", (unmanaged / "notes.swp").read_text())
@@ -373,7 +407,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         self.assertEqual(0, self.run_setup(["--copy"]))
         metadata_path = self.home / setup_assets.METADATA_NAME
         before_text = metadata_path.read_text()
-        (self.repo / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
+        (self.repo / "customizations" / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
         self.reset_capture()
         with mock.patch.object(
             setup_assets,
@@ -403,8 +437,8 @@ class CopyInstallTests(SetupAssetsTestCase):
         the first asset refreshed and restores the second exactly."""
         self.assertEqual(0, self.run_setup(["--copy"]))
         before = self.copy_mode_metadata()
-        (self.repo / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
-        (self.repo / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
+        (self.repo / "customizations" / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
+        (self.repo / "customizations" / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
         real_write = setup_assets.write_metadata
         calls = []
 
@@ -438,7 +472,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         )
         self.assertEqual(
             setup_assets.content_hash(
-                self.repo / "plugins" / "rtk" / "rtk-transform"
+                self.repo / "customizations" / "plugins" / "rtk" / "rtk-transform"
             ),
             metadata["assets"]["plugins"]["files"]["rtk/rtk-transform"],
         )
@@ -459,9 +493,9 @@ class CopyInstallTests(SetupAssetsTestCase):
         external = self.root / "outside-catalog" / "secret.txt"
         external.parent.mkdir(parents=True)
         external.write_text("external payload\n")
-        link = self.repo / "plugins" / "rtk" / "linked-config"
+        link = self.repo / "customizations" / "plugins" / "rtk" / "linked-config"
         link.symlink_to(external)
-        (self.repo / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
+        (self.repo / "customizations" / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
         self.reset_capture()
         code = self.run_setup(["--copy"])
         self.assertNotEqual(0, code)
@@ -489,7 +523,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         unmanaged_dir.mkdir()
         (unmanaged_dir / "x.py").write_text("user plugin\n")
         (self.home / "plugins" / "notes.txt").write_text("user notes\n")
-        (self.repo / "plugins" / "README.md").write_text("updated docs\n")
+        (self.repo / "customizations" / "plugins" / "README.md").write_text("updated docs\n")
         self.reset_capture()
         code = self.run_setup(["--copy"])
         self.assertEqual(0, code)
@@ -506,14 +540,14 @@ class CopyInstallTests(SetupAssetsTestCase):
         self.reset_capture()
         code = self.run_setup(["--copy"])
         self.assertNotEqual(0, code)
-        self.assertIn("refusing to replace an existing symlink", self.err.getvalue())
+        self.assertIn("refusing to replace", self.err.getvalue())
         self.assertTrue((self.home / "plugins").is_symlink())
         self.assertFalse((self.home / "worker-blueprints").exists())
 
     def test_staged_copy_failure_preserves_old_assets(self):
         self.assertEqual(0, self.run_setup(["--copy"]))
         before = self.copy_mode_metadata()
-        (self.repo / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
+        (self.repo / "customizations" / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
         real_copy2 = shutil.copy2
 
         def flaky_copy2(src, dst, **kwargs):
@@ -557,17 +591,17 @@ class CopyInstallTests(SetupAssetsTestCase):
 
     def test_allowlisted_plugin_added_upstream_is_copied_on_upgrade(self):
         self.assertEqual(0, self.run_setup(["--copy"]))
-        future = self.repo / "plugins" / "future-plugin"
+        future = self.repo / "customizations" / "plugins" / "future-plugin"
         future.mkdir()
         (future / "future-transform").write_text("#!/bin/sh\necho future\n")
         (future / "lib").mkdir(parents=True)
         (future / "lib" / "helper.py").write_text("helper\n")
         # An arbitrary local directory added upstream without an allowlist
         # entry stays excluded even on upgrade.
-        stray = self.repo / "plugins" / "stray-local"
+        stray = self.repo / "customizations" / "plugins" / "stray-local"
         stray.mkdir()
         (stray / "x.py").write_text("stray\n")
-        gitignore = self.repo / "plugins" / ".gitignore"
+        gitignore = self.repo / "customizations" / "plugins" / ".gitignore"
         gitignore.write_text(gitignore.read_text() + "!/future-plugin/\n")
         self.reset_capture()
         self.assertEqual(0, self.run_setup(["--copy"]))
@@ -584,7 +618,7 @@ class CopyInstallTests(SetupAssetsTestCase):
 
     def test_unlisted_plugin_dir_is_never_copied_even_upstream(self):
         self.assertEqual(0, self.run_setup(["--copy"]))
-        unlisted = self.repo / "plugins" / "unlisted"
+        unlisted = self.repo / "customizations" / "plugins" / "unlisted"
         unlisted.mkdir()
         (unlisted / "tool").write_text("no allowlist entry\n")
         self.reset_capture()
@@ -596,9 +630,9 @@ class CopyInstallTests(SetupAssetsTestCase):
         )
 
     def test_de_allowlisted_plugin_dir_is_preserved_not_deleted_on_upgrade(self):
-        gitignore = self.repo / "plugins" / ".gitignore"
+        gitignore = self.repo / "customizations" / "plugins" / ".gitignore"
         gitignore.write_text(gitignore.read_text() + "!/temporary/\n")
-        shipped = self.repo / "plugins" / "temporary"
+        shipped = self.repo / "customizations" / "plugins" / "temporary"
         shipped.mkdir()
         (shipped / "temporary-transform").write_text("v1\n")
         self.assertEqual(0, self.run_setup(["--copy"]))
@@ -620,9 +654,9 @@ class CopyInstallTests(SetupAssetsTestCase):
         self.assertNotIn("temporary/temporary-transform", files)
 
     def test_locally_edited_de_allowlisted_plugin_still_blocks_update(self):
-        gitignore = self.repo / "plugins" / ".gitignore"
+        gitignore = self.repo / "customizations" / "plugins" / ".gitignore"
         gitignore.write_text(gitignore.read_text() + "!/temporary/\n")
-        shipped = self.repo / "plugins" / "temporary"
+        shipped = self.repo / "customizations" / "plugins" / "temporary"
         shipped.mkdir()
         (shipped / "temporary-transform").write_text("v1\n")
         self.assertEqual(0, self.run_setup(["--copy"]))
@@ -652,7 +686,7 @@ class SkillsAssetTests(SetupAssetsTestCase):
         self.assertEqual(0, self.run_setup([]))
         skills = self.home / "skills"
         self.assertTrue(skills.is_symlink())
-        self.assertEqual((self.repo / "skills").resolve(), skills.resolve())
+        self.assertEqual((self.repo / "customizations" / "skills").resolve(), skills.resolve())
         self.assert_skills_payload(skills)
 
     def test_skills_copy_installs_author_plan_and_records_manifest(self):
@@ -673,7 +707,7 @@ class SkillsAssetTests(SetupAssetsTestCase):
         # The source fixture still has it; only the allowlist keeps it out.
         self.assertEqual(
             "ignored skill\n",
-            (self.repo / "skills" / "local-skill" / "SKILL.md").read_text(),
+            (self.repo / "customizations" / "skills" / "local-skill" / "SKILL.md").read_text(),
         )
 
     def test_copy_preserves_unrelated_local_skills_on_repeat_update(self):
@@ -681,7 +715,7 @@ class SkillsAssetTests(SetupAssetsTestCase):
         local = self.home / "skills" / "my-local-workflow"
         local.mkdir()
         (local / "SKILL.md").write_text("local workflow\n")
-        (self.repo / "skills" / "author-plan" / "SKILL.md").write_text(
+        (self.repo / "customizations" / "skills" / "author-plan" / "SKILL.md").write_text(
             "author-plan v2\n"
         )
         self.reset_capture()
@@ -696,6 +730,239 @@ class SkillsAssetTests(SetupAssetsTestCase):
             self.copy_mode_metadata()["assets"]["skills"]["files"],
         )
         self.assertIn("preserved unmanaged top-level entries", self.out.getvalue())
+
+
+class ConfigTemplateTests(SetupAssetsTestCase):
+    """Coverage for the managed config.toml template asset."""
+
+    def template(self) -> Path:
+        return self.repo / "customizations" / "config.toml"
+
+    def test_fresh_and_repeat_symlink_install(self):
+        self.assertEqual(0, self.run_setup([]))
+        config = self.home / "config.toml"
+        self.assertTrue(config.is_symlink())
+        self.assertEqual(self.template().resolve(), config.resolve())
+        self.assertEqual(CONFIG_TEMPLATE_TEXT, config.read_text())
+        self.assertFalse((self.home / setup_assets.METADATA_NAME).exists())
+        first_target = os.readlink(config)
+        self.reset_capture()
+        self.assertEqual(0, self.run_setup([]))
+        self.assertEqual(first_target, os.readlink(config))
+        self.assertIn("already linked", self.out.getvalue())
+
+    def test_fresh_and_repeat_copy_install(self):
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        config = self.home / "config.toml"
+        self.assertTrue(config.is_file())
+        self.assertFalse(config.is_symlink())
+        self.assertEqual(CONFIG_TEMPLATE_TEXT, config.read_text())
+        self.assertEqual(
+            {"config.toml": setup_assets.content_hash(self.template())},
+            self.copy_mode_metadata()["assets"]["config.toml"]["files"],
+        )
+        self.reset_capture()
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertIn("already matches", self.out.getvalue())
+        self.assertEqual(CONFIG_TEMPLATE_TEXT, config.read_text())
+
+    def test_managed_copy_refreshes_when_template_changes(self):
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.template().write_text("# template v2\n[display]\nnew = true\n")
+        self.reset_capture()
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertEqual(
+            "# template v2\n[display]\nnew = true\n",
+            (self.home / "config.toml").read_text(),
+        )
+        self.assertEqual(
+            setup_assets.content_hash(self.template()),
+            self.copy_mode_metadata()["assets"]["config.toml"]["files"]["config.toml"],
+        )
+        self.assertFalse(any(
+            p.name.startswith("config.toml.") for p in self.home.iterdir()
+        ))
+
+    def test_managed_copy_drift_refuses_update_without_loss(self):
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        before_metadata = self.copy_mode_metadata()
+        before_blueprints = (self.home / "worker-blueprints" / "fixer.md").read_text()
+        config = self.home / "config.toml"
+        config.write_text("# local drift\n")
+        self.template().write_text("# template v2\n")
+        self.reset_capture()
+        code = self.run_setup(["--copy"])
+        self.assertNotEqual(0, code)
+        self.assertIn("refusing to overwrite", self.err.getvalue())
+        self.assertEqual("# local drift\n", config.read_text())
+        self.assertEqual(
+            before_blueprints,
+            (self.home / "worker-blueprints" / "fixer.md").read_text(),
+        )
+        self.assertEqual(before_metadata, self.copy_mode_metadata())
+        self.assertFalse(any(
+            p.name.startswith(("config.toml.staging-", "config.toml.backup-"))
+            for p in self.home.iterdir()
+        ))
+
+    def test_file_copy_update_metadata_failure_restores_previous_file(self):
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        config = self.home / "config.toml"
+        before_text = config.read_text()
+        before_state = (self.home / setup_assets.METADATA_NAME).read_text()
+        self.template().write_text("# template v2\n")
+        self.reset_capture()
+        with mock.patch.object(
+            setup_assets,
+            "write_metadata",
+            side_effect=OSError("simulated metadata disk full"),
+        ):
+            code = self.run_setup(["--copy"])
+        self.assertNotEqual(0, code)
+        self.assertIn("simulated metadata disk full", self.err.getvalue())
+        self.assertEqual(before_text, config.read_text())
+        self.assertEqual(
+            before_state, (self.home / setup_assets.METADATA_NAME).read_text()
+        )
+        self.assertFalse(any(
+            p.name.startswith(("config.toml.staging-", "config.toml.backup-"))
+            for p in self.home.iterdir()
+        ))
+
+    def test_unmanaged_regular_config_preserved_and_skipped_in_copy_mode(self):
+        config = self.home / "config.toml"
+        config.write_text("# user config\n")
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertEqual("# user config\n", config.read_text())
+        self.assertNotIn("config.toml", self.copy_mode_metadata()["assets"])
+        self.assertIn("not managed by this tool", self.out.getvalue())
+        self.assert_plugins_payload(self.home / "plugins")
+
+    def test_unmanaged_config_with_equal_contents_is_never_adopted(self):
+        config = self.home / "config.toml"
+        config.write_text(CONFIG_TEMPLATE_TEXT)
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertEqual(CONFIG_TEMPLATE_TEXT, config.read_text())
+        self.assertNotIn("config.toml", self.copy_mode_metadata()["assets"])
+        self.assertIn("not managed by this tool", self.out.getvalue())
+
+    def test_unmanaged_regular_config_preserved_and_skipped_in_symlink_mode(self):
+        config = self.home / "config.toml"
+        config.write_text("# user config\n")
+        self.assertEqual(0, self.run_setup([]))
+        self.assertEqual("# user config\n", config.read_text())
+        self.assertFalse(config.is_symlink())
+        self.assertTrue((self.home / "plugins").is_symlink())
+        self.assertIn("not managed by this tool", self.out.getvalue())
+
+    def test_unmanaged_config_symlink_is_skipped(self):
+        elsewhere = self.root / "elsewhere.toml"
+        elsewhere.write_text("# other config\n")
+        config = self.home / "config.toml"
+        config.symlink_to(elsewhere)
+        self.assertEqual(0, self.run_setup([]))
+        self.assertTrue(config.is_symlink())
+        self.assertEqual(elsewhere.resolve(), config.resolve())
+        self.assertIn("not managed by this tool", self.out.getvalue())
+        self.assertTrue((self.home / "plugins").is_symlink())
+
+    def test_dangling_unmanaged_config_symlink_is_skipped_in_symlink_mode(self):
+        config = self.home / "config.toml"
+        config.symlink_to(self.root / "nowhere.toml")
+        self.assertEqual(0, self.run_setup([]))
+        self.assertTrue(config.is_symlink())
+        self.assertIn("not managed by this tool", self.out.getvalue())
+        self.assertTrue((self.home / "plugins").is_symlink())
+
+    def test_dangling_unmanaged_config_symlink_skipped_in_copy_mode(self):
+        config = self.home / "config.toml"
+        config.symlink_to(self.root / "nowhere.toml")
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertTrue(config.is_symlink())
+        self.assertNotIn("config.toml", self.copy_mode_metadata()["assets"])
+        self.assert_plugins_payload(self.home / "plugins")
+
+    def test_unmanaged_config_directory_is_skipped(self):
+        config = self.home / "config.toml"
+        config.mkdir()
+        (config / "keep.txt").write_text("keep\n")
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertEqual("keep\n", (config / "keep.txt").read_text())
+        self.assertIn("not managed by this tool", self.out.getvalue())
+
+    def test_private_config_sentinel_is_never_touched(self):
+        private = self.home / "config.private.toml"
+        private.write_text("# private sentinel\n")
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertEqual("# private sentinel\n", private.read_text())
+        self.assertEqual(
+            CONFIG_TEMPLATE_TEXT, (self.home / "config.toml").read_text()
+        )
+        self.assertEqual(
+            ["config.toml"],
+            list(self.copy_mode_metadata()["assets"]["config.toml"]["files"]),
+        )
+
+    def test_existing_metadata_without_config_entry_still_works(self):
+        """Metadata written before the config template existed (and before the
+        sources moved under customizations/) still drives a valid refresh."""
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        metadata = self.copy_mode_metadata()
+        del metadata["assets"]["config.toml"]
+        for entry in metadata["assets"].values():
+            entry["source"] = entry["source"].replace(
+                f"{os.sep}customizations{os.sep}", os.sep
+            )
+        (self.home / setup_assets.METADATA_NAME).write_text(
+            json.dumps(metadata, indent=2)
+        )
+        # Older versions never installed a config template, so one appears
+        # now as an unmanaged regular file and must be preserved.
+        (self.home / "config.toml").write_text("# user config\n")
+        self.reset_capture()
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertEqual("# user config\n", (self.home / "config.toml").read_text())
+        self.assert_plugins_payload(self.home / "plugins")
+
+
+class LegacyShapedSymlinkRefusalTests(SetupAssetsTestCase):
+    """Symlinks pointing at the catalog's old pre-customizations locations
+    are refused like any other unmanaged link."""
+
+    def legacy_targets(self) -> dict[str, Path]:
+        return {
+            "plugins": self.repo / "plugins",
+            "worker-blueprints": self.repo / "workers" / "blueprints",
+            "skills": self.repo / "skills",
+        }
+
+    def test_legacy_shaped_dangling_symlinks_refused_in_symlink_mode(self):
+        # The old catalog locations no longer exist, so these links dangle;
+        # they must be refused, never adopted or relinked.
+        for dest, legacy in self.legacy_targets().items():
+            (self.home / dest).symlink_to(legacy)
+        code = self.run_setup([])
+        self.assertNotEqual(0, code)
+        self.assertIn("broken symlink", self.err.getvalue())
+        for dest in self.legacy_targets():
+            link = self.home / dest
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(
+                self.legacy_targets()[dest].resolve(), link.resolve()
+            )
+        self.assertFalse((self.home / setup_assets.METADATA_NAME).exists())
+
+    def test_legacy_shaped_symlink_refused_in_copy_mode(self):
+        (self.home / "plugins").symlink_to(self.repo / "plugins")
+        code = self.run_setup(["--copy"])
+        self.assertNotEqual(0, code)
+        self.assertIn("unrelated symlink", self.err.getvalue())
+        link = self.home / "plugins"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(
+            self.legacy_targets()["plugins"].resolve(), link.resolve()
+        )
+        self.assertFalse((self.home / setup_assets.METADATA_NAME).exists())
 
 
 class BehaviorTests(SetupAssetsTestCase):
@@ -717,21 +984,32 @@ class BehaviorTests(SetupAssetsTestCase):
         self.assertEqual(0, caught.exception.code)
         text = self.out.getvalue()
         for phrase in ("--copy", "snapshots", "back up or move", "config.toml",
+                       "config.private.toml", "customizations",
                        "elevation", "agent-sudo", "allowlist", "python3", "rtk"):
             self.assertIn(phrase, text)
 
     def test_missing_required_source_fails_before_writes(self):
-        (self.repo / "plugins" / "rtk" / "rtk-transform").unlink()
+        (self.repo / "customizations" / "plugins" / "rtk" / "rtk-transform").unlink()
         code = self.run_setup([])
         self.assertNotEqual(0, code)
         self.assertIn("missing required asset file", self.err.getvalue())
         self.assertFalse((self.home / "plugins").exists())
         self.assertFalse((self.home / "worker-blueprints").exists())
 
+    def test_missing_config_template_fails_before_writes(self):
+        (self.repo / "customizations" / "config.toml").unlink()
+        code = self.run_setup([])
+        self.assertNotEqual(0, code)
+        self.assertIn("missing config template file", self.err.getvalue())
+        self.assertFalse((self.home / "plugins").exists())
+        self.assertFalse((self.home / "config.toml").exists())
+
     def test_windows_portable_path_behavior_best_effort(self):
         """Best-effort check; this suite does not claim native Windows validation."""
-        (self.repo / "plugins" / "rtk" / "nested" / "deep").mkdir(parents=True)
-        (self.repo / "plugins" / "rtk" / "nested" / "deep" / "inner.txt").write_text("x\n")
+        (self.repo / "customizations" / "plugins" / "rtk" / "nested" / "deep").mkdir(
+            parents=True
+        )
+        (self.repo / "customizations" / "plugins" / "rtk" / "nested" / "deep" / "inner.txt").write_text("x\n")
         self.assertEqual(0, self.run_setup(["--copy"]))
         files = self.copy_mode_metadata()["assets"]["plugins"]["files"]
         self.assertIn("rtk/nested/deep/inner.txt", files)
@@ -748,6 +1026,7 @@ class IgnoreRuleTests(unittest.TestCase):
     def test_fixture_uses_exact_real_gitignore_form(self):
         real = (
             Path(setup_assets.__file__).resolve().parents[2]
+            / "customizations"
             / "plugins"
             / ".gitignore"
         )
@@ -758,6 +1037,7 @@ class IgnoreRuleTests(unittest.TestCase):
     def test_skills_fixture_gitignore_matches_real(self):
         real = (
             Path(setup_assets.__file__).resolve().parents[2]
+            / "customizations"
             / "skills"
             / ".gitignore"
         )
@@ -929,8 +1209,8 @@ class IsolationTests(unittest.TestCase):
             home = root / "home"
             jcode_home = home / ".jcode"
             jcode_home.mkdir(parents=True)
-            sentinel = jcode_home / "config.toml"
-            sentinel.write_text("# user config sentinel\n")
+            sentinel = jcode_home / "config.private.toml"
+            sentinel.write_text("# user private config sentinel\n")
             for name in ("xdg-config", "xdg-cache", "xdg-data", "xdg-state"):
                 (root / name).mkdir()
             environment = {
@@ -947,8 +1227,20 @@ class IsolationTests(unittest.TestCase):
                 capture_output=True, text=True, env=environment,
             )
             self.assertEqual(0, proc.returncode, proc.stderr)
-            # The user's config.toml was not read, modified, or recreated.
-            self.assertEqual("# user config sentinel\n", sentinel.read_text())
+            # The user's config.private.toml was not read, modified, or
+            # recreated; the managed config.toml template was installed.
+            self.assertEqual(
+                "# user private config sentinel\n", sentinel.read_text()
+            )
+            template = (
+                Path(setup_assets.__file__).resolve().parents[2]
+                / "customizations"
+                / "config.toml"
+            )
+            self.assertEqual(
+                template.read_text(encoding="utf-8"),
+                (jcode_home / "config.toml").read_text(),
+            )
             self.assertEqual([], [p.name for p in (root / "xdg-config").iterdir()])
             installed = jcode_home / "plugins"
             self.assertTrue((installed / "rtk" / "rtk-transform").is_file())

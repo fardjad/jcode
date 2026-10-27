@@ -36,7 +36,7 @@ effort level appropriate to that work, while keeping complex coordination with
 the coordinator.
 
 At runtime, each valid regular blueprint becomes a coordinator-visible
-`swarm_<id>` tool. The supplied roles in `workers/blueprints/` demonstrate this
+`swarm_<id>` tool. The supplied roles in `customizations/workers/blueprints/` demonstrate this
 pattern:
 
 - `fixer` performs exact mechanical changes within coordinator-defined scope,
@@ -48,7 +48,7 @@ pattern:
 The coordinator blueprint explicitly guides selection of these workers for
 large reads, verbose commands, broad searches, research, and focused edits.
 This is the reusable, runtime-supported form of the delegation workflow
-illustrated by `workers/`, not merely a collection of prompt files.
+illustrated by `customizations/workers/`, not merely a collection of prompt files.
 
 The fixer uses native `edit` for exact replacements in one file. Its `edits`
 array runs in order and all operations for that file succeed or none are
@@ -97,7 +97,7 @@ nonzero exit, spawn problem, or timeout leaves the original tool result
 unchanged. This protects normal tool semantics but means the guard is an
 optional configured optimization, not a guarantee.
 
-`plugins/delegation-guard/delegation-guard-transform` uses that interface. When
+`customizations/plugins/delegation-guard/delegation-guard-transform` uses that interface. When
 swarm is enabled, the current process is the coordinator, and the runtime's
 precomputed `output_bytes` exceeds its configured threshold, the plugin
 replaces the successful result with a small nudge. The default threshold is
@@ -172,7 +172,7 @@ failure rate is not automatically an efficiency improvement.
 - `0002-candidate-add-hook-context-and-post-tool-transform.patch`
 - upstream `pre_tool_transform` hook (formerly
   `0001-candidate-pre-tool-input-transformers.patch`)
-- `workers/README.md` and `workers/blueprints/`
-- `plugins/delegation-guard/README.md`
+- `customizations/workers/README.md` and `customizations/workers/blueprints/`
+- `customizations/plugins/delegation-guard/README.md`
 - `docs/swarm-delegation-features.md`
 - `docs/completion-search-features.md`

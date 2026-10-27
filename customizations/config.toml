@@ -1,0 +1,63 @@
+[compaction]
+max_context_tokens = 0
+mode = "proactive"
+
+[display]
+compact_notifications = true
+pin_images = false
+resume_project_scope = true
+session_picker_sort = "created"
+show_agentgrep_output = true
+show_bash_output = true
+tool_call_details = true
+
+[features]
+auto_poke = false
+memory = false
+swarm = true
+
+[hooks]
+post_tool_transform = ["python3 ~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
+post_tool_transform_timeout_ms = 500
+pre_tool_transform = ["python3 ~/.jcode/plugins/rtk/rtk-transform"]
+
+[launch_hotkeys]
+enabled = true
+imported = true
+
+[[launch_hotkeys.entries]]
+chord = "cmd+;"
+dir = "/Users/far/Projects/wout-commerce-agent"
+label = "wout-commerce-agent"
+self_dev = false
+
+[[launch_hotkeys.entries]]
+chord = "cmd+'"
+dir = "$HOME"
+label = "home"
+self_dev = false
+
+[[launch_hotkeys.entries]]
+chord = "cmd+["
+dir = "/Users/far/.jcode/source"
+label = "source"
+self_dev = false
+
+[[launch_hotkeys.entries]]
+chord = "cmd+]"
+dir = "/Users/far/Projects/ai-platform"
+label = "ai-platform"
+self_dev = false
+
+[[launch_hotkeys.entries]]
+chord = 'cmd+\'
+dir = "/Users/far/Projects/ai-experiments"
+label = "ai-experiments"
+self_dev = false
+
+[tools]
+disabled = [
+    "swarm",
+    "maintainer_feedback",
+]
+mcp_tools = "deferred"

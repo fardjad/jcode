@@ -5,7 +5,7 @@ This directory versions personal worker blueprints installed locally under
 
 ## Worker evaluations
 
-`workers/` organizes worker-specific assets alongside [`blueprints/`](blueprints/):
+`customizations/workers/` organizes worker-specific assets alongside [`blueprints/`](blueprints/):
 
 - [`scenarios/`](scenarios/README.md): three real-code scenarios with
   outcome-only prompts, independent acceptance, named metrics, harness-focused
@@ -31,7 +31,7 @@ existing debug binary is not accepted. Build logs/stamps live under
 provenance alongside binary, blueprint, plugin, and scenario identities.
 
 Generic runner code and the harness API client live under
-[`../tools/evaluator/`](../tools/evaluator/README.md). Bundled workers are examples
+[`../../tools/evaluator/`](../../tools/evaluator/README.md). Bundled workers are examples
 discovered dynamically at runtime, not an evaluator registry: adding, removing,
 or renaming
 a worker requires no runner or judge change. Only `coordinator` is reserved.
@@ -86,7 +86,7 @@ override.
 
 ## Install
 
-Follow the [get started guide](../docs/get-started.md) to install plugins,
+Follow the [get started guide](../../docs/get-started.md) to install plugins,
 worker blueprints, and skills with `python3 tools/scripts/setup_assets.py`,
 including copy fallback and upgrade steps.
 

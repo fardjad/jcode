@@ -6,7 +6,7 @@ description: Run and review paid real-code jcode coordinator/worker blueprint sc
 # Evaluate worker blueprints
 
 Use this procedure from the catalog workspace. Follow root `AGENTS.md`,
-`workers/AGENTS.md`, and `tools/evaluator/AGENTS.md`; those hold the rules. The
+`customizations/workers/AGENTS.md`, and `tools/evaluator/AGENTS.md`; those hold the rules. The
 `tools/evaluator/README.md` documents formats. This skill is operational guidance,
 not another source of blueprint or patch intent.
 
@@ -51,7 +51,7 @@ normal catalog tests.
 
 ## 4. Read dimensions, cost, and evidence independently
 
-Locate the fresh ignored `workers/results/<run-id>/` directory. Read
+Locate the fresh ignored `customizations/workers/results/<run-id>/` directory. Read
 `summary.json`, each `scenario-summary.json`, acceptance logs, complete session
 set and journals, normalized transcript and simulated-user conversation, final
 diff, selected metric inventories, judge coverage ledger (`excluded_by_default`

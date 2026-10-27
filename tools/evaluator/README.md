@@ -139,7 +139,7 @@ It uses actual coordinator/worker models, a scenario-configured Pydantic AI
 simulated user, native sessions, production hooks, and a Pydantic AI diagnostic
 judge. It has no scripted provider, fixed user responses, assertion DSL, or
 fixed worker registry. Worker-specific scenarios and assets live in
-[`../../workers/`](../../workers/README.md); this package remains generic.
+[`../../customizations/workers/`](../../customizations/workers/README.md); this package remains generic.
 
 From the catalog root, the normal interface is:
 
@@ -164,12 +164,12 @@ tools/evaluator/.venv/bin/python -m jcode_harness_client init-settings workers
 tools/evaluator/.venv/bin/python -m jcode_harness_client run \
   --binary /path/to/jcode \
   --bridge /path/to/jcode-harness-api-bridge \
-  --settings workers/.eval-settings.toml \
-  --scenarios workers/scenarios \
-  --blueprints workers/blueprints \
-  --plugins plugins \
+  --settings customizations/workers/.eval-settings.toml \
+  --scenarios customizations/workers/scenarios \
+  --blueprints customizations/workers/blueprints \
+  --plugins customizations/plugins \
   --build-provenance /path/to/build-provenance.json \
-  --output workers/results/run-1
+  --output customizations/workers/results/run-1
 ```
 
 ### Scenarios, metrics, judge criteria, and simulated user

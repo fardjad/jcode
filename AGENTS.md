@@ -22,10 +22,11 @@ not preserve `JCODE_HOME` or any XDG path from the caller. This safeguard does
 not authorize access to any personal path.
 
 `personalized` is an orphan catalog branch. It contains catalog content,
-including documentation, installers, workflow scripts, `patches/`, `plugins/`,
-`workers/`, and project-local skills under `.jcode/skills/`, not an upstream
-source checkout. `VERSION.txt` pins a stable upstream release; ordered mail
-patches describe changes without requiring original source commits.
+including documentation, installers, workflow scripts, `patches/`,
+`customizations/plugins/`, `customizations/workers/`, and project-local skills
+under `.jcode/skills/`, not an upstream source checkout. `VERSION.txt` pins a
+stable upstream release; ordered mail patches describe changes without
+requiring original source commits.
 
 Validator discovers every `patches/*.patch`, checks intent, kind, dependency,
 and body-section metadata, then applies all patches in lexicographic order with
@@ -65,7 +66,8 @@ unchanged patches that already passed.
 `just eval-workers [scenario]` runs paid live real-code coordinator/worker,
 simulated-user, and judge calls outside normal catalog tests. Its build gate uses the exact pinned
 base plus every current patch and never resets or implicitly uses
-`.patched-jcode`. Follow `workers/AGENTS.md` and `tools/evaluator/AGENTS.md`, and
+`.patched-jcode`. Follow `customizations/workers/AGENTS.md` and
+`tools/evaluator/AGENTS.md`, and
 use the project-local `/evaluate-worker-blueprints` skill for run/review
 procedures.
 
@@ -331,12 +333,13 @@ These rules apply whenever workers edit `.patched-jcode`, during a sync or not.
 
 ## Worker blueprint boundaries
 
-The blueprints under `workers/blueprints/` are reusable harness roles, used in
-other projects as well as this catalog. Keep catalog paths, patch ownership,
-release pins, sync procedures, isolation commands, and installer recipes out
-of those blueprints. Supply this repository's context through project
-instructions and scoped assignments. Runtime tool guidance and transferable
-execution discipline belong in blueprints, not catalog-specific procedures.
+The blueprints under `customizations/workers/blueprints/` are reusable harness
+roles, used in other projects as well as this catalog. Keep catalog paths,
+patch ownership, release pins, sync procedures, isolation commands, and
+installer recipes out of those blueprints. Supply this repository's context
+through project instructions and scoped assignments. Runtime tool guidance
+and transferable execution discipline belong in blueprints, not
+catalog-specific procedures.
 
 Before changing workers or delegation rules, check the blueprints, their
 README, tool permissions, and these project instructions for contradictions.
@@ -425,24 +428,27 @@ component-specific conventions in plugins, workers, and evaluator stay intact.
 
 ## Plugins
 
-Plugin source is external catalog content under `plugins/`. Keep each plugin in
-its own directory, document its upstream source and update procedure, and avoid
-mixing plugin implementation changes with mail-patch changes unless required.
+Plugin source is external catalog content under `customizations/plugins/`.
+Keep each plugin in its own directory, document its upstream source and
+update procedure, and avoid mixing plugin implementation changes with
+mail-patch changes unless required.
 
-`plugins/.gitignore` ignores plugin directories by default so users can keep
-local plugins in their checkout without adding them to the catalog. Whenever
-adding a shipped plugin under `plugins/`, add its directory to the explicit
-allowlist in `plugins/.gitignore` too, and verify asset setup copies it while
-continuing to exclude unlisted local plugin directories.
+`customizations/plugins/.gitignore` ignores plugin directories by default so
+users can keep local plugins in their checkout without adding them to the
+catalog. Whenever adding a shipped plugin under `customizations/plugins/`, add
+its directory to the explicit allowlist in
+`customizations/plugins/.gitignore` too, and verify asset setup copies it
+while continuing to exclude unlisted local plugin directories.
 
 ## Skills
 
-Shipped skill source lives under `skills/<name>/`. Project-local agent
-workflows remain under `.jcode/skills/`.
+Shipped skill source lives under `customizations/skills/<name>/`. Project-local
+agent workflows remain under `.jcode/skills/`.
 
-`skills/.gitignore` ignores local additions by default. Add an explicit
-`!/<name>/` entry for each shipped skill, and verify asset setup copies it
-while excluding unlisted local skills. `tools/scripts/setup_assets.py` installs
+`customizations/skills/.gitignore` ignores local additions by default. Add an
+explicit `!/<name>/` entry for each shipped skill, and verify asset setup
+copies it while excluding unlisted local skills.
+`tools/scripts/setup_assets.py` installs
 skills into the target jcode home's `skills/` directory using the same managed
 asset safety rules as plugins, preserving unrelated local skills in copy mode.
 Default symlink mode links the source directory, so ignore rules filter copies,

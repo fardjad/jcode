@@ -11,4 +11,4 @@ __pycache__/
 .eval-settings.toml.*
 .eval-settings.toml~
 ..eval-settings.toml.swp
-/workers/results/
+/customizations/workers/results/

@@ -1,7 +1,7 @@
 # Custom jcode plugins
 
 This directory is the complete, versioned plugin installation. Follow the
-[get started guide](../docs/get-started.md) for portable installation and
+[get started guide](../../docs/get-started.md) for portable installation and
 upgrades with `python3 tools/scripts/setup_assets.py`. It links plugins, worker
 blueprints, and skills together, or copies them when symlinks are unavailable.
 
@@ -34,7 +34,7 @@ pre_tool_transform = ["python3 ~/.jcode/plugins/rtk/rtk-transform"]
 Run isolated contract tests from repository root:
 
 ```bash
-python3 tools/scripts/isolate_config.py -- python3 plugins/rtk/test_rtk_transform.py
+python3 tools/scripts/isolate_config.py -- python3 customizations/plugins/rtk/test_rtk_transform.py
 ```
 
 jcode-side generic pre-tool transformer implementation is supplied by the
@@ -66,5 +66,5 @@ post_tool_transform_timeout_ms = 500
 Run isolated contract tests from repository root:
 
 ```bash
-python3 tools/scripts/isolate_config.py -- python3 plugins/delegation-guard/test_transform.py
+python3 tools/scripts/isolate_config.py -- python3 customizations/plugins/delegation-guard/test_transform.py
 ```

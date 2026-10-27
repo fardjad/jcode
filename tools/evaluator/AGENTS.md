@@ -2,7 +2,7 @@
 
 The package in this directory is reusable infrastructure. Worker-specific
 scenarios, fixtures, blueprint Markdown, settings, and results belong in
-`workers/`. Catalog patch materialization and build identity belong in
+`customizations/workers/`. Catalog patch materialization and build identity belong in
 `tools/catalog/src/jcode_catalog/`
 and the `just eval-workers` recipe, not this package.
 

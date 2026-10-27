@@ -129,7 +129,10 @@ def test_private_file_permissions_symlink_and_no_overwrite(tmp_path: Path) -> No
 
 def test_example_has_scenario_configured_user_actor_and_no_opt_in_flags() -> None:
     example = (
-        Path(__file__).resolve().parents[3] / "workers" / ".eval-settings.example.toml"
+        Path(__file__).resolve().parents[3]
+        / "customizations"
+        / "workers"
+        / ".eval-settings.example.toml"
     ).read_text(encoding="utf-8")
     assert "scenario YAML" in example
     assert "--judge" not in example
