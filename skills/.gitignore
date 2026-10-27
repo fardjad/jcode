@@ -1,0 +1,12 @@
+# Python bytecode generated when validating or running skills.
+__pycache__/
+*.py[cod]
+
+# Editor and macOS metadata.
+.DS_Store
+*.swp
+
+# Skill allowlist: add a matching !/name/ entry for each shipped skill.
+/*
+!/.gitignore
+!/author-plan/

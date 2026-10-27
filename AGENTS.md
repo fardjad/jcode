@@ -434,3 +434,19 @@ local plugins in their checkout without adding them to the catalog. Whenever
 adding a shipped plugin under `plugins/`, add its directory to the explicit
 allowlist in `plugins/.gitignore` too, and verify asset setup copies it while
 continuing to exclude unlisted local plugin directories.
+
+## Skills
+
+Shipped skill source lives under `skills/<name>/`. Project-local agent
+workflows remain under `.jcode/skills/`.
+
+`skills/.gitignore` ignores local additions by default. Add an explicit
+`!/<name>/` entry for each shipped skill, and verify asset setup copies it
+while excluding unlisted local skills. `tools/scripts/setup_assets.py` installs
+skills into the target jcode home's `skills/` directory using the same managed
+asset safety rules as plugins, preserving unrelated local skills in copy mode.
+Default symlink mode links the source directory, so ignore rules filter copies,
+not the contents visible through a symlink.
+
+Changes to a separate globally installed skill do not automatically update the
+catalog source. A symlink installation shares the catalog source directly.

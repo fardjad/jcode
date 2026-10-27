@@ -2,8 +2,8 @@
 
 This directory is the complete, versioned plugin installation. Follow the
 [get started guide](../docs/get-started.md) for portable installation and
-upgrades with `python3 tools/scripts/setup_assets.py`. It links plugins and worker
-blueprints together, or copies them when symlinks are unavailable.
+upgrades with `python3 tools/scripts/setup_assets.py`. It links plugins, worker
+blueprints, and skills together, or copies them when symlinks are unavailable.
 
 Run setup from the catalog repository root, then configure the hooks below.
 Asset setup and plugins require plain Python 3.14 or newer as `python3` on PATH.

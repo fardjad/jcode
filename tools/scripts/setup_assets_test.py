@@ -49,6 +49,23 @@ GITIGNORE_TEXT = (
     "!/delegation-guard/\n"
 )
 
+# Exact copy of the real catalog skills/.gitignore (asserted by
+# IgnoreRuleTests.test_skills_fixture_gitignore_matches_real).
+SKILLS_GITIGNORE_TEXT = (
+    "# Python bytecode generated when validating or running skills.\n"
+    "__pycache__/\n"
+    "*.py[cod]\n"
+    "\n"
+    "# Editor and macOS metadata.\n"
+    ".DS_Store\n"
+    "*.swp\n"
+    "\n"
+    "# Skill allowlist: add a matching !/name/ entry for each shipped skill.\n"
+    "/*\n"
+    "!/.gitignore\n"
+    "!/author-plan/\n"
+)
+
 
 def make_executable(path: Path) -> None:
     if os.name == "posix":
@@ -56,8 +73,8 @@ def make_executable(path: Path) -> None:
 
 
 def make_repo(root: Path) -> Path:
-    """Build a fake catalog with shipped plugins, an un-allowlisted local
-    plugin, and junk."""
+    """Build a fake catalog with shipped plugins and skills, un-allowlisted
+    local plugin and skill directories, and junk."""
     plugins = root / "plugins"
     (plugins / "rtk").mkdir(parents=True)
     (plugins / "rtk" / "rtk-transform").write_text("#!/bin/sh\necho rtk\n")
@@ -84,6 +101,16 @@ def make_repo(root: Path) -> Path:
     blueprints.mkdir(parents=True)
     for name in BLUEPRINTS:
         (blueprints / name).write_text(f"{name} blueprint\n")
+    skills = root / "skills"
+    skills.mkdir()
+    (skills / "author-plan").mkdir()
+    (skills / "author-plan" / "SKILL.md").write_text("author-plan skill\n")
+    (skills / ".gitignore").write_text(SKILLS_GITIGNORE_TEXT)
+    # Local skill directory without an allowlist entry: ignored, never copied.
+    (skills / "local-skill").mkdir()
+    (skills / "local-skill" / "SKILL.md").write_text("ignored skill\n")
+    (skills / "__pycache__").mkdir()
+    (skills / "__pycache__" / "junk.cpython-311.pyc").write_text("junk\n")
     return root
 
 
@@ -132,6 +159,13 @@ class SetupAssetsTestCase(unittest.TestCase):
         for name in BLUEPRINTS:
             self.assertTrue((root / name).is_file())
 
+    def assert_skills_payload(self, root: Path) -> None:
+        self.assertTrue((root / "author-plan" / "SKILL.md").is_file())
+        self.assertEqual(
+            "author-plan skill\n",
+            (root / "author-plan" / "SKILL.md").read_text(),
+        )
+
 
 class SymlinkInstallTests(SetupAssetsTestCase):
     def test_initial_symlinks_and_idempotence(self):
@@ -153,21 +187,23 @@ class SymlinkInstallTests(SetupAssetsTestCase):
         self.assertEqual(first_target, os.readlink(plugins))
         self.assertIn("already linked", self.out.getvalue())
 
-    def test_symlink_unsupported_falls_back_to_copy_for_both_assets(self):
+    def test_symlink_unsupported_falls_back_to_copy_for_all_assets(self):
         unsupported = OSError(errno.EPERM, "Operation not permitted")
         with mock.patch.object(setup_assets.os, "symlink", side_effect=unsupported):
             code = self.run_setup([])
         self.assertEqual(0, code)
         self.assertIn("not supported", self.out.getvalue())
         self.assertIn("copying", self.out.getvalue())
-        for name in ("plugins", "worker-blueprints"):
+        for name in ("plugins", "worker-blueprints", "skills"):
             dest = self.home / name
             self.assertTrue(dest.is_dir())
             self.assertFalse(dest.is_symlink())
         self.assert_plugins_payload(self.home / "plugins")
         self.assert_blueprints_payload(self.home / "worker-blueprints")
+        self.assert_skills_payload(self.home / "skills")
         self.assertTrue((self.home / setup_assets.METADATA_NAME).is_file())
         self.assert_plugins_copy_excludes_ignored(self.home / "plugins")
+        self.assertFalse((self.home / "skills" / "local-skill").exists())
 
     def test_copy_mode_stays_copy_and_preserves_unmanaged_local_plugin(self):
         self.assertEqual(0, self.run_setup(["--copy"]))
@@ -210,11 +246,15 @@ class CopyInstallTests(SetupAssetsTestCase):
             self.assertTrue(os.access(plugins / "rtk" / "rtk-transform", os.X_OK))
         metadata = self.copy_mode_metadata()
         self.assertEqual(
-            {"plugins", "worker-blueprints"}, set(metadata["assets"])
+            {"plugins", "worker-blueprints", "skills"}, set(metadata["assets"])
         )
+        expected_sources = {
+            "plugins": "plugins",
+            "worker-blueprints": "workers/blueprints",
+            "skills": "skills",
+        }
         for name, asset in metadata["assets"].items():
-            self.assertEqual(str(self.repo / ("plugins" if name == "plugins"
-                             else "workers/blueprints")), asset["source"])
+            self.assertEqual(str(self.repo / expected_sources[name]), asset["source"])
             self.assertTrue(asset["files"])
             for rel, digest in asset["files"].items():
                 self.assertNotIn("\\", rel)
@@ -225,6 +265,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         )
         self.assertFalse((plugins / setup_assets.METADATA_NAME).exists())
         self.assertFalse((blueprints / setup_assets.METADATA_NAME).exists())
+        self.assertFalse((self.home / "skills" / setup_assets.METADATA_NAME).exists())
 
     def test_copy_upgrades_additions_and_removals(self):
         self.assertEqual(0, self.run_setup(["--copy"]))
@@ -349,7 +390,7 @@ class CopyInstallTests(SetupAssetsTestCase):
             (self.home / "plugins" / "rtk" / "rtk-transform").read_text(),
         )
         self.assertEqual(before_text, metadata_path.read_text())
-        for name in ("plugins", "worker-blueprints"):
+        for name in ("plugins", "worker-blueprints", "skills"):
             self.assertTrue((self.home / name).is_dir())
         self.assertFalse(any(
             p.name.startswith(("plugins.staging-", "plugins.backup-"))
@@ -491,7 +532,7 @@ class CopyInstallTests(SetupAssetsTestCase):
             (self.home / "worker-blueprints" / "fixer.md").read_text(),
         )
         self.assertEqual(before, self.copy_mode_metadata())
-        for name in ("plugins", "worker-blueprints"):
+        for name in ("plugins", "worker-blueprints", "skills"):
             dest = self.home / name
             self.assertTrue(dest.is_dir())
             self.assertFalse(dest.is_symlink())
@@ -604,6 +645,59 @@ class CopyInstallTests(SetupAssetsTestCase):
         self.assertTrue((self.home / "worker-blueprints").is_symlink())
 
 
+class SkillsAssetTests(SetupAssetsTestCase):
+    """Focused coverage for the skills asset using the shared mechanics."""
+
+    def test_skills_symlink_install_default_path(self):
+        self.assertEqual(0, self.run_setup([]))
+        skills = self.home / "skills"
+        self.assertTrue(skills.is_symlink())
+        self.assertEqual((self.repo / "skills").resolve(), skills.resolve())
+        self.assert_skills_payload(skills)
+
+    def test_skills_copy_installs_author_plan_and_records_manifest(self):
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        skills = self.home / "skills"
+        self.assertTrue(skills.is_dir())
+        self.assertFalse(skills.is_symlink())
+        self.assert_skills_payload(skills)
+        self.assertFalse((skills / ".gitignore").exists())
+        self.assertFalse((skills / "__pycache__").exists())
+        entry = self.copy_mode_metadata()["assets"]["skills"]
+        self.assertIn("author-plan/SKILL.md", entry["files"])
+        self.assertNotIn("local-skill/SKILL.md", entry["files"])
+
+    def test_unlisted_local_skill_is_never_copied(self):
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertFalse((self.home / "skills" / "local-skill").exists())
+        # The source fixture still has it; only the allowlist keeps it out.
+        self.assertEqual(
+            "ignored skill\n",
+            (self.repo / "skills" / "local-skill" / "SKILL.md").read_text(),
+        )
+
+    def test_copy_preserves_unrelated_local_skills_on_repeat_update(self):
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        local = self.home / "skills" / "my-local-workflow"
+        local.mkdir()
+        (local / "SKILL.md").write_text("local workflow\n")
+        (self.repo / "skills" / "author-plan" / "SKILL.md").write_text(
+            "author-plan v2\n"
+        )
+        self.reset_capture()
+        self.assertEqual(0, self.run_setup(["--copy"]))
+        self.assertEqual("local workflow\n", (local / "SKILL.md").read_text())
+        self.assertEqual(
+            "author-plan v2\n",
+            (self.home / "skills" / "author-plan" / "SKILL.md").read_text(),
+        )
+        self.assertNotIn(
+            "my-local-workflow/SKILL.md",
+            self.copy_mode_metadata()["assets"]["skills"]["files"],
+        )
+        self.assertIn("preserved unmanaged top-level entries", self.out.getvalue())
+
+
 class BehaviorTests(SetupAssetsTestCase):
     def test_default_uses_home_relative_jcode_directory(self):
         environment = os.environ.copy()
@@ -661,6 +755,16 @@ class IgnoreRuleTests(unittest.TestCase):
             self.skipTest("real catalog plugins/.gitignore not present")
         self.assertEqual(real.read_text(encoding="utf-8"), GITIGNORE_TEXT)
 
+    def test_skills_fixture_gitignore_matches_real(self):
+        real = (
+            Path(setup_assets.__file__).resolve().parents[2]
+            / "skills"
+            / ".gitignore"
+        )
+        if not real.is_file():
+            self.skipTest("real catalog skills/.gitignore not present")
+        self.assertEqual(real.read_text(encoding="utf-8"), SKILLS_GITIGNORE_TEXT)
+
     def test_parses_negation_anchoring_and_directory_rules(self):
         rules = self.rules()
         self.assertIn(
@@ -717,6 +821,19 @@ class IgnoreRuleTests(unittest.TestCase):
         self.assertTrue(setup_assets.ignored("top", True, rules))
         self.assertFalse(setup_assets.ignored("top/sub", True, rules))
         self.assertFalse(setup_assets.ignored("top/file.txt", False, rules))
+
+    def test_skills_gitignore_allowlist_semantics(self):
+        rules = setup_assets.parse_gitignore_rules(SKILLS_GITIGNORE_TEXT)
+        # The shipped skill and its files are permitted.
+        self.assertFalse(setup_assets.ignored("author-plan", True, rules))
+        self.assertFalse(setup_assets.ignored("author-plan/SKILL.md", False, rules))
+        # Arbitrary unlisted top-level skill directories are ignored; their
+        # contents are excluded by directory pruning during the walk.
+        self.assertTrue(setup_assets.ignored("local-skill", True, rules))
+        self.assertTrue(setup_assets.ignored("some-new-skill", True, rules))
+        # Recursive exclusions still apply inside allowed skills.
+        self.assertTrue(setup_assets.ignored("author-plan/__pycache__", True, rules))
+        self.assertTrue(setup_assets.ignored("author-plan/notes.swp", False, rules))
 
     def test_last_matching_rule_wins_in_order(self):
         allow_last = setup_assets.parse_gitignore_rules("/*/\n!/keep/\n")
@@ -836,6 +953,10 @@ class IsolationTests(unittest.TestCase):
             installed = jcode_home / "plugins"
             self.assertTrue((installed / "rtk" / "rtk-transform").is_file())
             self.assertFalse((installed / "agent-sudo").exists())
+            self.assertTrue(
+                (jcode_home / "skills" / "author-plan" / "SKILL.md").is_file()
+            )
+            self.assertFalse((jcode_home / "skills" / ".gitignore").exists())
 
 
 if __name__ == "__main__":

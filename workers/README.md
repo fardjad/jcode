@@ -86,9 +86,9 @@ override.
 
 ## Install
 
-Follow the [get started guide](../docs/get-started.md) to install plugins and
-worker blueprints with `python3 tools/scripts/setup_assets.py`, including copy
-fallback and upgrade steps.
+Follow the [get started guide](../docs/get-started.md) to install plugins,
+worker blueprints, and skills with `python3 tools/scripts/setup_assets.py`,
+including copy fallback and upgrade steps.
 
 Setup includes `coordinator.md` alongside the worker blueprints.
 

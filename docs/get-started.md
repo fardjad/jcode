@@ -25,10 +25,14 @@ python3 tools/scripts/setup_assets.py
 Run each command only after the previous one succeeds. Follow the installer's
 PATH instructions, then launch `jcode`.
 
-Asset setup links plugins and worker blueprints into `~/.jcode/plugins` and
-`~/.jcode/worker-blueprints`, falling back to copies if symlinks are unavailable.
-Use `--copy` to force copies. Set `JCODE_HOME` to use a different jcode home.
-Setup never changes your config or replaces unmanaged directories. If it
+Asset setup links plugins, worker blueprints, and skills into
+`~/.jcode/plugins`, `~/.jcode/worker-blueprints`, and `~/.jcode/skills`,
+falling back to copies if symlinks are unavailable. Linked directories
+reflect the checkout exactly. Copied assets include only allowlisted
+content: a shipped skill needs an explicit `!/name/` entry in
+`skills/.gitignore`, and unlisted local skill directories stay out of the
+copy. Use `--copy` to force copies. Set `JCODE_HOME` to use a different jcode
+home. Setup never changes your config or replaces unmanaged directories. If it
 reports a conflict, back up and move the conflicting destination yourself.
 
 ## Configure
@@ -99,7 +103,7 @@ enabled = false
 ## Upgrade
 
 Update the checkout, binary, and assets together. A binary-only update does not
-refresh plugins or blueprints.
+refresh plugins, blueprints, or skills.
 
 **macOS / Linux:**
 

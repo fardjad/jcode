@@ -1,4 +1,5 @@
-"""Install jcode catalog plugins and worker blueprints into the jcode home.
+"""Install jcode catalog plugins, worker blueprints, and skills into the jcode
+home.
 
 Default mode creates directory symlinks from this catalog checkout into the
 target jcode home. When
@@ -16,12 +17,13 @@ directories, and caches. Each asset is refreshed as one staged unit that is
 rolled back on failure; a failure affecting a later asset leaves assets
 refreshed earlier in the same run updated (the whole run is not atomic).
 Top-level entries
-that are not part of the managed payload (for example a local plugin
-directory, or a plugin that upstream no longer ships) are preserved
+that are not part of the managed payload (for example a local plugin or
+skill directory, or one that upstream no longer ships) are preserved
 untouched during updates and reported in the output. Local content ignored
 by the repository (for example plugin directories without an allowlist
 entry in plugins/.gitignore, such as the local plugins/agent-sudo plugin,
-plus __pycache__, editor files, and test caches) is never copied. Existing
+or skill directories without an entry in skills/.gitignore, plus
+__pycache__, editor files, and test caches) is never copied. Existing
 unmanaged files and unrelated symlinks are never replaced. config.toml is
 never read or written. The tool never requests elevation.
 
@@ -96,6 +98,11 @@ ASSETS = (
         name="worker-blueprints",
         source_rel=Path("workers") / "blueprints",
         required=("coordinator.md", "fixer.md", "investigator.md", "research.md"),
+    ),
+    Asset(
+        name="skills",
+        source_rel=Path("skills"),
+        required=("author-plan/SKILL.md",),
     ),
 )
 
@@ -643,8 +650,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="setup_assets.py",
         description=(
-            "Link or copy the catalog plugins and worker blueprints into the "
-            "target jcode home (JCODE_HOME or ~/.jcode)."
+            "Link or copy the catalog plugins, worker blueprints, and skills "
+            "into the target jcode home (JCODE_HOME or ~/.jcode)."
         ),
         epilog=(
             "Limitations: the default mode symlinks whole directories, so the "
@@ -656,12 +663,14 @@ def build_parser() -> argparse.ArgumentParser:
             "as swap files and __pycache__. Each asset is refreshed as one "
             "rolled-back unit; if a later asset fails, assets refreshed "
             "earlier in the same run stay updated. Top-level entries that "
-            "are not part of the managed payload (a local plugin directory, or "
-            "a plugin upstream no longer ships) are preserved untouched and "
-            "reported during updates. Content ignored by the repository (such "
-            "as plugin directories without an allowlist entry in "
-            "plugins/.gitignore, for example the local plugins/agent-sudo "
-            "plugin, plus __pycache__, editor files, and test caches) is never "
+            "are not part of the managed payload (a local plugin or skill "
+            "directory, or one upstream no longer ships) are preserved "
+            "untouched and reported during updates. Content ignored by the "
+            "repository (such as plugin directories without an allowlist "
+            "entry in plugins/.gitignore, for example the local "
+            "plugins/agent-sudo plugin, or skill directories without an "
+            "entry in skills/.gitignore, plus __pycache__, editor files, and "
+            "test caches) is never "
             "copied. Existing unmanaged files and unrelated symlinks are never "
             "replaced. config.toml is never read or written, and the tool "
             "never requests elevation.\n"
