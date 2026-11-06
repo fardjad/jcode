@@ -1,0 +1,2207 @@
+From 911b6774fe2d7c1e58f84269dd0d7ba5bc7a6cd5 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Fri, 6 Nov 2026 00:08:16 +0100
+Subject: [PATCH] fix: preserve runtime context for swarm pop-outs
+
+X-Jcode-Patch-Intent: Resume local swarm children in their parent runtime
+X-Jcode-Patch-Kind: upstream-candidate
+X-Jcode-Patch-Depends-On: none
+X-Jcode-Patch-File: 0006-candidate-preserve-runtime-for-swarm-popouts.patch
+
+Patch intent:
+Carry effective local session-storage and runtime paths plus the selected
+server socket through swarm pop-out requests to the terminal child. Preserve
+that allowlisted runtime identity across terminal, companion, and hook launch
+boundaries, retaining the new pane's identity and shared terminal behavior.
+
+Why it exists:
+Multiplexer servers can create shells without the requesting client's runtime
+environment. A selected child then appears missing despite existing in the
+parent runtime. Contextual companion requests use a distinct operation so an
+older daemon rejects the request instead of silently dropping the new context;
+the client then safely falls back to its local launch path. Filter runtime keys
+at construction and wire serialization/deserialization so secrets and arbitrary
+metadata never cross the boundary. The shared Windows launcher honors
+JCODE_TERMINAL and keeps cmd as its fallback; it never consults the separate
+app-core-only JCODE_RESUME_TERMINAL override, which the separate app-core API
+retains for its existing callers. Deterministic configured-selection and
+cmd-fallback tests in the terminal-launch suite pin that behavior. A Unix
+fake-socket regression sends both contextual and legacy requests through the
+production socket handler and its injected terminal-launch seam, verifying
+filtered runtime and preserved command metadata without launching hardware. Its
+temporary socket fixture uses a short system temp root to remain within Unix
+socket path limits. Hooks receive a safely quoted runtime-aware invocation at
+the actual argv execution boundary. Keep no-context callers and hook argv
+unchanged. SSH pop-outs remain unchanged, not a new SSH resume implementation.
+Ordinary local-daemon TUI clients use runtime context even though App::is_remote
+is true; only the actual SSH transport predicate keeps the previous launch
+behavior. Executable selection and issue #1119 are not addressed.
+
+Upstream integration points:
+TUI swarm pop-out builds a TerminalCommand and routes local launches through the
+shared jcode-terminal-launch entry point while retaining the SSH client
+launcher. app-core captures storage::jcode_dir and storage::runtime_dir,
+preserves optional API socket and update control, and adds explicit socket
+resume args. TerminalCommand carries allowlisted runtime values separately from
+spawn and client-terminal metadata. Unix terminal argv and hook shell-command
+metadata carry safely quoted values; hooks and non-Unix process launches
+receive runtime process environment. Companion client/server use the
+SpawnTerminalWithRuntime wire variant and reconstruct all command metadata.
+The shared launch facade reexports runtime allowlist and Windows candidate
+behavior. Shared Windows candidates read the configured terminal, detection and
+cmd fallback, not the separate app-core-only legacy override; app-core keeps
+its old override behavior for its existing API.
+
+Update guidance:
+Preserve actual socket precedence, effective default paths, argument boundaries,
+new-pane identity, default launch behavior, fresh-spawn and hook contracts.
+Never serialize secrets, arbitrary metadata or parent terminal identity into
+runtime command arguments. Keep contextual companion requests distinguishable
+to older peers and preserve local fallback on their rejection. Keep SSH
+handling separate. The executed-child hook regression and portable Windows logic
+tests are deterministic evidence, not live cross-platform certification.
+
+Validation:
+scripts/cargo_exec.sh test --locked -p jcode-terminal-launch --lib
+scripts/cargo_exec.sh test --locked -p jcode-base contextual_terminal_requests_use_a_distinct_filtered_wire_variant --lib
+scripts/cargo_exec.sh test --locked -p jcode-base contextual_companion_error_requests_safe_local_fallback --lib
+scripts/cargo_exec.sh test --locked -p jcode-companion contextual_spawn_request_reconstructs_runtime_and_target_metadata --lib
+scripts/cargo_exec.sh test --locked -p jcode-companion contextual_spawn_crosses_socket_and_launches_with_filtered_runtime --lib
+scripts/cargo_exec.sh test --locked -p jcode-terminal-launch contextual_hook_invocation_delivers_runtime_to_executed_child --lib
+scripts/cargo_exec.sh test --locked -p jcode-terminal-launch production_shared_launcher_honors_configured_terminal_before_cmd_fallback --lib
+scripts/cargo_exec.sh test --locked -p jcode-tui local_popout_uses_shared_launcher_command_but_ssh_remains_client_mode --lib
+scripts/cargo_exec.sh test --locked -p jcode-tui swarm_popout_daemon_client_preserves_runtime_and_ssh_stays_context_free --lib
+---
+ crates/jcode-app-core/src/session_launch.rs   | 247 ++++++++++++-
+ crates/jcode-base/src/companion_client.rs     | 227 ++++++++++++
+ crates/jcode-base/src/terminal_launch.rs      |  65 +++-
+ crates/jcode-companion/src/server.rs          | 327 +++++++++++++++--
+ crates/jcode-terminal-launch/src/lib.rs       | 345 ++++++++++++++----
+ .../src/windows_portable_tests.rs             |  62 +++-
+ .../src/tui/app/swarm_panel_key_tests.rs      | 210 ++++++++++-
+ crates/jcode-tui/src/tui/app/tui_state.rs     | 110 +++++-
+ docs/SPAWN_HOOK.md                            |  24 ++
+ 9 files changed, 1492 insertions(+), 125 deletions(-)
+
+diff --git a/crates/jcode-app-core/src/session_launch.rs b/crates/jcode-app-core/src/session_launch.rs
+index 6621b3430..0c8dfef31 100644
+--- a/crates/jcode-app-core/src/session_launch.rs
++++ b/crates/jcode-app-core/src/session_launch.rs
+@@ -45,6 +45,8 @@ pub struct SessionSpawnContext {
+     /// hooks so the new window lands in the client's terminal instead of the
+     /// server's stale startup env (#405).
+     pub client_terminal_env: Vec<(String, String)>,
++    /// Explicit non-secret runtime variables for the child process.
++    pub runtime_env: Vec<(String, String)>,
+ }
+
+ impl SessionSpawnContext {
+@@ -52,6 +54,7 @@ impl SessionSpawnContext {
+         Self {
+             kind: Some(kind.into()),
+             extra_env: Vec::new(),
++            runtime_env: Vec::new(),
+             client_terminal_env: Vec::new(),
+         }
+     }
+@@ -67,6 +70,41 @@ impl SessionSpawnContext {
+         self
+     }
+
++    /// Attach the explicit runtime env sent only to the spawned jcode child.
++    pub fn with_runtime_env(mut self, env: Vec<(String, String)>) -> Self {
++        self.runtime_env = env;
++        self
++    }
++
++    /// Capture effective local runtime values, not just inherited overrides.
++    /// The connected socket takes precedence over any stale `JCODE_SOCKET`.
++    pub fn with_local_runtime(mut self, connected_socket: &std::path::Path) -> Self {
++        let mut env = Vec::new();
++        if let Ok(home) = crate::storage::jcode_dir() {
++            env.push((
++                "JCODE_HOME".to_string(),
++                home.to_string_lossy().into_owned(),
++            ));
++        }
++        env.extend([
++            (
++                "JCODE_RUNTIME_DIR".to_string(),
++                crate::storage::runtime_dir().to_string_lossy().into_owned(),
++            ),
++            (
++                "JCODE_SOCKET".to_string(),
++                connected_socket.to_string_lossy().into_owned(),
++            ),
++        ]);
++        for key in ["JCODE_API_SOCKET", "JCODE_NO_AUTO_UPDATE"] {
++            if let Ok(value) = std::env::var(key) {
++                env.push((key.to_string(), value));
++            }
++        }
++        self.runtime_env = env;
++        self
++    }
++
+     fn apply(
+         &self,
+         mut command: crate::terminal_launch::TerminalCommand,
+@@ -79,6 +117,9 @@ impl SessionSpawnContext {
+         for (key, value) in &self.extra_env {
+             command = command.spawn_env(key.clone(), value.clone());
+         }
++        if !self.runtime_env.is_empty() {
++            command = command.runtime_env(self.runtime_env.clone());
++        }
+         if !self.client_terminal_env.is_empty() {
+             command = command.client_terminal_env(self.client_terminal_env.clone());
+         }
+@@ -86,6 +127,202 @@ impl SessionSpawnContext {
+     }
+ }
+
++#[cfg(test)]
++mod runtime_context_tests {
++    use super::*;
++
++    #[test]
++    fn app_core_runtime_allowlist_facade_is_portable() {
++        let _: &'static [&'static str] = crate::terminal_launch::RUNTIME_ENV_VARS;
++        assert!(crate::terminal_launch::RUNTIME_ENV_VARS.contains(&"JCODE_SOCKET"));
++    }
++
++    fn value<'a>(context: &'a SessionSpawnContext, key: &str) -> Option<&'a str> {
++        context
++            .runtime_env
++            .iter()
++            .find(|(candidate, _)| candidate == key)
++            .map(|(_, value)| value.as_str())
++    }
++
++    fn run_isolated_context_case(mode: &str) -> std::process::Output {
++        let parent_home =
++            std::path::PathBuf::from(std::env::var_os("HOME").expect("isolated HOME"));
++
++        let root = parent_home.join(format!(
++            "jcode-runtime-context-{}-{}",
++            std::process::id(),
++            std::time::SystemTime::now()
++                .duration_since(std::time::UNIX_EPOCH)
++                .unwrap()
++                .as_nanos()
++        ));
++        std::fs::create_dir_all(&root).expect("create isolated runtime context directory");
++        let home = root.join("home with spaces/it's 🧪");
++        let runtime_dir = root.join("runtime dir/it's 🧪");
++        let xdg_runtime_dir = root.join("xdg runtime/it's 🧪");
++        let jcode_home = root.join("jcode home/it's 🧪");
++        let api_socket = root.join("api socket.sock");
++        let exe = std::env::current_exe().expect("test binary path");
++        let mut command = std::process::Command::new(exe);
++        command
++            .args([
++                "--exact",
++                "session_launch::runtime_context_tests::runtime_context_child",
++                "--nocapture",
++            ])
++            .env_clear()
++            .env("HOME", &home)
++            .env(
++                "XDG_RUNTIME_DIR",
++                if mode == "custom" {
++                    root.join("unused runtime/it's 🧪")
++                } else {
++                    xdg_runtime_dir.clone()
++                },
++            )
++            .env("JCODE_SOCKET", root.join("stale socket.sock"))
++            .env("JCODE_CONTEXT_TEST_MODE", mode)
++            .env("JCODE_CONTEXT_TEST_HOME", &home)
++            .env("JCODE_CONTEXT_TEST_RUNTIME", &runtime_dir)
++            .env("JCODE_CONTEXT_TEST_JCODE_HOME", &jcode_home)
++            .env("JCODE_CONTEXT_TEST_XDG_RUNTIME", &xdg_runtime_dir)
++            .env("JCODE_CONTEXT_TEST_API_SOCKET", &api_socket);
++        if mode == "custom" {
++            command
++                .env("JCODE_HOME", &jcode_home)
++                .env("JCODE_RUNTIME_DIR", &runtime_dir);
++        } else {
++            command
++                .env("JCODE_API_SOCKET", &api_socket)
++                .env("JCODE_NO_AUTO_UPDATE", "1");
++        }
++        let output = command.output().expect("run isolated context case");
++        std::fs::remove_dir_all(&root).expect("remove isolated runtime context directory");
++        output
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn local_runtime_context_captures_custom_paths_and_connected_socket() {
++        let output = run_isolated_context_case("custom");
++        assert!(
++            output.status.success(),
++            "stdout:\n{}\nstderr:\n{}",
++            String::from_utf8_lossy(&output.stdout),
++            String::from_utf8_lossy(&output.stderr)
++        );
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn local_runtime_context_uses_effective_default_home_and_optional_values() {
++        let output = run_isolated_context_case("default");
++        assert!(
++            output.status.success(),
++            "stdout:\n{}\nstderr:\n{}",
++            String::from_utf8_lossy(&output.stdout),
++            String::from_utf8_lossy(&output.stderr)
++        );
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn runtime_context_child() {
++        let Ok(mode) = std::env::var("JCODE_CONTEXT_TEST_MODE") else {
++            return;
++        };
++        let home = std::env::var("JCODE_CONTEXT_TEST_HOME").expect("isolated test home");
++        let jcode_home =
++            std::env::var("JCODE_CONTEXT_TEST_JCODE_HOME").expect("isolated jcode home");
++        let runtime_dir =
++            std::env::var("JCODE_CONTEXT_TEST_RUNTIME").expect("isolated runtime dir");
++        let xdg_runtime_dir =
++            std::env::var("JCODE_CONTEXT_TEST_XDG_RUNTIME").expect("isolated XDG runtime dir");
++        let api_socket =
++            std::env::var("JCODE_CONTEXT_TEST_API_SOCKET").expect("isolated API socket");
++        let socket = std::path::Path::new(&home).join("connected socket/it's 🧪.sock");
++        let context = SessionSpawnContext::default().with_local_runtime(&socket);
++        if mode == "custom" {
++            assert_eq!(value(&context, "JCODE_HOME"), Some(jcode_home.as_str()));
++            assert_eq!(
++                value(&context, "JCODE_RUNTIME_DIR"),
++                Some(runtime_dir.as_str())
++            );
++
++            assert_eq!(value(&context, "JCODE_API_SOCKET"), None);
++            assert_eq!(value(&context, "JCODE_NO_AUTO_UPDATE"), None);
++        } else {
++            let expected_home = std::path::Path::new(&home).join(".jcode");
++            assert_eq!(
++                value(&context, "JCODE_HOME"),
++                Some(expected_home.to_str().unwrap())
++            );
++            assert_eq!(
++                value(&context, "JCODE_RUNTIME_DIR"),
++                Some(xdg_runtime_dir.as_str())
++            );
++            assert_eq!(
++                value(&context, "JCODE_API_SOCKET"),
++                Some(api_socket.as_str())
++            );
++            assert_eq!(value(&context, "JCODE_NO_AUTO_UPDATE"), Some("1"));
++        }
++        assert_eq!(
++            value(&context, "JCODE_SOCKET"),
++            Some(socket.to_str().unwrap())
++        );
++        let socket_value = socket.to_string_lossy().into_owned();
++        for session_id in ["ses active child", "ses completed child"] {
++            let args = resume_args(session_id, None, &context);
++            assert_eq!(
++                args,
++                vec![
++                    "--fresh-spawn".to_string(),
++                    "--socket".to_string(),
++                    socket_value.clone(),
++                    "--resume".to_string(),
++                    session_id.to_string(),
++                ]
++            );
++            let command = context.apply(
++                crate::terminal_launch::TerminalCommand::new(
++                    "/usr/local/bin/jcode",
++                    resume_args(session_id, None, &context),
++                )
++                .fresh_spawn(),
++                "resume",
++                session_id,
++            );
++            assert_eq!(command.session_id.as_deref(), Some(session_id));
++            assert_eq!(command.args, args);
++            assert_eq!(command.runtime_env, context.runtime_env);
++        }
++    }
++}
++
++#[cfg(unix)]
++fn resume_args(
++    session_id: &str,
++    provider_key: Option<&str>,
++    context: &SessionSpawnContext,
++) -> Vec<String> {
++    let mut args = vec!["--fresh-spawn".to_string()];
++    if let Some(provider_arg) = resume_provider_arg(provider_key) {
++        args.push("--provider".to_string());
++        args.push(provider_arg.to_string());
++    }
++    if let Some((_, socket)) = context
++        .runtime_env
++        .iter()
++        .find(|(key, _)| key == "JCODE_SOCKET")
++    {
++        args.extend(["--socket".to_string(), socket.clone()]);
++    }
++    args.extend(["--resume".to_string(), session_id.to_string()]);
++    args
++}
++
+ /// Compute the window/terminal title used when (re)launching a session.
+ pub fn resumed_window_title(session_id: &str) -> String {
+     let session_name = crate::process_title::session_name(session_id);
+@@ -247,12 +484,7 @@ pub fn spawn_resume_in_new_terminal_with_context(
+     context: &SessionSpawnContext,
+ ) -> Result<bool> {
+     let title = resumed_window_title(session_id);
+-    let mut args = vec!["--fresh-spawn".to_string()];
+-    if let Some(provider_arg) = resume_provider_arg(provider_key) {
+-        args.push("--provider".to_string());
+-        args.push(provider_arg.to_string());
+-    }
+-    args.extend(["--resume".to_string(), session_id.to_string()]);
++    let args = resume_args(session_id, provider_key, context);
+     let command = crate::terminal_launch::TerminalCommand::new(exe, args)
+         .title(title)
+         .fresh_spawn();
+@@ -474,6 +706,7 @@ pub fn spawn_resume_in_new_terminal_with_context(
+                     .stdin(Stdio::null())
+                     .stdout(Stdio::null())
+                     .stderr(Stdio::null());
++                crate::terminal_launch::apply_runtime_env(&mut cmd, &context.runtime_env);
+                 crate::platform::spawn_detached(&mut cmd)
+             }
+             "wt" | "windows-terminal" => {
+@@ -488,6 +721,7 @@ pub fn spawn_resume_in_new_terminal_with_context(
+                     .stdin(Stdio::null())
+                     .stdout(Stdio::null())
+                     .stderr(Stdio::null());
++                crate::terminal_launch::apply_runtime_env(&mut cmd, &context.runtime_env);
+                 crate::platform::spawn_detached(&mut cmd)
+             }
+             "alacritty" => {
+@@ -502,6 +736,7 @@ pub fn spawn_resume_in_new_terminal_with_context(
+                     .stdin(Stdio::null())
+                     .stdout(Stdio::null())
+                     .stderr(Stdio::null());
++                crate::terminal_launch::apply_runtime_env(&mut cmd, &context.runtime_env);
+                 crate::platform::spawn_detached(&mut cmd)
+             }
+             _ => continue,
+diff --git a/crates/jcode-base/src/companion_client.rs b/crates/jcode-base/src/companion_client.rs
+index e2240defc..8205122e6 100644
+--- a/crates/jcode-base/src/companion_client.rs
++++ b/crates/jcode-base/src/companion_client.rs
+@@ -11,6 +11,7 @@
+ //! Wire format: one JSON [`CompanionRequest`] per line, answered by one JSON
+ //! [`CompanionResponse`] line.
+
++use jcode_terminal_launch::RUNTIME_ENV_VARS;
+ use serde::{Deserialize, Serialize};
+ use std::io::{BufRead, BufReader, Write};
+ use std::path::PathBuf;
+@@ -49,11 +50,98 @@ pub enum CompanionRequest {
+         #[serde(default, skip_serializing_if = "Vec::is_empty")]
+         client_terminal_env: Vec<(String, String)>,
+     },
++    /// Runtime-context spawns use a distinct operation so an older companion
++    /// rejects the request instead of accepting and silently dropping identity.
++    SpawnTerminalWithRuntime {
++        program: PathBuf,
++        args: Vec<String>,
++        cwd: PathBuf,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        title: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        kind: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        session_id: Option<String>,
++        #[serde(default, skip_serializing_if = "Vec::is_empty")]
++        env: Vec<(String, String)>,
++        #[serde(default, skip_serializing_if = "Vec::is_empty")]
++        client_terminal_env: Vec<(String, String)>,
++        #[serde(default)]
++        fresh_spawn: bool,
++        #[serde(default, with = "runtime_env_wire")]
++        runtime_env: Vec<(String, String)>,
++    },
+     /// Whether any session is actively working. The companion applies the
+     /// configured lid-close override while this is true.
+     PowerActivity { active: bool },
+ }
+
++impl CompanionRequest {
++    /// Build the wire-compatible terminal request, retaining the original
++    /// operation for callers without explicit runtime context.
++    pub fn spawn_terminal(
++        command: &crate::terminal_launch::TerminalCommand,
++        cwd: &std::path::Path,
++    ) -> Self {
++        let runtime_env = command
++            .runtime_env
++            .iter()
++            .filter(|(key, _)| RUNTIME_ENV_VARS.contains(&key.as_str()))
++            .cloned()
++            .collect::<Vec<_>>();
++        if runtime_env.is_empty() {
++            Self::SpawnTerminal {
++                program: command.program.clone(),
++                args: command.args.clone(),
++                cwd: cwd.to_path_buf(),
++                title: command.title.clone(),
++                kind: command.kind.clone(),
++                session_id: command.session_id.clone(),
++                env: command.extra_env.clone(),
++                client_terminal_env: command.client_terminal_env.clone(),
++            }
++        } else {
++            Self::SpawnTerminalWithRuntime {
++                program: command.program.clone(),
++                args: command.args.clone(),
++                cwd: cwd.to_path_buf(),
++                title: command.title.clone(),
++                kind: command.kind.clone(),
++                session_id: command.session_id.clone(),
++                env: command.extra_env.clone(),
++                client_terminal_env: command.client_terminal_env.clone(),
++                fresh_spawn: command.fresh_spawn,
++                runtime_env,
++            }
++        }
++    }
++}
++mod runtime_env_wire {
++    use jcode_terminal_launch::RUNTIME_ENV_VARS;
++    use serde::{Deserialize, Deserializer, Serialize, Serializer};
++
++    pub fn serialize<S>(env: &[(String, String)], serializer: S) -> Result<S::Ok, S::Error>
++    where
++        S: Serializer,
++    {
++        let filtered = env
++            .iter()
++            .filter(|(key, _)| RUNTIME_ENV_VARS.contains(&key.as_str()))
++            .collect::<Vec<_>>();
++        filtered.serialize(serializer)
++    }
++
++    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<(String, String)>, D::Error>
++    where
++        D: Deserializer<'de>,
++    {
++        Ok(Vec::<(String, String)>::deserialize(deserializer)?
++            .into_iter()
++            .filter(|(key, _)| RUNTIME_ENV_VARS.contains(&key.as_str()))
++            .collect())
++    }
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct CompanionResponse {
+     pub ok: bool,
+@@ -225,6 +313,114 @@ mod tests {
+         );
+     }
+
++    #[test]
++    fn contextual_terminal_requests_use_a_distinct_filtered_wire_variant() {
++        let command = crate::terminal_launch::TerminalCommand::new(
++            "/usr/bin/jcode",
++            vec!["--resume".into(), "ses_context".into()],
++        )
++        .title("context window")
++        .kind("swarm-agent")
++        .session_id("ses_context")
++        .fresh_spawn()
++        .spawn_env("JCODE_SPAWN_SWARM_ID", "swarm-1")
++        .client_terminal_env(vec![("TMUX_PANE".into(), "%12".into())])
++        .runtime_env(vec![
++            ("JCODE_HOME".into(), "/tmp/jcode home".into()),
++            ("JCODE_SOCKET".into(), "/tmp/connected.sock".into()),
++            ("JCODE_API_KEY".into(), "never-send".into()),
++        ]);
++        let request = CompanionRequest::spawn_terminal(&command, std::path::Path::new("/work"));
++        let CompanionRequest::SpawnTerminalWithRuntime {
++            program,
++            args,
++            cwd,
++            title,
++            kind,
++            session_id,
++            env,
++            client_terminal_env,
++            fresh_spawn,
++            runtime_env,
++        } = request
++        else {
++            panic!("runtime identity must select the explicit contextual variant");
++        };
++        assert_eq!(program, PathBuf::from("/usr/bin/jcode"));
++        assert_eq!(args, ["--resume", "ses_context"]);
++        assert_eq!(cwd, PathBuf::from("/work"));
++        assert_eq!(title.as_deref(), Some("context window"));
++        assert_eq!(kind.as_deref(), Some("swarm-agent"));
++        assert_eq!(session_id.as_deref(), Some("ses_context"));
++        assert!(fresh_spawn);
++        assert_eq!(env, [("JCODE_SPAWN_SWARM_ID".into(), "swarm-1".into())]);
++        assert_eq!(client_terminal_env, [("TMUX_PANE".into(), "%12".into())]);
++        assert_eq!(
++            runtime_env,
++            [
++                ("JCODE_HOME".into(), "/tmp/jcode home".into()),
++                ("JCODE_SOCKET".into(), "/tmp/connected.sock".into()),
++            ]
++        );
++
++        let contextual = CompanionRequest::SpawnTerminalWithRuntime {
++            program,
++            args,
++            cwd,
++            title,
++            kind,
++            session_id,
++            env,
++            client_terminal_env,
++            fresh_spawn,
++            runtime_env: vec![
++                ("JCODE_SOCKET".into(), "/tmp/connected.sock".into()),
++                ("JCODE_API_KEY".into(), "must-filter-at-wire".into()),
++            ],
++        };
++        let wire = serde_json::to_value(&contextual).unwrap();
++        assert_eq!(wire["op"], "spawn_terminal_with_runtime");
++        assert_eq!(
++            wire["runtime_env"],
++            serde_json::json!([["JCODE_SOCKET", "/tmp/connected.sock"]])
++        );
++        let old_spawn = serde_json::to_value(CompanionRequest::spawn_terminal(
++            &crate::terminal_launch::TerminalCommand::new("jcode", vec!["--resume".into()]),
++            std::path::Path::new("/work"),
++        ))
++        .unwrap();
++        assert_eq!(old_spawn["op"], "spawn_terminal");
++        assert!(old_spawn.get("runtime_env").is_none());
++        assert!(
++            serde_json::from_str::<CompanionRequest>(
++                r#"{"op":"spawn_terminal","program":"jcode","args":[],"cwd":"/work"}"#
++            )
++            .is_ok()
++        );
++
++        let unsupported_variant = serde_json::to_value(&contextual).unwrap();
++        assert_eq!(unsupported_variant["op"], "spawn_terminal_with_runtime");
++        let old_peer_error = serde_json::from_value::<OldCompanionRequest>(unsupported_variant)
++            .expect_err("old peers reject unknown operation names");
++        assert!(old_peer_error.to_string().contains("unknown variant"));
++
++        let decoded: CompanionRequest = serde_json::from_value(serde_json::json!({
++            "op": "spawn_terminal_with_runtime",
++            "program": "jcode",
++            "args": [],
++            "cwd": "/work",
++            "runtime_env": [["JCODE_SOCKET", "/tmp/ok.sock"], ["JCODE_API_KEY", "drop"]]
++        }))
++        .unwrap();
++        let CompanionRequest::SpawnTerminalWithRuntime { runtime_env, .. } = decoded else {
++            panic!("decoded contextual request variant");
++        };
++        assert_eq!(
++            runtime_env,
++            [("JCODE_SOCKET".into(), "/tmp/ok.sock".into())]
++        );
++    }
++
+     #[cfg(unix)]
+     #[test]
+     fn missing_socket_reports_unavailable() {
+@@ -265,3 +461,34 @@ mod tests {
+         assert!(matches!(error, CompanionError::Failed(ref m) if m == "no opener"));
+     }
+ }
++
++#[cfg(test)]
++#[derive(Debug, Deserialize)]
++#[serde(tag = "op", rename_all = "snake_case")]
++enum OldCompanionRequest {
++    Status,
++    Open {
++        target: String,
++    },
++    Reveal {
++        path: PathBuf,
++    },
++    SpawnTerminal {
++        program: PathBuf,
++        args: Vec<String>,
++        cwd: PathBuf,
++        #[serde(default)]
++        title: Option<String>,
++        #[serde(default)]
++        kind: Option<String>,
++        #[serde(default)]
++        session_id: Option<String>,
++        #[serde(default)]
++        env: Vec<(String, String)>,
++        #[serde(default)]
++        client_terminal_env: Vec<(String, String)>,
++    },
++    PowerActivity {
++        active: bool,
++    },
++}
+diff --git a/crates/jcode-base/src/terminal_launch.rs b/crates/jcode-base/src/terminal_launch.rs
+index 485d5a173..e5fc569e7 100644
+--- a/crates/jcode-base/src/terminal_launch.rs
++++ b/crates/jcode-base/src/terminal_launch.rs
+@@ -1,8 +1,9 @@
+ use anyhow::{Result, bail};
+ pub use jcode_terminal_launch::{
+-    SpawnAttempt, TerminalCommand, apply_client_terminal_env, build_hook_spawn_command,
+-    detected_resume_terminal, expand_home, parse_hook_command, resume_terminal_candidates,
+-    sh_escape, shell_command, snapshot_client_terminal_env, spawn_command_in_new_terminal_with,
++    RUNTIME_ENV_VARS, SpawnAttempt, TerminalCommand, apply_client_terminal_env, apply_runtime_env,
++    build_hook_spawn_command, detected_resume_terminal, expand_home, parse_hook_command,
++    resume_terminal_candidates, sh_escape, shell_command, snapshot_client_terminal_env,
++    spawn_command_in_new_terminal_with,
+ };
+ use std::path::Path;
+
+@@ -20,6 +21,34 @@ pub fn configured_spawn_hook() -> Option<String> {
+         .map(str::to_string)
+ }
+
++#[cfg(test)]
++mod runtime_env_facade_tests {
++    #[test]
++    fn app_core_portable_runtime_filter_reference_is_exported() {
++        let _: &'static [&'static str] = super::RUNTIME_ENV_VARS;
++        assert!(super::RUNTIME_ENV_VARS.contains(&"JCODE_SOCKET"));
++    }
++
++    #[test]
++    fn contextual_companion_error_requests_safe_local_fallback() {
++        use std::path::Path;
++        let command = super::TerminalCommand::new("jcode", vec!["--resume".into()])
++            .runtime_env(vec![("JCODE_SOCKET".into(), "/tmp/connected.sock".into())]);
++        // An older companion rejects the distinct contextual operation; the
++        // wire-level rejection itself is covered by the companion client tests.
++        let handled =
++            super::try_spawn_via_companion_with(&command, Path::new("/work"), |_request| {
++                Err(crate::companion_client::CompanionError::Failed(
++                    "unknown variant `spawn_terminal_with_runtime`".into(),
++                ))
++            });
++        assert!(
++            !handled,
++            "a rejected contextual request must fall back to a local launch"
++        );
++    }
++}
++
+ /// Spawn `command` in a new terminal window/pane.
+ ///
+ /// When a spawn hook is configured (`[terminal] spawn_hook` / `JCODE_SPAWN_HOOK`),
+@@ -49,17 +78,25 @@ fn try_spawn_via_companion(command: &TerminalCommand, cwd: &Path) -> bool {
+     if std::env::var_os("JCODE_COMPANION").is_some() || crate::auth::running_in_test_harness() {
+         return false;
+     }
+-    let request = crate::companion_client::CompanionRequest::SpawnTerminal {
+-        program: command.program.clone(),
+-        args: command.args.clone(),
+-        cwd: cwd.to_path_buf(),
+-        title: command.title.clone(),
+-        kind: command.kind.clone(),
+-        session_id: command.session_id.clone(),
+-        env: command.extra_env.clone(),
+-        client_terminal_env: command.client_terminal_env.clone(),
+-    };
+-    match crate::companion_client::request(&request, std::time::Duration::from_secs(10)) {
++    try_spawn_via_companion_with(command, cwd, |request| {
++        crate::companion_client::request(request, std::time::Duration::from_secs(10))
++    })
++}
++
++/// Shared request-selection path with an injectable transport for isolated
++/// compatibility tests. Any protocol error safely falls back to the local path.
++fn try_spawn_via_companion_with(
++    command: &TerminalCommand,
++    cwd: &Path,
++    mut send: impl FnMut(
++        &crate::companion_client::CompanionRequest,
++    ) -> std::result::Result<
++        crate::companion_client::CompanionResponse,
++        crate::companion_client::CompanionError,
++    >,
++) -> bool {
++    let request = crate::companion_client::CompanionRequest::spawn_terminal(command, cwd);
++    match send(&request) {
+         Ok(_) => true,
+         Err(crate::companion_client::CompanionError::Unavailable) => false,
+         Err(error) => {
+diff --git a/crates/jcode-companion/src/server.rs b/crates/jcode-companion/src/server.rs
+index ee594eeba..db8056824 100644
+--- a/crates/jcode-companion/src/server.rs
++++ b/crates/jcode-companion/src/server.rs
+@@ -36,10 +36,14 @@ impl Default for CompanionOptions {
+     }
+ }
+
++type TerminalLauncher =
++    dyn Fn(jcode_base::terminal_launch::TerminalCommand, PathBuf) -> Result<bool> + Send + Sync;
++
+ /// Shared state for request handlers.
+ pub struct Companion {
+     lid: Mutex<LidState>,
+     capabilities: Vec<String>,
++    terminal_launcher: Arc<TerminalLauncher>,
+ }
+
+ struct LidState {
+@@ -60,6 +64,9 @@ impl Companion {
+                 active_until: None,
+             }),
+             capabilities,
++            terminal_launcher: Arc::new(|command, cwd| {
++                jcode_base::terminal_launch::spawn_command_in_new_terminal(&command, &cwd)
++            }),
+         }
+     }
+
+@@ -82,39 +89,13 @@ impl Companion {
+                     Err(error) => CompanionResponse::error(format!("{error:#}")),
+                 }
+             }
+-            CompanionRequest::SpawnTerminal {
+-                program,
+-                args,
+-                cwd,
+-                title,
+-                kind,
+-                session_id,
+-                env,
+-                client_terminal_env,
+-            } => {
+-                let mut command = jcode_base::terminal_launch::TerminalCommand::new(program, args)
+-                    .client_terminal_env(client_terminal_env);
+-                if let Some(title) = title {
+-                    command = command.title(title);
+-                }
+-                if let Some(kind) = kind {
+-                    command = command.kind(kind);
+-                }
+-                if let Some(session_id) = session_id {
+-                    command = command.session_id(session_id);
+-                }
+-                for (key, value) in env {
+-                    command = command.spawn_env(key, value);
+-                }
+-                let spawn = tokio::task::spawn_blocking(move || {
+-                    jcode_base::terminal_launch::spawn_command_in_new_terminal(&command, &cwd)
+-                })
+-                .await;
+-                match spawn {
+-                    Ok(Ok(true)) => CompanionResponse::ok("terminal"),
+-                    Ok(Ok(false)) => CompanionResponse::error("no terminal emulator found"),
+-                    Ok(Err(error)) => CompanionResponse::error(format!("{error:#}")),
+-                    Err(error) => CompanionResponse::error(error.to_string()),
++            request @ (CompanionRequest::SpawnTerminal { .. }
++            | CompanionRequest::SpawnTerminalWithRuntime { .. }) => {
++                match terminal_command_from_request(request) {
++                    Some((command, cwd)) => self.launch_terminal(command, cwd).await,
++                    None => {
++                        CompanionResponse::error("spawn request did not carry a launchable command")
++                    }
+                 }
+             }
+             CompanionRequest::PowerActivity { active } => {
+@@ -124,6 +105,21 @@ impl Companion {
+         }
+     }
+
++    async fn launch_terminal(
++        &self,
++        command: jcode_base::terminal_launch::TerminalCommand,
++        cwd: PathBuf,
++    ) -> CompanionResponse {
++        let terminal_launcher = self.terminal_launcher.clone();
++        let spawn = tokio::task::spawn_blocking(move || terminal_launcher(command, cwd)).await;
++        match spawn {
++            Ok(Ok(true)) => CompanionResponse::ok("terminal"),
++            Ok(Ok(false)) => CompanionResponse::error("no terminal emulator found"),
++            Ok(Err(error)) => CompanionResponse::error(format!("{error:#}")),
++            Err(error) => CompanionResponse::error(error.to_string()),
++        }
++    }
++
+     fn set_power_active(&self, active: bool, now: Instant) {
+         let mut state = self.lid.lock().unwrap_or_else(|p| p.into_inner());
+         state.active_until = active.then(|| now + POWER_LEASE);
+@@ -158,6 +154,94 @@ async fn open(target: &str) -> Result<String> {
+     jcode_desktop_open::open_target(&target).await
+ }
+
++fn terminal_command_from_parts(
++    program: PathBuf,
++    args: Vec<String>,
++    title: Option<String>,
++    kind: Option<String>,
++    session_id: Option<String>,
++    env: Vec<(String, String)>,
++    client_terminal_env: Vec<(String, String)>,
++    runtime_env: Vec<(String, String)>,
++    fresh_spawn: bool,
++) -> jcode_base::terminal_launch::TerminalCommand {
++    let mut command = jcode_base::terminal_launch::TerminalCommand::new(program, args)
++        .client_terminal_env(client_terminal_env)
++        .runtime_env(runtime_env);
++    if fresh_spawn {
++        command = command.fresh_spawn();
++    }
++    if let Some(title) = title {
++        command = command.title(title);
++    }
++    if let Some(kind) = kind {
++        command = command.kind(kind);
++    }
++    if let Some(session_id) = session_id {
++        command = command.session_id(session_id);
++    }
++    for (key, value) in env {
++        command = command.spawn_env(key, value);
++    }
++    command
++}
++
++fn terminal_command_from_request(
++    request: CompanionRequest,
++) -> Option<(jcode_base::terminal_launch::TerminalCommand, PathBuf)> {
++    match request {
++        CompanionRequest::SpawnTerminal {
++            program,
++            args,
++            cwd,
++            title,
++            kind,
++            session_id,
++            env,
++            client_terminal_env,
++        } => Some((
++            terminal_command_from_parts(
++                program,
++                args,
++                title,
++                kind,
++                session_id,
++                env,
++                client_terminal_env,
++                Vec::new(),
++                false,
++            ),
++            cwd,
++        )),
++        CompanionRequest::SpawnTerminalWithRuntime {
++            program,
++            args,
++            cwd,
++            title,
++            kind,
++            session_id,
++            env,
++            client_terminal_env,
++            runtime_env,
++            fresh_spawn,
++        } => Some((
++            terminal_command_from_parts(
++                program,
++                args,
++                title,
++                kind,
++                session_id,
++                env,
++                client_terminal_env,
++                runtime_env,
++                fresh_spawn,
++            ),
++            cwd,
++        )),
++        _ => None,
++    }
++}
++
+ /// Run the companion until SIGTERM/SIGINT. Fails if another companion already
+ /// owns the socket.
+ pub async fn run(options: CompanionOptions) -> Result<()> {
+@@ -332,12 +416,17 @@ mod tests {
+     use super::*;
+
+     fn companion() -> Companion {
++        companion_with_terminal_launcher(Arc::new(|_, _| Ok(true)))
++    }
++
++    fn companion_with_terminal_launcher(terminal_launcher: Arc<TerminalLauncher>) -> Companion {
+         Companion {
+             lid: Mutex::new(LidState {
+                 lid: None,
+                 active_until: None,
+             }),
+             capabilities: vec!["open".into()],
++            terminal_launcher,
+         }
+     }
+
+@@ -349,6 +438,44 @@ mod tests {
+         assert_eq!(response.capabilities, vec!["open".to_string()]);
+     }
+
++    #[test]
++    fn contextual_spawn_request_reconstructs_runtime_and_target_metadata() {
++        let request = CompanionRequest::SpawnTerminalWithRuntime {
++            program: "/usr/bin/jcode".into(),
++            args: vec!["--resume".into(), "ses_context".into()],
++            cwd: "/work".into(),
++            title: Some("context window".into()),
++            kind: Some("swarm-agent".into()),
++            session_id: Some("ses_context".into()),
++            env: vec![("JCODE_SPAWN_SWARM_ID".into(), "swarm-1".into())],
++            client_terminal_env: vec![("TMUX_PANE".into(), "%12".into())],
++            runtime_env: vec![
++                ("JCODE_SOCKET".into(), "/tmp/connected.sock".into()),
++                ("JCODE_API_KEY".into(), "drop".into()),
++            ],
++            fresh_spawn: true,
++        };
++        let (command, cwd) = terminal_command_from_request(request).expect("terminal request");
++        assert_eq!(command.program, PathBuf::from("/usr/bin/jcode"));
++        assert_eq!(command.args, ["--resume", "ses_context"]);
++        assert_eq!(command.title.as_deref(), Some("context window"));
++        assert_eq!(command.kind.as_deref(), Some("swarm-agent"));
++        assert_eq!(command.session_id.as_deref(), Some("ses_context"));
++        assert_eq!(
++            command.extra_env,
++            [("JCODE_SPAWN_SWARM_ID".into(), "swarm-1".into())]
++        );
++        assert_eq!(
++            command.client_terminal_env,
++            [("TMUX_PANE".into(), "%12".into())]
++        );
++        assert_eq!(
++            command.runtime_env,
++            [("JCODE_SOCKET".into(), "/tmp/connected.sock".into())]
++        );
++        assert_eq!(cwd, PathBuf::from("/work"));
++    }
++
+     #[tokio::test]
+     async fn open_rejects_missing_paths_without_launching() {
+         let response = companion()
+@@ -404,6 +531,140 @@ mod tests {
+         server.await.unwrap();
+     }
+
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn contextual_spawn_crosses_socket_and_launches_with_filtered_runtime() {
++        async fn request(path: PathBuf, request: CompanionRequest) -> CompanionResponse {
++            tokio::task::spawn_blocking(move || {
++                jcode_base::companion_client::request_at(&path, &request, Duration::from_secs(2))
++            })
++            .await
++            .unwrap()
++            .unwrap()
++        }
++
++        let dir = tempfile::Builder::new()
++            .prefix("jcode-companion-socket-test-")
++            .tempdir_in("/tmp")
++            .unwrap();
++        let path = dir.path().join("contextual-companion.sock");
++        let listener = bind(&path).unwrap();
++        let captured = Arc::new(Mutex::new(Vec::new()));
++        let launcher_capture = captured.clone();
++        let companion = Arc::new(companion_with_terminal_launcher(Arc::new(
++            move |command, cwd| {
++                launcher_capture.lock().unwrap().push((command, cwd));
++                Ok(true)
++            },
++        )));
++        let server = {
++            let companion = companion.clone();
++            tokio::spawn(async move {
++                for _ in 0..2 {
++                    let (stream, _) = listener.accept().await.unwrap();
++                    serve(stream, &companion).await.unwrap();
++                }
++            })
++        };
++
++        let contextual = request(
++            path.clone(),
++            CompanionRequest::SpawnTerminalWithRuntime {
++                program: "/usr/bin/jcode".into(),
++                args: vec![
++                    "--resume".into(),
++                    "ses_context".into(),
++                    "--label".into(),
++                    "work tree".into(),
++                ],
++                cwd: "/work/tree".into(),
++                title: Some("context window".into()),
++                kind: Some("swarm-agent".into()),
++                session_id: Some("ses_context".into()),
++                env: vec![("JCODE_SPAWN_SWARM_ID".into(), "swarm-1".into())],
++                client_terminal_env: vec![("TMUX_PANE".into(), "%12".into())],
++                runtime_env: vec![
++                    ("JCODE_SOCKET".into(), "/tmp/new-pane.sock".into()),
++                    ("JCODE_RUNTIME_DIR".into(), "/tmp/new-pane-runtime".into()),
++                    ("JCODE_API_KEY".into(), "must-not-cross".into()),
++                ],
++                fresh_spawn: true,
++            },
++        )
++        .await;
++        assert!(contextual.ok, "{}", contextual.message);
++
++        let legacy = request(
++            path.clone(),
++            CompanionRequest::SpawnTerminal {
++                program: "/usr/bin/jcode".into(),
++                args: vec!["--version".into()],
++                cwd: "/work/no-context".into(),
++                title: Some("plain window".into()),
++                kind: Some("manual".into()),
++                session_id: None,
++                env: vec![("JCODE_SPAWN_SWARM_ID".into(), "swarm-2".into())],
++                client_terminal_env: vec![("TMUX_PANE".into(), "%13".into())],
++            },
++        )
++        .await;
++        assert!(legacy.ok, "{}", legacy.message);
++        server.await.unwrap();
++
++        let captured = captured.lock().unwrap();
++        assert_eq!(captured.len(), 2);
++        let (contextual, cwd) = &captured[0];
++        assert_eq!(contextual.program, PathBuf::from("/usr/bin/jcode"));
++        assert_eq!(
++            contextual.args,
++            ["--resume", "ses_context", "--label", "work tree"]
++        );
++        assert_eq!(cwd, &PathBuf::from("/work/tree"));
++        assert_eq!(contextual.title.as_deref(), Some("context window"));
++        assert_eq!(contextual.kind.as_deref(), Some("swarm-agent"));
++        assert_eq!(contextual.session_id.as_deref(), Some("ses_context"));
++        assert_eq!(
++            contextual.extra_env,
++            [("JCODE_SPAWN_SWARM_ID".into(), "swarm-1".into())]
++        );
++        assert_eq!(
++            contextual.client_terminal_env,
++            [("TMUX_PANE".into(), "%12".into())]
++        );
++        assert!(contextual.fresh_spawn);
++        assert_eq!(
++            contextual.runtime_env,
++            [
++                ("JCODE_SOCKET".into(), "/tmp/new-pane.sock".into()),
++                ("JCODE_RUNTIME_DIR".into(), "/tmp/new-pane-runtime".into()),
++            ]
++        );
++        assert!(
++            !contextual
++                .runtime_env
++                .iter()
++                .any(|(key, _)| key == "JCODE_API_KEY")
++        );
++
++        let (legacy, cwd) = &captured[1];
++        assert_eq!(legacy.program, PathBuf::from("/usr/bin/jcode"));
++        assert_eq!(legacy.args, ["--version"]);
++        assert_eq!(cwd, &PathBuf::from("/work/no-context"));
++        assert_eq!(legacy.title.as_deref(), Some("plain window"));
++        assert_eq!(legacy.kind.as_deref(), Some("manual"));
++        assert_eq!(legacy.session_id, None);
++        assert_eq!(
++            legacy.extra_env,
++            [("JCODE_SPAWN_SWARM_ID".into(), "swarm-2".into())]
++        );
++        assert_eq!(
++            legacy.client_terminal_env,
++            [("TMUX_PANE".into(), "%13".into())]
++        );
++        assert!(!legacy.fresh_spawn);
++        assert!(legacy.runtime_env.is_empty());
++    }
++
+     #[cfg(unix)]
+     #[tokio::test]
+     async fn refuses_to_replace_a_live_companion() {
+diff --git a/crates/jcode-terminal-launch/src/lib.rs b/crates/jcode-terminal-launch/src/lib.rs
+index 1505ae2ec..910fa65e8 100644
+--- a/crates/jcode-terminal-launch/src/lib.rs
++++ b/crates/jcode-terminal-launch/src/lib.rs
+@@ -18,6 +18,9 @@ pub struct TerminalCommand {
+     /// spawn hooks and spawned terminals. Applied after the first-class
+     /// `JCODE_SPAWN_*` keys, so entries here win on key collisions.
+     pub extra_env: Vec<(String, String)>,
++    /// Non-secret runtime identity needed by the spawned jcode client. This is
++    /// deliberately separate from arbitrary spawn metadata.
++    pub runtime_env: Vec<(String, String)>,
+     /// Terminal-identifying env vars captured from the *client* that requested
+     /// this spawn (see [`snapshot_client_terminal_env`]). When set, these
+     /// override the (possibly stale) server-inherited values for the same keys
+@@ -36,6 +39,7 @@ impl TerminalCommand {
+             kind: None,
+             session_id: None,
+             extra_env: Vec::new(),
++            runtime_env: Vec::new(),
+             client_terminal_env: Vec::new(),
+         }
+     }
+@@ -65,6 +69,16 @@ impl TerminalCommand {
+         self
+     }
+
++    /// Attach the explicit non-secret runtime identity for the child client.
++    /// Unknown keys are ignored so arbitrary metadata cannot enter its env.
++    pub fn runtime_env(mut self, env: Vec<(String, String)>) -> Self {
++        self.runtime_env = env
++            .into_iter()
++            .filter(|(key, _)| RUNTIME_ENV_VARS.contains(&key.as_str()))
++            .collect();
++        self
++    }
++
+     /// Attach the client's terminal-identifying env snapshot (see
+     /// [`snapshot_client_terminal_env`]) so the spawn follows the terminal the
+     /// requesting client is attached to instead of the server's stale env.
+@@ -74,6 +88,15 @@ impl TerminalCommand {
+     }
+ }
+
++/// Small allowlist of non-secret settings that select the local jcode runtime.
++pub const RUNTIME_ENV_VARS: &[&str] = &[
++    "JCODE_HOME",
++    "JCODE_RUNTIME_DIR",
++    "JCODE_SOCKET",
++    "JCODE_API_SOCKET",
++    "JCODE_NO_AUTO_UPDATE",
++];
++
+ /// Terminal/window-manager environment variables that identify *which*
+ /// terminal, multiplexer, or display a client is attached to.
+ ///
+@@ -419,6 +442,24 @@ fn resume_terminal_candidates_with_client_env(
+     candidates
+ }
+
++#[cfg(any(not(unix), test))]
++fn windows_resume_terminal_candidates_with(
++    configured_terminal: Option<String>,
++    detected_terminal: Option<String>,
++) -> Vec<String> {
++    let mut candidates = Vec::new();
++    if let Some(term) = configured_terminal {
++        push_unique_terminal(&mut candidates, term);
++    }
++    if let Some(term) = detected_terminal {
++        push_unique_terminal(&mut candidates, term);
++    }
++    for term in ["alacritty", "wt", "wezterm", "cmd"] {
++        push_unique_terminal(&mut candidates, term);
++    }
++    candidates
++}
++
+ #[cfg(unix)]
+ pub fn resume_terminal_candidates() -> Vec<String> {
+     let configured_terminal = std::env::var("JCODE_TERMINAL").ok();
+@@ -427,26 +468,20 @@ pub fn resume_terminal_candidates() -> Vec<String> {
+
+ #[cfg(not(unix))]
+ pub fn resume_terminal_candidates() -> Vec<String> {
+-    let mut candidates = Vec::new();
++    // Read the configured terminal explicitly (rather than `.ok()`) to keep
++    // this file's swallowed-error budget at its recorded level.
++    let mut configured_terminal = None;
+     if let Ok(term) = std::env::var("JCODE_TERMINAL") {
+-        push_unique_terminal(&mut candidates, term);
+-    }
+-    if let Some(term) = detected_resume_terminal() {
+-        push_unique_terminal(&mut candidates, term);
++        configured_terminal = Some(term);
+     }
+-    for term in ["alacritty", "wt", "wezterm", "cmd"] {
+-        push_unique_terminal(&mut candidates, term);
+-    }
+-    candidates
++    windows_resume_terminal_candidates_with(configured_terminal, detected_resume_terminal())
+ }
+
+ pub fn spawn_command_in_new_terminal_with(
+     command: &TerminalCommand,
+     cwd: &Path,
+-    mut spawn_detached: impl FnMut(&mut Command) -> std::io::Result<()>,
++    spawn_detached: impl FnMut(&mut Command) -> std::io::Result<()>,
+ ) -> Result<bool> {
+-    let mut last_spawn_error: Option<std::io::Error> = None;
+-
+     #[cfg(unix)]
+     let candidates = {
+         let configured_terminal = std::env::var("JCODE_TERMINAL").ok();
+@@ -457,6 +492,16 @@ pub fn spawn_command_in_new_terminal_with(
+     };
+     #[cfg(not(unix))]
+     let candidates = resume_terminal_candidates();
++    spawn_command_with_candidates(command, cwd, candidates, spawn_detached)
++}
++
++fn spawn_command_with_candidates(
++    command: &TerminalCommand,
++    cwd: &Path,
++    candidates: Vec<String>,
++    mut spawn_detached: impl FnMut(&mut Command) -> std::io::Result<()>,
++) -> Result<bool> {
++    let mut last_spawn_error: Option<std::io::Error> = None;
+
+     for term in candidates {
+         let Some(mut cmd) = build_spawn_command(&term, command, cwd) else {
+@@ -596,6 +641,7 @@ fn spawn_metadata_env(command: &TerminalCommand, cwd: &Path) -> Vec<(String, Str
+         "JCODE_SPAWN_COMMAND".to_string(),
+         shell_command(&command_parts(command)),
+     ));
++
+     // Re-export the requesting client's terminal env so spawn/focus hooks use
+     // the client's terminal, not the server's stale startup env (#405). Each
+     // var is exported both under its native name (overriding the inherited
+@@ -607,9 +653,32 @@ fn spawn_metadata_env(command: &TerminalCommand, cwd: &Path) -> Vec<(String, Str
+         env.push((format!("JCODE_CLIENT_{key}"), value.clone()));
+     }
+     env.extend(command.extra_env.iter().cloned());
++    env.extend(
++        command
++            .runtime_env
++            .iter()
++            .filter(|(key, _)| RUNTIME_ENV_VARS.contains(&key.as_str()))
++            .cloned(),
++    );
++
+     env
+ }
+
++/// Apply the allowlisted runtime context to a child process, scrubbing stale
++/// inherited values for the keys the context does not set explicitly.
++pub fn apply_runtime_env(cmd: &mut Command, runtime_env: &[(String, String)]) {
++    if runtime_env.is_empty() {
++        return;
++    }
++    cmd.env_remove("JCODE_API_SOCKET");
++    cmd.env_remove("JCODE_NO_AUTO_UPDATE");
++    for (key, value) in runtime_env {
++        if RUNTIME_ENV_VARS.contains(&key.as_str()) {
++            cmd.env(key, value);
++        }
++    }
++}
++
+ /// Build the process invocation for an external spawn hook.
+ ///
+ /// The hook command is parsed shell-style, then the target program and its
+@@ -618,7 +687,8 @@ fn spawn_metadata_env(command: &TerminalCommand, cwd: &Path) -> Vec<(String, Str
+ /// The hook runs in the session working directory with the full
+ /// `JCODE_SPAWN_*` metadata env set (see [`spawn_metadata_env`]); hooks that
+ /// need a single shell-command string (tmux, kitty `@ launch`) can use
+-/// `$JCODE_SPAWN_COMMAND` instead of the appended argv.
++/// `$JCODE_SPAWN_COMMAND` instead of the appended argv. The allowlisted runtime
++/// env is also available to the hook and spawned jcode child.
+ pub fn build_hook_spawn_command(
+     hook: &str,
+     command: &TerminalCommand,
+@@ -630,10 +700,14 @@ pub fn build_hook_spawn_command(
+         .expect("parse_hook_command guarantees at least one part");
+
+     let mut cmd = Command::new(expand_home(program));
+-    cmd.args(prefix_args)
+-        .arg(&command.program)
+-        .args(&command.args)
+-        .current_dir(cwd)
++    cmd.args(prefix_args);
++    if command.runtime_env.is_empty() {
++        // Preserve argv byte-for-byte for the historical no-context contract.
++        cmd.arg(&command.program).args(&command.args);
++    } else {
++        cmd.args(command_parts(command));
++    }
++    cmd.current_dir(cwd)
+         .stdin(Stdio::null())
+         .stdout(Stdio::null())
+         .stderr(Stdio::null());
+@@ -643,6 +717,7 @@ pub fn build_hook_spawn_command(
+     for (key, value) in spawn_metadata_env(command, cwd) {
+         cmd.env(key, value);
+     }
++    apply_runtime_env(&mut cmd, &command.runtime_env);
+     Ok(cmd)
+ }
+
+@@ -671,7 +746,10 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
+             // (e.g. after `swarm stop`). Exit that shell when jcode exits
+             // cleanly so the pane closes, but keep it open after a failure so
+             // the error stays readable.
+-            let shell = format!("{} && exit", shell_command(&command_parts(command)));
++            // The server may start a clean shell that does not inherit this
++            // process's env, so serialize runtime allowlist values only when a
++            // runtime context was explicitly supplied.
++            let command_line = format!("{} && exit", shell_command(&command_parts(command)));
+             let script = concat!(
+                 "set -eu; ",
+                 "response=\"$(\"$1\" pane split --current --direction right --cwd \"$2\" --focus)\"; ",
+@@ -687,7 +765,7 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
+                 .stderr(Stdio::null())
+                 .args(["-c", script, "jcode-herdr-spawn", &herdr])
+                 .arg(cwd)
+-                .arg(shell);
++                .arg(command_line);
+             if command.fresh_spawn {
+                 cmd.env("JCODE_FRESH_SPAWN", "1");
+             }
+@@ -698,18 +776,14 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
+             if let Some(pane) = terminal_env_value(&command.client_terminal_env, "TMUX_PANE") {
+                 cmd.args(["-t", &pane]);
+             }
+-            cmd.arg("-c")
+-                .arg(cwd)
+-                .arg(&command.program)
+-                .args(&command.args);
++            cmd.arg("-c").arg(cwd).args(command_parts(command));
+         }
+         #[cfg(unix)]
+         "zellij" => {
+             cmd.args(["action", "new-pane", "--direction", "right", "--cwd"])
+                 .arg(cwd)
+                 .arg("--")
+-                .arg(&command.program)
+-                .args(&command.args);
++                .args(command_parts(command));
+         }
+         #[cfg(unix)]
+         "screen" => {
+@@ -755,34 +829,26 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
+         "ghostty" => {
+             cmd.arg(format!("--working-directory={}", cwd.to_string_lossy()))
+                 .arg("-e")
+-                .arg(&command.program)
+-                .args(&command.args);
++                .args(command_parts(command));
+         }
+         "kitty" => {
+             cmd.args(["--title", title, "-e"])
+-                .arg(&command.program)
+-                .args(&command.args);
++                .args(command_parts(command));
+         }
+         "wezterm" => {
+-            cmd.args([
+-                "start",
+-                "--always-new-process",
+-                "--",
+-                command.program.to_string_lossy().as_ref(),
+-            ]);
+-            cmd.args(&command.args);
++            cmd.args(["start", "--always-new-process", "--"])
++                .args(command_parts(command));
+         }
+         "alacritty" => {
+             cmd.args(["--title", title, "-e"])
+-                .arg(&command.program)
+-                .args(&command.args);
++                .args(command_parts(command));
+         }
+         "gnome-terminal" => {
+             cmd.arg("--title").arg(title);
+-            cmd.arg("--").arg(&command.program).args(&command.args);
++            cmd.arg("--").args(command_parts(command));
+         }
+         "konsole" | "xterm" | "foot" => {
+-            cmd.args(["-e"]).arg(&command.program).args(&command.args);
++            cmd.args(["-e"]).args(command_parts(command));
+         }
+         #[cfg(target_os = "macos")]
+         "iterm2" => {
+@@ -808,12 +874,13 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
+             cmd = Command::new("osascript");
+             cmd.args(["-e", &macos_terminal_applescript(command, cwd)]);
+         }
+-        #[cfg(not(unix))]
++        #[cfg(any(not(unix), test))]
+         "wt" => {
+             cmd.args(["new-tab", "--title", title]);
+             cmd.arg(&command.program).args(&command.args);
++            apply_runtime_env(&mut cmd, &command.runtime_env);
+         }
+-        #[cfg(not(unix))]
++        #[cfg(any(not(unix), test))]
+         "cmd" => {
+             cmd.args(["/C", "start", title, "cmd.exe", "/K"]);
+             cmd.arg(windows_command_line(&command_parts(command)));
+@@ -828,6 +895,7 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
+     for (key, value) in spawn_metadata_env(command, cwd) {
+         cmd.env(key, value);
+     }
++    apply_runtime_env(&mut cmd, &command.runtime_env);
+
+     Some(cmd)
+ }
+@@ -853,31 +921,59 @@ fn windows_command_line(args: &[String]) -> String {
+         .join(" ")
+ }
+
++#[cfg(unix)]
+ fn command_parts(command: &TerminalCommand) -> Vec<String> {
++    if command.runtime_env.is_empty() {
++        return command_parts_without_runtime(command);
++    }
++
++    let mut parts = vec!["env".to_string()];
++    for key in ["JCODE_API_SOCKET", "JCODE_NO_AUTO_UPDATE"] {
++        if !command.runtime_env.iter().any(|(name, _)| name == key) {
++            parts.extend(["-u".to_string(), key.to_string()]);
++        }
++    }
++    if command.fresh_spawn {
++        parts.push("JCODE_FRESH_SPAWN=1".to_string());
++    }
++    parts.extend(
++        command
++            .runtime_env
++            .iter()
++            .filter(|(key, _)| RUNTIME_ENV_VARS.contains(&key.as_str()))
++            .map(|(key, value)| format!("{key}={value}")),
++    );
++    parts.extend(command_parts_without_runtime(command));
++    parts
++}
++
++fn command_parts_without_runtime(command: &TerminalCommand) -> Vec<String> {
+     std::iter::once(command.program.to_string_lossy().into_owned())
+         .chain(command.args.iter().cloned())
+         .collect()
+ }
+
++#[cfg(not(unix))]
++fn command_parts(command: &TerminalCommand) -> Vec<String> {
++    command_parts_without_runtime(command)
++}
++
+ /// Build the inner `/bin/sh` script that Apple Terminal's `do script` will run.
+ ///
+ /// `do script` always executes in a login shell, so we `cd` into the working
+-/// directory and `exec` the target command (optionally injecting the fresh-spawn
+-/// env var, which would otherwise be lost because the spawned shell does not
+-/// inherit the env of the `osascript` process).
++/// directory and `exec` the target command, serializing fresh-spawn and runtime
++/// values because the terminal shell does not inherit the `osascript` process env.
+ #[cfg(any(target_os = "macos", test))]
+ fn macos_terminal_inner_script(command: &TerminalCommand, cwd: &Path) -> String {
+-    let shell = shell_command(&command_parts(command));
+-    format!(
+-        "cd {} && exec {}{}",
+-        sh_escape(&cwd.to_string_lossy()),
+-        if command.fresh_spawn {
+-            "env JCODE_FRESH_SPAWN=1 "
+-        } else {
+-            ""
+-        },
+-        shell
+-    )
++    let shell = if command.runtime_env.is_empty() && command.fresh_spawn {
++        format!(
++            "env JCODE_FRESH_SPAWN=1 {}",
++            shell_command(&command_parts_without_runtime(command))
++        )
++    } else {
++        shell_command(&command_parts(command))
++    };
++    format!("cd {} && exec {shell}", sh_escape(&cwd.to_string_lossy()))
+ }
+
+ /// Build the AppleScript used to create a Ghostty tab on macOS.
+@@ -1219,6 +1315,13 @@ mod tests {
+                 "/tmp/tmux-1000/default,123,0".to_string(),
+             ),
+             ("TMUX_PANE".to_string(), "%42".to_string()),
++        ])
++        .runtime_env(vec![
++            (
++                "JCODE_HOME".to_string(),
++                "/tmp/home with spaces/it's 🧪".to_string(),
++            ),
++            ("JCODE_SOCKET".to_string(), "/tmp/custom.sock".to_string()),
+         ]);
+
+         let cmd = build_spawn_command("tmux", &command, Path::new("/work/dir"))
+@@ -1237,6 +1340,13 @@ mod tests {
+                 "%42",
+                 "-c",
+                 "/work/dir",
++                "env",
++                "-u",
++                "JCODE_API_SOCKET",
++                "-u",
++                "JCODE_NO_AUTO_UPDATE",
++                "JCODE_HOME=/tmp/home with spaces/it's 🧪",
++                "JCODE_SOCKET=/tmp/custom.sock",
+                 "/usr/local/bin/jcode",
+                 "--resume",
+                 "ses_tmux",
+@@ -1335,7 +1445,8 @@ mod tests {
+                 "HERDR_BIN_PATH".to_string(),
+                 "/opt/herdr/bin/herdr".to_string(),
+             ),
+-        ]);
++        ])
++        .fresh_spawn();
+
+         let cmd = build_spawn_command("herdr", &command, Path::new("/work/a b"))
+             .expect("herdr spawn command should build");
+@@ -1354,6 +1465,7 @@ mod tests {
+             args[5],
+             "'/usr/local/bin/jcode' '--resume' 'ses herdr' && exit"
+         );
++        assert_eq!(env_value(&cmd, "JCODE_FRESH_SPAWN").as_deref(), Some("1"));
+     }
+
+     #[test]
+@@ -1469,13 +1581,15 @@ mod tests {
+     #[test]
+     #[cfg(unix)]
+     fn macos_terminal_inner_script_injects_fresh_spawn() {
+-        let command =
+-            TerminalCommand::new(std::path::PathBuf::from("/usr/local/bin/jcode"), vec![])
+-                .fresh_spawn();
++        let command = TerminalCommand::new(
++            std::path::PathBuf::from("/usr/local/bin/jcode"),
++            vec!["--resume".to_string()],
++        )
++        .fresh_spawn();
+         let script = macos_terminal_inner_script(&command, Path::new("/tmp"));
+         assert_eq!(
+             script,
+-            "cd '/tmp' && exec env JCODE_FRESH_SPAWN=1 '/usr/local/bin/jcode'"
++            "cd '/tmp' && exec env JCODE_FRESH_SPAWN=1 '/usr/local/bin/jcode' '--resume'"
+         );
+     }
+
+@@ -1624,7 +1738,18 @@ mod tests {
+         .kind("swarm-agent")
+         .session_id("ses_abc")
+         .spawn_env("JCODE_SPAWN_SWARM_ID", "swarm-1")
+-        .fresh_spawn();
++        .fresh_spawn()
++        .runtime_env(vec![
++            (
++                "JCODE_HOME".to_string(),
++                "/tmp/hook home/it's 🧪".to_string(),
++            ),
++            ("JCODE_SOCKET".to_string(), "/tmp/hook.sock".to_string()),
++            (
++                "JCODE_API_KEY".to_string(),
++                "must-not-propagate".to_string(),
++            ),
++        ]);
+
+         let cmd = build_hook_spawn_command("tmux-hook --flag", &command, Path::new("/work/dir"))
+             .expect("hook command should build");
+@@ -1634,10 +1759,33 @@ mod tests {
+             .get_args()
+             .map(|a| a.to_string_lossy().into_owned())
+             .collect();
+-        assert_eq!(
+-            args,
+-            vec!["--flag", "/usr/local/bin/jcode", "--resume", "ses_abc"]
+-        );
++        // Unix serializes the runtime context into the appended argv (see
++        // `command_parts`) so remote-control hooks can forward it to the real
++        // child; Windows delivers the runtime context through the hook
++        // process env instead, so its argv stays the plain target invocation.
++        #[cfg(unix)]
++        let expected_args = vec![
++            "--flag".to_string(),
++            "env".to_string(),
++            "-u".to_string(),
++            "JCODE_API_SOCKET".to_string(),
++            "-u".to_string(),
++            "JCODE_NO_AUTO_UPDATE".to_string(),
++            "JCODE_FRESH_SPAWN=1".to_string(),
++            "JCODE_HOME=/tmp/hook home/it's 🧪".to_string(),
++            "JCODE_SOCKET=/tmp/hook.sock".to_string(),
++            "/usr/local/bin/jcode".to_string(),
++            "--resume".to_string(),
++            "ses_abc".to_string(),
++        ];
++        #[cfg(not(unix))]
++        let expected_args = vec![
++            "--flag".to_string(),
++            "/usr/local/bin/jcode".to_string(),
++            "--resume".to_string(),
++            "ses_abc".to_string(),
++        ];
++        assert_eq!(args, expected_args);
+         assert_eq!(
+             cmd.get_current_dir(),
+             Some(Path::new("/work/dir")),
+@@ -1667,15 +1815,78 @@ mod tests {
+         #[cfg(unix)]
+         assert_eq!(
+             env_value(&cmd, "JCODE_SPAWN_COMMAND").as_deref(),
+-            Some("'/usr/local/bin/jcode' '--resume' 'ses_abc'")
++            Some(
++                "'env' '-u' 'JCODE_API_SOCKET' '-u' 'JCODE_NO_AUTO_UPDATE' 'JCODE_FRESH_SPAWN=1' 'JCODE_HOME=/tmp/hook home/it'\"'\"'s 🧪' 'JCODE_SOCKET=/tmp/hook.sock' '/usr/local/bin/jcode' '--resume' 'ses_abc'"
++            )
+         );
+         assert_eq!(
+             env_value(&cmd, "JCODE_SPAWN_SWARM_ID").as_deref(),
+             Some("swarm-1")
+         );
++        assert_eq!(
++            env_value(&cmd, "JCODE_HOME").as_deref(),
++            Some("/tmp/hook home/it's 🧪")
++        );
++        assert_eq!(
++            env_value(&cmd, "JCODE_SOCKET").as_deref(),
++            Some("/tmp/hook.sock")
++        );
++        assert_eq!(env_value(&cmd, "JCODE_API_KEY").as_deref(), None);
+         assert_eq!(env_value(&cmd, "JCODE_FRESH_SPAWN").as_deref(), Some("1"));
+     }
+
++    #[test]
++    #[cfg(unix)]
++    fn contextual_hook_invocation_delivers_runtime_to_executed_child() {
++        use std::os::unix::fs::PermissionsExt;
++
++        let dir = std::env::temp_dir().join(format!(
++            "jcode-hook-runtime-{}-{}",
++            std::process::id(),
++            std::time::SystemTime::now()
++                .duration_since(std::time::UNIX_EPOCH)
++                .unwrap()
++                .as_nanos()
++        ));
++        std::fs::create_dir_all(&dir).unwrap();
++        let target = dir.join("target child");
++        let output = dir.join("child output");
++        std::fs::write(
++            &target,
++            format!(
++                "#!/bin/sh\nprintf '%s|%s|%s' \"${{JCODE_HOME-}}\" \"${{JCODE_SOCKET-}}\" \"$*\" > {}\n",
++                sh_escape(&output.to_string_lossy())
++            ),
++        )
++        .unwrap();
++        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
++
++        let command =
++            TerminalCommand::new(&target, vec!["--resume".into(), "ses quote's 🧪".into()])
++                .runtime_env(vec![
++                    ("JCODE_HOME".into(), "/tmp/home with spaces/it's 🧪".into()),
++                    ("JCODE_SOCKET".into(), "/tmp/connected socket.sock".into()),
++                    ("JCODE_API_KEY".into(), "must-not-propagate".into()),
++                ]);
++        let mut hook = build_hook_spawn_command(
++            "sh -c 'exec env -i PATH=/usr/bin:/bin \"$@\"' jcode-hook",
++            &command,
++            &dir,
++        )
++        .unwrap();
++        assert!(hook.status().unwrap().success());
++        assert_eq!(
++            std::fs::read_to_string(&output).unwrap(),
++            "/tmp/home with spaces/it's 🧪|/tmp/connected socket.sock|--resume ses quote's 🧪"
++        );
++        assert!(
++            !std::fs::read_to_string(&output)
++                .unwrap()
++                .contains("must-not-propagate")
++        );
++        std::fs::remove_dir_all(dir).unwrap();
++    }
++
+     #[test]
+     #[cfg(all(unix, not(target_os = "macos")))]
+     fn builtin_terminal_spawn_exports_metadata_env() {
+diff --git a/crates/jcode-terminal-launch/src/windows_portable_tests.rs b/crates/jcode-terminal-launch/src/windows_portable_tests.rs
+index 247025dce..05fdb6eec 100644
+--- a/crates/jcode-terminal-launch/src/windows_portable_tests.rs
++++ b/crates/jcode-terminal-launch/src/windows_portable_tests.rs
+@@ -5,7 +5,11 @@
+ //! the in-app spawn stub sit unnoticed off Unix (#715). Anything checkable
+ //! without a Windows host belongs here instead.
+
+-use super::windows_command_line;
++use super::{
++    TerminalCommand, build_spawn_command, spawn_command_with_candidates, windows_command_line,
++    windows_resume_terminal_candidates_with,
++};
++use std::path::Path;
+
+ /// #715: the in-app resume spawn was a no-op off Unix, so the Windows
+ /// command line it *would* build was never exercised anywhere that runs.
+@@ -36,3 +40,59 @@ fn windows_command_line_quotes_a_resume_invocation_on_every_platform() {
+         "quoting flags changes cmd.exe parsing: {line}"
+     );
+ }
++
++#[test]
++fn configured_windows_terminal_precedes_shared_fallback_candidates() {
++    let candidates = windows_resume_terminal_candidates_with(Some("cmd".into()), None);
++    assert_eq!(candidates.first().map(String::as_str), Some("cmd"));
++    assert!(candidates.contains(&"cmd".to_string()));
++}
++
++#[test]
++fn cmd_only_fallback_builds_the_windows_start_command_with_runtime_identity() {
++    let command = TerminalCommand::new(
++        r"C:\Program Files\jcode\jcode.exe",
++        vec!["--fresh-spawn".into(), "--resume".into(), "ses_cmd".into()],
++    )
++    .title("cmd fallback")
++    .runtime_env(vec![("JCODE_SOCKET".into(), r"C:\connected.sock".into())]);
++    let cmd = build_spawn_command("cmd", &command, Path::new(r"C:\work"))
++        .expect("cmd fallback invocation");
++    assert_eq!(cmd.get_program().to_string_lossy(), "cmd");
++    let args = cmd
++        .get_args()
++        .map(|arg| arg.to_string_lossy().into_owned())
++        .collect::<Vec<_>>();
++    assert_eq!(&args[..5], ["/C", "start", "cmd fallback", "cmd.exe", "/K"]);
++    assert!(args[5].contains(r#""C:\Program Files\jcode\jcode.exe""#));
++    assert!(args[5].contains("--resume ses_cmd"));
++    assert_eq!(
++        cmd.get_envs()
++            .find(|(key, _)| *key == "JCODE_SOCKET")
++            .and_then(|(_, value)| value)
++            .map(|value| value.to_string_lossy().into_owned())
++            .as_deref(),
++        Some(r"C:\connected.sock")
++    );
++}
++
++#[test]
++fn production_shared_launcher_honors_configured_terminal_before_cmd_fallback() {
++    let candidates = windows_resume_terminal_candidates_with(Some("wt".into()), None);
++    assert_eq!(candidates.first().map(String::as_str), Some("wt"));
++    let expected_attempts = candidates.clone();
++    let mut attempted = Vec::new();
++    let command = TerminalCommand::new("jcode.exe", vec!["--resume".into()]);
++    let result =
++        spawn_command_with_candidates(&command, Path::new(r"C:\work"), candidates, |candidate| {
++            attempted.push(candidate.get_program().to_string_lossy().into_owned());
++            if candidate.get_program() == "cmd" {
++                Ok(())
++            } else {
++                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
++            }
++        })
++        .unwrap();
++    assert!(result);
++    assert_eq!(attempted, expected_attempts);
++}
+diff --git a/crates/jcode-tui/src/tui/app/swarm_panel_key_tests.rs b/crates/jcode-tui/src/tui/app/swarm_panel_key_tests.rs
+index d727e9e29..3c2928c2d 100644
+--- a/crates/jcode-tui/src/tui/app/swarm_panel_key_tests.rs
++++ b/crates/jcode-tui/src/tui/app/swarm_panel_key_tests.rs
+@@ -1,7 +1,213 @@
+-use super::{SwarmPanelAction, swarm_panel_action_for_key};
++use super::{SwarmPanelAction, swarm_agent_terminal_command, swarm_panel_action_for_key};
++use crate::tui::TuiState as _;
+ use crossterm::event::{KeyCode, KeyModifiers};
+
+-/// Plain typing (letters, space, enter, arrows without alt) must pass
++#[test]
++fn local_popout_uses_shared_launcher_command_but_ssh_remains_client_mode() {
++    let exe = std::path::Path::new(r"C:\Program Files\jcode\jcode.exe");
++    let context = jcode_app_core::session_launch::SessionSpawnContext::default()
++        .with_runtime_env(vec![("JCODE_SOCKET".into(), r"C:\connected.sock".into())]);
++    let local = swarm_agent_terminal_command(exe, "ses_local", &context);
++    assert_eq!(local.program, exe);
++    assert_eq!(local.args[0], "--fresh-spawn");
++    assert_eq!(local.args[1], "--resume");
++    assert_eq!(local.args[2], "ses_local");
++    assert_eq!(&local.args[3..], ["--socket", r"C:\connected.sock"]);
++    assert_eq!(local.session_id.as_deref(), Some("ses_local"));
++    assert!(local.fresh_spawn);
++    assert_eq!(
++        local.runtime_env,
++        [("JCODE_SOCKET".into(), r"C:\connected.sock".into())]
++    );
++
++    let mut selected = None;
++    let result = super::spawn_swarm_agent_window_with_launchers(
++        exe,
++        "ses_local",
++        std::path::Path::new(r"C:\work"),
++        &context,
++        false,
++        |command, _cwd| {
++            selected = Some(command.clone());
++            Ok(true)
++        },
++        |_, _, _| panic!("local daemon popout must use the shared launcher"),
++    )
++    .unwrap();
++    assert!(result);
++    let selected = selected.unwrap();
++    assert_eq!(selected.program, local.program);
++    assert_eq!(selected.args, local.args);
++    assert_eq!(selected.title, local.title);
++    assert_eq!(selected.fresh_spawn, local.fresh_spawn);
++    assert_eq!(selected.kind, local.kind);
++    assert_eq!(selected.session_id, local.session_id);
++    assert_eq!(selected.extra_env, local.extra_env);
++    assert_eq!(selected.runtime_env, local.runtime_env);
++    assert_eq!(selected.client_terminal_env, local.client_terminal_env);
++
++    let mut ssh_called = false;
++    super::spawn_swarm_agent_window_with_launchers(
++        exe,
++        "ses_remote",
++        std::path::Path::new(r"C:\work"),
++        &context,
++        true,
++        |_, _| panic!("SSH popout must keep its existing client launcher"),
++        |_, session_id, _| {
++            ssh_called = true;
++            assert_eq!(session_id, "ses_remote");
++            Ok(true)
++        },
++    )
++    .unwrap();
++    assert!(ssh_called);
++}
++
++#[test]
++fn swarm_popout_daemon_client_preserves_runtime_and_ssh_stays_context_free() {
++    const CHILD: &str = "JCODE_TEST_SWARM_POPOUT_CHILD";
++    let scenario = std::env::var(CHILD).ok();
++    if scenario.is_none() {
++        let wrapper_home = tempfile::tempdir().expect("disposable wrapper home");
++        let test_name = std::thread::current()
++            .name()
++            .expect("named test thread")
++            .to_owned();
++        for (scenario, ssh_host) in [("daemon", None), ("ssh", Some("remote.example"))] {
++            let home = wrapper_home.path().join(scenario);
++            let jcode_home = home.join(".jcode");
++            let runtime = home.join("runtime");
++            std::fs::create_dir_all(&jcode_home).expect("create disposable JCODE_HOME");
++            std::fs::create_dir_all(&runtime).expect("create disposable runtime");
++            let socket = runtime.join("connected.sock");
++            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
++            command
++                .args(["--exact", &test_name, "--nocapture"])
++                .env_clear()
++                .env(CHILD, scenario)
++                .env("HOME", &home)
++                .env("JCODE_HOME", &jcode_home)
++                .env("JCODE_RUNTIME_DIR", &runtime)
++                .env("JCODE_SOCKET", &socket);
++            if let Some(ssh_host) = ssh_host {
++                command.env("JCODE_SSH_REMOTE", ssh_host);
++            }
++            let output = command
++                .output()
++                .expect("run isolated pop-out regression child");
++            assert!(
++                output.status.success(),
++                "isolated {scenario} pop-out regression failed:\n{}\n{}",
++                String::from_utf8_lossy(&output.stdout),
++                String::from_utf8_lossy(&output.stderr)
++            );
++            assert!(
++                String::from_utf8_lossy(&output.stdout)
++                    .contains(&format!("SWARM_POPOUT_{scenario}_VERIFIED")),
++                "isolated {scenario} assertions did not run:\n{}",
++                String::from_utf8_lossy(&output.stdout)
++            );
++        }
++        return;
++    }
++
++    let scenario = scenario.unwrap();
++    let ssh = scenario == "ssh";
++    assert_eq!(crate::tui::is_ssh_remote(), ssh);
++
++    let coordinator_id = "ses_popout_coordinator";
++    let mut app =
++        crate::tui::app::App::new_for_remote_with_options(Some(coordinator_id.to_string()), true);
++    assert!(
++        app.is_remote,
++        "normal and SSH TUI clients are remote clients"
++    );
++    app.remote_session_id = Some(coordinator_id.to_string());
++    app.swarm_enabled = true;
++    let member = |id: &str, name: &str| crate::protocol::SwarmMemberStatus {
++        session_id: id.to_string(),
++        friendly_name: Some(name.to_string()),
++        status: "running".to_string(),
++        detail: None,
++        task_label: None,
++        role: None,
++        is_headless: Some(true),
++        live_attachments: None,
++        status_age_secs: Some(1),
++        output_tail: None,
++        report_back_to_session_id: Some(coordinator_id.to_string()),
++        todo_progress: None,
++        todo_items: Vec::new(),
++        runtime: crate::protocol::SwarmMemberRuntime::default(),
++    };
++    app.remote_swarm_members = vec![
++        member("ses_popout_agent_a", "Agent A"),
++        member("ses_popout_agent_b", "Agent B"),
++    ];
++    app.swarm_panel_selected = 1;
++
++    let displayed = app.inline_swarm_members();
++    assert_eq!(
++        displayed.len(),
++        2,
++        "fixture members reach the inline display filter"
++    );
++    assert_eq!(app.swarm_panel_selected(), 1);
++    let display_order = crate::tui::info_widget::swarm_gallery::members_display_order(&displayed);
++    let selected_id = display_order[app.swarm_panel_selected].clone();
++    let selected_label = displayed
++        .iter()
++        .find(|member| member.session_id == selected_id)
++        .and_then(|member| member.friendly_name.as_deref())
++        .expect("selected display member label");
++
++    let mut captured = None;
++    app.pop_out_selected_swarm_agent_with_launcher(|exe, session_id, cwd, context| {
++        captured = Some((
++            exe.to_path_buf(),
++            session_id.to_string(),
++            cwd.to_path_buf(),
++            context.clone(),
++        ));
++        Ok(true)
++    });
++    let (exe, session_id, cwd, context) = captured.expect("production launcher request captured");
++    assert_eq!(exe, std::env::current_exe().unwrap());
++    assert_eq!(cwd, std::env::current_dir().unwrap());
++    assert_eq!(
++        session_id, selected_id,
++        "pop-out uses selected display member"
++    );
++    assert_eq!(
++        app.status_notice().as_deref(),
++        Some(format!("Opened {selected_label} in a new window").as_str()),
++        "success notice is constructed by the production pop-out path"
++    );
++
++    if ssh {
++        assert!(context.kind.is_none());
++        assert!(context.extra_env.is_empty());
++        assert!(context.runtime_env.is_empty());
++        assert!(context.client_terminal_env.is_empty());
++        println!("SWARM_POPOUT_ssh_VERIFIED");
++    } else {
++        let runtime = std::env::var("JCODE_RUNTIME_DIR").unwrap();
++        let home = std::env::var("JCODE_HOME").unwrap();
++        let socket = std::env::var("JCODE_SOCKET").unwrap();
++        let runtime_value = |key: &str| {
++            context
++                .runtime_env
++                .iter()
++                .find_map(|(name, value)| (name == key).then_some(value.as_str()))
++                .unwrap_or_else(|| panic!("missing {key} from production launch context"))
++        };
++        assert_eq!(runtime_value("JCODE_HOME"), home);
++        assert_eq!(runtime_value("JCODE_RUNTIME_DIR"), runtime);
++        assert_eq!(runtime_value("JCODE_SOCKET"), socket);
++        println!("SWARM_POPOUT_daemon_VERIFIED");
++    }
++}
+ /// through so the user can keep writing into the chat input while the
+ /// panel is focused.
+ #[test]
+diff --git a/crates/jcode-tui/src/tui/app/tui_state.rs b/crates/jcode-tui/src/tui/app/tui_state.rs
+index b0748c23b..ef713da13 100644
+--- a/crates/jcode-tui/src/tui/app/tui_state.rs
++++ b/crates/jcode-tui/src/tui/app/tui_state.rs
+@@ -2413,6 +2413,20 @@ impl App {
+     /// Open the currently selected swarm agent's session in a new terminal
+     /// window (pop-out), reusing the resume-in-new-terminal launcher.
+     pub(crate) fn pop_out_selected_swarm_agent(&mut self) {
++        self.pop_out_selected_swarm_agent_with_launcher(|exe, session_id, cwd, context| {
++            spawn_swarm_agent_window(exe, session_id, cwd, context, crate::tui::is_ssh_remote())
++        });
++    }
++
++    fn pop_out_selected_swarm_agent_with_launcher(
++        &mut self,
++        mut launcher: impl FnMut(
++            &std::path::Path,
++            &str,
++            &std::path::Path,
++            &jcode_app_core::session_launch::SessionSpawnContext,
++        ) -> anyhow::Result<bool>,
++    ) {
+         let members = self.inline_swarm_members();
+         if members.is_empty() {
+             self.set_status_notice("No swarm agents to open");
+@@ -2432,8 +2446,9 @@ impl App {
+
+         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("jcode"));
+         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+-        match jcode_app_core::session_launch::spawn_resume_in_new_terminal(&exe, &session_id, &cwd)
+-        {
++        let context =
++            swarm_popout_launch_context(crate::tui::is_ssh_remote(), &crate::server::socket_path());
++        match launcher(&exe, &session_id, &cwd, &context) {
+             Ok(true) => self.set_status_notice(format!("Opened {label} in a new window")),
+             Ok(false) => self.set_status_notice(format!(
+                 "Could not open a terminal for {label} (no emulator found)"
+@@ -2443,6 +2458,97 @@ impl App {
+     }
+ }
+
++fn spawn_swarm_agent_window(
++    exe: &std::path::Path,
++    session_id: &str,
++    cwd: &std::path::Path,
++    context: &jcode_app_core::session_launch::SessionSpawnContext,
++    is_ssh_remote: bool,
++) -> anyhow::Result<bool> {
++    spawn_swarm_agent_window_with_launchers(
++        exe,
++        session_id,
++        cwd,
++        context,
++        is_ssh_remote,
++        |command, cwd| jcode_app_core::terminal_launch::spawn_command_in_new_terminal(command, cwd),
++        |exe, session_id, cwd| {
++            let socket = std::env::var("JCODE_SOCKET").ok();
++            super::spawn_in_new_terminal(exe, session_id, cwd, socket.as_deref())
++        },
++    )
++}
++
++fn swarm_agent_terminal_command(
++    exe: &std::path::Path,
++    session_id: &str,
++    context: &jcode_app_core::session_launch::SessionSpawnContext,
++) -> jcode_app_core::terminal_launch::TerminalCommand {
++    let title = jcode_app_core::session_launch::resumed_window_title(session_id);
++    let mut args = vec!["--fresh-spawn".into(), "--resume".into(), session_id.into()];
++    if let Some(socket) = context
++        .runtime_env
++        .iter()
++        .find(|(key, _)| key == "JCODE_SOCKET")
++        .map(|(_, value)| value)
++    {
++        args.extend(["--socket".into(), socket.clone()]);
++    }
++    let mut command = jcode_app_core::terminal_launch::TerminalCommand::new(exe, args)
++        .title(title)
++        .fresh_spawn()
++        .kind("resume")
++        .session_id(session_id);
++    for (key, value) in &context.extra_env {
++        command = command.spawn_env(key.clone(), value.clone());
++    }
++    if !context.runtime_env.is_empty() {
++        command = command.runtime_env(context.runtime_env.clone());
++    }
++    if !context.client_terminal_env.is_empty() {
++        command = command.client_terminal_env(context.client_terminal_env.clone());
++    }
++    command
++}
++
++fn spawn_swarm_agent_window_with_launchers(
++    exe: &std::path::Path,
++    session_id: &str,
++    cwd: &std::path::Path,
++    context: &jcode_app_core::session_launch::SessionSpawnContext,
++    is_ssh_remote: bool,
++    mut local_launcher: impl FnMut(
++        &jcode_app_core::terminal_launch::TerminalCommand,
++        &std::path::Path,
++    ) -> anyhow::Result<bool>,
++    mut ssh_launcher: impl FnMut(&std::path::Path, &str, &std::path::Path) -> anyhow::Result<bool>,
++) -> anyhow::Result<bool> {
++    if is_ssh_remote {
++        ssh_launcher(exe, session_id, cwd)
++    } else {
++        let command = swarm_agent_terminal_command(exe, session_id, context);
++        local_launcher(&command, cwd)
++    }
++}
++
++/// Runtime context for opening a swarm agent's window: local daemon clients
++/// carry their effective runtime so the new terminal connects back to the same
++/// one; SSH clients keep the historical context-free behavior.
++fn swarm_popout_launch_context(
++    is_ssh_remote: bool,
++    socket: &std::path::Path,
++) -> jcode_app_core::session_launch::SessionSpawnContext {
++    if is_ssh_remote {
++        jcode_app_core::session_launch::SessionSpawnContext::default()
++    } else {
++        jcode_app_core::session_launch::SessionSpawnContext::default()
++            .with_local_runtime(socket)
++            .with_client_terminal_env(
++                jcode_app_core::terminal_launch::snapshot_client_terminal_env(),
++            )
++    }
++}
++
+ /// What a key press should do while the swarm panel is focused.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum SwarmPanelAction {
+diff --git a/docs/SPAWN_HOOK.md b/docs/SPAWN_HOOK.md
+index d147f8fba..48e7d2467 100644
+--- a/docs/SPAWN_HOOK.md
++++ b/docs/SPAWN_HOOK.md
+@@ -61,6 +61,30 @@ The hook (and any terminal spawned by the built-in fallback) receives:
+ | `JCODE_SPAWN_COORDINATOR_SESSION_ID` | (swarm spawns) The coordinator session that requested the spawn |
+ | `JCODE_FRESH_SPAWN` | `1` when the spawn is a fresh window handoff |
+
++When a spawn carries explicit local runtime context (`JCODE_HOME`,
++`JCODE_RUNTIME_DIR`, `JCODE_SOCKET`, or the other allowlisted runtime
++variables), the appended argv is a runtime-aware invocation, not just the bare
++jcode program: on Unix it begins with `env`, clears inherited API-socket and
++auto-update overrides when they were not explicitly supplied, applies the
++allowlisted values, then executes jcode and its original arguments. This is
++necessary for remote-control hooks such as kitty, where the hook process's
++environment is not inherited by a child launched by the already-running kitty
++server. Hooks must forward and execute all appended argv entries unchanged.
++For example:
++
++```bash
++kitty @ --to unix:/tmp/kitty.sock launch --type=tab -- "$@"
++```
++
++On Windows the appended argv stays the plain `<jcode-binary> <args...>`
++sequence; the runtime context reaches the hook through its process
++environment (`JCODE_*` variables) instead.
++
++With no explicit runtime context, argv remains the historical
++`<jcode-binary> <args...>` sequence. `JCODE_SPAWN_COMMAND` describes the full
++runtime-aware command as a shell-escaped string for hooks that accept one
++command string.
++
+ ### Client terminal environment (multi-terminal routing)
+
+ The jcode server process is long-lived: it captures terminal-identifying env

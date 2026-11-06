@@ -4697,7 +4697,7 @@ index ef3331803..897abc5d0 100644
  /// `current`.
  ///
 diff --git a/crates/jcode-tui/src/tui/app/tui_state.rs b/crates/jcode-tui/src/tui/app/tui_state.rs
-index b0748c23b..6edd080fe 100644
+index ef713da13..62bf46123 100644
 --- a/crates/jcode-tui/src/tui/app/tui_state.rs
 +++ b/crates/jcode-tui/src/tui/app/tui_state.rs
 @@ -1192,10 +1192,11 @@ impl crate::tui::TuiState for App {

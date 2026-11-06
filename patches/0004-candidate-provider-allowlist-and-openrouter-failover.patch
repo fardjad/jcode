@@ -1,4 +1,4 @@
-From c1be176c47c6d9caef5e0d91b410bbdc1846c764 Mon Sep 17 00:00:00 2001
+From a95eadd50f6a5a85e1e8f8a2c71ec2090f1fb356 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <fardjad.davari2@jumbo.com>
 Date: Sat, 26 Sep 2026 19:15:49 +0200
 Subject: [PATCH] fix: provider allowlist and OpenRouter failover
