@@ -9,6 +9,7 @@ import os
 import sys
 
 DEFAULT_THRESHOLD = 8192
+WORKER_BLUEPRINTS = {"advanced", "expert"}
 
 
 def threshold_from_environment() -> int:
@@ -22,13 +23,37 @@ def threshold_from_environment() -> int:
     return threshold if threshold >= 0 else DEFAULT_THRESHOLD
 
 
+def selected_worker_blueprints() -> set[str]:
+    configured = os.environ.get("JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS", "")
+    return {
+        blueprint.strip()
+        for blueprint in configured.split(",")
+        if blueprint.strip() in WORKER_BLUEPRINTS
+    }
+
+
+def worker_blueprint_id(envelope: dict) -> str | None:
+    swarm = envelope.get("swarm")
+    if isinstance(swarm, dict):
+        blueprint_id = swarm.get("blueprint_id")
+        if isinstance(blueprint_id, str) and blueprint_id:
+            return blueprint_id
+
+    blueprint_id = os.environ.get("JCODE_HOOK_WORKER_BLUEPRINT_ID")
+    return blueprint_id or None
+
+
 def main() -> None:
     if sys.version_info < (3, 14):
         print("delegation-guard requires Python 3.14 or newer", file=sys.stderr)
         raise SystemExit(1)
     if os.environ.get("JCODE_HOOK_SWARM_ENABLED") != "1":
         return
-    if os.environ.get("JCODE_HOOK_PROCESS_ROLE") != "coordinator":
+    process_role = os.environ.get("JCODE_HOOK_PROCESS_ROLE")
+    selected_blueprints = selected_worker_blueprints()
+    if process_role != "coordinator" and not (
+        process_role == "worker" and selected_blueprints
+    ):
         return
 
     try:
@@ -36,17 +61,30 @@ def main() -> None:
     except (json.JSONDecodeError, OSError):
         return
 
+    if process_role == "worker":
+        if worker_blueprint_id(envelope) not in selected_blueprints:
+            return
+
     output_bytes = envelope.get("output_bytes")
     if isinstance(output_bytes, bool) or not isinstance(output_bytes, int):
         return
     if output_bytes <= threshold_from_environment():
         return
 
-    nudge = (
-        f"Tool result was {output_bytes} bytes, which exceeds the delegation "
-        "guard threshold. Delegate inspection according to the delegation "
-        "guidance."
-    )
+    if process_role == "worker":
+        nudge = (
+            f"Tool result was {output_bytes} bytes, which exceeds the delegation "
+            "guard threshold. Use swarm_routine for a bounded, read-only "
+            "extraction from the saved result file. If the saved result file "
+            "path is missing, report that blocker to the parent instead of "
+            "retrying blindly."
+        )
+    else:
+        nudge = (
+            f"Tool result was {output_bytes} bytes, which exceeds the delegation "
+            "guard threshold. Delegate inspection according to the delegation "
+            "guidance."
+        )
     result_file = envelope.get("tool_result_file")
     if isinstance(result_file, str) and result_file:
         nudge += f" Full output is available at: {result_file}"

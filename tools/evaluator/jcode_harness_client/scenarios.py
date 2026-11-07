@@ -9,12 +9,17 @@ import os
 import re
 import shutil
 import stat
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .settings import validate_scenario_overrides
+
 _ID = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 _METRIC_ID = re.compile(r"[a-z][a-z0-9_-]{0,79}")
+CONFIG_NAME = "config.toml"
+FIXTURES_DIR_NAME = "fixtures"
 _FIELDS = {
     "id",
     "fixture",
@@ -23,6 +28,7 @@ _FIELDS = {
     "metrics",
     "judge",
     "simulated_user",
+    "settings",
 }
 
 
@@ -48,6 +54,7 @@ class Scenario:
     metrics: tuple[str, ...]
     judge: JudgeScenario
     simulated_user: SimulatedUserScenario
+    settings: dict[str, object]
     source: Path
     source_sha256: str
 
@@ -66,6 +73,10 @@ class Scenario:
                 "max_turns": self.simulated_user.max_turns,
                 "instructions": self.simulated_user.instructions,
             },
+            # Public, credential-free overrides only; the effective merged
+            # settings and private defaults provenance live in the harness
+            # settings manifests, never in agent prompts or context.
+            "settings": self.settings,
         }
 
 
@@ -76,49 +87,67 @@ class FileState:
     binary: bool
 
 
-def _yaml_load(raw: bytes) -> Any:
-    import yaml  # type: ignore[import-untyped]
+def _load_file(path: Path, expected_id: str | None = None) -> Scenario:
+    """Load one closed-schema scenario TOML config file."""
 
-    class UniqueLoader(yaml.SafeLoader):  # type: ignore[misc]
-        def construct_mapping(self, node: Any, deep: bool = False) -> Any:
-            result: dict[str, Any] = {}
-            for key_node, value_node in node.value:
-                key = self.construct_object(key_node, deep=deep)
-                if not isinstance(key, str) or key in result:
-                    raise ValueError("scenario keys must be unique strings")
-                result[key] = self.construct_object(value_node, deep=deep)
-            return result
-
-    if any(
-        isinstance(token, (yaml.tokens.AliasToken, yaml.tokens.AnchorToken))
-        for token in yaml.scan(raw)
-    ):
-        raise ValueError("YAML anchors and aliases are unsupported")
-    return yaml.load(raw, Loader=UniqueLoader)
-
-
-def _load_file(path: Path) -> Scenario:
     if path.is_symlink() or not path.is_file():
-        raise ValueError(f"scenario must be a regular non-symlink file: {path}")
+        raise ValueError(f"scenario config must be a regular non-symlink file: {path}")
     raw = path.read_bytes()
     if len(raw) > 256 * 1024:
-        raise ValueError("scenario file exceeds 256 KiB")
-    data = _yaml_load(raw)
-    if not isinstance(data, dict) or set(data) != _FIELDS:
+        raise ValueError("scenario config exceeds 256 KiB")
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError, tomllib.TOMLDecodeError:
+        raise ValueError(f"scenario config must be valid UTF-8 TOML: {path}") from None
+    if (
+        not isinstance(data, dict)
+        or set(data) - _FIELDS
+        or not {
+            "prompt",
+            "accept",
+            "metrics",
+            "judge",
+            "simulated_user",
+        }
+        <= set(data)
+    ):
         raise ValueError(
-            "scenario requires exactly id, fixture, prompt, accept, metrics, judge, "
-            "and simulated_user; version is not supported"
+            "scenario config requires exactly id, fixture, prompt, accept, "
+            "metrics, judge, simulated_user, and optional settings; version "
+            "is not supported"
         )
     scenario_id = data.get("id")
-    if not isinstance(scenario_id, str) or not _ID.fullmatch(scenario_id):
-        raise ValueError("scenario ID must be a lowercase slug")
+    if scenario_id is None:
+        if expected_id is None:
+            raise ValueError(
+                "scenario id is required when a config file is loaded directly"
+            )
+        scenario_id = expected_id
+    else:
+        if not isinstance(scenario_id, str) or not _ID.fullmatch(scenario_id):
+            raise ValueError("scenario ID must be a lowercase slug")
+        if expected_id is not None and scenario_id != expected_id:
+            raise ValueError(
+                "scenario id must match its scenario directory name: "
+                f"{scenario_id!r} != {expected_id!r}"
+            )
+    settings_value = data.get("settings")
+    overrides = (
+        validate_scenario_overrides(settings_value, f"scenario {scenario_id} settings")
+        if settings_value is not None
+        else {}
+    )
     prompt = data.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("scenario prompt must be nonempty text")
     fixture_value = data.get("fixture")
-    if not isinstance(fixture_value, str) or not fixture_value:
-        raise ValueError("scenario fixture must be a relative directory path")
-    fixture_relative = Path(fixture_value)
+    if fixture_value is None:
+        # Default: the fixtures directory adjacent to the scenario config.
+        fixture_relative = Path(FIXTURES_DIR_NAME)
+    else:
+        if not isinstance(fixture_value, str) or not fixture_value:
+            raise ValueError("scenario fixture must be a relative directory path")
+        fixture_relative = Path(fixture_value)
     if fixture_relative.is_absolute():
         raise ValueError("scenario fixture must be a relative directory path")
     fixture = (path.parent / fixture_relative).resolve()
@@ -176,20 +205,48 @@ def _load_file(path: Path) -> Scenario:
         metrics=tuple(metrics),
         judge=JudgeScenario(tuple(item.strip() for item in criteria)),
         simulated_user=SimulatedUserScenario(max_turns, instructions.strip()),
+        settings=overrides,
         source=path.resolve(),
         source_sha256=hashlib.sha256(raw).hexdigest(),
     )
 
 
 def load_scenarios(path: Path, scenario_id: str | None = None) -> list[Scenario]:
-    """Load one scenario file or every top-level YAML scenario in a directory."""
+    """Load one config file or every scenario directory below a directory.
+
+    A scenarios directory holds sorted immediate child directories, each
+    named like its scenario ID and each holding exactly one ``config.toml``.
+    YAML files are not a fallback anywhere. A direct file path loads that
+    single scenario, which must then carry an explicit ``id``.
+    """
 
     if path.is_symlink():
         raise ValueError("scenario path must not be a symlink")
-    paths = sorted(path.glob("*.yaml")) if path.is_dir() else [path]
-    if path.is_dir() and not paths:
-        raise ValueError("scenario directory must contain at least one YAML file")
-    scenarios = [_load_file(child) for child in paths]
+    if path.is_file():
+        scenarios = [_load_file(path)]
+    elif path.is_dir():
+        children = sorted(path.iterdir())
+        if not children:
+            raise ValueError(
+                "scenario directory must contain at least one scenario directory"
+            )
+        scenarios = []
+        for child in children:
+            if child.is_symlink() or not child.is_dir():
+                raise ValueError(
+                    "scenario directory entries must be scenario directories "
+                    f"holding {CONFIG_NAME}; YAML files are not a fallback: "
+                    f"{child.name}"
+                )
+            config = child / CONFIG_NAME
+            if config.is_symlink() or not config.is_file():
+                raise ValueError(
+                    f"scenario directory must hold a regular {CONFIG_NAME}: "
+                    f"{child.name}"
+                )
+            scenarios.append(_load_file(config, expected_id=child.name))
+    else:
+        raise ValueError(f"scenario path must be an existing file or directory: {path}")
     if len({scenario.id for scenario in scenarios}) != len(scenarios):
         raise ValueError("duplicate scenario IDs across files")
     if scenario_id is not None:

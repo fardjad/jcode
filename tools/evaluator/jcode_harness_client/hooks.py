@@ -93,6 +93,13 @@ def _context(payload: bytes, secrets: list[bytes]) -> dict[str, Any]:
         "JCODE_HOOK_WORKER_ID": "worker_id",
         "JCODE_HOOK_WORKER_BLUEPRINT_ID": "worker_blueprint",
         "JCODE_HOOK_WORKER_BLUEPRINT_NAME": "worker_blueprint_name",
+        "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS": (
+            "delegation_guard_worker_blueprints"
+        ),
+        "JCODE_DELEGATION_GUARD_THRESHOLD": "delegation_guard_threshold",
+        "JCODE_ESCALATION_CONTROLLER_STATE_DIR": ("escalation_controller_state_dir"),
+        "JCODE_ESCALATION_CONTROLLER_WORKSPACE": ("escalation_controller_workspace"),
+        "JCODE_ESCALATION_CONTROLLER_GUARD": "escalation_controller_guard",
     }
     for environment_key, context_key in environment_keys.items():
         if environment_key in os.environ:

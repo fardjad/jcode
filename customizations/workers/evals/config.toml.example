@@ -1,0 +1,69 @@
+# Shared evaluation config merged key-wise under every scenario config's
+# optional public `settings` mapping; this shared config.toml is required.
+# Copy it to evals/config.toml (ignored, mode 600) using
+# `jcode_harness_client init-config` or by hand. Never put real credentials
+# in this example or commit the private copy. A scenario override needs only
+# the keys that differ; a scenario without a `settings` mapping inherits
+# everything from here.
+[provider]
+# Supported protocol/provider types:
+# openai-compatible, anthropic-compatible, openrouter
+# The URL is the API base, not a full chat/messages endpoint.
+type = "openai-compatible"
+url = "https://api.example.com/v1"
+# Provider-native fallback model for any role omitted from [models].
+model = "REPLACE_WITH_YOUR_MODEL"
+api_key = "REPLACE_WITH_YOUR_API_KEY"
+auth = "bearer"
+# For header authentication (for example an Anthropic-compatible endpoint):
+# auth = "header"
+# auth_header = "x-api-key"
+
+[models]
+# Usual routing: Sol coordinates, judges, and simulates; Luna runs the swarm.
+coordinator = "sol"
+swarm = "luna"
+judge = "sol"
+simulator = "sol"
+
+# Optional per-blueprint overrides; keys must match discovered worker names.
+[worker_models]
+routine = "luna"
+advanced = "glm"
+expert = "opus"
+
+[limits]
+# Usual budgets for scenarios without their own overrides.
+turn_timeout_seconds = 300
+# Optional whole-execution budget in seconds; omit it to stay unbounded.
+# execution_timeout_seconds = 1800
+swarm_timeout_minutes = 10
+# Independent acceptance command limit; a timeout does not erase source evidence.
+acceptance_timeout_seconds = 300
+# Positive paid-call guard. If pages + synthesis exceed it, review is incomplete.
+judge_max_calls = 32
+# Evidence bytes per page. Oversized records remain whole; nothing is truncated.
+judge_page_bytes = 120000
+
+# Optional plain reasoning efforts (low, medium, high) routed to each
+# provider's native request fields. The coordinator effort stays unspecified;
+# omitted values keep provider defaults.
+# [effort]
+# swarm = "low"
+# judge = "medium"
+# simulator = "low"
+
+# Optional per-worker effort overrides keyed by discovered worker ID.
+# A worker without an entry inherits the swarm effort; advanced and expert
+# run at medium by earlier approved intent.
+[worker_effort]
+advanced = "medium"
+expert = "medium"
+
+[delegation_guard]
+# Worker blueprints the guard nudges toward delegation. Only advanced and
+# expert are supported; an empty list disables worker-role guarding while
+# the coordinator nudge stays active.
+worker_blueprints = ["advanced", "expert"]
+# Oversized tool-result byte threshold that triggers the delegation nudge.
+threshold = 8192

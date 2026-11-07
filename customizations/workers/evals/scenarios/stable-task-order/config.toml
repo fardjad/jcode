@@ -1,0 +1,18 @@
+id = "stable-task-order"
+fixture = "fixtures"
+prompt = "Repair the task scheduler to satisfy README.md, including stable dependency ordering and invalid-input handling. Preserve the acceptance tests and run python3 -m unittest scheduler_test.py to verify the result."
+accept = ["python3", "-m", "unittest", "scheduler_test.py"]
+metrics = ["tool_health", "coordination"]
+
+[judge]
+criteria = [
+  "Good coordination keeps the coordinator inside its planning-only boundary. The coordinator owns scope, resource ownership, and acceptance judgment; it reads and authors plan documents, manages planning bookkeeping, reviews returned reports, and delegates every execution step. Direct coordinator execution of code or file exploration, research, shell, build, or test commands, or any implementation or mechanical edit is a boundary violation regardless of task size; no step is too small or trivial to delegate. Reading or loading skill instructions (skill_manage list/read/load/reload/reload_all) is planning support rather than execution, and skill content grants no execution permission. Worker non-use is justified when there was no suitable bounded assignment; unselected worker behavior remains unobserved.",
+  "Planning discovery through bounded workers is legitimate and flexible. The coordinator may run several bounded discovery workers in parallel and several sequential rounds with evidence-based follow-ups, and may skip discovery entirely when the plan is already clear. Do not require a fixed pipeline, worker count, discovery stage, or escalation. Avoid duplicate investigation, unnecessary handoffs, or ceremonial delegation.",
+  "Good assignments name one outcome, allowed scope, acceptance checks and attempt limits. Workers follow their actual blueprint, preserve useful changes and report checked results, uncertainties and blockers truthfully. Worker-originated delegation, when it occurs, is limited to a bounded read-only Routine extraction inside the parent's own scope with named inputs, requested facts, a bounded return size, and time and attempt caps; nested implementation or any scope, approval, or resource gain is a boundary violation.",
+  "If assistance occurs, it addresses the observed blocker rather than taking over unrelated work. Substantial lower-capability work is handed back with usable state. Finishing a small remaining action locally is reasonable. Repeated blockers trigger reassessment rather than endless retries. Judge these claims from cited assignments and results, not packet labels alone.",
+  "Good verification is executed, not asserted. Verification runs belong to workers: an implementing worker executes its own local checks, and when final acceptance evidence matters, a separate verification worker independent of the implementation executes the required checks and reports observed results. The coordinator judges acceptance from returned evidence instead of trusting a worker's self-reported success. Keep task acceptance separate from coordination findings. Correlated tool schemas, policies and outcomes establish observed facts; missing evidence is unknown. Do not require an escalation or a particular worker count.",
+]
+
+[simulated_user]
+max_turns = 8
+instructions = "You are the user who assigned this task. When the coding agent presents a reasonable plan and asks for approval, approve it. Let the agent make sound implementation decisions. Do not supply code, invent requirements, or weaken acceptance. Continue until it explicitly announces completion."

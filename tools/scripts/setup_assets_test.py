@@ -29,7 +29,7 @@ import setup_assets  # noqa: E402
 
 SCRIPT = SCRIPT_DIR / "setup_assets.py"
 
-BLUEPRINTS = ("coordinator.md", "fixer.md", "investigator.md", "research.md")
+BLUEPRINTS = ("coordinator.md", "routine.md", "advanced.md", "expert.md")
 
 # Exact copy of the real catalog customizations/plugins/.gitignore (asserted by
 # IgnoreRuleTests.test_fixture_uses_exact_real_gitignore_form).
@@ -329,7 +329,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         self.assertEqual(0, self.run_setup(["--copy"]))
         edited = self.home / "plugins" / "rtk" / "rtk-transform"
         edited.write_text("local edit\n")
-        before = (self.home / "worker-blueprints" / "fixer.md").read_text()
+        before = (self.home / "worker-blueprints" / "routine.md").read_text()
         self.reset_capture()
         code = self.run_setup(["--copy"])
         self.assertNotEqual(0, code)
@@ -337,7 +337,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         self.assertIn("Back up or move", self.err.getvalue())
         self.assertEqual("local edit\n", edited.read_text())
         # Preflight covers both assets, so nothing was mutated at all.
-        self.assertEqual(before, (self.home / "worker-blueprints" / "fixer.md").read_text())
+        self.assertEqual(before, (self.home / "worker-blueprints" / "routine.md").read_text())
 
     def test_copy_refuses_extra_file_inside_managed_directory(self):
         self.assertEqual(0, self.run_setup(["--copy"]))
@@ -362,7 +362,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         pyc.write_text("bytecode\n")
         (self.home / "plugins" / "rtk" / ".DS_Store").write_text("mac meta\n")
         before = self.copy_mode_metadata()
-        blueprints_before = (self.home / "worker-blueprints" / "fixer.md").read_text()
+        blueprints_before = (self.home / "worker-blueprints" / "routine.md").read_text()
         (self.repo / "customizations" / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
         self.reset_capture()
         code = self.run_setup(["--copy"])
@@ -382,7 +382,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         )
         self.assertEqual(
             blueprints_before,
-            (self.home / "worker-blueprints" / "fixer.md").read_text(),
+            (self.home / "worker-blueprints" / "routine.md").read_text(),
         )
         self.assertEqual(before, self.copy_mode_metadata())
 
@@ -438,7 +438,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         self.assertEqual(0, self.run_setup(["--copy"]))
         before = self.copy_mode_metadata()
         (self.repo / "customizations" / "plugins" / "rtk" / "rtk-transform").write_text("rtk v2\n")
-        (self.repo / "customizations" / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
+        (self.repo / "customizations" / "workers" / "blueprints" / "routine.md").write_text("routine v2\n")
         real_write = setup_assets.write_metadata
         calls = []
 
@@ -462,8 +462,8 @@ class CopyInstallTests(SetupAssetsTestCase):
         )
         # Second asset rolled back to its prior copy and metadata entry.
         self.assertEqual(
-            "fixer.md blueprint\n",
-            (self.home / "worker-blueprints" / "fixer.md").read_text(),
+            "routine.md blueprint\n",
+            (self.home / "worker-blueprints" / "routine.md").read_text(),
         )
         metadata = self.copy_mode_metadata()
         self.assertEqual(
@@ -495,7 +495,7 @@ class CopyInstallTests(SetupAssetsTestCase):
         external.write_text("external payload\n")
         link = self.repo / "customizations" / "plugins" / "rtk" / "linked-config"
         link.symlink_to(external)
-        (self.repo / "customizations" / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
+        (self.repo / "customizations" / "workers" / "blueprints" / "routine.md").write_text("routine v2\n")
         self.reset_capture()
         code = self.run_setup(["--copy"])
         self.assertNotEqual(0, code)
@@ -509,8 +509,8 @@ class CopyInstallTests(SetupAssetsTestCase):
             (self.home / "plugins" / "rtk" / "rtk-transform").read_text(),
         )
         self.assertEqual(
-            "fixer.md blueprint\n",
-            (self.home / "worker-blueprints" / "fixer.md").read_text(),
+            "routine.md blueprint\n",
+            (self.home / "worker-blueprints" / "routine.md").read_text(),
         )
         self.assertEqual(before, self.copy_mode_metadata())
         self.assertFalse(any(
@@ -547,11 +547,11 @@ class CopyInstallTests(SetupAssetsTestCase):
     def test_staged_copy_failure_preserves_old_assets(self):
         self.assertEqual(0, self.run_setup(["--copy"]))
         before = self.copy_mode_metadata()
-        (self.repo / "customizations" / "workers" / "blueprints" / "fixer.md").write_text("fixer v2\n")
+        (self.repo / "customizations" / "workers" / "blueprints" / "routine.md").write_text("routine v2\n")
         real_copy2 = shutil.copy2
 
         def flaky_copy2(src, dst, **kwargs):
-            if Path(dst).name == "fixer.md":
+            if Path(dst).name == "routine.md":
                 raise OSError("simulated disk full")
             return real_copy2(src, dst, **kwargs)
 
@@ -562,8 +562,8 @@ class CopyInstallTests(SetupAssetsTestCase):
         self.assertIn("simulated disk full", self.err.getvalue())
         # The prior installation is untouched and the metadata still matches.
         self.assertEqual(
-            "fixer.md blueprint\n",
-            (self.home / "worker-blueprints" / "fixer.md").read_text(),
+            "routine.md blueprint\n",
+            (self.home / "worker-blueprints" / "routine.md").read_text(),
         )
         self.assertEqual(before, self.copy_mode_metadata())
         for name in ("plugins", "worker-blueprints", "skills"):
@@ -786,7 +786,7 @@ class ConfigTemplateTests(SetupAssetsTestCase):
     def test_managed_copy_drift_refuses_update_without_loss(self):
         self.assertEqual(0, self.run_setup(["--copy"]))
         before_metadata = self.copy_mode_metadata()
-        before_blueprints = (self.home / "worker-blueprints" / "fixer.md").read_text()
+        before_blueprints = (self.home / "worker-blueprints" / "routine.md").read_text()
         config = self.home / "config.toml"
         config.write_text("# local drift\n")
         self.template().write_text("# template v2\n")
@@ -797,7 +797,7 @@ class ConfigTemplateTests(SetupAssetsTestCase):
         self.assertEqual("# local drift\n", config.read_text())
         self.assertEqual(
             before_blueprints,
-            (self.home / "worker-blueprints" / "fixer.md").read_text(),
+            (self.home / "worker-blueprints" / "routine.md").read_text(),
         )
         self.assertEqual(before_metadata, self.copy_mode_metadata())
         self.assertFalse(any(

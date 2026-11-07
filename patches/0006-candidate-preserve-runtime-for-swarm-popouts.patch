@@ -1,4 +1,4 @@
-From 911b6774fe2d7c1e58f84269dd0d7ba5bc7a6cd5 Mon Sep 17 00:00:00 2001
+From 65738d62d85818b94322bb97386e493bd2c23ec8 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <public@fardjad.com>
 Date: Fri, 6 Nov 2026 00:08:16 +0100
 Subject: [PATCH] fix: preserve runtime context for swarm pop-outs

@@ -570,7 +570,15 @@ def collect_evidence(
                 gaps.append(f"unreadable native journal for {session_id}: {error}")
         worker = _worker_name(replay.policy, session_id, coordinator_session_id)
         listing = listing_by_id.get(session_id, {})
-        parent_session_id = listing.get("parent_session_id")
+        # Safe fallback only: when the listing carries no usable report-back
+        # parent, the actual transcript parent is the native ancestry fact.
+        # Both raw fields stay retained; nothing is fabricated when both miss.
+        listed_parent = listing.get("parent_session_id")
+        parent_session_id: str | None
+        if isinstance(listed_parent, str) and listed_parent:
+            parent_session_id = listed_parent
+        else:
+            parent_session_id = replay.parent_id
         edit_stats = listing.get("edit_stats")
         edit_sidecar = session_root / "edit-stats" / f"{session_id}.json"
         if (

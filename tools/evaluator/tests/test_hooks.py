@@ -177,6 +177,45 @@ def test_concurrent_invocations_have_unique_ordered_traces(tmp_path: Path) -> No
     assert len({path.parent.name for path in traces}) == 12
 
 
+def test_delegation_guard_environment_is_captured_alongside_identity(
+    tmp_path: Path,
+) -> None:
+    wrapper, trace = install_wrapper(
+        tmp_path,
+        "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
+    )
+    envelope = json.dumps(
+        {"session_id": "session-guard", "event": "post_tool_transform"}
+    ).encode()
+    result = invoke(
+        wrapper,
+        envelope,
+        extra_env={
+            "JCODE_HOOK_SESSION_ID": "session-guard",
+            "JCODE_HOOK_PROCESS_ROLE": "worker",
+            "JCODE_HOOK_WORKER_BLUEPRINT_ID": "advanced",
+            "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS": "advanced,expert",
+            "JCODE_DELEGATION_GUARD_THRESHOLD": "8192",
+            "JCODE_ESCALATION_CONTROLLER_STATE_DIR": "/isolated/state",
+            "JCODE_ESCALATION_CONTROLLER_WORKSPACE": "/workspaces/scenario",
+            "JCODE_ESCALATION_CONTROLLER_GUARD": "/plugins/guard",
+        },
+    )
+    assert result.returncode == 0
+    assert result.stdout == envelope
+    invocation = next(path for path in trace.iterdir() if path.is_dir())
+    metadata = json.loads((invocation / "trace.json").read_text(encoding="utf-8"))
+    context = metadata["context"]
+    assert context["session_id"] == "session-guard"
+    assert context["process_role"] == "worker"
+    assert context["worker_blueprint"] == "advanced"
+    assert context["delegation_guard_worker_blueprints"] == "advanced,expert"
+    assert context["delegation_guard_threshold"] == "8192"
+    assert context["escalation_controller_state_dir"] == "/isolated/state"
+    assert context["escalation_controller_workspace"] == "/workspaces/scenario"
+    assert context["escalation_controller_guard"] == "/plugins/guard"
+
+
 def test_spawn_failure_is_retained(tmp_path: Path) -> None:
     wrapper = make_hook_wrapper(
         command=[str(tmp_path / "missing-executable")],

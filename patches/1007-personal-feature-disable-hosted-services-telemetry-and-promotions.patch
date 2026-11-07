@@ -27,12 +27,9 @@ The personal build runs without hosted accounts, tiers, billing, telemetry,
 ads, sponsors, or nudges. Gating at chokepoints instead of deleting code keeps
 the patch small and the rebase cost low.
 
-The swarm completion-report instruction test in server/swarm.rs pins the
-shared text jcode-swarm-core appends to worker prompts. Its expected string
-now matches that shared wording verbatim (otherwise include a concise
-summary, validation/tests performed, and blockers or follow-ups) instead of
-a mis-cased paraphrase, and the idempotence assertions are unchanged. The
-appended instruction text itself does not change.
+The swarm completion-report instruction test in server/swarm.rs is owned
+by the worker blueprints patch (1003), which changes that wording, not by
+this patch.
 
 Upstream integration points:
 crates/jcode-telemetry-core/src/lib.rs is_enabled (false outside tests),
@@ -71,7 +68,6 @@ cargo test -p jcode --lib gate_
 cargo test -p jcode-base --lib policy_
 cargo test -p jcode-app-core --lib tool_descriptions_stay_under_token_cap
 cargo test -p jcode-telemetry-core policy_sync_ --lib
-cargo test -p jcode-app-core append_swarm_completion_report_instructions_is_idempotent --lib
 ---
  crates/jcode-app-core/src/agent.rs            |   5 +-
  crates/jcode-app-core/src/channel.rs          |  56 +++-
@@ -79,7 +75,6 @@ cargo test -p jcode-app-core append_swarm_completion_report_instructions_is_idem
  .../jcode-app-core/src/server/jade_relay.rs   |  89 +++---
  .../src/server/provider_control_tests.rs      |  12 +
  .../src/server/runtime_special_commands.rs    |   3 +-
- crates/jcode-app-core/src/server/swarm.rs     |   7 +-
  .../jcode-app-core/src/tool/compile_remote.rs |   2 +
  crates/jcode-app-core/src/tool/discover.rs    | 104 ++----
  .../src/tool/discover_secrets.rs              |   2 +
@@ -146,13 +141,13 @@ cargo test -p jcode-app-core append_swarm_completion_report_instructions_is_idem
  src/cli/login.rs                              |   2 +
  src/cli/provider_init.rs                      |   8 +-
  src/cli/provider_init_tests.rs                |  21 +-
- 73 files changed, 1784 insertions(+), 790 deletions(-)
+ 72 files changed, 1778 insertions(+), 789 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index f4769491b..4c8d2f64e 100644
+index 2340d861d..eed14662f 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -1608,7 +1608,10 @@ impl Agent {
+@@ -1618,7 +1618,10 @@ impl Agent {
      }
 
      fn upload_transcript_telemetry(&mut self, end_reason: crate::telemetry::SessionEndReason) {
@@ -477,24 +472,6 @@ index 34ed18134..8c1b05ac9 100644
          RemoteCommand::Status => {
              let status = RemoteStatus::load();
              let devices: Vec<_> = status.devices.iter().map(|device| json!({"id": device.id, "name": device.name, "paired_at": device.paired_at, "last_seen": device.last_seen})).collect();
-diff --git a/crates/jcode-app-core/src/server/swarm.rs b/crates/jcode-app-core/src/server/swarm.rs
-index f61b6dcb5..cc8ffa731 100644
---- a/crates/jcode-app-core/src/server/swarm.rs
-+++ b/crates/jcode-app-core/src/server/swarm.rs
-@@ -2052,7 +2052,12 @@ mod tests {
-
-         assert!(with_instructions.starts_with(prompt));
-         assert!(with_instructions.contains("SWARM COMPLETION REPORT REQUIRED"));
--        assert!(with_instructions.contains("swarm tool with action=\"report\""));
-+        assert!(with_instructions.contains(
-+            "final assistant response that serves as your completion report"
-+        ));
-+        assert!(with_instructions.contains(
-+            "otherwise include a concise summary, validation/tests performed, and blockers or follow-ups."
-+        ));
-         assert_eq!(
-             append_swarm_completion_report_instructions(&with_instructions),
-             with_instructions
 diff --git a/crates/jcode-app-core/src/tool/compile_remote.rs b/crates/jcode-app-core/src/tool/compile_remote.rs
 index 8672df3da..7ad6263f4 100644
 --- a/crates/jcode-app-core/src/tool/compile_remote.rs
@@ -1938,10 +1915,10 @@ index 5a6d9198c..274671485 100644
 
  #[test]
 diff --git a/crates/jcode-config-types/src/lib.rs b/crates/jcode-config-types/src/lib.rs
-index 49fb3bac1..ae3c73cfc 100644
+index 09d5e8d91..e3b4889fa 100644
 --- a/crates/jcode-config-types/src/lib.rs
 +++ b/crates/jcode-config-types/src/lib.rs
-@@ -1078,32 +1078,65 @@ pub struct AutoReviewConfig {
+@@ -1083,32 +1083,65 @@ pub struct AutoReviewConfig {
 
  /// Integration discovery configuration (legacy `[sponsors]` section name).
  ///

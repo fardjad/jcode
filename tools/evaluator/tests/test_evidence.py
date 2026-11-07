@@ -188,6 +188,92 @@ def test_native_journal_vectors_and_stale_prefix_replay(tmp_path: Path) -> None:
     assert final["data"]["request_snapshot"] == {"prompt": 0, "tools": 0}
 
 
+def test_three_level_ancestry_indexed_with_transcript_parent_fallback(
+    tmp_path: Path,
+) -> None:
+    sessions = tmp_path / "raw" / "sessions"
+    write_session(sessions, "session_root", [message("r-1", "user", "objective")])
+    advanced = write_session(
+        sessions,
+        "session_advanced",
+        [],
+        worker_blueprint_policy={"name": "advanced-worker"},
+    )
+    # The advanced session has no snapshot parent and no snapshot messages:
+    # only the journal carries the actual transcript parent and its one turn.
+    advanced.with_name("session_advanced.journal.jsonl").write_text(
+        json.dumps(
+            {
+                "meta": {"parent_id": "session_root"},
+                "append_messages": [
+                    message("a-1", "assistant", "spawn a routine child")
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    write_session(
+        sessions,
+        "session_routine",
+        [message("c-1", "assistant", "bounded extraction report")],
+        parent_id="session_advanced",
+        worker_blueprint_policy={"name": "routine-worker"},
+    )
+    bundle = collect_evidence(
+        raw_dir=tmp_path / "raw",
+        coordinator_session_id="session_root",
+        outer_events=[],
+        session_listing=[
+            {"session_id": "session_root"},
+            {"session_id": "session_advanced"},
+            {
+                "session_id": "session_routine",
+                "parent_session_id": "session_advanced",
+            },
+        ],
+    )
+    assert bundle.complete, bundle.gaps
+    assert len(bundle.sessions) == 3
+    assert len([r for r in bundle.records if r["kind"] == "session-snapshot"]) == 3
+    by_id = {session["session_id"]: session for session in bundle.sessions}
+    assert by_id["session_root"]["parent_session_id"] is None
+    assert by_id["session_advanced"]["parent_session_id"] == "session_root"
+    assert by_id["session_advanced"]["parent_id"] == "session_root"
+    assert by_id["session_routine"]["parent_session_id"] == "session_advanced"
+    assert by_id["session_routine"]["parent_id"] == "session_advanced"
+    assert {session["worker"] for session in bundle.sessions} == {
+        "coordinator",
+        "advanced-worker",
+        "routine-worker",
+    }
+    advanced_message = next(
+        record
+        for record in bundle.records
+        if record["id"] == "session:session_advanced:message:a-1"
+    )
+    assert advanced_message["parent_session_id"] == "session_root"
+    assert advanced_message["parent_id"] == "session_root"
+    routine_message = next(
+        record
+        for record in bundle.records
+        if record["id"] == "session:session_routine:message:c-1"
+    )
+    assert routine_message["parent_session_id"] == "session_advanced"
+    assert routine_message["parent_id"] == "session_advanced"
+    assert (
+        len(
+            [
+                record
+                for record in bundle.records
+                if record["kind"] == "message"
+                and record["session_id"] == "session_advanced"
+            ]
+        )
+        == 1
+    )
+
+
 def test_missing_and_unreadable_sessions_are_explicit_gaps(tmp_path: Path) -> None:
     sessions = tmp_path / "raw" / "sessions"
     write_session(sessions, "session_parent", [])
@@ -292,3 +378,28 @@ def test_retention_redacts_every_copy_and_rejects_symlinks(tmp_path: Path) -> No
             assert b"secret-token" not in path.read_bytes()
             if os.name == "posix":
                 assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_retain_tree_maps_controller_evidence_next_to_hook_traces(
+    tmp_path: Path,
+) -> None:
+    """The escalation_resumption analyzer depends on this retention layout."""
+
+    source = tmp_path / "instrumentation" / "escalation-resumption"
+    (source / "hook-traces").mkdir(parents=True)
+    (source / "artifacts").mkdir(parents=True)
+    (source / "events.jsonl").write_text('{"seq": 1}\n', encoding="utf-8")
+    (source / "guard-events.jsonl").write_text('{"seq": 1}\n', encoding="utf-8")
+    (source / "state.json").write_text("{}", encoding="utf-8")
+    (source / "hook-traces" / "trace.json").write_text("{}", encoding="utf-8")
+    (source / "artifacts" / "stage2-task.json").write_text("{}", encoding="utf-8")
+    raw = tmp_path / "raw"
+    redactor = Redactor(("secret",))
+    gaps, copied = retain_tree(source, raw, redactor, skip_private=False)
+    assert gaps == []
+    assert len(copied) == 5
+    assert (raw / "other" / "events.jsonl").is_file()
+    assert (raw / "other" / "guard-events.jsonl").is_file()
+    assert (raw / "other" / "state.json").is_file()
+    assert (raw / "hook-traces" / "trace.json").is_file()
+    assert (raw / "other" / "artifacts" / "stage2-task.json").is_file()

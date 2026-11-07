@@ -117,7 +117,7 @@ ASSETS = (
     Asset(
         name="worker-blueprints",
         source_rel=Path("workers") / "blueprints",
-        required=("coordinator.md", "fixer.md", "investigator.md", "research.md"),
+        required=("coordinator.md", "routine.md", "advanced.md", "expert.md"),
     ),
     Asset(
         name="skills",

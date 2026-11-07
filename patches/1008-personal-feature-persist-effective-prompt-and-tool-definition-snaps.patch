@@ -109,10 +109,10 @@ index bbc0a3a46..ad2df15be 100644
 
  [[package]]
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 4c8d2f64e..4769e458c 100644
+index eed14662f..ab58fc27b 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -1426,6 +1426,7 @@ impl Agent {
+@@ -1436,6 +1436,7 @@ impl Agent {
                      timestamp: Some(chrono::Utc::now()),
                      tool_duration_ms: None,
                      token_usage: None,
@@ -193,10 +193,10 @@ index 82e828978..ef0958b56 100644
      }];
 
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 22b4878b7..d5975394e 100644
+index 1640b14b2..5e394a7fe 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -2824,6 +2824,7 @@ async fn env_snapshot_detail_is_minimal_for_empty_sessions_and_full_after_histor
+@@ -3266,6 +3266,7 @@ async fn env_snapshot_detail_is_minimal_for_empty_sessions_and_full_after_histor
              timestamp: None,
              tool_duration_ms: None,
              token_usage: None,
@@ -1109,7 +1109,7 @@ index 4b5ee2d1a..968187a0b 100644
      session.save().unwrap();
      assert_eq!(Session::load(&imported_id).unwrap().messages.len(), 3);
 diff --git a/crates/jcode-base/src/session.rs b/crates/jcode-base/src/session.rs
-index 068eec82b..482157d3a 100644
+index 08afc7b12..824bde529 100644
 --- a/crates/jcode-base/src/session.rs
 +++ b/crates/jcode-base/src/session.rs
 @@ -52,8 +52,9 @@ pub use crash::{
@@ -1137,7 +1137,7 @@ index 068eec82b..482157d3a 100644
      /// Full assembled system prompt replacement, including an intentionally empty prompt.
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub system_prompt: Option<String>,
-@@ -417,6 +424,8 @@ impl Session {
+@@ -424,6 +431,8 @@ impl Session {
          session.created_at = snapshot.created_at;
          session.updated_at = snapshot.updated_at;
          session.messages = snapshot.messages;
@@ -1146,7 +1146,7 @@ index 068eec82b..482157d3a 100644
          session.compaction = snapshot.compaction;
          session.provider_session_id = snapshot.provider_session_id;
          session.provider_key = snapshot.provider_key;
-@@ -469,6 +478,16 @@ impl Session {
+@@ -476,6 +485,16 @@ impl Session {
              self.memory_injections.iter().map(estimate_json_bytes).sum();
          let replay_events_json_bytes: usize =
              self.replay_events.iter().map(estimate_json_bytes).sum();
@@ -1163,7 +1163,7 @@ index 068eec82b..482157d3a 100644
          let compaction_json_bytes = self
              .compaction
              .as_ref()
-@@ -526,6 +545,12 @@ impl Session {
+@@ -533,6 +552,12 @@ impl Session {
                  "count": self.replay_events.len(),
                  "json_bytes": replay_events_json_bytes,
              },
@@ -1176,7 +1176,7 @@ index 068eec82b..482157d3a 100644
              "provider_messages_cache": {
                  "count": self.provider_messages_cache.len(),
                  "source_len": self.provider_messages_cache_len,
-@@ -540,6 +565,8 @@ impl Session {
+@@ -547,6 +572,8 @@ impl Session {
                      + env_snapshots_json_bytes
                      + memory_injections_json_bytes
                      + replay_events_json_bytes
@@ -1185,7 +1185,7 @@ index 068eec82b..482157d3a 100644
                      + compaction_json_bytes,
                  "canonical_transcript_json_bytes": session_message_json_bytes,
                  "provider_cache_json_bytes": provider_messages_cache_json_bytes,
-@@ -588,10 +615,14 @@ impl Session {
+@@ -595,10 +622,14 @@ impl Session {
          self.persist_state = SessionPersistState {
              snapshot_exists,
              messages_len: self.messages.len(),
@@ -1200,7 +1200,7 @@ index 068eec82b..482157d3a 100644
              env_snapshots_mode: PersistVectorMode::Clean,
              memory_injections_mode: PersistVectorMode::Clean,
              replay_events_mode: PersistVectorMode::Clean,
-@@ -732,6 +763,18 @@ impl Session {
+@@ -739,6 +770,18 @@ impl Session {
          }
      }
 
@@ -1219,7 +1219,7 @@ index 068eec82b..482157d3a 100644
      fn mark_messages_full_dirty(&mut self) {
          self.persist_state.messages_mode = PersistVectorMode::Full;
          self.provider_messages_cache_mode = PersistVectorMode::Full;
-@@ -805,6 +848,8 @@ impl Session {
+@@ -812,6 +855,8 @@ impl Session {
              created_at: now,
              updated_at: now,
              messages: Vec::new(),
@@ -1228,7 +1228,7 @@ index 068eec82b..482157d3a 100644
              system_prompt: None,
              model_usage_turn_id: None,
              compaction: None,
-@@ -864,6 +909,8 @@ impl Session {
+@@ -871,6 +916,8 @@ impl Session {
              created_at: now,
              updated_at: now,
              messages: Vec::new(),
@@ -1237,7 +1237,7 @@ index 068eec82b..482157d3a 100644
              system_prompt: None,
              model_usage_turn_id: None,
              compaction: None,
-@@ -1367,6 +1414,61 @@ request in this new forked session, using the inherited conversation only as con
+@@ -1374,6 +1421,61 @@ request in this new forked session, using the inherited conversation only as con
          self.add_message_ext_with_display_role(role, content, tool_duration_ms, token_usage, None)
      }
 
@@ -1299,7 +1299,7 @@ index 068eec82b..482157d3a 100644
      pub fn add_message_ext_with_display_role(
          &mut self,
          role: Role,
-@@ -1384,6 +1486,7 @@ request in this new forked session, using the inherited conversation only as con
+@@ -1391,6 +1493,7 @@ request in this new forked session, using the inherited conversation only as con
              timestamp: Some(Utc::now()),
              tool_duration_ms,
              token_usage,
@@ -1307,7 +1307,7 @@ index 068eec82b..482157d3a 100644
          });
          id
      }
-@@ -1714,6 +1817,8 @@ request in this new forked session, using the inherited conversation only as con
+@@ -1721,6 +1824,8 @@ request in this new forked session, using the inherited conversation only as con
      /// in the client only inflates memory during idle remote sessions.
      pub fn strip_transcript_for_remote_client(&mut self) {
          self.messages.clear();
@@ -1316,7 +1316,7 @@ index 068eec82b..482157d3a 100644
          self.compaction = None;
          self.env_snapshots.clear();
          self.memory_injections.clear();
-@@ -1794,6 +1899,10 @@ struct RemoteStartupSessionSnapshot {
+@@ -1801,6 +1906,10 @@ struct RemoteStartupSessionSnapshot {
      #[serde(default, deserialize_with = "parallel_messages::deserialize")]
      messages: Vec<StoredMessage>,
      #[serde(default)]
@@ -1460,7 +1460,7 @@ index ac900b5b7..cc4f38545 100644
      }
      fn usage(input: u64) -> Option<StoredTokenUsage> {
 diff --git a/crates/jcode-base/src/session_tests/cases.rs b/crates/jcode-base/src/session_tests/cases.rs
-index 42a030903..37657e6e4 100644
+index 2952ab535..a8d9cde00 100644
 --- a/crates/jcode-base/src/session_tests/cases.rs
 +++ b/crates/jcode-base/src/session_tests/cases.rs
 @@ -171,14 +171,42 @@ fn test_debug_memory_profile_reports_messages_and_provider_cache() {
@@ -1533,7 +1533,7 @@ index 42a030903..37657e6e4 100644
      assert!(loaded.replay_events.is_empty());
      assert!(loaded.env_snapshots.is_empty());
      assert!(loaded.memory_injections.is_empty());
-@@ -753,6 +785,301 @@ fn blueprint_policy_persistence_journal_roundtrip_and_startup_stub() -> Result<(
+@@ -799,6 +831,301 @@ fn blueprint_policy_persistence_journal_roundtrip_and_startup_stub() -> Result<(
      Ok(())
  }
 
@@ -1835,7 +1835,7 @@ index 42a030903..37657e6e4 100644
  #[test]
  fn test_create_marks_debug_when_test_session_env_enabled() {
      let _env_lock = lock_env();
-@@ -2426,6 +2753,7 @@ fn reasoning_trace_survives_session_save_and_load() -> Result<()> {
+@@ -2472,6 +2799,7 @@ fn reasoning_trace_survives_session_save_and_load() -> Result<()> {
          timestamp: Some(Utc::now()),
          tool_duration_ms: None,
          token_usage: None,
@@ -1843,7 +1843,7 @@ index 42a030903..37657e6e4 100644
      });
      session.save()?;
 
-@@ -3115,6 +3443,7 @@ fn env_snapshot_past_cap_appends_instead_of_rewriting_snapshot() -> Result<()> {
+@@ -3161,6 +3489,7 @@ fn env_snapshot_past_cap_appends_instead_of_rewriting_snapshot() -> Result<()> {
          timestamp: Some(Utc::now()),
          tool_duration_ms: None,
          token_usage: None,
@@ -1851,7 +1851,7 @@ index 42a030903..37657e6e4 100644
      });
      let snapshot = |reason: &str| EnvSnapshot {
          captured_at: Utc::now(),
-@@ -3189,6 +3518,7 @@ fn metadata_change_on_large_session_is_journaled_not_rewritten() -> Result<()> {
+@@ -3235,6 +3564,7 @@ fn metadata_change_on_large_session_is_journaled_not_rewritten() -> Result<()> {
              timestamp: Some(Utc::now()),
              tool_duration_ms: None,
              token_usage: None,
@@ -1859,7 +1859,7 @@ index 42a030903..37657e6e4 100644
          });
      }
      session.save()?;
-@@ -3249,6 +3579,7 @@ fn journal_entries_elide_unchanged_compaction_but_loads_keep_it() -> Result<()>
+@@ -3295,6 +3625,7 @@ fn journal_entries_elide_unchanged_compaction_but_loads_keep_it() -> Result<()>
          timestamp: Some(Utc::now()),
          tool_duration_ms: None,
          token_usage: None,
@@ -1867,7 +1867,7 @@ index 42a030903..37657e6e4 100644
      };
      session.append_stored_message(msg(0));
      session.compaction = Some(big_compaction("A"));
-@@ -3318,6 +3649,7 @@ fn legacy_journal_entries_with_inline_compaction_still_load() -> Result<()> {
+@@ -3364,6 +3695,7 @@ fn legacy_journal_entries_with_inline_compaction_still_load() -> Result<()> {
          timestamp: Some(Utc::now()),
          tool_duration_ms: None,
          token_usage: None,
@@ -1875,7 +1875,7 @@ index 42a030903..37657e6e4 100644
      });
      session.save()?;
      let snapshot_path = storage_paths::session_path(session_id)?;
-@@ -3365,6 +3697,7 @@ fn write_compaction_elision_compat_fixture() -> Result<()> {
+@@ -3411,6 +3743,7 @@ fn write_compaction_elision_compat_fixture() -> Result<()> {
              timestamp: Some(Utc::now()),
              tool_duration_ms: None,
              token_usage: None,

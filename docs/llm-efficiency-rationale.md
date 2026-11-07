@@ -9,11 +9,14 @@ to measure the resulting trade-offs.
 
 ## Design principles
 
-1. **Allocate capability to the task.** Routine shell work and repository
-   inspection can use the read-only `swarm_investigator`; web and jcode
-   documentation research can use `swarm_research`; exact mechanical changes
-   can use `swarm_fixer`. A blueprint can pin a model and effort appropriate to
-   that work, while complex coordination stays with the coordinator.
+1. **Allocate capability to the task.** Clear, localized implementation and
+   verification can use `swarm_routine`; moderate implementation/debugging and
+   scoped Routine assistance can use `swarm_advanced`; hard reasoning and
+   cross-cutting diagnosis can use `swarm_expert`. A blueprint can pin a model
+   and effort appropriate to that work, while planning and acceptance
+   judgment stay with the coordinator, which is planning-only and delegates
+   all execution. Shipped tier models are unspecified, so cheaper-model
+   savings are not guaranteed.
 2. **Keep bulky evidence out of the coordinator by default.** The coordinator
    receives a bounded report, and can retrieve more only when it is needed.
 3. **Apply deterministic guards at the context boundary.** A plugin can replace
@@ -28,58 +31,56 @@ to measure the resulting trade-offs.
 
 Patch
 `1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
-adds reusable Markdown blueprints and the reserved `coordinator.md` blueprint.
-A regular blueprint has durable role instructions and can declare its model,
-reasoning effort, enabled and disabled tools, communication policy, and
-runtime timeout. This supports intentionally placing narrow work on a model or
-effort level appropriate to that work, while keeping complex coordination with
-the coordinator.
+adds reusable tiered worker contracts and a reserved `coordinator.md` blueprint.
+Routine, Advanced, and Expert omit a worker-level tool allowlist, exposing broad
+task-relevant tools subject to global policy and assignment scope. Each tier
+keeps recursion bounded: Routine disables the generic `swarm` tool and every
+tier spawn name, and Advanced and Expert disable the generic `swarm` tool and
+their peer and upward spawn names while exposing only `swarm_routine` for
+bounded read-only extraction within their own scope. Unknown or newly
+registered spawn tools are not authorized for workers.
+Communication remains `report-to-parent`; coordinator and worker IDs are
+`coordinator`, `routine`, `advanced`, and `expert`. Old `fixer`, `investigator`,
+and `research` IDs are retired. Copy-mode setup preserves unrelated local
+assets. Shipped model mappings remain unspecified.
 
 At runtime, each valid regular blueprint becomes a coordinator-visible
-`swarm_<id>` tool. The supplied roles in `customizations/workers/blueprints/` demonstrate this
-pattern:
+`swarm_<id>` tool. Broad capability does not broaden assignment scope or
+change approval, cost, or security boundaries. Attempt, escalation, and
+handback discipline is owned by the central worker rules; see
+`customizations/workers/AGENTS.md` and `customizations/workers/README.md`.
 
-- `fixer` performs exact mechanical changes within coordinator-defined scope,
-  using `edit`, `apply_patch`, or `write`.
-- `investigator` runs read-only shell commands within its assigned scope, searches
-  code, and reads files to return factual evidence.
-- `research` handles web and jcode documentation research.
+The coordinator is planning-only and delegates all execution; the boundary,
+routing, discovery, and acceptance-judgment rules are owned by
+`customizations/workers/AGENTS.md`. Its blueprint front matter denies the
+generic execution and research tools as a second line of defense, while the
+empty enabled list keeps the generated tier spawn tools, `skill_manage`
+skill access, read, and write available.
 
-The coordinator blueprint explicitly guides selection of these workers for
-large reads, verbose commands, broad searches, research, and focused edits.
-This is the reusable, runtime-supported form of the delegation workflow
-illustrated by `customizations/workers/`, not merely a collection of prompt files.
-
-The fixer uses native `edit` for exact replacements in one file. Its `edits`
-array runs in order and all operations for that file succeed or none are
-written. For multi-file changes, native `apply_patch` accepts a Codex patch or
-unified diff, but does not promise all-or-none application across files. The
-investigator has read/search tools and coordinator-specified shell access, not
-file-editing tools. Research has no shell or file-edit tools. These are distinct
-capabilities, not general-purpose implementation or automation workers.
-
-A blueprint can pin a worker model and effort. It does not promise that a
-worker is cheaper, that it is always the right choice, or that delegation
-reduces total tokens. The saving comes when a lower-cost specialist avoids
-placing its raw investigation and tool output in the coordinator context.
+The shipped capability tiers perform bounded tasks. A smaller, cheaper, faster
+model with appropriate reasoning effort may be a good fit, but tier models are
+not pinned and no saving is promised without measurement. Configure models by
+blueprint ID if needed; the coordinator retains planning and acceptance
+judgment.
 
 ## Bounded spawn summaries and incremental inspection
 
 Patch
 `1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
 makes the initial `swarm_<id>` tool response a compact summary, bounded to
-2,000 characters. Worker report instructions do not impose a character limit;
-reports can include the detail needed to hand off the work. Deterministic,
-non-LLM follow-up reads page the report or transcript in 2,000-character chunks.
-The coordinator can inspect the summary first and retrieve more evidence only
-when needed.
+2,000 characters. Worker reports may contain the detail needed for handoff.
+Deterministic, non-LLM follow-up reads page the report or transcript in
+2,000-character chunks but do not resume execution. Preserve acceptance evidence
+and remaining work, and keep bulky diagnostics in artifacts where possible. The
+coordinator can retrieve more evidence only when needed.
 
-This is a context-shaping mechanism, not information deletion: the worker's
-full result remains available for paged retrieval according to the runtime's
+This is a context-shaping mechanism, not information deletion: the worker's full
+result remains available for paged retrieval according to the runtime's
 follow-up interface. A coordinator can still consume a large amount of text if
-it repeatedly reads the whole result. The discipline encoded in the coordinator
-prompt is therefore essential: delegate bulky inspection and request only the
-specific additional portion required for a decision.
+it repeatedly reads the whole result. Final verification is executed by
+workers: a separate verification worker independent of the implementation runs
+the required checks when acceptance evidence matters, and the coordinator
+judges acceptance from the returned evidence.
 
 ## Hook infrastructure and the delegation guard
 

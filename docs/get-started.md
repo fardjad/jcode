@@ -73,8 +73,9 @@ No credentials or private search endpoint are included.
 
 ```toml
 [provider]
-# The coordinator handles planning, integration, and judgment. Give it a
-# larger, more intelligent frontier model rather than optimizing only for cost.
+# The coordinator is planning-only: it handles planning and judgment and
+# delegates all execution to workers. Give it a larger, more intelligent
+# frontier model rather than optimizing only for cost.
 default_provider = "openrouter-eu"
 default_model = "openai/gpt-6.1-sol"
 allowed_providers = ["openrouter-eu"]
@@ -112,9 +113,16 @@ fallback_engines = []
   overrides together when choosing another provider.
 - Coordinator and worker model choices are a starting point, not a guarantee.
   Evaluate quality, latency, and cost on your own tasks.
-- Disabling the generic `swarm` tool in the template leaves blueprint tools
-  such as `swarm_fixer` enabled. [Worker blueprints](../customizations/workers/README.md)
-  can override model settings and make paid calls. Review them before use.
+- Disabling the generic `swarm` tool leaves capability-tier blueprint tools
+  such as `swarm_routine`, `swarm_advanced`, and `swarm_expert` available.
+  The shipped coordinator blueprint is planning-only and additionally denies
+  generic execution and research tools; it retains `skill_manage` for reading
+  and reloading skill instructions, which grants no execution permission, and
+  read and write stay available for
+  authoring plan documents, a prompt-level restriction rather than a sandbox.
+  [Worker blueprints](../customizations/workers/README.md) describes bounded
+  assignments, the coordinator boundary, and model overrides. The shipped tier
+  models are unspecified; review tool policy and configure models before use.
 - For hook details, see [plugins](../customizations/plugins/README.md). For
   provider choices, see [provider configuration](provider-features.md).
 

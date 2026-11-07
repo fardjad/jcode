@@ -2,33 +2,50 @@
 
 These patches add reusable worker blueprints and runtime hook integration for
 swarm-based delegation. The coordinator prompt in
-`customizations/workers/blueprints/coordinator.md` guides the coordinator on when and how to
-delegate token-heavy work to workers configured with task-appropriate models.
+`customizations/workers/blueprints/coordinator.md` guides when and how to delegate
+bounded tasks to capability tiers with appropriate configured models.
 
 ## Worker blueprints
 
 Patch `1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
-enables reusable worker blueprints with coordinator delegation. Each blueprint
-declares its enabled tools, effort level, and communication policy. A blueprint
-can pin a model that may cost less than the coordinator's model. Workers return
-compact summaries instead of raw tool output.
+enables reusable Markdown blueprints and coordinator delegation. The shipped
+blueprints provide three capability tiers: `swarm_routine` for low-ambiguity
+bounded work, `swarm_advanced` for moderate implementation/debugging and scoped
+Routine assistance, and `swarm_expert` for hard reasoning and scoped Advanced
+assistance. The coordinator selects a suitable tier; all can complete bounded
+inspect/edit/check assignments when authorized. Models are unspecified in the
+shipped blueprints, and global model restrictions still apply.
 
-Available workers:
+The old `swarm_fixer`, `swarm_investigator`, and `swarm_research` IDs are retired.
+Update personal overrides and assignments when upgrading. Coordination policy
+(the planning-only coordinator, routing, and the report contract) is owned by
+`customizations/workers/AGENTS.md`. Its blueprint front matter denies the
+generic execution and research tools while the empty enabled list keeps the
+generated tier tools, read, `skill_manage` skill access, and write available.
+Workers report to the parent. The shipped blueprints use
+child-blueprint allowlists: Advanced and Expert allow only Routine, while
+Routine allows no children. The generic native policy also honors explicit
+tool denials, and an allowed-child list cannot override a disabled tool. See
+`customizations/workers/README.md` for the effective persisted TOML override,
+default-deny behavior when no list is configured, the unchanged depth/model/
+parent-work access rules, and the bounded assignment, blocker assistance, and
+handback contract.
 
-```text
-swarm_fixer         Exact mechanical change using coordinator-approved tools
-swarm_investigator  Read-only repository investigation and specified commands
-swarm_research      Web and jcode documentation research
+Child-blueprint allowlists are generic IDs, not a fixed tier registry. For
+example, a custom `reviewer` may allow a custom `summarizer` child through its
+persisted TOML configuration:
+
+```toml
+[agents.worker_blueprints.reviewer]
+allowed_child_blueprints = ["summarizer"]
 ```
 
-The fixer uses native `edit` for exact replacements in one file. Its `edits`
-array runs in order and all operations for that file succeed or none are
-written. For multi-file changes, native `apply_patch` accepts a Codex patch or
-unified diff, but does not guarantee all-or-none application across files.
-MCP server-tool discovery and invocation use native `mcp` actions `search` and
-`call`.
+That setting controls child eligibility only. Tool denials and global
+restrictions still apply, and it does not change task authority, cost, or
+security approvals.
 
-Configure the swarm model in `~/.jcode/config.toml`:
+Configure a shared fallback model in `~/.jcode/config.toml` if desired. The
+shipped Routine, Advanced, and Expert model mappings are unspecified.
 
 ```toml
 [features]

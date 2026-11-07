@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -164,21 +165,38 @@ def blueprint_config(
     blueprints: list[_JSON],
     swarm_model: str,
     timeout_minutes: int,
+    worker_models: dict[str, str] | None = None,
+    *,
+    coordinator_effort: str | None = None,
+    swarm_effort: str | None = None,
+    worker_efforts: dict[str, str] | None = None,
 ) -> str:
     text = (
         "\n[agents]\nworker_blueprints_dir = "
         + json.dumps(str(snapshot_dir.resolve()))
         + f"\nswarm_timeout_minutes = {timeout_minutes}\n"
     )
+    if coordinator_effort is not None:
+        # The coordinator is the native swarm root agent.
+        text += "swarm_root_effort = " + json.dumps(coordinator_effort) + "\n"
+    if swarm_effort is not None:
+        text += "swarm_effort = " + json.dumps(swarm_effort) + "\n"
+    worker_models = worker_models or {}
+    worker_efforts = worker_efforts or {}
     for blueprint in blueprints:
         if blueprint["name"] != "coordinator":
+            model = worker_models.get(blueprint["name"], swarm_model)
             text += (
                 "\n[agents.worker_blueprints."
                 + json.dumps(blueprint["name"])
                 + "]\nmodel = "
-                + json.dumps(swarm_model)
+                + json.dumps(model)
                 + "\n"
             )
+            if blueprint["name"] in worker_efforts:
+                text += (
+                    "effort = " + json.dumps(worker_efforts[blueprint["name"]]) + "\n"
+                )
     return text
 
 
@@ -186,13 +204,41 @@ def traced_plugin_config(
     plugins: list[PluginSnapshot],
     wrapper_dir: Path,
     trace_dir: Path,
+    *,
+    composite_controller: Path | None = None,
+    python_executable: str | None = None,
 ) -> tuple[str, list[_JSON]]:
+    """Install one traced wrapper per plugin hook entry.
+
+    When ``composite_controller`` is set, the delegation-guard entry is
+    replaced by the composite launcher command so the controller runs first
+    and the actual guard runs as its subprocess. The guard entry is never
+    duplicated: the plain guard command stays out of the hook config and is
+    recorded as provenance instead.
+    """
+
     if not plugins:
         return "", []
     lines = ["\n[hooks]"]
     commands: list[_JSON] = []
     for plugin in plugins:
         production = [str(plugin.executable)]
+        record: _JSON = {
+            "hook": plugin.hook,
+            "plugin": plugin.id,
+            "production_command": production,
+        }
+        if composite_controller is not None and plugin.id == "delegation-guard":
+            composite = [
+                python_executable or sys.executable,
+                str(composite_controller),
+            ]
+            record["composite"] = True
+            record["controller_module"] = str(composite_controller)
+            record["guard_executable"] = str(plugin.executable)
+            record["guard_production_command"] = production
+            record["production_command"] = composite
+            production = composite
         wrapper = make_hook_wrapper(
             command=production,
             plugin=plugin.id,
@@ -206,13 +252,7 @@ def traced_plugin_config(
             lines.append("pre_tool_transform_timeout_ms = 2000")
         elif plugin.hook == "post_tool_transform":
             lines.append("post_tool_transform_timeout_ms = 2000")
-        commands.append(
-            {
-                "hook": plugin.hook,
-                "plugin": plugin.id,
-                "production_command": production,
-                "traced_command": traced,
-                "trace_dir": str(trace_dir / plugin.id),
-            }
-        )
+        record["traced_command"] = traced
+        record["trace_dir"] = str(trace_dir / plugin.id)
+        commands.append(record)
     return "\n".join(lines) + "\n", commands

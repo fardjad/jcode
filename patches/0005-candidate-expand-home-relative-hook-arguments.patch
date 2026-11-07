@@ -1,4 +1,4 @@
-From 45316eb0fd3e319c09e6d318061558595bf1a000 Mon Sep 17 00:00:00 2001
+From 34948c38f3a016a3504c74c944d948cbcf09a4ad Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <public@fardjad.com>
 Date: Mon, 26 Oct 2026 08:54:10 +0100
 Subject: [PATCH] fix: expand home-relative hook arguments

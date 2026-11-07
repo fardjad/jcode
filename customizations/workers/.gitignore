@@ -1,6 +1,8 @@
 # Generated worker evaluation evidence and private evaluation settings.
-/results/
-.eval-settings.toml
-.eval-settings.toml.*
-.eval-settings.toml~
-..eval-settings.toml.swp
+# The private shared config and all run results stay untracked; the
+# credential-free example, scenario configs, and fixtures stay tracked.
+/evals/config.toml
+/evals/config.toml.*
+!/evals/config.toml.example
+/evals/config.toml~
+/evals/results/

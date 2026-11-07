@@ -28,6 +28,7 @@ def scenario(tmp_path: Path) -> Scenario:
             max_turns=8,
             instructions="Approve reasonable plans and encourage agent decisions.",
         ),
+        settings={},
         source=source,
         source_sha256="abc123",
     )

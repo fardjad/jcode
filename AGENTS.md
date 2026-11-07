@@ -328,26 +328,23 @@ These rules apply whenever workers edit `.patched-jcode`, during a sync or not.
   `git diff` before taking over a crashed worker's tree.
 - Do not rebase or reset `.patched-jcode` while a background build or test run
   uses it.
-- Resolve trivial conflicts directly, such as both sides adding tests or
-  methods, or a test moved into a split module.
+- Decide trivial conflict resolutions directly, such as both sides adding
+  tests or methods, or a test moved into a split module, and delegate the
+  mechanical conflict application to a worker.
 
 ## Worker blueprint boundaries
 
-The blueprints under `customizations/workers/blueprints/` are reusable harness
-roles, used in other projects as well as this catalog. Keep catalog paths,
-patch ownership, release pins, sync procedures, isolation commands, and
-installer recipes out of those blueprints. Supply this repository's context
-through project instructions and scoped assignments. Runtime tool guidance
-and transferable execution discipline belong in blueprints, not
-catalog-specific procedures.
-
-Before changing workers or delegation rules, check the blueprints, their
-README, tool permissions, and these project instructions for contradictions.
-Fix the authoritative instruction that is wrong. Do not add generic
-"be project-independent" boilerplate, conflicting exceptions, or workarounds
-that bypass permissions. Preserve established role responsibilities unless
-the user explicitly approves changing them. Static contract tests check known
-regressions, not whether a model will follow the instructions in practice.
+Before authoring, reviewing, or changing worker blueprints, or running or
+reviewing worker evaluations, read and follow
+`customizations/workers/AGENTS.md`. That file is the single authoritative
+source for worker coordination, worker blueprint and scenario authoring,
+and worker evaluation rules; its scope is the reusable harness blueprints
+under `customizations/workers/blueprints/`, real-code scenarios, fixtures,
+and worker-specific evaluation configuration. This pointer grants no
+higher-priority override: the root catalog rules for patch ownership,
+configuration isolation, release pins, sync procedures, and installer
+recipes still apply unchanged, and catalog-specific procedures stay out of
+the reusable blueprints themselves.
 
 ## Validation execution discipline
 

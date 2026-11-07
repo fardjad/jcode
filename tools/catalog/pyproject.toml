@@ -20,7 +20,7 @@ dev = ["pytest>=8,<10"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]
-testpaths = ["src/jcode_catalog", "../scripts", "../../customizations/plugins", "../../customizations/workers/tests"]
+testpaths = ["src/jcode_catalog", "../scripts", "../../customizations/plugins"]
 
 [tool.uv]
 package = true

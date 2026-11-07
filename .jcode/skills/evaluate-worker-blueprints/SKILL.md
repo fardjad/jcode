@@ -15,12 +15,11 @@ not another source of blueprint or patch intent.
 Confirm the scenario ID (or all scenarios), its named metrics, harness-focused
 judge criteria, and simulated-user behavior, and that the user explicitly
 approves live coordinator/worker, simulated-user, and judge calls.
-Implementation and non-live tests do not imply that approval. When verifying
-Pydantic AI caching or custom-route behavior, run one small scenario or probe
-first and confirm actual `cache_read_tokens` and `cost_usd` before requesting
-approval for all bundled scenarios. Do not launch repeated paid runs merely to
-seek a clean stochastic result. Keep any later improvement and rerun as a
-separately reviewed scope.
+Paid-call, approval, and evaluation policies are owned by
+`customizations/workers/AGENTS.md`; this checklist is operational only. When
+verifying Pydantic AI caching or custom-route behavior, run one small scenario
+or probe first and confirm actual `cache_read_tokens` and `cost_usd` before
+requesting approval for all bundled scenarios.
 
 ## 2. Establish immutable current inputs
 
@@ -51,7 +50,8 @@ normal catalog tests.
 
 ## 4. Read dimensions, cost, and evidence independently
 
-Locate the fresh ignored `customizations/workers/results/<run-id>/` directory. Read
+Locate the fresh ignored `customizations/workers/evals/results/<run-id>/`
+directory. Read
 `summary.json`, each `scenario-summary.json`, acceptance logs, complete session
 set and journals, normalized transcript and simulated-user conversation, final
 diff, selected metric inventories, judge coverage ledger (`excluded_by_default`
@@ -73,27 +73,22 @@ non-use must be a finding.
 ## 5. Classify supported outcomes
 
 Separate confirmed observations, likely diagnoses with confidence, optional
-improvement opportunities, and unexercised workers. Tool-health facts are not
-proof of root cause. Post-transform hook calls without native call IDs may be
-ambiguous. Leave uncertain ownership as `unknown` pending reproduction. Never
-assume bundled worker names are exhaustive or permanent.
+improvement opportunities, and unexercised workers. Tool-health facts are
+reported as cited hypotheses; their discipline is owned by
+`customizations/workers/AGENTS.md`.
 
 ## 6. Review before any improvement
 
 Do not auto-apply judge suggestions. Before editing, present the supported
-finding, citations, and proposed owner to the user. Blueprint changes target the
-implicated Markdown only. Tool metadata, plugin, or jcode runtime defects require
-focused reproduction and their owning tests/patch workflow. Source fixes belong
-in the current catalog stack before another evaluation; never edit mail patches
-directly or reset working copies.
+finding, citations, and proposed owner to the user; change and patch
+discipline is owned by the central and root `AGENTS.md` files.
 
 ## 7. Re-evaluate an approved change narrowly
 
 After an approved improvement, confirm paid scope and rerun the smallest
 affected real scenario. Compare input/source/blueprint/plugin hashes,
 independent correctness, tool health, coverage, cache reads, total cost, and
-citations with the prior run. One clean stochastic run is a smoke signal, not
-universal proof.
+citations with the prior run.
 
 This skill must not weaken acceptance, modify learned upstream exclusions, or
 commit/push. It must not access or modify the user's personal configuration.

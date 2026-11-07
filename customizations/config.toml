@@ -17,7 +17,7 @@ memory = false
 swarm = true
 
 [hooks]
-post_tool_transform = ["python3 ~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
+post_tool_transform = ["env JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS=advanced,expert python3 /home/far/.jcode/plugins/delegation-guard/delegation-guard-transform"]
 post_tool_transform_timeout_ms = 500
 pre_tool_transform = ["python3 ~/.jcode/plugins/rtk/rtk-transform"]
 

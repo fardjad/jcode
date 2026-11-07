@@ -3,17 +3,62 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
 import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 from .isolate_config import isolated_environment
 from .patch_catalog import CatalogError, repository_root
 from .prepare_worker_eval_build import evaluation_directory, prepare
 from .validation_state import exclusive_lock
 from .version_base import VersionError
+
+
+def _evaluator_python(root) -> Path:
+    return root / "tools" / "evaluator" / ".venv" / "bin" / "python"
+
+
+def _evals_dir(root) -> Path:
+    """The worker evaluation layout root: config, scenarios, and results."""
+
+    return root / "customizations" / "workers" / "evals"
+
+
+def _config_file(root) -> Path:
+    return _evals_dir(root) / "config.toml"
+
+
+def _scenarios_dir(root) -> Path:
+    return _evals_dir(root) / "scenarios"
+
+
+def preflight_settings(root, scenario: str | None = None) -> int:
+    """Validate selected settings files before any native build cost."""
+
+    python = _evaluator_python(root)
+    if not python.is_file():
+        raise CatalogError(
+            "settings preflight needs: cd tools/evaluator && uv sync --extra eval"
+        )
+    command = [
+        str(python),
+        "-m",
+        "jcode_harness_client",
+        "validate-settings",
+        "--config",
+        str(_config_file(root)),
+        "--scenarios",
+        str(_scenarios_dir(root)),
+    ]
+    if scenario:
+        command += ["--scenario", scenario]
+    with isolated_environment() as environment:
+        return subprocess.run(
+            command, cwd=root, env=environment, check=False
+        ).returncode
 
 
 def main() -> int:
@@ -28,12 +73,14 @@ def main() -> int:
         + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         + f"-{os.getpid()}"
     )
-    output = root / "customizations" / "workers" / "results" / run_id
-    provenance = (
-        evaluation_directory(root) / "provenance" / f"{run_id}.json"
-    )
+    output = _evals_dir(root) / "results" / run_id
+    provenance = evaluation_directory(root) / "provenance" / f"{run_id}.json"
     provenance.parent.mkdir(parents=True, exist_ok=True)
     try:
+        # Config errors must surface before any native build cost.
+        if preflight_settings(root, args.scenario) != 0:
+            print("settings preflight failed; no build was started", file=sys.stderr)
+            return 1
         # Keep builders out until native processes and acceptance have finished.
         with exclusive_lock(
             evaluation_directory(root) / "build.lock",
@@ -57,10 +104,10 @@ def main() -> int:
                 build["binary_paths"]["jcode"],
                 "--bridge",
                 build["binary_paths"]["jcode-harness-api-bridge"],
-                "--settings",
-                str(root / "customizations" / "workers" / ".eval-settings.toml"),
+                "--config",
+                str(_config_file(root)),
                 "--scenarios",
-                str(root / "customizations" / "workers" / "scenarios"),
+                str(_scenarios_dir(root)),
                 "--blueprints",
                 str(root / "customizations" / "workers" / "blueprints"),
                 "--plugins",
@@ -73,7 +120,7 @@ def main() -> int:
             if args.scenario:
                 command += ["--scenario", args.scenario]
             with isolated_environment() as environment:
-                result = subprocess.run(command, cwd=root, env=environment)
+                result = subprocess.run(command, cwd=root, env=environment, check=False)
     except (CatalogError, VersionError, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,7 +12,6 @@ from typing import Any, cast
 
 import httpx
 from anthropic import AsyncAnthropic
-from genai_prices import calc_price
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 from pydantic_ai import Agent, CachePoint
@@ -26,7 +26,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.usage import RequestUsage, UsageLimits
+from pydantic_ai.usage import UsageLimits
 
 from .redaction import Redactor, write_json
 from .settings import ProviderSettings
@@ -34,6 +34,25 @@ from .settings import ProviderSettings
 _JSON = dict[str, Any]
 SIMULATOR_MAX_TOKENS = 512
 JUDGE_MAX_TOKENS = 8192
+COST_SOURCE_REPORTED_NATIVE = "reported-native"
+COST_SOURCE_REPORTED_WIRE = "reported-wire"
+COST_UNKNOWN_WIRE = "no provider-reported cost in wire response"
+COST_UNKNOWN_NATIVE = "no provider-reported cost in native session usage"
+_NATIVE_REPORTED_COST_KEYS = ("cost_usd", "total_cost_usd", "total_cost", "cost")
+
+
+def _finite_cost_value(value: Any) -> float | None:
+    """Return a finite nonnegative real cost, or None for unusable values.
+
+    Zero is a valid reported cost. Booleans, negatives, NaN, and infinities
+    are rejected so malformed provider data never poisons cost totals.
+    """
+
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        cost = float(value)
+        if math.isfinite(cost) and cost >= 0.0:
+            return cost
+    return None
 
 
 def cache_identity(*parts: str) -> str:
@@ -49,7 +68,7 @@ def cache_identity(*parts: str) -> str:
 
 @dataclass(slots=True)
 class CallUsageRecord:
-    """Normalized usage and best-effort USD cost for one model call."""
+    """Normalized usage and provider-reported USD cost for one model call."""
 
     role: str
     model: str
@@ -61,6 +80,9 @@ class CallUsageRecord:
     cost_usd: float | None = None
     priced: bool = False
     completed: bool = False
+    category: str = "agent"
+    cost_source: str | None = None
+    cost_unknown_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -73,37 +95,83 @@ class UsageTracker:
         self.records.append(record)
 
     def summary(self) -> _JSON:
-        input_tokens = sum(record.input_tokens for record in self.records)
-        output_tokens = sum(record.output_tokens for record in self.records)
-        cache_read_tokens = sum(record.cache_read_tokens for record in self.records)
-        cache_write_tokens = sum(record.cache_write_tokens for record in self.records)
-        priced_records = [
-            record
-            for record in self.records
-            if record.priced and record.cost_usd is not None
-        ]
-        unpriced_calls = sum(
-            1 for record in self.records if not record.priced or record.cost_usd is None
-        )
-        cost_usd: float | None
-        if not self.records:
-            cost_usd = 0.0
-        elif priced_records:
-            cost_usd = round(
-                sum(float(record.cost_usd or 0.0) for record in priced_records), 8
+        def aggregate(records: list[CallUsageRecord]) -> _JSON:
+            input_tokens = sum(record.input_tokens for record in records)
+            output_tokens = sum(record.output_tokens for record in records)
+            cache_read_tokens = sum(record.cache_read_tokens for record in records)
+            cache_write_tokens = sum(record.cache_write_tokens for record in records)
+            priced_records = [
+                record
+                for record in records
+                if record.priced and record.cost_usd is not None
+            ]
+            unpriced_calls = sum(
+                1 for record in records if not record.priced or record.cost_usd is None
             )
-        else:
-            cost_usd = None
-        result: _JSON = {
-            "cost_usd": cost_usd,
-            "calls": len(self.records),
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cache_read_tokens": cache_read_tokens,
-            "cache_write_tokens": cache_write_tokens,
+            cost_sources: dict[str, int] = {}
+            unpriced_reasons: dict[str, int] = {}
+            for record in records:
+                if record.cost_usd is not None and record.cost_source:
+                    cost_sources[record.cost_source] = (
+                        cost_sources.get(record.cost_source, 0) + 1
+                    )
+                if not record.priced or record.cost_usd is None:
+                    reason = record.cost_unknown_reason or "cost unknown"
+                    unpriced_reasons[reason] = unpriced_reasons.get(reason, 0) + 1
+            if not records:
+                cost_usd: float | None = 0.0
+            elif priced_records:
+                cost_usd = round(
+                    sum(float(record.cost_usd or 0.0) for record in priced_records),
+                    8,
+                )
+            else:
+                cost_usd = None
+            result: _JSON = {
+                "cost_usd": cost_usd,
+                "calls": len(records),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+            }
+            if unpriced_calls:
+                result["unpriced_calls"] = unpriced_calls
+            if cost_sources:
+                result["cost_sources"] = dict(sorted(cost_sources.items()))
+            if unpriced_reasons:
+                result["unpriced_reasons"] = dict(sorted(unpriced_reasons.items()))
+            return result
+
+        result = aggregate(self.records)
+        by_role: dict[str, list[CallUsageRecord]] = {}
+        by_model: dict[str, list[CallUsageRecord]] = {}
+        for record in self.records:
+            by_role.setdefault(record.role, []).append(record)
+            by_model.setdefault(record.model, []).append(record)
+        result["by_role"] = {
+            role: aggregate(records) for role, records in sorted(by_role.items())
         }
-        if unpriced_calls:
-            result["unpriced_calls"] = unpriced_calls
+        result["by_model"] = {
+            model: aggregate(records) for model, records in sorted(by_model.items())
+        }
+        result["by_category"] = {
+            category: aggregate(
+                [record for record in self.records if record.category == category]
+            )
+            for category in ("agent", "evaluation-overhead")
+            if any(record.category == category for record in self.records)
+        }
+        result["agent"] = aggregate(
+            [record for record in self.records if record.category == "agent"]
+        )
+        result["evaluation_overhead"] = aggregate(
+            [
+                record
+                for record in self.records
+                if record.category == "evaluation-overhead"
+            ]
+        )
         return result
 
 
@@ -162,71 +230,56 @@ class Caching(AbstractCapability[Any]):
         return cast(ModelSettings, settings)
 
 
-def _estimate_usage_cost(
-    usage: RequestUsage,
-    *,
-    model_name: str,
-    provider_type: str,
-    provider_url: str,
-) -> float | None:
-    if not usage.has_values():
-        return None
-    candidates: list[str] = [model_name]
-    if "/" in model_name:
-        candidates.append(model_name.split("/", 1)[1])
-    if ":" in model_name:
-        candidates.append(model_name.split(":", 1)[0])
-    provider_ids: list[str | None]
-    if provider_type == "anthropic-compatible":
-        provider_ids = ["anthropic", "openrouter", None]
-    elif provider_type in {"openrouter", "open-router"}:
-        provider_ids = ["openrouter", "openai", "anthropic", None]
-    else:
-        provider_ids = ["openai", "openrouter", "anthropic", None]
-    for candidate in candidates:
-        if provider_url:
-            try:
-                price = calc_price(
-                    usage,
-                    candidate,
-                    provider_api_url=provider_url,
-                )
-                return float(price.total_price)
-            except Exception:
-                pass
-        for provider_id in provider_ids:
-            try:
-                price = calc_price(
-                    usage,
-                    candidate,
-                    provider_id=provider_id,
-                )
-                return float(price.total_price)
-            except Exception:
-                continue
+def _native_reported_cost(token_usage: _JSON) -> float | None:
+    """Extract a numeric cost retained by native usage, never invented.
+
+    Only explicit finite nonnegative numeric cost fields count. A missing,
+    non-numeric, bool, negative, NaN, or infinite value means no retained
+    cost; zero is a valid reported cost.
+    """
+
+    for key in _NATIVE_REPORTED_COST_KEYS:
+        cost = _finite_cost_value(token_usage.get(key))
+        if cost is not None:
+            return cost
     return None
+
+
+def _provider_details_cost(provider_details: _JSON | None) -> float | None:
+    """Finite nonnegative reported cost from response provider details.
+
+    Returns None for missing, non-numeric, bool, negative, NaN, or infinite
+    values so malformed provider-reported costs stay unpriced with a safe
+    reason instead of poisoning totals. Zero is a valid reported cost.
+    """
+
+    if not isinstance(provider_details, dict):
+        return None
+    return _finite_cost_value(provider_details.get("cost"))
 
 
 def _extract_wire_usage(
     provider_type: str,
-    model_name: str,
-    provider_url: str,
     body: _JSON | None,
-) -> tuple[int, int, int, int, float | None, bool]:
+) -> tuple[int, int, int, int, float | None, str | None, str | None]:
+    """Extract token usage and provider-reported cost from a wire body.
+
+    Cost comes only from provider-reported fields. A wire response without a
+    usable reported cost stays unpriced with a safe reason; token counts are
+    still preserved when present.
+    """
+
     if not isinstance(body, dict):
-        return 0, 0, 0, 0, None, False
+        return 0, 0, 0, 0, None, None, "no wire response body retained"
     raw_usage = body.get("usage")
     if not isinstance(raw_usage, dict):
-        return 0, 0, 0, 0, None, False
+        return 0, 0, 0, 0, None, None, "no usage object in wire response"
 
-    reported_cost: float | None = None
-    cost_val = raw_usage.get("cost")
-    if isinstance(cost_val, int | float) and not isinstance(cost_val, bool):
-        reported_cost = float(cost_val)
-    elif isinstance(raw_usage.get("cost_details"), dict):
-        upstream = raw_usage["cost_details"].get("upstream_inference_cost")
-        if isinstance(upstream, int | float) and not isinstance(upstream, bool):
-            reported_cost = float(upstream)
+    reported_cost: float | None = _finite_cost_value(raw_usage.get("cost"))
+    if reported_cost is None and isinstance(raw_usage.get("cost_details"), dict):
+        reported_cost = _finite_cost_value(
+            raw_usage["cost_details"].get("upstream_inference_cost")
+        )
 
     if provider_type == "anthropic-compatible" or (
         "input_tokens" in raw_usage and "prompt_tokens" not in raw_usage
@@ -261,29 +314,18 @@ def _extract_wire_usage(
 
     has_tokens = bool(in_tok or out_tok or cache_read or cache_write)
     if reported_cost is not None:
-        return in_tok, out_tok, cache_read, cache_write, reported_cost, True
+        return (
+            in_tok,
+            out_tok,
+            cache_read,
+            cache_write,
+            reported_cost,
+            COST_SOURCE_REPORTED_WIRE,
+            None,
+        )
     if not has_tokens:
-        return 0, 0, 0, 0, None, False
-    req_usage = RequestUsage(
-        input_tokens=in_tok,
-        output_tokens=out_tok,
-        cache_read_tokens=cache_read,
-        cache_write_tokens=cache_write,
-    )
-    estimated = _estimate_usage_cost(
-        req_usage,
-        model_name=model_name,
-        provider_type=provider_type,
-        provider_url=provider_url,
-    )
-    return (
-        in_tok,
-        out_tok,
-        cache_read,
-        cache_write,
-        estimated,
-        estimated is not None,
-    )
+        return 0, 0, 0, 0, None, None, "no token usage in wire response"
+    return in_tok, out_tok, cache_read, cache_write, None, None, COST_UNKNOWN_WIRE
 
 
 def record_native_session_usage(
@@ -310,11 +352,31 @@ def record_native_session_usage(
             continue
         session_id = str(snapshot.get("session_id") or snapshot.get("id") or path.stem)
         role = "coordinator" if session_id == coordinator_session_id else "swarm"
+        worker_name: str | None = None
+        if role != "coordinator":
+            policy = snapshot.get("worker_blueprint_policy")
+            if isinstance(policy, dict):
+                blueprint_name = policy.get("name")
+                if (
+                    isinstance(blueprint_name, str)
+                    and blueprint_name.strip()
+                    and blueprint_name != "coordinator"
+                ):
+                    worker_name = blueprint_name
+                    role = blueprint_name
         raw_model = snapshot.get("model")
         model_name = (
             str(raw_model).split(":", 1)[-1]
             if isinstance(raw_model, str) and raw_model.strip()
-            else settings.model_for(role)
+            else (
+                settings.model_for("coordinator")
+                if role == "coordinator"
+                else (
+                    settings.model_for_worker(worker_name)
+                    if worker_name is not None
+                    else settings.model_for("swarm")
+                )
+            )
         )
         messages: dict[str, _JSON] = {}
         raw_messages = snapshot.get("messages")
@@ -366,18 +428,18 @@ def record_native_session_usage(
             else:
                 in_tok = max(raw_in, cache_read + cache_write)
             out_tok = int(token_usage.get("output_tokens") or 0)
-            req_usage = RequestUsage(
-                input_tokens=in_tok,
-                output_tokens=out_tok,
-                cache_read_tokens=cache_read,
-                cache_write_tokens=cache_write,
-            )
-            cost_usd = _estimate_usage_cost(
-                req_usage,
-                model_name=model_name,
-                provider_type=settings.provider,
-                provider_url=settings.url,
-            )
+            reported_cost = _native_reported_cost(token_usage)
+            cost_usd: float | None
+            cost_source: str | None
+            cost_reason: str | None
+            if reported_cost is not None:
+                cost_usd = reported_cost
+                cost_source = COST_SOURCE_REPORTED_NATIVE
+                cost_reason = None
+            else:
+                cost_usd = None
+                cost_source = None
+                cost_reason = COST_UNKNOWN_NATIVE
             tracker.add(
                 CallUsageRecord(
                     role=role,
@@ -390,6 +452,8 @@ def record_native_session_usage(
                     cost_usd=cost_usd,
                     priced=cost_usd is not None,
                     completed=True,
+                    cost_source=cost_source,
+                    cost_unknown_reason=cost_reason,
                 )
             )
 
@@ -512,6 +576,24 @@ def _build_model(
     return OpenAIChatModel(model_name, provider=openai_provider)
 
 
+def effort_model_settings(provider_type: str, effort: str | None) -> dict[str, Any]:
+    """Map a plain effort level onto the provider's real request fields.
+
+    Inspected SDK support only: ``openai_reasoning_effort`` for
+    OpenAI-compatible chat models, ``anthropic_effort`` for Anthropic
+    (output-config effort), and OpenRouter's generic top-level
+    ``reasoning`` object via ``extra_body``. No invented fields.
+    """
+
+    if effort is None:
+        return {}
+    if provider_type == "anthropic-compatible":
+        return {"anthropic_effort": effort}
+    if provider_type in {"openrouter", "open-router"}:
+        return {"extra_body": {"reasoning": {"effort": effort}}}
+    return {"openai_reasoning_effort": effort}
+
+
 def run_structured(
     settings: ProviderSettings,
     *,
@@ -566,7 +648,13 @@ def run_structured(
         output_type=output_spec,
         retries=0,
         capabilities=[caching],
-        model_settings=cast(ModelSettings, {"max_tokens": resolved_max_tokens}),
+        model_settings=cast(
+            ModelSettings,
+            {
+                "max_tokens": resolved_max_tokens,
+                **effort_model_settings(settings.provider, settings.effort_for(role)),
+            },
+        ),
     )
 
     try:
@@ -576,11 +664,11 @@ def run_structured(
         )
     except Exception as error:
         if usage_tracker is not None and recorder.last_response_body is not None:
-            in_t, out_t, cr_t, cw_t, cost, priced = _extract_wire_usage(
-                settings.provider,
-                model_name,
-                settings.url,
-                recorder.last_response_body,
+            in_t, out_t, cr_t, cw_t, cost, cost_source, cost_reason = (
+                _extract_wire_usage(
+                    settings.provider,
+                    recorder.last_response_body,
+                )
             )
             usage_tracker.add(
                 CallUsageRecord(
@@ -592,8 +680,11 @@ def run_structured(
                     cache_read_tokens=cr_t,
                     cache_write_tokens=cw_t,
                     cost_usd=cost,
-                    priced=priced,
+                    priced=cost is not None,
                     completed=False,
+                    category="evaluation-overhead",
+                    cost_source=cost_source,
+                    cost_unknown_reason=cost_reason,
                 )
             )
         elif usage_tracker is not None and recorder.last_request_body is not None:
@@ -604,6 +695,8 @@ def run_structured(
                     provider=settings.provider,
                     completed=False,
                     priced=False,
+                    category="evaluation-overhead",
+                    cost_unknown_reason=("provider error before usage was reported"),
                 )
             )
         safe_message = redactor.text(str(error))
@@ -615,41 +708,28 @@ def run_structured(
 
     if usage_tracker is not None:
         run_usage = result.usage
-        in_t, out_t, cr_t, cw_t, wire_cost, wire_priced = _extract_wire_usage(
-            settings.provider,
-            model_name,
-            settings.url,
-            recorder.last_response_body,
+        in_t, out_t, cr_t, cw_t, wire_cost, wire_source, wire_reason = (
+            _extract_wire_usage(
+                settings.provider,
+                recorder.last_response_body,
+            )
         )
         input_tokens = run_usage.input_tokens or in_t
         output_tokens = run_usage.output_tokens or out_t
         cache_read_tokens = run_usage.cache_read_tokens or cr_t
         cache_write_tokens = run_usage.cache_write_tokens or cw_t
 
-        cost_usd: float | None = None
+        resolved_cost: float | None = None
+        resolved_source: str | None = None
+        resolved_reason: str | None = wire_reason
         provider_details = result.response.provider_details or {}
-        if isinstance(provider_details.get("cost"), int | float) and not isinstance(
-            provider_details.get("cost"), bool
-        ):
-            cost_usd = float(provider_details["cost"])
-        elif wire_cost is not None and wire_priced:
-            cost_usd = wire_cost
-        else:
-            try:
-                cost_usd = float(result.response.cost().total_price)
-            except Exception:
-                req_usage = RequestUsage(
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read_tokens=cache_read_tokens,
-                    cache_write_tokens=cache_write_tokens,
-                )
-                cost_usd = _estimate_usage_cost(
-                    req_usage,
-                    model_name=model_name,
-                    provider_type=settings.provider,
-                    provider_url=settings.url,
-                )
+        details_cost = _provider_details_cost(provider_details)
+        if details_cost is not None:
+            resolved_cost = details_cost
+            resolved_source = COST_SOURCE_REPORTED_WIRE
+        elif wire_cost is not None and wire_source is not None:
+            resolved_cost = wire_cost
+            resolved_source = wire_source
         usage_tracker.add(
             CallUsageRecord(
                 role=role,
@@ -659,9 +739,14 @@ def run_structured(
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
-                cost_usd=cost_usd,
-                priced=cost_usd is not None,
+                cost_usd=resolved_cost,
+                priced=resolved_cost is not None,
                 completed=True,
+                category="evaluation-overhead",
+                cost_source=resolved_source,
+                cost_unknown_reason=(
+                    None if resolved_cost is not None else resolved_reason
+                ),
             )
         )
 

@@ -126,7 +126,7 @@ index 1ad36b942..d7bdd0a51 100644
          serde_json::from_value::<ServerEvent>(json)?,
          ServerEvent::Pong {
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index 7a03b42d1..c5c8466ea 100644
+index 8f25fd7a7..3f7e792eb 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
 @@ -49,8 +49,9 @@ use super::{
@@ -426,7 +426,7 @@ index fb40ef198..b7a8fa040 100644
  async fn context_message_rejects_while_busy_without_waiting_for_agent_lock() {
      let provider: Arc<dyn Provider> = Arc::new(PanicOnForkProvider {
 diff --git a/crates/jcode-app-core/src/server/client_lightweight_control.rs b/crates/jcode-app-core/src/server/client_lightweight_control.rs
-index 4c03dedb2..7882ae6f5 100644
+index 0ef6508e0..48242828d 100644
 --- a/crates/jcode-app-core/src/server/client_lightweight_control.rs
 +++ b/crates/jcode-app-core/src/server/client_lightweight_control.rs
 @@ -275,12 +275,15 @@ pub(super) async fn handle_lightweight_control_request(
@@ -1372,7 +1372,7 @@ index 053317f7c..d7ad895c1 100644
  fn test_soft_interrupt_images_roundtrip_and_legacy_default() -> Result<()> {
      let req = Request::SoftInterrupt {
 diff --git a/crates/jcode-protocol/src/wire.rs b/crates/jcode-protocol/src/wire.rs
-index dc37de1f6..2782e48c9 100644
+index 54e102623..15b01fd3c 100644
 --- a/crates/jcode-protocol/src/wire.rs
 +++ b/crates/jcode-protocol/src/wire.rs
 @@ -30,6 +30,13 @@ pub struct SessionToolConfig {
