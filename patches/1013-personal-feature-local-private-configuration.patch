@@ -140,7 +140,7 @@ index 788f094a7..2563f56ce 100644
 
  pub(super) async fn handle_set_subagent_model(
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index 3f7e792eb..498f74e73 100644
+index 5525a96e5..6e268ffd2 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
 @@ -2195,17 +2195,31 @@ pub(super) async fn handle_client(
@@ -179,10 +179,10 @@ index 3f7e792eb..498f74e73 100644
                  };
                  let _ = client_event_tx.send(event);
 diff --git a/crates/jcode-app-core/src/server/comm_session_tests.rs b/crates/jcode-app-core/src/server/comm_session_tests.rs
-index 9e55c083f..6036cbe44 100644
+index 6bc892519..c09fcf3ce 100644
 --- a/crates/jcode-app-core/src/server/comm_session_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_session_tests.rs
-@@ -1041,7 +1041,7 @@ async fn global_agent_model_request_updates_server_config_not_session() {
+@@ -1043,7 +1043,7 @@ async fn global_agent_model_request_updates_server_config_not_session() {
      let previous = std::env::var_os("JCODE_HOME");
      crate::env::set_var("JCODE_HOME", temp.path());
      let agent = test_agent_with_working_dir("routing_global", "/tmp/coord").await;
@@ -191,7 +191,7 @@ index 9e55c083f..6036cbe44 100644
          &agent,
          "routing_global",
          "swarm",
-@@ -1053,6 +1053,10 @@ async fn global_agent_model_request_updates_server_config_not_session() {
+@@ -1055,6 +1055,10 @@ async fn global_agent_model_request_updates_server_config_not_session() {
          overrides.is_empty(),
          "a global change must not pin the session"
      );

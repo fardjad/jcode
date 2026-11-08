@@ -1,9 +1,9 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fardjad Davari <public@fardjad.com>
 Date: Sat, 7 Nov 2026 04:34:38 +0100
-Subject: [PATCH] feat: worker blueprints and session lifecycle fixes
+Subject: [PATCH] feat: worker blueprint schemas and session lifecycle fixes
 
-X-Jcode-Patch-Intent: enable reusable worker blueprints with coordinator policy, one trusted allowlisted worker-to-child spawn edge, trusted worker hook identity, and blueprint-scoped resume of finished workers
+X-Jcode-Patch-Intent: enable reusable worker blueprints with optional validated assignment objects and report schemas, coordinator policy, one trusted allowlisted worker-to-child spawn edge, trusted worker hook identity, and blueprint-scoped resume of finished workers
 X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: 0002-candidate-add-hook-context-and-post-tool-transform.patch, 1001-personal-provider-openrouter-eu-and-auth-provider-selection.patch
 X-Jcode-Patch-File: 1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch
@@ -15,8 +15,29 @@ role instructions, model, effort, enabled-tools, disabled-tools,
 communication-policy, and timeout. At runtime, every valid blueprint
 generates a coordinator-visible tool named swarm_<id> that spawns a
 blueprint-backed worker, waits for completion, and returns a compact
-summary with paginated follow-up reads. Workers submit that completion report as
-their final assistant response, never through an unavailable swarm report tool.
+summary with paginated follow-up reads. Optional inline input-schema and
+output-schema front matter supplies compiled JSON Schema contracts. An
+input contract replaces task with one assignment object whose schema is
+the blueprint's input-schema verbatim, including its required fields.
+Spawn and resume require that object, validate it before any RPC, and
+render it as generic JSON; missing assignments name the required fields.
+Top-level tool requirements stay mode-neutral, and paging ignores the
+assignment entirely. Invalid schemas and reserved control names
+exclude their blueprint with a diagnostic. An output contract installs
+an Agent-owned submit_report tool; only validated arguments complete the
+worker turn. A missing submission receives at most two corrections, then
+fails honestly. Invalid submit_report calls consume that same correction
+budget; repeated tool-only failures terminate with their actual validation
+errors delivered to the parent's completion status and summary. For
+output-schema workers, submit_report is deliberately always available
+regardless of enabled-tools allowlists (global or blueprint); explicit
+disabled-tools restrictions still apply. Schema roots must directly
+declare type: object and properties; root composition is unsupported.
+accept_large_output is reserved along with the existing control fields.
+The trusted policy persists the output schema for reload
+and resume. Generic JSON report text uses the existing summary, history,
+and paging paths. No-schema blueprints retain task and final assistant
+text exactly; schema validation never interprets setup-specific fields.
 A reserved coordinator.md file
 supplies the coordinator's durable prompt and tool policy
 (enabled-tools/disabled-tools), configured via the shared
@@ -151,6 +172,9 @@ authority for session status on disconnect.
 
 Why it exists:
 Worker blueprints let a user specialize subagents without code changes.
+Optional schemas replace repeated assignment/report formatting prose
+with enforced shape, not truth, without encoding routing tiers or
+project-specific fields in Rust.
 A blueprint can pin a cheap model for routine work, restrict its tool
 access, control its communication, and cap its runtime. The generated
 tool returns a bounded summary (2000 chars) so the coordinator does not
@@ -220,6 +244,31 @@ without it the tool would surface a stale final as if it were the new
 answer.
 
 Upstream integration points:
+- crates/jcode-base/src/worker_blueprint.rs: BlueprintSchema compiles
+  inline YAML-to-JSON schemas and diagnoses invalid/reserved properties;
+  WorkerBlueprintSource and WorkerBlueprint carry optional contracts.
+  crates/jcode-base/Cargo.toml and Cargo.lock reuse jsonschema 0.49.3
+  without default features, as the upstream SDK does.
+- crates/jcode-base/src/session.rs: WorkerBlueprintPolicy.output_schema
+  defaults to absent for old snapshots and preserves the output contract
+  across visible/headless restoration and same-session resume.
+- crates/jcode-app-core/src/tool/blueprint.rs: assignment object and
+  validation, verbatim nested schema, and SubmitReportTool validation.
+  tool/mod.rs attaches that channel to the existing owner-scoped session
+  policy lifetime and dispatches it without a shared registry override.
+- crates/jcode-app-core/src/agent.rs, agent/status.rs, and
+  agent/turn_execution.rs: restore the report channel and expose its
+  schema through filtered session-local tool definitions. Both
+  agent/turn_loops.rs and agent/turn_streaming_mpsc.rs apply bounded
+  correction and persist validated JSON as completion text.
+- SubmitReportTool counts invalid submissions together with turn-end
+  corrections. Its typed ReportFailure preserves the actual validation
+  errors through comm_session.rs, comm_control.rs, live_turn.rs, and
+  client_lifecycle.rs completion paths; comm_await.rs includes these
+  failures in summaries, and scoped resume reads the same error report.
+- crates/jcode-app-core/src/agent_tests/blueprint_schema.rs: fictional
+  blueprint/field fixtures cover schema loading, real tool RPCs, both
+  turn loops, corrections, persistence, and no-schema compatibility.
 - crates/jcode-app-core/src/tool/mod.rs: blueprint tool registration.
 - crates/jcode-base/src/hooks.rs: optional blueprint hook identity.
 - crates/jcode-config-types/src/lib.rs: WorkerBlueprintOverride with
@@ -383,9 +432,15 @@ fields (model, effort, timeout_minutes) are rejected. Preserve the
 precedence chain for model (per-spawn > blueprint > swarm_model >
 coordinator) and timeout (per-call > blueprint > config > default 20m).
 Generated swarm_<id> descriptions are user-owned and exempt from the
-static built-in description token cap. Worker completion prompts must
-request a final assistant response and must not require unavailable swarm
-tools. Blueprint enabled-tools are
+static built-in description token cap. Without output-schema, completion
+still uses final assistant text and no
+unavailable swarm report tool. With a schema, require submit_report and
+preserve native session-local validation and bounded corrections. Keep
+Rust independent of schema property names and blueprint tiers. Keep
+input-schema verbatim under the assignment property, including required
+fields. Keep top-level tool requirements mode-neutral so paging never
+needs an assignment; require and validate spawn/resume assignment objects.
+Blueprint enabled-tools are
 always combined with the global tool policy. Coordinator policy only
 applies to root sessions, never to spawned workers or internal roles.
 The coordinator.md body is injected as a stable static segment in the
@@ -448,6 +503,7 @@ pre-existed in the sessions map. If a future TUI mode hosts the agent
 in-process, reintroduce session relabeling for that mode only.
 
 Validation:
+cargo test -p jcode-app-core blueprint_schema --lib
 cargo test -p jcode-swarm-core append_swarm_completion_report_instructions_is_idempotent --lib
 cargo test -p jcode-app-core append_swarm_completion_report_instructions_is_idempotent --lib
 cargo test -p jcode-app-core blueprint --lib
@@ -456,7 +512,6 @@ cargo test -p jcode-app-core generated_blueprint_workers_default_to_headless_spa
 cargo test -p jcode-app-core generated_blueprint_tool_executes_through_server_without_visible_attachment --lib
 cargo test -p jcode-app-core requested_unknown_blueprint_is_rejected_before_generic_swarm_spawn --lib
 cargo test -p jcode-app-core generated_blueprint_id_resolves_model_or_configured_luna_at_runtime --lib
-cargo test -p jcode-app-core tool_descriptions_stay_under_token_cap --lib
 cargo test -p jcode-base worker_blueprint --lib
 cargo test -p jcode-base discovery_follows_symlinked_markdown_files --lib
 cargo test -p jcode-base discovery_follows_a_symlinked_blueprint_directory --lib
@@ -536,18 +591,23 @@ cargo test -p jcode-app-core viewer_disconnect_keeps_live_agent_and_swarm_member
 cargo test -p jcode-app-core owner_idle_disconnect_without_viewer_flag_still_removes_member --lib
 cargo test -p jcode-app-core viewer_that_started_its_own_turn_still_stops_on_disconnect --lib
 ---
- crates/jcode-app-core/src/agent.rs            |  265 +-
+ Cargo.lock                                    |    1 +
+ crates/jcode-app-core/src/agent.rs            |  275 +-
  crates/jcode-app-core/src/agent/prompting.rs  |   21 +-
- .../src/agent/turn_execution.rs               |  136 +-
- crates/jcode-app-core/src/agent_tests.rs      |  959 +++++++
+ crates/jcode-app-core/src/agent/status.rs     |   34 +
+ .../src/agent/turn_execution.rs               |  146 +-
+ crates/jcode-app-core/src/agent/turn_loops.rs |   23 +-
+ .../src/agent/turn_streaming_mpsc.rs          |   29 +-
+ crates/jcode-app-core/src/agent_tests.rs      |  965 ++++++
+ .../src/agent_tests/blueprint_schema.rs       |  580 ++++
  .../src/protocol_tests/comm_requests.rs       |    2 +
  .../src/server/client_actions.rs              |    6 +
- .../src/server/client_actions_tests.rs        |   45 +-
+ .../src/server/client_actions_tests.rs        |   47 +-
  .../src/server/client_comm_message.rs         |   19 +
  .../src/server/client_comm_tests.rs           |   15 +
  .../src/server/client_disconnect_cleanup.rs   |   22 +
  .../server/client_disconnect_grace_tests.rs   |   96 +
- .../src/server/client_lifecycle.rs            |    5 +
+ .../src/server/client_lifecycle.rs            |   10 +-
  .../src/server/client_lifecycle_tests.rs      |    1 +
  .../src/server/client_lightweight_control.rs  |    6 +
  .../src/server/client_session.rs              |    4 +
@@ -564,19 +624,21 @@ cargo test -p jcode-app-core viewer_that_started_its_own_turn_still_stops_on_dis
  .../resume/same_client_takeover.rs            |    2 +
  .../src/server/client_state_tests.rs          |    2 +
  .../src/server/client_target_attach_tests.rs  |    1 +
- .../jcode-app-core/src/server/comm_control.rs |  182 +-
+ .../jcode-app-core/src/server/comm_await.rs   |   13 +-
+ .../jcode-app-core/src/server/comm_control.rs |  187 +-
  .../src/server/comm_control_tests.rs          |    1 +
  .../comm_control_tests/assign_double.rs       |    1 +
  .../client_attached_dispatch.rs               |    1 +
- .../server/comm_control_tests/task_control.rs |  712 +++++
+ .../server/comm_control_tests/task_control.rs |  713 +++++
  .../src/server/comm_plan_tests.rs             |    1 +
- .../jcode-app-core/src/server/comm_session.rs |  314 +-
- .../src/server/comm_session_tests.rs          | 1695 ++++++++++-
+ .../jcode-app-core/src/server/comm_session.rs |  321 +-
+ .../src/server/comm_session_tests.rs          | 1701 ++++++++++-
  crates/jcode-app-core/src/server/comm_sync.rs |  218 +-
  crates/jcode-app-core/src/server/debug.rs     |    6 +
  .../src/server/debug_session_admin.rs         |    1 +
  .../jcode-app-core/src/server/debug_tests.rs  |    2 +
  crates/jcode-app-core/src/server/headless.rs  |    7 +-
+ crates/jcode-app-core/src/server/live_turn.rs |    6 +-
  .../jcode-app-core/src/server/reload_tests.rs |    1 +
  .../src/server/session_connections.rs         |    1 +
  crates/jcode-app-core/src/server/state.rs     |    8 +
@@ -585,36 +647,50 @@ cargo test -p jcode-app-core viewer_that_started_its_own_turn_still_stops_on_dis
  .../src/server/swarm_persistence_tests.rs     |   76 +
  .../src/server/swarm_watchdog_tests.rs        |    1 +
  crates/jcode-app-core/src/server/tests.rs     |    2 +
- crates/jcode-app-core/src/tool/blueprint.rs   |  950 ++++++
- .../src/tool/blueprint_tests.rs               | 2430 ++++++++++++++++
+ crates/jcode-app-core/src/tool/blueprint.rs   | 1156 ++++++++
+ .../src/tool/blueprint_tests.rs               | 2450 +++++++++++++++
  crates/jcode-app-core/src/tool/communicate.rs |   11 +-
  .../src/tool/communicate/transport.rs         |    4 +-
  .../src/tool/communicate_tests.rs             |    2 +-
  .../src/tool/communicate_tests/end_to_end.rs  |  152 +
- crates/jcode-app-core/src/tool/mod.rs         |   62 +-
+ crates/jcode-app-core/src/tool/mod.rs         |   84 +-
  crates/jcode-app-core/src/tool/tests.rs       |   12 +
+ crates/jcode-base/Cargo.toml                  |    2 +-
  crates/jcode-base/src/config.rs               |    1 +
  .../jcode-base/src/config/display_summary.rs  |   75 +-
  crates/jcode-base/src/config_tests.rs         |   11 +
  crates/jcode-base/src/hooks.rs                |   28 +
  crates/jcode-base/src/lib.rs                  |    1 +
- crates/jcode-base/src/session.rs              |   27 +
+ crates/jcode-base/src/session.rs              |   30 +
  crates/jcode-base/src/session/journal.rs      |    5 +-
- crates/jcode-base/src/session_tests/cases.rs  |  177 ++
- crates/jcode-base/src/worker_blueprint.rs     | 2541 +++++++++++++++++
+ crates/jcode-base/src/session_tests/cases.rs  |  181 ++
+ crates/jcode-base/src/worker_blueprint.rs     | 2639 +++++++++++++++++
  crates/jcode-config-types/src/lib.rs          |   64 +
  .../src/protocol_tests/comm_requests.rs       |    2 +
  crates/jcode-protocol/src/wire.rs             |   15 +
  crates/jcode-swarm-core/src/lib.rs            |    9 +-
  docs/HOOKS.md                                 |    2 +
  src/cli/terminal.rs                           |   20 +-
- 72 files changed, 11281 insertions(+), 186 deletions(-)
+ 80 files changed, 12358 insertions(+), 202 deletions(-)
+ create mode 100644 crates/jcode-app-core/src/agent_tests/blueprint_schema.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint.rs
  create mode 100644 crates/jcode-app-core/src/tool/blueprint_tests.rs
  create mode 100644 crates/jcode-base/src/worker_blueprint.rs
 
+diff --git a/Cargo.lock b/Cargo.lock
+index bbc0a3a46..a109cd197 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3533,6 +3533,7 @@ dependencies = [
+  "jcode-tool-types",
+  "jcode-transport",
+  "jcode-usage-types",
++ "jsonschema",
+  "libc",
+  "open",
+  "proctitle",
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index f8773d683..2340d861d 100644
+index f8773d683..90b414af9 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
 @@ -78,6 +78,123 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
@@ -789,14 +865,17 @@ index f8773d683..2340d861d 100644
              rewind_undo_snapshot: None,
              stdin_request_tx: None,
              provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
-@@ -550,6 +680,73 @@ impl Agent {
+@@ -550,6 +680,81 @@ impl Agent {
          agent
      }
 
 +    fn apply_worker_blueprint_policy(
 +        &mut self,
 +        policy: Option<&crate::session::WorkerBlueprintPolicy>,
-+    ) {
++    ) -> anyhow::Result<()> {
++        let report_tool = policy.and_then(|policy| policy.output_schema.as_ref())
++            .map(|schema| crate::tool::blueprint::SubmitReportTool::new(schema.clone()).map(Arc::new))
++            .transpose()?;
 +        let global_allowed = crate::config::config().tools.selection().allowed_tools;
 +        let mut base_allowed = match (self.base_allowed_tools.clone(), global_allowed) {
 +            (Some(base), Some(global)) => Some(base.intersection(&global).cloned().collect()),
@@ -831,20 +910,25 @@ index f8773d683..2340d861d 100644
 +            self.disabled_tools
 +                .extend(self.global_disabled_tools.iter().cloned());
 +        }
++        if report_tool.is_some() && let Some(allowed) = base_allowed.as_mut() {
++            allowed.insert("submit_report".to_string());
++        }
 +        self.allowed_tools = base_allowed;
 +        self._tool_policy_registration = crate::tool::register_session_tool_policy(
 +            &self.session.id,
 +            self.allowed_tools.clone(),
 +            self.disabled_tools.clone(),
 +        );
++        crate::tool::set_blueprint_report_tool(&self.session.id, report_tool);
++        Ok(())
 +    }
 +
 +    pub(crate) fn set_worker_blueprint_policy(
 +        &mut self,
 +        policy: crate::session::WorkerBlueprintPolicy,
 +    ) -> anyhow::Result<()> {
-+        self.session.worker_blueprint_policy = Some(policy.clone());
-+        self.apply_worker_blueprint_policy(Some(&policy));
++        self.apply_worker_blueprint_policy(Some(&policy))?;
++        self.session.worker_blueprint_policy = Some(policy);
 +        self.locked_tools = None;
 +        self.cache_tracker.reset();
 +        self.session.save_prepared()
@@ -863,7 +947,7 @@ index f8773d683..2340d861d 100644
      fn current_skills_snapshot(&self) -> Arc<SkillRegistry> {
          // Global skills come from the process-wide shared registry; the
          // project-local overlay is composed fresh from this session's
-@@ -611,6 +808,25 @@ impl Agent {
+@@ -611,6 +816,25 @@ impl Agent {
          Self::new_with_initial_ownership(provider, registry, working_dir, parent_id, true)
      }
 
@@ -889,7 +973,7 @@ index f8773d683..2340d861d 100644
      fn new_with_initial_ownership(
          provider: Arc<dyn Provider>,
          registry: Registry,
-@@ -626,6 +842,23 @@ impl Agent {
+@@ -626,6 +850,23 @@ impl Agent {
              *lap = Instant::now();
          };
          let tool_selection = crate::config::config().tools.selection();
@@ -913,7 +997,7 @@ index f8773d683..2340d861d 100644
          let mut session = Session::create(parent_id, None);
          if let Some(working_dir) = working_dir {
              session.working_dir = Some(working_dir.to_string());
-@@ -635,8 +868,8 @@ impl Agent {
+@@ -635,8 +876,8 @@ impl Agent {
              provider,
              registry,
              session,
@@ -924,7 +1008,7 @@ index f8773d683..2340d861d 100644
          );
          mark("build_base", &mut lap);
          // activate_concurrency_tracking writes the presence markers when the
-@@ -644,6 +877,10 @@ impl Agent {
+@@ -644,6 +885,10 @@ impl Agent {
          // session never touches the marker files.
          agent.session.mark_active_unregistered();
          mark("mark_active", &mut lap);
@@ -935,7 +1019,7 @@ index f8773d683..2340d861d 100644
          agent.session.model = Some(agent.provider_model());
          agent.session.provider_key = agent.provider_key_for_new_session();
          agent.reconcile_explicit_provider_pin_route();
-@@ -692,7 +929,20 @@ impl Agent {
+@@ -692,7 +937,20 @@ impl Agent {
          session: Session,
          allowed_tools: Option<HashSet<String>>,
      ) -> Self {
@@ -957,12 +1041,14 @@ index f8773d683..2340d861d 100644
              crate::config::ToolSelection {
                  allowed_tools: Some(allowed_tools),
                  disabled_tools: HashSet::new(),
-@@ -707,6 +957,9 @@ impl Agent {
+@@ -707,6 +965,11 @@ impl Agent {
              tool_selection.allowed_tools,
              tool_selection.disabled_tools,
          );
 +        if let Some(policy) = agent.session.worker_blueprint_policy.clone() {
-+            agent.apply_worker_blueprint_policy(Some(&policy));
++            if let Err(error) = agent.apply_worker_blueprint_policy(Some(&policy)) {
++                logging::error(&format!("Failed to restore worker output schema: {error}"));
++            }
 +        }
          // begin_concurrency_tracking below writes the presence markers.
          agent.session.mark_active_unregistered();
@@ -1015,8 +1101,53 @@ index cfce180b9..66361996b 100644
          split
      }
 
+diff --git a/crates/jcode-app-core/src/agent/status.rs b/crates/jcode-app-core/src/agent/status.rs
+index 62ccd6de1..679e49edc 100644
+--- a/crates/jcode-app-core/src/agent/status.rs
++++ b/crates/jcode-app-core/src/agent/status.rs
+@@ -1,6 +1,40 @@
+ use super::*;
+
+ impl Agent {
++    pub(super) fn blueprint_report_for_turn(
++        &mut self,
++    ) -> Result<Option<Arc<crate::tool::blueprint::SubmitReportTool>>> {
++        let report = crate::tool::blueprint_report_tool(&self.session.id);
++        anyhow::ensure!(
++            report.is_some()
++                || self
++                    .session
++                    .worker_blueprint_policy
++                    .as_ref()
++                    .is_none_or(|policy| policy.output_schema.is_none()),
++            "Worker output schema is not available"
++        );
++        if let Some(report) = &report {
++            report.reset();
++            self.append_turn_system_reminder(
++                "Finish this turn by calling submit_report with arguments matching its schema. \
++                 Final assistant prose is not a completion report for this worker.",
++            )?;
++        }
++        Ok(report)
++    }
++
++    pub(super) fn persist_blueprint_report(&mut self, report: &str) -> Result<()> {
++        self.add_message(
++            Role::Assistant,
++            vec![ContentBlock::Text {
++                text: report.to_string(),
++                cache_control: None,
++            }],
++        );
++        self.session.save()
++    }
++
+     /// Read-only source for splitting a new session before its first persistence.
+     pub(crate) fn session_for_split(&self) -> &Session {
+         &self.session
 diff --git a/crates/jcode-app-core/src/agent/turn_execution.rs b/crates/jcode-app-core/src/agent/turn_execution.rs
-index fd8903f33..17d2cd9e9 100644
+index fd8903f33..82c23d098 100644
 --- a/crates/jcode-app-core/src/agent/turn_execution.rs
 +++ b/crates/jcode-app-core/src/agent/turn_execution.rs
 @@ -201,15 +201,26 @@ impl Agent {
@@ -1052,7 +1183,16 @@ index fd8903f33..17d2cd9e9 100644
          }
      }
 
-@@ -443,9 +454,41 @@ impl Agent {
+@@ -242,7 +253,7 @@ impl Agent {
+
+     /// Persist a hidden, model-visible `<system-reminder>` message at the tail
+     /// of the transcript so it does not disturb the cached prompt prefix.
+-    fn append_turn_system_reminder(&mut self, reminder: &str) -> Result<()> {
++    pub(super) fn append_turn_system_reminder(&mut self, reminder: &str) -> Result<()> {
+         let reminder = reminder.trim();
+         if reminder.is_empty() {
+             return Ok(());
+@@ -443,9 +454,43 @@ impl Agent {
          }
      }
 
@@ -1082,7 +1222,9 @@ index fd8903f33..17d2cd9e9 100644
 +            );
 +            self.global_disabled_tools = selection.disabled_tools;
 +            let policy = self.session.worker_blueprint_policy.clone();
-+            self.apply_worker_blueprint_policy(policy.as_ref());
++            if let Err(error) = self.apply_worker_blueprint_policy(policy.as_ref()) {
++                logging::error(&format!("Failed to restore worker output schema: {error}"));
++            }
 +            // Load or clear the coordinator prompt for root sessions.
 +            if enabled {
 +                self.coordinator_prompt = super::load_coordinator_prompt_body();
@@ -1095,7 +1237,7 @@ index fd8903f33..17d2cd9e9 100644
      }
 
      /// Mark this session as an inline swarm worker. When enabled, the streaming
-@@ -677,6 +720,16 @@ impl Agent {
+@@ -677,6 +722,16 @@ impl Agent {
              .map(|names| names.iter().cloned().collect());
          let allowed = enabled.as_ref().or(self.allowed_tools.as_ref());
          let mut tools = self.registry.definitions(allowed).await;
@@ -1112,7 +1254,20 @@ index fd8903f33..17d2cd9e9 100644
          if enabled.is_none() && !self.disabled_tools.is_empty() {
              tools.retain(|tool| {
                  !self
-@@ -1156,6 +1209,30 @@ impl Agent {
+@@ -697,6 +752,12 @@ impl Agent {
+             let disabled = config.disabled.iter().cloned().collect();
+             tools.retain(|tool| !self.registry.tool_is_disabled(&disabled, &tool.name));
+         }
++        if let Some(report) = crate::tool::blueprint_report_tool(&self.session.id)
++            && self.validate_tool_allowed("submit_report").is_ok()
++        {
++            tools.retain(|tool| tool.name != "submit_report");
++            tools.push(report.definition());
++        }
+         tools
+     }
+
+@@ -1156,6 +1217,30 @@ impl Agent {
                  "Tool 'jcode_docs' is disabled in self-development mode. Read the working tree documentation instead."
              ));
          }
@@ -1143,7 +1298,7 @@ index fd8903f33..17d2cd9e9 100644
          if sdk_enabled {
              return Ok(());
          }
-@@ -1252,11 +1329,8 @@ impl Agent {
+@@ -1252,11 +1337,8 @@ impl Agent {
          self.refresh_agents_md_snapshot();
          let agents_md_ms = lap.elapsed().as_millis();
          let lap = Instant::now();
@@ -1153,11 +1308,11 @@ index fd8903f33..17d2cd9e9 100644
 -            self.disabled_tools.clone(),
 -        );
 +        let policy = self.session.worker_blueprint_policy.clone();
-+        self.apply_worker_blueprint_policy(policy.as_ref());
++        self.apply_worker_blueprint_policy(policy.as_ref())?;
          let policy_ms = lap.elapsed().as_millis();
          let assign_ms = assign_start.elapsed().as_millis();
          if assign_ms >= 50 {
-@@ -1615,6 +1689,44 @@ struct TurnTokenUsage {
+@@ -1615,6 +1697,44 @@ struct TurnTokenUsage {
      cache_creation_input_tokens: Option<u64>,
  }
 
@@ -1202,11 +1357,179 @@ index fd8903f33..17d2cd9e9 100644
  fn turn_token_usage_after(
      messages: &[crate::session::StoredMessage],
      start_message_index: usize,
+diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
+index ddf462f0a..3a1f12991 100644
+--- a/crates/jcode-app-core/src/agent/turn_loops.rs
++++ b/crates/jcode-app-core/src/agent/turn_loops.rs
+@@ -78,6 +78,8 @@ impl Agent {
+         let mut batch_nudge_pending = false;
+         let mut consecutive_malformed_tool_rounds = 0u32;
+         let mut unparsed_tool_markup_nudges = 0u32;
++        let report_tool = self.blueprint_report_for_turn()?;
++        let mut report_corrections = 0;
+
+         loop {
+             // Do not start another provider request once a cancel has been
+@@ -87,6 +89,14 @@ impl Agent {
+                 logging::info("Cancel observed at turn-loop head - not starting another request");
+                 break;
+             }
++            if let Some(report) = report_tool.as_ref().and_then(|tool| tool.report()) {
++                self.persist_blueprint_report(&report)?;
++                final_text = report;
++                break;
++            }
++            if let Some(report) = &report_tool {
++                report.check_failure(report_corrections)?;
++            }
+             if let Some(block) = self.session.migration_lease_block() {
+                 logging::info(&format!(
+                     "Session migrated mid-turn - stopping local turn loop: {block}"
+@@ -1000,6 +1010,11 @@ impl Agent {
+
+             // If no tool calls, we're done
+             if tool_calls.is_empty() {
++                if let Some(report) = &report_tool {
++                    let correction = report.correction(&mut report_corrections)?;
++                    self.append_turn_system_reminder(&correction)?;
++                    continue;
++                }
+                 // Unparseable tool-call markup in the text (issue #1702):
+                 // surface it and ask the model to re-issue the call natively.
+                 if let Some(notice) = self.maybe_nudge_unparsed_tool_markup(
+@@ -1066,7 +1081,8 @@ impl Agent {
+
+             // If provider handles tools internally (like Claude Code CLI), only run native tools locally
+             if self.provider.handles_tools_internally() {
+-                tool_calls.retain(|tc| JCODE_NATIVE_TOOLS.contains(&tc.name.as_str()));
++                tool_calls.retain(|tc| JCODE_NATIVE_TOOLS.contains(&tc.name.as_str())
++                    || (tc.name == "submit_report" && report_tool.is_some()));
+                 if tool_calls.is_empty() {
+                     if !generated_image_contexts.is_empty() {
+                         for blocks in generated_image_contexts.drain(..) {
+@@ -1139,7 +1155,8 @@ impl Agent {
+                 executed_valid_call = true;
+                 self.validate_tool_allowed(&tc.name)?;
+
+-                let is_native_tool = JCODE_NATIVE_TOOLS.contains(&tc.name.as_str());
++                let is_native_tool = JCODE_NATIVE_TOOLS.contains(&tc.name.as_str())
++                    || (tc.name == "submit_report" && report_tool.is_some());
+
+                 // Check if SDK already executed this tool
+                 if let Some((sdk_content, sdk_is_error)) = sdk_tool_results.remove(&tc.id) {
+@@ -1355,6 +1372,8 @@ impl Agent {
+             }
+         }
+
++        anyhow::ensure!(report_tool.as_ref().is_none_or(|tool| tool.report().is_some()),
++            "Worker turn ended without a valid submit_report");
+         Ok(final_text)
+     }
+ }
+diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
+index 5d6cd2e06..21c970f96 100644
+--- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
++++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
+@@ -81,6 +81,8 @@ impl Agent {
+         let mut fable_guardrail_reconsiderations = 0u32;
+         let mut consecutive_malformed_tool_rounds = 0u32;
+         let mut unparsed_tool_markup_nudges = 0u32;
++        let report_tool = self.blueprint_report_for_turn()?;
++        let mut report_corrections = 0;
+
+         loop {
+             // Never open a new provider request after a cancel. Several paths
+@@ -93,6 +95,14 @@ impl Agent {
+                 logging::info("Cancel observed at turn-loop head - not starting another request");
+                 break;
+             }
++            if let Some(report) = report_tool.as_ref().and_then(|tool| tool.report()) {
++                self.persist_blueprint_report(&report)?;
++                let _ = event_tx.send(ServerEvent::TextDelta { text: report });
++                break;
++            }
++            if let Some(report) = &report_tool {
++                report.check_failure(report_corrections)?;
++            }
+             if let Some(block) = self.session.migration_lease_block() {
+                 logging::info(&format!(
+                     "Session migrated mid-turn - stopping local turn loop: {block}"
+@@ -289,6 +299,8 @@ impl Agent {
+                             logging::info(
+                                 "Graceful shutdown/cancel before API stream opened - stopping turn",
+                             );
++                            anyhow::ensure!(report_tool.is_none(),
++                                "Worker turn cancelled before its completion report was delivered");
+                             return Ok(());
+                         }
+                         result = &mut complete_future => {
+@@ -1388,6 +1400,13 @@ impl Agent {
+             // Injecting before tool_results would break the API requirement that
+             // tool_use must be immediately followed by tool_result.
+             if tool_calls.is_empty() {
++                if saw_message_end && !self.is_graceful_shutdown()
++                    && let Some(report) = &report_tool
++                {
++                    let correction = report.correction(&mut report_corrections)?;
++                    self.append_turn_system_reminder(&correction)?;
++                    continue;
++                }
+                 // The model printed a tool call as markup we could not parse
+                 // (issue #1702): say so visibly and ask it to re-issue the
+                 // call natively instead of silently ending the turn.
+@@ -1507,7 +1526,8 @@ impl Agent {
+             ));
+
+             if self.provider.handles_tools_internally() {
+-                tool_calls.retain(|tc| JCODE_NATIVE_TOOLS.contains(&tc.name.as_str()));
++                tool_calls.retain(|tc| JCODE_NATIVE_TOOLS.contains(&tc.name.as_str())
++                    || (tc.name == "submit_report" && report_tool.is_some()));
+                 if tool_calls.is_empty() {
+                     // === INJECTION POINT D: After provider-handled tools, before next API call ===
+                     let injected = self.inject_soft_interrupts();
+@@ -1601,7 +1621,8 @@ impl Agent {
+                 executed_valid_call = true;
+                 self.validate_tool_allowed(&tc.name)?;
+
+-                let is_native_tool = JCODE_NATIVE_TOOLS.contains(&tc.name.as_str());
++                let is_native_tool = JCODE_NATIVE_TOOLS.contains(&tc.name.as_str())
++                    || (tc.name == "submit_report" && report_tool.is_some());
+
+                 if let Some((sdk_content, sdk_is_error)) = sdk_tool_results.remove(&tc.id) {
+                     // For native tools, ignore SDK errors and execute locally
+@@ -1830,6 +1851,8 @@ impl Agent {
+                         );
+                     }
+                     self.session.save()?;
++                    anyhow::ensure!(report_tool.is_none(),
++                        "Worker turn cancelled before its completion report was delivered");
+                     return Ok(());
+                 } else {
+                     // User pressed Alt+B — move tool to background
+@@ -1911,6 +1934,8 @@ impl Agent {
+             }
+         }
+
++        anyhow::ensure!(report_tool.as_ref().is_none_or(|tool| tool.report().is_some()),
++            "Worker turn ended without a valid submit_report");
+         Ok(())
+     }
+ }
 diff --git a/crates/jcode-app-core/src/agent_tests.rs b/crates/jcode-app-core/src/agent_tests.rs
-index 357b50a93..1640b14b2 100644
+index 357b50a93..a7e2d3e7d 100644
 --- a/crates/jcode-app-core/src/agent_tests.rs
 +++ b/crates/jcode-app-core/src/agent_tests.rs
-@@ -674,6 +674,8 @@ async fn streaming_preserves_hook_context() {
+@@ -29,6 +29,9 @@ mod compile_remote;
+ #[path = "agent_tests/mcp_remote_cache.rs"]
+ mod mcp_remote_cache;
+
++#[path = "agent_tests/blueprint_schema.rs"]
++mod blueprint_schema;
++
+ struct DelayedProvider {
+     open_delay: Duration,
+     first_event_delay: Duration,
+@@ -674,6 +677,8 @@ async fn streaming_preserves_hook_context() {
          mode: Some("inline".into()),
          role: crate::hooks::ProcessRole::Worker,
          worker_id: Some("worker-session".into()),
@@ -1215,7 +1538,7 @@ index 357b50a93..1640b14b2 100644
      };
      let expected_context = context.to_json();
      let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-@@ -765,6 +767,8 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
+@@ -765,6 +770,8 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
          mode: Some("inline".to_string()),
          role: crate::hooks::ProcessRole::Worker,
          worker_id: Some("worker-session".to_string()),
@@ -1224,7 +1547,7 @@ index 357b50a93..1640b14b2 100644
      };
 
      crate::hooks::with_swarm_context(worker.clone(), async {
-@@ -785,10 +789,766 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
+@@ -785,10 +792,769 @@ async fn agent_turn_hook_context_preserves_explicit_worker_scope() {
      .await;
  }
 
@@ -1237,6 +1560,7 @@ index 357b50a93..1640b14b2 100644
 +    children: &[&str],
 +) -> crate::session::WorkerBlueprintPolicy {
 +    crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: name.to_string(),
 +        enabled_tools: None,
 +        disabled_tools: None,
@@ -1707,6 +2031,7 @@ index 357b50a93..1640b14b2 100644
 +        "write".to_string(),
 +    ]);
 +    let policy = crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: "native-worker".to_string(),
 +        enabled_tools: Some(vec![
 +            "read".to_string(),
@@ -1869,6 +2194,7 @@ index 357b50a93..1640b14b2 100644
 +    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
 +    let registry = Registry::new(provider.clone()).await;
 +    let policy = crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: "native-worker".to_string(),
 +        enabled_tools: Some(vec![
 +            "read".to_string(),
@@ -1991,7 +2317,7 @@ index 357b50a93..1640b14b2 100644
  #[test]
  fn agent_drop_removes_its_configured_session_tool_policy() {
      let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
-@@ -1907,6 +2667,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
+@@ -1907,6 +2673,205 @@ async fn gmail_is_exposed_by_default_and_can_be_explicitly_disabled() {
      crate::config::Config::invalidate_cache();
  }
 
@@ -2197,6 +2523,592 @@ index 357b50a93..1640b14b2 100644
  fn seed_transient_session_state(agent: &mut Agent) {
      agent.push_alert("pending alert".to_string());
      agent.queue_soft_interrupt(
+diff --git a/crates/jcode-app-core/src/agent_tests/blueprint_schema.rs b/crates/jcode-app-core/src/agent_tests/blueprint_schema.rs
+new file mode 100644
+index 000000000..6cbea017f
+--- /dev/null
++++ b/crates/jcode-app-core/src/agent_tests/blueprint_schema.rs
+@@ -0,0 +1,580 @@
++//! Generic blueprint contracts exercised through the real tool and turn paths.
++use super::*;
++use crate::tool::{Tool, ToolContext, ToolExecutionMode};
++use crate::worker_blueprint::load_worker_blueprints;
++use serde_json::{Value, json};
++use std::collections::{BTreeMap, VecDeque};
++use std::sync::Mutex as StdMutex;
++
++// Approved contract shapes, with every setup-specific field renamed.
++fn input_schema() -> Value {
++    json!({"type":"object", "additionalProperties":false,
++    "required":["ticket","prerequisite","origin","topic","method","sources",
++        "paths","exclusions","criterion","minutes","tries"],
++    "properties":{
++        "ticket":{"type":"string"}, "prerequisite":{"type":["string","null"]},
++        "origin":{"type":["string","null"]}, "topic":{"type":"string"},
++        "method":{"enum":["read-only","edit"]},
++        "sources":{"type":"array","items":{"type":"string"}},
++        "paths":{"type":"array","items":{"type":"string"}},
++        "exclusions":{"type":"array","items":{"type":"string"}},
++        "criterion":{"type":"string"}, "minutes":{"type":"integer","minimum":1},
++        "tries":{"type":"integer","minimum":1,"maximum":2}, "memo":{"type":"string"}
++    }})
++}
++
++fn output_schema() -> Value {
++    json!({"type":"object", "additionalProperties":false,
++    "required":["verdict","answer","evidence","edits","probes","gaps","links"],
++    "properties":{
++        "verdict":{"enum":["done","partial","blocked","needs_decision"]},
++        "answer":{"type":"string"}, "evidence":{"type":"string"},
++        "edits":{"type":"array","items":{"type":"string"}},
++        "probes":{"type":"array","items":{"type":"object","additionalProperties":false,
++            "required":["run","code","text"],"properties":{
++                "run":{"type":"string"},"code":{"type":["integer","null"]},"text":{"type":"string"}}}},
++        "gaps":{"type":"string"}, "help":{"type":["string","null"]},
++        "files":{"type":"array","items":{"type":"string"}},
++        "links":{"type":"object","additionalProperties":false,
++            "required":["event","ticket","prerequisite","origin"],"properties":{
++                "event":{"enum":["done","blocked","assistance","handback"]},
++                "ticket":{"type":"string"},"prerequisite":{"type":["string","null"]},
++                "origin":{"type":["string","null"]}}}
++    }})
++}
++
++fn assignment() -> Value {
++    json!({"assignment":{"ticket":"one","prerequisite":null,"origin":null,"topic":"Find a fact",
++        "method":"read-only","sources":[],"paths":[],"exclusions":[],"criterion":"fact found",
++        "minutes":1,"tries":2,"memo":""}})
++}
++
++fn report() -> Value {
++    json!({"verdict":"done","answer":"Fact found","evidence":"e".repeat(3000),"edits":[],
++        "probes":[{"run":"inspect","code":null,"text":"not run"}],"gaps":"","help":null,"files":[],
++        "links":{"event":"done","ticket":"one","prerequisite":null,"origin":null}})
++}
++
++fn write_blueprint(dir: &std::path::Path, name: &str, schemas: bool) {
++    let schemas = if schemas {
++        format!(
++            "input-schema: {}\noutput-schema: {}\n",
++            input_schema(),
++            output_schema()
++        )
++    } else {
++        String::new()
++    };
++    std::fs::write(dir.join(format!("{name}.md")), format!(
++        "---\nname: {name}\ndescription: Inspect facts.\nmodel: mock\n{schemas}---\nInspect the assigned material.\n"
++    )).unwrap();
++}
++
++fn context() -> ToolContext {
++    ToolContext {
++        session_id: "planner-session".into(),
++        message_id: "message".into(),
++        tool_call_id: "call".into(),
++        working_dir: None,
++        stdin_request_tx: None,
++        graceful_shutdown_signal: None,
++        execution_mode: ToolExecutionMode::Direct,
++    }
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn blueprint_schema_assignment_spawn_resume_and_paging() {
++    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
++    let _guard = crate::storage::lock_test_env();
++    let dir = tempfile::tempdir().unwrap();
++    write_blueprint(dir.path(), "planner", true);
++    write_blueprint(dir.path(), "summarizer", true);
++    write_blueprint(dir.path(), "legacy", false);
++    let blueprint_dir = Some(dir.path().to_str().unwrap());
++    let loaded = load_worker_blueprints(blueprint_dir, &BTreeMap::new());
++    assert!(loaded.diagnostics.is_empty());
++    let bp = loaded.registry.get("summarizer").unwrap();
++    let tool = crate::tool::blueprint::BlueprintTool::from_blueprint(bp);
++    let parameters = tool.parameters_schema();
++    assert!(parameters["properties"].get("task").is_none());
++    assert_eq!(
++        parameters["properties"]["assignment"],
++        input_schema()
++    );
++    assert!(parameters["properties"].get("topic").is_none());
++    assert!(
++        parameters.get("required").is_none(),
++        "paging must not require assignments"
++    );
++    let legacy = crate::tool::blueprint::BlueprintTool::from_blueprint(
++        loaded.registry.get("legacy").unwrap(),
++    );
++    assert!(
++        legacy.parameters_schema()["properties"]
++            .get("task")
++            .is_some()
++    );
++    assert!(
++        legacy
++            .execute(json!({"task":" "}), context())
++            .await
++            .unwrap_err()
++            .to_string()
++            .contains("must not be blank")
++    );
++    std::fs::write(dir.path().join("invalid.md"), format!(
++        "---\nname: invalid\ndescription: Composed schema.\ninput-schema: {{type: object, properties: {{}}, allOf: [{}]}}\n---\nInspect.", input_schema()
++    )).unwrap();
++    let composed = load_worker_blueprints(blueprint_dir, &BTreeMap::new());
++    assert!(
++        composed.registry.get("invalid").is_none(),
++        "composed schemas must be excluded"
++    );
++    assert!(
++        composed
++            .diagnostics
++            .iter()
++            .any(|diagnostic| diagnostic.message.contains("allOf"))
++    );
++    for reserved in [
++        "task",
++        "follow_up_session",
++        "resume_session",
++        "offset",
++        "limit",
++        "scope",
++        "working_dir",
++        "spawn_mode",
++        "timeout_minutes",
++        "intent",
++        "accept_large_output",
++    ] {
++        for key in ["input-schema", "output-schema"] {
++            std::fs::write(dir.path().join("invalid.md"), format!(
++                "---\nname: invalid\ndescription: Invalid contract.\n{key}: {{type: object, properties: {{{reserved}: {{type: string}}}}}}\n---\nInspect."
++            )).unwrap();
++            let loaded = load_worker_blueprints(blueprint_dir, &BTreeMap::new());
++            assert!(loaded.registry.get("invalid").is_none());
++            assert!(
++                loaded
++                    .diagnostics
++                    .iter()
++                    .any(|d| d.message.contains(reserved))
++            );
++        }
++    }
++    std::fs::write(dir.path().join("invalid.md"),
++        "---\nname: invalid\ndescription: Invalid schema.\ninput-schema: {type: nonsense}\n---\nInspect.").unwrap();
++    assert!(
++        load_worker_blueprints(blueprint_dir, &BTreeMap::new())
++            .registry
++            .get("invalid")
++            .is_none()
++    );
++    let mut invalid = assignment();
++    invalid["assignment"]["tries"] = json!(3);
++    for resume in [false, true] {
++        let missing = if resume {
++            json!({"resume_session":"summarizer-session"})
++        } else {
++            json!({})
++        };
++        let error = tool.execute(missing, context()).await.unwrap_err().to_string();
++        assert!(error.contains("'assignment' is required"), "{error}");
++        for field in input_schema()["required"].as_array().unwrap() {
++            assert!(error.contains(field.as_str().unwrap()), "{error}");
++        }
++        if resume {
++            invalid["resume_session"] = json!("summarizer-session");
++        }
++        assert!(
++            tool.execute(invalid.clone(), context())
++                .await
++                .unwrap_err()
++                .to_string()
++                .contains("tries")
++        );
++    }
++    for assignment in [json!(null), json!("not an object"), json!({"extra":true})] {
++        assert!(tool.execute(json!({"assignment":assignment}), context()).await.is_err());
++    }
++    let mut extra = assignment();
++    extra["assignment"]["unexpected"] = json!(true);
++    assert!(tool.execute(extra, context()).await.unwrap_err().to_string().contains("unexpected"));
++
++    let socket = dir.path().join("swarm.sock");
++    let previous = std::env::var_os("JCODE_SOCKET");
++    crate::env::set_var("JCODE_SOCKET", &socket);
++    struct RestoreSocket(Option<std::ffi::OsString>);
++    impl Drop for RestoreSocket {
++        fn drop(&mut self) {
++            match &self.0 {
++                Some(value) => crate::env::set_var("JCODE_SOCKET", value),
++                None => crate::env::remove_var("JCODE_SOCKET"),
++            }
++        }
++    }
++    let _restore = RestoreSocket(previous);
++    let listener = crate::transport::Listener::bind(&socket).unwrap();
++    let requests = Arc::new(StdMutex::new(Vec::new()));
++    let captured = requests.clone();
++    let text = serde_json::to_string_pretty(&report()).unwrap();
++    let worker_text = text.clone();
++    let mock = tokio::spawn(async move {
++        let mut resumed = false;
++        loop {
++            let (stream, _) = listener.accept().await.unwrap();
++            let (reader, mut writer) = stream.into_split();
++            let mut line = String::new();
++            BufReader::new(reader).read_line(&mut line).await.unwrap();
++            let request: Value = serde_json::from_str(&line).unwrap();
++            captured.lock().unwrap().push(request.clone());
++            let mut response = match request["type"].as_str().unwrap() {
++                "comm_spawn" => {
++                    json!({"type":"comm_spawn_response","session_id":"planner-session","new_session_id":"summarizer-session"})
++                }
++                "comm_await_members" => {
++                    json!({"type":"comm_await_members_response","completed":true,"members":[{"session_id":"summarizer-session","status":"ready","done":true}],"summary":"complete"})
++                }
++                "comm_list" => {
++                    json!({"type":"comm_members","members":[{"session_id":"summarizer-session","files_touched":[],"status":"ready"}]})
++                }
++                "comm_task_control" => {
++                    resumed = true;
++                    json!({"type":"comm_task_control_response","action":"resume","status":"running","task_id":"","summary":{"version":0,"item_count":0}})
++                }
++                "comm_read_context" => {
++                    let mut messages = vec![
++                        json!({"role":"user","content":"assignment"}),
++                        json!({"role":"assistant","content":worker_text}),
++                    ];
++                    if resumed {
++                        messages.extend([
++                            json!({"role":"user","content":"next assignment"}),
++                            json!({"role":"assistant","content":worker_text}),
++                        ]);
++                    }
++                    json!({"type":"comm_context_history","session_id":"summarizer-session","messages":messages})
++                }
++                other => panic!("unexpected request {other}"),
++            };
++            response["id"] = request["id"].clone();
++            writer
++                .write_all(format!("{response}\n").as_bytes())
++                .await
++                .unwrap();
++        }
++    });
++    let spawn = tool.execute(assignment(), context()).await.unwrap();
++    assert!(spawn.output.contains("omitted report chars"));
++    let page = tool
++        .execute(
++            json!({"follow_up_session":"summarizer-session","offset":0,"limit":10000}),
++            context(),
++        )
++        .await
++        .unwrap();
++    assert!(page.output.contains(&text));
++    let ignored = tool
++        .execute(
++            json!({"follow_up_session":"summarizer-session","assignment":null,"limit":10000}),
++            context(),
++        )
++        .await
++        .unwrap();
++    assert!(ignored.output.contains(&text));
++    let mut continuation = assignment();
++    continuation["resume_session"] = json!("summarizer-session");
++    tool.execute(continuation, context()).await.unwrap();
++    let requests = requests.lock().unwrap();
++    for request in requests
++        .iter()
++        .filter(|r| matches!(r["type"].as_str(), Some("comm_spawn" | "comm_task_control")))
++    {
++        let message = request
++            .get("initial_message")
++            .or_else(|| request.get("message"))
++            .unwrap()
++            .as_str()
++            .unwrap();
++        assert_eq!(
++            message,
++            format!("Assignment:\n```json\n{}\n```", serde_json::to_string_pretty(&assignment()["assignment"]).unwrap())
++        );
++    }
++    mock.abort();
++}
++
++#[derive(Clone)]
++struct ScriptProvider {
++    rounds: Arc<StdMutex<VecDeque<Vec<StreamEvent>>>>,
++    requests: Arc<StdMutex<Vec<Vec<Message>>>>,
++}
++
++#[async_trait]
++impl Provider for ScriptProvider {
++    async fn complete(
++        &self,
++        messages: &[Message],
++        tools: &[ToolDefinition],
++        _: &str,
++        _: Option<&str>,
++    ) -> Result<EventStream> {
++        self.requests.lock().unwrap().push(messages.to_vec());
++        if let Some(tool) = tools.iter().find(|tool| tool.name == "submit_report") {
++            assert_eq!(tool.input_schema, output_schema());
++        }
++        let events = self
++            .rounds
++            .lock()
++            .unwrap()
++            .pop_front()
++            .expect("unbounded correction loop");
++        Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
++    }
++    fn name(&self) -> &str {
++        "blueprint-schema-script"
++    }
++    fn model(&self) -> String {
++        "mock-schema".into()
++    }
++    fn supports_compaction(&self) -> bool {
++        false
++    }
++    fn fork(&self) -> Arc<dyn Provider> {
++        Arc::new(self.clone())
++    }
++}
++
++fn text_round() -> Vec<StreamEvent> {
++    vec![
++        StreamEvent::TextDelta("Unsubmitted answer".into()),
++        StreamEvent::MessageEnd {
++            stop_reason: Some("end_turn".into()),
++        },
++    ]
++}
++fn report_round(value: Value) -> Vec<StreamEvent> {
++    vec![
++        StreamEvent::ToolUseStart {
++            id: if value.get("answer").is_some() {
++                "valid-report"
++            } else {
++                "invalid-report"
++            }
++            .into(),
++            name: "submit_report".into(),
++        },
++        StreamEvent::ToolInputDelta(value.to_string()),
++        StreamEvent::ToolUseEnd,
++        StreamEvent::MessageEnd {
++            stop_reason: Some("tool_use".into()),
++        },
++    ]
++}
++
++async fn parent_report_failure(home: &std::path::Path) -> String {
++    let runtime = tempfile::tempdir().unwrap();
++    let blueprints = tempfile::tempdir().unwrap();
++    write_blueprint(blueprints.path(), "summarizer", true);
++    let path = blueprints.path().join("summarizer.md");
++    std::fs::write(
++        &path,
++        std::fs::read_to_string(&path)
++            .unwrap()
++            .replace("model: mock\n", ""),
++    )
++    .unwrap();
++    std::fs::write(
++        home.join("config.toml"),
++        format!(
++            "[features]\nmemory = false\n[agents]\nworker_blueprints_dir = {:?}\n",
++            blueprints.path().to_str().unwrap()
++        ),
++    )
++    .unwrap();
++    crate::config::invalidate_config_cache();
++    let socket = runtime.path().join("worker.sock");
++    let previous = std::env::var_os("JCODE_SOCKET");
++    crate::env::set_var("JCODE_SOCKET", &socket);
++    struct RestoreSocket(Option<std::ffi::OsString>);
++    impl Drop for RestoreSocket {
++        fn drop(&mut self) {
++            match &self.0 {
++                Some(value) => crate::env::set_var("JCODE_SOCKET", value),
++                None => crate::env::remove_var("JCODE_SOCKET"),
++            }
++        }
++    }
++    let _restore = RestoreSocket(previous);
++    let provider = ScriptProvider {
++        rounds: Arc::new(StdMutex::new(VecDeque::from([
++            report_round(json!({"verdict":5})),
++            text_round(),
++            text_round(),
++            text_round(),
++        ]))),
++        requests: Default::default(),
++    };
++    let server = crate::server::Server::new_with_paths(
++        Arc::new(provider),
++        socket.clone(),
++        runtime.path().join("debug.sock"),
++    );
++    let server_task = tokio::spawn(async move { server.run().await });
++    let result = tokio::time::timeout(Duration::from_secs(10), async {
++        while !socket.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
++        let mut client = crate::server::Client::connect_with_path(socket).await.unwrap();
++        let id = client.subscribe().await.unwrap();
++        loop {
++            if matches!(client.read_event().await.unwrap(), crate::protocol::ServerEvent::Done { id: done } if id == done) { break; }
++        }
++        let mut event = client.get_state().await.unwrap();
++        let session_id = loop {
++            if let crate::protocol::ServerEvent::State { session_id, .. } = event { break session_id; }
++            event = client.read_event().await.unwrap();
++        };
++        let loaded = load_worker_blueprints(Some(blueprints.path().to_str().unwrap()), &BTreeMap::new());
++        let tool = crate::tool::blueprint::BlueprintTool::from_blueprint(loaded.registry.get("summarizer").unwrap());
++        let mut ctx = context();
++        ctx.session_id = session_id;
++        tool.execute(assignment(), ctx).await.unwrap_err().to_string()
++    }).await;
++    server_task.abort();
++    result.expect("native parent must observe the bounded worker failure")
++}
++
++#[tokio::test]
++async fn blueprint_schema_output_validation_correction_and_legacy_turns() {
++    let _guard = crate::storage::lock_test_env();
++    let home = tempfile::tempdir().unwrap();
++    let old = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", home.path());
++    crate::config::invalidate_config_cache();
++    struct RestoreHome(Option<std::ffi::OsString>);
++    impl Drop for RestoreHome {
++        fn drop(&mut self) {
++            match &self.0 {
++                Some(value) => crate::env::set_var("JCODE_HOME", value),
++                None => crate::env::remove_var("JCODE_HOME"),
++            }
++            crate::config::invalidate_config_cache();
++        }
++    }
++    let _restore = RestoreHome(old);
++    std::fs::write(
++        home.path().join("config.toml"),
++        "[features]\nmemory = false\n",
++    )
++    .unwrap();
++    let parent_error = parent_report_failure(home.path()).await;
++    assert!(
++        parent_error.contains("verdict"),
++        "parent lost validation errors: {parent_error}"
++    );
++    for streaming in [false, true] {
++        let provider = ScriptProvider {
++            rounds: Arc::new(StdMutex::new(VecDeque::from([
++                report_round(json!({"verdict":5})),
++                text_round(),
++                report_round(report()),
++            ]))),
++            requests: Default::default(),
++        };
++        let mut agent = Agent::new(Arc::new(provider.clone()), Registry::empty());
++        agent
++            .set_worker_blueprint_policy(crate::session::WorkerBlueprintPolicy {
++                name: "summarizer".into(),
++                enabled_tools: Some(Vec::new()),
++                disabled_tools: None,
++                allowed_child_blueprints: Vec::new(),
++                output_schema: Some(output_schema()),
++            })
++            .unwrap();
++        assert!(
++            agent
++                .tool_definitions()
++                .await
++                .iter()
++                .any(|tool| tool.name == "submit_report")
++        );
++        if streaming {
++            let (tx, _rx) = tokio_mpsc::unbounded_channel();
++            agent
++                .run_once_streaming_mpsc("Inspect", vec![], None, tx)
++                .await
++                .unwrap();
++        } else {
++            let result = agent.run_once_capture("Inspect").await.unwrap();
++            assert_eq!(serde_json::from_str::<Value>(&result).unwrap(), report());
++        }
++        assert_eq!(
++            serde_json::from_str::<Value>(&agent.last_assistant_text().unwrap()).unwrap(),
++            report()
++        );
++        let requests = provider.requests.lock().unwrap();
++        assert_eq!(requests.len(), 3);
++        assert!(requests[2].iter().flat_map(|message| &message.content).any(|block| {
++            matches!(block, ContentBlock::Text { text, .. } if text.contains("structured-output contract") && text.contains("verdict"))
++        }));
++        drop(requests);
++        let saved = crate::session::Session::load(&agent.session.id).unwrap();
++        let mut resumed =
++            Agent::new_with_session(Arc::new(provider.clone()), Registry::empty(), saved, None);
++        assert!(
++            resumed
++                .tool_definitions()
++                .await
++                .iter()
++                .any(|tool| tool.name == "submit_report")
++        );
++        provider
++            .rounds
++            .lock()
++            .unwrap()
++            .extend([text_round(), text_round(), text_round()]);
++        let error = if streaming {
++            let (tx, _rx) = tokio_mpsc::unbounded_channel();
++            resumed
++                .run_once_streaming_mpsc("Continue", vec![], None, tx)
++                .await
++                .unwrap_err()
++        } else {
++            resumed.run_once_capture("Continue").await.unwrap_err()
++        };
++        assert!(error.to_string().contains("after two corrections"));
++        provider.rounds.lock().unwrap().extend([
++            report_round(json!({"verdict":5})),
++            report_round(json!({"verdict":6})),
++            report_round(json!({"verdict":7})),
++        ]);
++        let repeated = if streaming {
++            let (tx, _rx) = tokio_mpsc::unbounded_channel();
++            resumed
++                .run_once_streaming_mpsc("Report", vec![], None, tx)
++                .await
++                .unwrap_err()
++        } else {
++            resumed.run_once_capture("Report").await.unwrap_err()
++        };
++        assert!(repeated.to_string().contains("after two corrections"));
++        assert!(repeated.to_string().contains("verdict"));
++    }
++    let provider = ScriptProvider {
++        rounds: Arc::new(StdMutex::new(VecDeque::from([text_round()]))),
++        requests: Default::default(),
++    };
++    let mut legacy = Agent::new(Arc::new(provider), Registry::empty());
++    assert!(
++        !legacy
++            .tool_definitions()
++            .await
++            .iter()
++            .any(|tool| tool.name == "submit_report")
++    );
++    assert_eq!(
++        legacy.run_once_capture("Inspect").await.unwrap(),
++        "Unsubmitted answer"
++    );
++}
 diff --git a/crates/jcode-app-core/src/protocol_tests/comm_requests.rs b/crates/jcode-app-core/src/protocol_tests/comm_requests.rs
 index 1a1a54390..51b9b6d1f 100644
 --- a/crates/jcode-app-core/src/protocol_tests/comm_requests.rs
@@ -2249,14 +3161,15 @@ index 383d0ca3b..4054d02e0 100644
      child.model = parent.model.clone();
      child.provider_key = parent.provider_key.clone();
 diff --git a/crates/jcode-app-core/src/server/client_actions_tests.rs b/crates/jcode-app-core/src/server/client_actions_tests.rs
-index adf3a068f..345cb1065 100644
+index adf3a068f..7fa2e1ade 100644
 --- a/crates/jcode-app-core/src/server/client_actions_tests.rs
 +++ b/crates/jcode-app-core/src/server/client_actions_tests.rs
-@@ -120,6 +120,12 @@ fn clone_split_session_uses_persisted_session_state() {
+@@ -120,6 +120,13 @@ fn clone_split_session_uses_persisted_session_state() {
      parent.working_dir = Some("/tmp/jcode-split-test".to_string());
      parent.model = Some("gpt-test".to_string());
      parent.system_prompt = Some("forked system prompt".into());
 +    parent.worker_blueprint_policy = Some(crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: "split-worker".to_string(),
 +        enabled_tools: Some(Vec::new()),
 +        disabled_tools: None,
@@ -2265,7 +3178,7 @@ index adf3a068f..345cb1065 100644
      parent.add_message(
          Role::User,
          vec![ContentBlock::Text {
-@@ -152,6 +158,10 @@ fn clone_split_session_uses_persisted_session_state() {
+@@ -152,6 +159,10 @@ fn clone_split_session_uses_persisted_session_state() {
 
      assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
      assert_eq!(child.system_prompt, parent.system_prompt);
@@ -2276,7 +3189,7 @@ index adf3a068f..345cb1065 100644
      assert_eq!(
          child.messages.len(),
          parent.messages.len() + 1,
-@@ -377,6 +387,27 @@ fn transfer_preserves_system_prompt_including_empty_override() {
+@@ -377,6 +388,28 @@ fn transfer_preserves_system_prompt_including_empty_override() {
      }
  }
 
@@ -2286,6 +3199,7 @@ index adf3a068f..345cb1065 100644
 +    let _home = SplitTestHome::new();
 +    let mut parent = crate::session::Session::create(None, None);
 +    parent.worker_blueprint_policy = Some(crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: "transfer-worker".to_string(),
 +        enabled_tools: None,
 +        disabled_tools: Some(Vec::new()),
@@ -2304,7 +3218,7 @@ index adf3a068f..345cb1065 100644
  #[test]
  fn split_corrupt_persisted_parent_is_not_hidden_by_live_fallback() {
      let _guard = crate::storage::lock_test_env();
-@@ -420,6 +451,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
+@@ -420,6 +453,7 @@ async fn enabling_swarm_does_not_auto_elect_coordinator() {
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -2312,7 +3226,7 @@ index adf3a068f..345cb1065 100644
          },
      )])));
      let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
-@@ -528,6 +560,7 @@ async fn rename_session_event_uses_agent_session_id_even_when_client_id_is_stale
+@@ -528,6 +562,7 @@ async fn rename_session_event_uses_agent_session_id_even_when_client_id_is_stale
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -2320,7 +3234,7 @@ index adf3a068f..345cb1065 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -603,6 +636,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
+@@ -603,6 +638,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
              is_processing: false,
              current_tool_name: None,
              terminal_env: Vec::new(),
@@ -2328,7 +3242,7 @@ index adf3a068f..345cb1065 100644
              disconnect_tx: mpsc::unbounded_channel().0,
          },
      )])));
-@@ -630,6 +664,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
+@@ -630,6 +666,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session()
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -2336,7 +3250,7 @@ index adf3a068f..345cb1065 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -721,6 +756,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
+@@ -721,6 +758,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
              is_processing: false,
              current_tool_name: None,
              terminal_env: Vec::new(),
@@ -2344,7 +3258,7 @@ index adf3a068f..345cb1065 100644
              disconnect_tx: mpsc::unbounded_channel().0,
          },
      )])));
-@@ -748,6 +784,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
+@@ -748,6 +786,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
              todo_progress: None,
              todo_items: Vec::new(),
              runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -2352,7 +3266,7 @@ index adf3a068f..345cb1065 100644
          },
      )])));
      let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
-@@ -834,6 +871,7 @@ fn live_member(session_id: &str) -> (SwarmMember, mpsc::UnboundedReceiver<Server
+@@ -834,6 +873,7 @@ fn live_member(session_id: &str) -> (SwarmMember, mpsc::UnboundedReceiver<Server
          todo_progress: None,
          todo_items: Vec::new(),
          runtime: crate::protocol::SwarmMemberRuntime::default(),
@@ -2360,7 +3274,7 @@ index adf3a068f..345cb1065 100644
      };
      (member, attach_rx)
  }
-@@ -1127,6 +1165,8 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
+@@ -1127,6 +1167,8 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
          mode: Some("parallel".to_string()),
          role: crate::hooks::ProcessRole::Coordinator,
          worker_id: None,
@@ -2369,7 +3283,7 @@ index adf3a068f..345cb1065 100644
      };
 
      crate::hooks::with_swarm_context(context, async {
-@@ -1154,10 +1194,7 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
+@@ -1154,10 +1196,7 @@ async fn run_subagent_hook_context_propagates_through_nested_tool_execution() {
      timeout(Duration::from_secs(2), async {
          let mut completed = 0;
          loop {
@@ -2694,7 +3608,7 @@ index d6e8921ef..9f65bb912 100644
 +    ));
 +}
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index b543fa53f..8f25fd7a7 100644
+index b543fa53f..c6fac1a9a 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
 @@ -582,6 +582,7 @@ pub(super) async fn handle_client(
@@ -2737,6 +3651,28 @@ index b543fa53f..8f25fd7a7 100644
                      &client_event_tx,
                      &sessions,
                      &soft_interrupt_queues,
+@@ -3328,10 +3333,11 @@ async fn record_processing_completion(
+         }
+         Err(e) => {
+             if let Some(session_id) = done_session {
+-                update_member_status(
++                update_member_status_with_report(
+                     session_id,
+                     "failed",
+                     Some(truncate_detail(&e.to_string(), 120)),
++                    completion_report,
+                     swarm.members,
+                     swarm.swarms_by_id,
+                     Some(swarm.event_history),
+@@ -3542,7 +3548,7 @@ async fn start_processing_message(
+             let agent = report_agent.lock().await;
+             agent.latest_assistant_text_after(start_message_index)
+         } else {
+-            None
++            result.as_ref().err().and_then(crate::tool::blueprint::report_failure)
+         };
+         // Keep the terminal event on the same ordered fanout channel as the
+         // stream. Sending it later from the owning client's event loop could
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs b/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
 index e56fd3a45..fb40ef198 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle_tests.rs
@@ -3059,11 +3995,60 @@ index 02bf78ebc..8a2393787 100644
          },
      )])));
      let _busy = agent.lock().await;
+diff --git a/crates/jcode-app-core/src/server/comm_await.rs b/crates/jcode-app-core/src/server/comm_await.rs
+index 5805ffbf2..debdc0b3e 100644
+--- a/crates/jcode-app-core/src/server/comm_await.rs
++++ b/crates/jcode-app-core/src/server/comm_await.rs
+@@ -85,11 +85,20 @@ pub(super) fn timeout_summary(member_statuses: &[AwaitedMemberStatus]) -> String
+
+ fn completion_summary(member_statuses: &[AwaitedMemberStatus]) -> String {
+     let done_names: Vec<String> = member_statuses.iter().map(short_member_name).collect();
+-    format!(
++    let mut summary = format!(
+         "All {} members are done: {}",
+         done_names.len(),
+         done_names.join(", ")
+-    )
++    );
++    for member in member_statuses {
++        if matches!(member.status.as_str(), "failed" | "crashed")
++            && let Some(report) = member.completion_report.as_deref()
++            && report.starts_with(crate::tool::blueprint::REPORT_FAILURE_PREFIX)
++        {
++            summary.push_str(&format!("\n{}: {report}", short_member_name(member)));
++        }
++    }
++    summary
+ }
+
+ pub(super) fn completion_mode(mode: Option<&str>) -> &str {
 diff --git a/crates/jcode-app-core/src/server/comm_control.rs b/crates/jcode-app-core/src/server/comm_control.rs
-index 5d9ab2b91..cee3f785e 100644
+index 5d9ab2b91..fae892af9 100644
 --- a/crates/jcode-app-core/src/server/comm_control.rs
 +++ b/crates/jcode-app-core/src/server/comm_control.rs
-@@ -1631,6 +1631,7 @@ pub(super) async fn handle_comm_assign_next(
+@@ -683,7 +683,7 @@ fn spawn_assigned_task_run(
+             let agent = agent_arc.lock().await;
+             agent.latest_assistant_text_after(start_message_index)
+         } else {
+-            None
++            result.as_ref().err().and_then(crate::tool::blueprint::report_failure)
+         };
+         let _ = heartbeat_stop_tx.send(true);
+         let _ = heartbeat_task.await;
+@@ -787,10 +787,11 @@ fn spawn_assigned_task_run(
+                     &swarms_by_id,
+                 )
+                 .await;
+-                update_member_status(
++                update_member_status_with_report(
+                     &target_session,
+                     "failed",
+                     Some(truncate_detail(&error.to_string(), 120)),
++                    completion_report,
+                     &swarm_members,
+                     &swarms_by_id,
+                     Some(&event_history),
+@@ -1631,6 +1632,7 @@ pub(super) async fn handle_comm_assign_next(
                  model.clone(),
                  effort.clone(),
                  None,
@@ -3071,7 +4056,7 @@ index 5d9ab2b91..cee3f785e 100644
                  sessions,
                  global_session_id,
                  provider_template,
-@@ -1752,6 +1753,7 @@ pub(super) async fn handle_comm_task_control(
+@@ -1752,6 +1754,7 @@ pub(super) async fn handle_comm_task_control(
      task_id: String,
      target_session: Option<String>,
      message: Option<String>,
@@ -3079,7 +4064,7 @@ index 5d9ab2b91..cee3f785e 100644
      client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
      sessions: &SessionAgents,
      soft_interrupt_queues: &super::SessionInterruptQueues,
-@@ -1794,6 +1796,7 @@ pub(super) async fn handle_comm_task_control(
+@@ -1794,6 +1797,7 @@ pub(super) async fn handle_comm_task_control(
              &owner_swarm_id,
              target,
              message.as_deref(),
@@ -3087,7 +4072,7 @@ index 5d9ab2b91..cee3f785e 100644
              client_event_tx,
              sessions,
              soft_interrupt_queues,
-@@ -1837,6 +1840,7 @@ pub(super) async fn handle_comm_task_control(
+@@ -1837,6 +1841,7 @@ pub(super) async fn handle_comm_task_control(
              &swarm_id,
              target,
              message.as_deref(),
@@ -3095,7 +4080,7 @@ index 5d9ab2b91..cee3f785e 100644
              client_event_tx,
              sessions,
              soft_interrupt_queues,
-@@ -1918,6 +1922,24 @@ pub(super) async fn handle_comm_task_control(
+@@ -1918,6 +1923,24 @@ pub(super) async fn handle_comm_task_control(
          return;
      }
 
@@ -3120,7 +4105,7 @@ index 5d9ab2b91..cee3f785e 100644
      match action {
          TaskControlAction::Start | TaskControlAction::Wake | TaskControlAction::Resume => {
              let Some(assignee) = current_assignee.clone() else {
-@@ -2419,11 +2441,126 @@ async fn target_has_plan_assignment(
+@@ -2419,11 +2442,126 @@ async fn target_has_plan_assignment(
      })
  }
 
@@ -3248,7 +4233,7 @@ index 5d9ab2b91..cee3f785e 100644
  #[expect(
      clippy::too_many_arguments,
      reason = "direct wake needs the same swarm bookkeeping handles as task control"
-@@ -2434,6 +2571,7 @@ async fn wake_session_without_plan(
+@@ -2434,6 +2572,7 @@ async fn wake_session_without_plan(
      swarm_id: &str,
      target: &str,
      message: Option<&str>,
@@ -3256,7 +4241,7 @@ index 5d9ab2b91..cee3f785e 100644
      client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
      sessions: &SessionAgents,
      soft_interrupt_queues: &super::SessionInterruptQueues,
-@@ -2462,6 +2600,41 @@ async fn wake_session_without_plan(
+@@ -2462,6 +2601,41 @@ async fn wake_session_without_plan(
          });
          return;
      }
@@ -3298,7 +4283,7 @@ index 5d9ab2b91..cee3f785e 100644
      if task_agent_session(&session_id, sessions, swarm_members)
          .await
          .is_none()
-@@ -2498,6 +2671,13 @@ async fn wake_session_without_plan(
+@@ -2498,6 +2672,13 @@ async fn wake_session_without_plan(
      .await;
      let status = if woke {
          "running"
@@ -3349,7 +4334,7 @@ index e3312077a..08033558f 100644
          },
      )])));
 diff --git a/crates/jcode-app-core/src/server/comm_control_tests/task_control.rs b/crates/jcode-app-core/src/server/comm_control_tests/task_control.rs
-index 0f7a524fe..0d7ee9d54 100644
+index 0f7a524fe..e78ac7dd0 100644
 --- a/crates/jcode-app-core/src/server/comm_control_tests/task_control.rs
 +++ b/crates/jcode-app-core/src/server/comm_control_tests/task_control.rs
 @@ -51,6 +51,7 @@ async fn task_control_wake_returns_structured_response_with_plan_summary() {
@@ -3416,7 +4401,7 @@ index 0f7a524fe..0d7ee9d54 100644
          &client_tx,
          &sessions,
          &soft_interrupt_queues,
-@@ -803,3 +811,707 @@ async fn spawner_can_retry_its_worker_without_coordinator_slot_or_plan() {
+@@ -803,3 +811,708 @@ async fn spawner_can_retry_its_worker_without_coordinator_slot_or_plan() {
          other => panic!("expected Error, got {other:?}"),
      }
  }
@@ -3454,6 +4439,7 @@ index 0f7a524fe..0d7ee9d54 100644
 +    let mut session = crate::session::Session::create_with_id(session_id.to_string(), None, None);
 +    session.model = Some("mock".to_string());
 +    session.worker_blueprint_policy = Some(crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: blueprint.to_string(),
 +        enabled_tools: None,
 +        disabled_tools: None,
@@ -4137,7 +5123,7 @@ index b6444a039..35d87f44c 100644
      }
  }
 diff --git a/crates/jcode-app-core/src/server/comm_session.rs b/crates/jcode-app-core/src/server/comm_session.rs
-index 5b496b7c6..fc1c37778 100644
+index 5b496b7c6..c7f9b5c14 100644
 --- a/crates/jcode-app-core/src/server/comm_session.rs
 +++ b/crates/jcode-app-core/src/server/comm_session.rs
 @@ -18,6 +18,7 @@ use crate::config::SwarmSpawnMode;
@@ -4415,7 +5401,7 @@ index 5b496b7c6..fc1c37778 100644
      let resolved_working_dir =
          resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
      let coordinator = resolve_coordinator_spawn_identity(req_session_id, sessions).await;
-@@ -679,15 +877,32 @@ pub(super) async fn spawn_swarm_agent(
+@@ -679,15 +877,37 @@ pub(super) async fn spawn_swarm_agent(
 
      let startup_message = initial_message
          .as_deref()
@@ -4424,7 +5410,11 @@ index 5b496b7c6..fc1c37778 100644
 +            // When a blueprint is active, compose its durable role instructions
 +            // first and the clearly labeled runtime task second, exactly once.
 +            if let Some(bp) = &blueprint {
-+                let task = append_swarm_completion_report_instructions(msg);
++                let task = if bp.output_schema.is_some() {
++                    msg.to_string()
++                } else {
++                    append_swarm_completion_report_instructions(msg)
++                };
 +                compose_blueprint_prompt(&bp.body, &task)
 +            } else {
 +                append_swarm_completion_report_instructions(msg)
@@ -4433,6 +5423,7 @@ index 5b496b7c6..fc1c37778 100644
 
 +    let worker_blueprint_policy = blueprint.as_ref().map(|bp| {
 +        crate::session::WorkerBlueprintPolicy {
++            output_schema: bp.output_schema.as_ref().map(|schema| schema.value.clone()),
 +            name: bp.name.clone(),
 +            enabled_tools: bp.enabled_tools.clone(),
 +            disabled_tools: bp.disabled_tools.clone(),
@@ -4450,7 +5441,7 @@ index 5b496b7c6..fc1c37778 100644
              resolved_working_dir.as_deref(),
              spawn_model.as_deref(),
              spawn_provider_key.as_deref(),
-@@ -695,6 +910,7 @@ pub(super) async fn spawn_swarm_agent(
+@@ -695,6 +915,7 @@ pub(super) async fn spawn_swarm_agent(
              spawn_effort.as_deref(),
              coordinator_is_canary,
              startup_message.as_deref(),
@@ -4458,7 +5449,7 @@ index 5b496b7c6..fc1c37778 100644
              |session_id, cwd, selfdev_requested, provider_key| {
                  // Tag the headed window as a swarm-agent spawn so spawn hooks
                  // and terminals can identify and reroute it (JCODE_SPAWN_*).
-@@ -738,6 +954,7 @@ pub(super) async fn spawn_swarm_agent(
+@@ -738,6 +959,7 @@ pub(super) async fn spawn_swarm_agent(
                  spawn_effort.clone(),
                  Some(Arc::clone(mcp_pool)),
                  Some(req_session_id.to_string()),
@@ -4466,7 +5457,7 @@ index 5b496b7c6..fc1c37778 100644
                  super::headless::HeadlessMemoryScope::RealProject,
              )
              .await
-@@ -756,6 +973,24 @@ pub(super) async fn spawn_swarm_agent(
+@@ -756,6 +978,24 @@ pub(super) async fn spawn_swarm_agent(
          }
      }?;
 
@@ -4491,7 +5482,7 @@ index 5b496b7c6..fc1c37778 100644
      let startup_message = startup_message.clone();
      {
          let mut plans = swarm_plans.write().await;
-@@ -825,6 +1060,17 @@ pub(super) async fn spawn_swarm_agent(
+@@ -825,6 +1065,17 @@ pub(super) async fn spawn_swarm_agent(
              agent_sessions.get(&new_session_id).cloned()
          };
          if let Some(agent_arc) = agent_arc {
@@ -4509,7 +5500,7 @@ index 5b496b7c6..fc1c37778 100644
              let sid_clone = new_session_id.clone();
              let swarm_members2 = Arc::clone(swarm_members);
              let swarms_by_id2 = Arc::clone(swarms_by_id);
-@@ -832,17 +1078,6 @@ pub(super) async fn spawn_swarm_agent(
+@@ -832,17 +1083,6 @@ pub(super) async fn spawn_swarm_agent(
              let event_counter2 = Arc::clone(event_counter);
              let swarm_event_tx2 = swarm_event_tx.clone();
              crate::runtime_activity::spawn(async move {
@@ -4527,7 +5518,16 @@ index 5b496b7c6..fc1c37778 100644
                  let event_tx = super::session_event_fanout_sender(
                      sid_clone.clone(),
                      Arc::clone(&swarm_members2),
-@@ -899,6 +1134,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -863,7 +1103,7 @@ pub(super) async fn spawn_swarm_agent(
+                     let agent = agent_arc.lock().await;
+                     agent.latest_assistant_text_after(start_message_index)
+                 } else {
+-                    None
++                    result.as_ref().err().and_then(crate::tool::blueprint::report_failure)
+                 };
+                 let (new_status, new_detail) = match result {
+                     Ok(()) => ("ready", None),
+@@ -899,6 +1139,7 @@ pub(super) async fn handle_comm_spawn(
      model: Option<String>,
      effort: Option<String>,
      label: Option<String>,
@@ -4535,7 +5535,7 @@ index 5b496b7c6..fc1c37778 100644
      client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
      sessions: &SessionAgents,
      global_session_id: &Arc<RwLock<String>>,
-@@ -928,9 +1164,17 @@ pub(super) async fn handle_comm_spawn(
+@@ -928,9 +1169,17 @@ pub(super) async fn handle_comm_spawn(
          .unwrap_or_else(|| req_session_id.clone());
      let admission_lock = spawn_admission_lock(&admission_key);
      let admission_guard = admission_lock.lock().await;
@@ -4553,7 +5553,7 @@ index 5b496b7c6..fc1c37778 100644
          client_event_tx,
          swarm_members,
          swarms_by_id,
-@@ -958,6 +1202,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -958,6 +1207,7 @@ pub(super) async fn handle_comm_spawn(
              effort.clone().unwrap_or_default(),
              model.clone().unwrap_or_default(),
              label.clone().unwrap_or_default(),
@@ -4561,7 +5561,7 @@ index 5b496b7c6..fc1c37778 100644
          ],
      );
      let Some(mutation_state) = begin_or_replay(
-@@ -982,6 +1227,7 @@ pub(super) async fn handle_comm_spawn(
+@@ -982,6 +1232,7 @@ pub(super) async fn handle_comm_spawn(
          model,
          effort,
          label,
@@ -4569,7 +5569,7 @@ index 5b496b7c6..fc1c37778 100644
          sessions,
          global_session_id,
          provider_template,
-@@ -1315,6 +1561,9 @@ fn swarm_member_status_is_stale_for_coordination(status: &str) -> bool {
+@@ -1315,6 +1566,9 @@ fn swarm_member_status_is_stale_for_coordination(status: &str) -> bool {
  async fn ensure_spawn_coordinator_swarm(
      id: u64,
      req_session_id: &str,
@@ -4579,7 +5579,7 @@ index 5b496b7c6..fc1c37778 100644
      client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
      swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
      swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-@@ -1327,6 +1576,7 @@ async fn ensure_spawn_coordinator_swarm(
+@@ -1327,6 +1581,7 @@ async fn ensure_spawn_coordinator_swarm(
          from_name,
          is_root,
          root_session_id,
@@ -4587,7 +5587,7 @@ index 5b496b7c6..fc1c37778 100644
          coordinator_id,
          coordinator_is_stale,
          live_member_count,
-@@ -1344,10 +1594,12 @@ async fn ensure_spawn_coordinator_swarm(
+@@ -1344,10 +1599,12 @@ async fn ensure_spawn_coordinator_swarm(
              .get(req_session_id)
              .and_then(|member| member.report_back_to_session_id.clone())
              .is_none();
@@ -4601,7 +5601,7 @@ index 5b496b7c6..fc1c37778 100644
          // Count both all live members for the absolute hard cap and live spawned
          // agents for the configurable RAM-safety cap. User-created roots do not
          // consume worker slots; every recursively spawned descendant does.
-@@ -1392,6 +1644,7 @@ async fn ensure_spawn_coordinator_swarm(
+@@ -1392,6 +1649,7 @@ async fn ensure_spawn_coordinator_swarm(
              from_name,
              is_root,
              root_session_id,
@@ -4609,7 +5609,7 @@ index 5b496b7c6..fc1c37778 100644
              coordinator_id,
              coordinator_is_stale,
              live_member_count,
-@@ -1408,9 +1661,36 @@ async fn ensure_spawn_coordinator_swarm(
+@@ -1408,9 +1666,36 @@ async fn ensure_spawn_coordinator_swarm(
          return None;
      };
 
@@ -4650,7 +5650,7 @@ index 5b496b7c6..fc1c37778 100644
              id,
              message: format!(
 diff --git a/crates/jcode-app-core/src/server/comm_session_tests.rs b/crates/jcode-app-core/src/server/comm_session_tests.rs
-index daf18c8e4..9e55c083f 100644
+index daf18c8e4..6bc892519 100644
 --- a/crates/jcode-app-core/src/server/comm_session_tests.rs
 +++ b/crates/jcode-app-core/src/server/comm_session_tests.rs
 @@ -1,12 +1,14 @@
@@ -4679,7 +5679,7 @@ index daf18c8e4..9e55c083f 100644
              task_label: None,
          },
          event_rx,
-@@ -319,6 +322,157 @@ fn prepare_visible_spawn_session_persists_startup_before_launch() {
+@@ -319,6 +322,159 @@ fn prepare_visible_spawn_session_persists_startup_before_launch() {
      crate::env::remove_var("JCODE_HOME");
  }
 
@@ -4692,6 +5692,7 @@ index daf18c8e4..9e55c083f 100644
 +    let worktree = tempfile::TempDir::new().expect("temp worktree");
 +    let startup = "Inspect this before doing anything.";
 +    let policy = crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: "reviewer".to_string(),
 +        enabled_tools: Some(vec!["read".to_string(), "edit".to_string()]),
 +        disabled_tools: Some(vec!["edit".to_string()]),
@@ -4759,6 +5760,7 @@ index daf18c8e4..9e55c083f 100644
 +    crate::config::invalidate_config_cache();
 +
 +    let policy = crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: "reviewer".to_string(),
 +        enabled_tools: Some(vec!["read".to_string()]),
 +        disabled_tools: Some(vec!["edit".to_string()]),
@@ -4837,7 +5839,7 @@ index daf18c8e4..9e55c083f 100644
  #[test]
  fn prepare_visible_spawn_session_cleans_startup_when_launch_not_started() {
      let _guard = crate::storage::lock_test_env();
-@@ -496,6 +650,44 @@ fn coordinator_identity(
+@@ -496,6 +652,44 @@ fn coordinator_identity(
      }
  }
 
@@ -4882,7 +5884,7 @@ index daf18c8e4..9e55c083f 100644
  #[test]
  fn resolve_swarm_spawn_model_prefers_configured_model_over_coordinator_model() {
      let selection = resolve_swarm_spawn_selection(
-@@ -944,6 +1136,7 @@ async fn session_agent_models_update_and_spawn_while_coordinator_busy() {
+@@ -944,6 +1138,7 @@ async fn session_agent_models_update_and_spawn_while_coordinator_busy() {
              None,
              None,
              Some("routing test".into()),
@@ -4890,7 +5892,7 @@ index daf18c8e4..9e55c083f 100644
              &sessions,
              &Arc::new(RwLock::new(String::new())),
              &provider,
-@@ -1016,6 +1209,9 @@ async fn spawn_bootstraps_coordinator_when_swarm_has_none() {
+@@ -1016,6 +1211,9 @@ async fn spawn_bootstraps_coordinator_when_swarm_has_none() {
      let swarm_id = ensure_spawn_coordinator_swarm(
          1,
          "req",
@@ -4900,7 +5902,7 @@ index daf18c8e4..9e55c083f 100644
          &client_event_tx,
          &swarm_members,
          &swarms_by_id,
-@@ -1087,6 +1283,9 @@ async fn nested_agent_cannot_spawn_regardless_of_root_effort() {
+@@ -1087,6 +1285,9 @@ async fn nested_agent_cannot_spawn_regardless_of_root_effort() {
          let refused = ensure_spawn_coordinator_swarm(
              2,
              &child_id,
@@ -4910,7 +5912,7 @@ index daf18c8e4..9e55c083f 100644
              &client_event_tx,
              &swarm_members,
              &swarms_by_id,
-@@ -1123,84 +1322,328 @@ async fn nested_agent_cannot_spawn_regardless_of_root_effort() {
+@@ -1123,84 +1324,331 @@ async fn nested_agent_cannot_spawn_regardless_of_root_effort() {
      }
  }
 
@@ -4930,6 +5932,7 @@ index daf18c8e4..9e55c083f 100644
 +    children: &[&str],
 +) -> crate::session::WorkerBlueprintPolicy {
 +    crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: name.to_string(),
 +        enabled_tools: None,
 +        disabled_tools: None,
@@ -4948,6 +5951,8 @@ index daf18c8e4..9e55c083f 100644
 +    model: Option<&str>,
 +) -> crate::worker_blueprint::WorkerBlueprint {
 +    crate::worker_blueprint::WorkerBlueprint {
++        input_schema: None,
++        output_schema: None,
 +        source_path: std::path::PathBuf::from(format!("{name}.md")),
 +        name: name.to_string(),
 +        description: format!("test {name} blueprint"),
@@ -5294,7 +6299,7 @@ index daf18c8e4..9e55c083f 100644
          &client_event_tx,
          &swarm_members,
          &swarms_by_id,
-@@ -1210,40 +1653,798 @@ async fn terminal_members_do_not_consume_spawn_capacity() {
+@@ -1210,40 +1658,799 @@ async fn terminal_members_do_not_consume_spawn_capacity() {
      )
      .await;
 
@@ -5878,6 +6883,7 @@ index daf18c8e4..9e55c083f 100644
 +    let mut req_session =
 +        crate::session::Session::create_with_id("edge-reviewer".into(), None, None);
 +    req_session.worker_blueprint_policy = Some(crate::session::WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: reviewer.name.clone(),
 +        enabled_tools: reviewer.enabled_tools.clone(),
 +        disabled_tools: reviewer.disabled_tools.clone(),
@@ -6109,7 +7115,7 @@ index daf18c8e4..9e55c083f 100644
      )
      .await;
 
-@@ -1330,3 +2531,349 @@ fn per_call_auto_spawn_mode_defers_to_configured_mode() {
+@@ -1330,3 +2537,349 @@ fn per_call_auto_spawn_mode_defers_to_configured_mode() {
      assert_eq!(resolve_swarm_spawn_mode(Some(Headless), Visible), Headless);
      assert_eq!(resolve_swarm_spawn_mode(Some(Inline), Visible), Inline);
  }
@@ -6806,6 +7812,33 @@ index eea5f8b05..fba42be0f 100644
              },
          );
      }
+diff --git a/crates/jcode-app-core/src/server/live_turn.rs b/crates/jcode-app-core/src/server/live_turn.rs
+index 8cddf7385..fdbf34632 100644
+--- a/crates/jcode-app-core/src/server/live_turn.rs
++++ b/crates/jcode-app-core/src/server/live_turn.rs
+@@ -154,7 +154,8 @@ pub(super) async fn spawn_tracked_live_turn(
+         let completion_report = result
+             .is_ok()
+             .then(|| agent.latest_assistant_text_after(start_message_index))
+-            .flatten();
++            .flatten()
++            .or_else(|| result.as_ref().err().and_then(crate::tool::blueprint::report_failure));
+         // Keep the reservation until after the terminal status is published.
+         // Releasing it earlier lets a follow-up wake reserve the agent and
+         // publish `running`, which this turn's later `ready`/`failed` would
+@@ -186,10 +187,11 @@ pub(super) async fn spawn_tracked_live_turn(
+                     "Server-initiated turn failed for live session {}: {}",
+                     session_id, error
+                 ));
+-                update_member_status(
++                update_member_status_with_report(
+                     &session_id,
+                     "failed",
+                     Some(truncate_detail(&error.to_string(), 120)),
++                    completion_report,
+                     &swarm.members,
+                     &swarm.swarms_by_id,
+                     Some(&swarm.event_history),
 diff --git a/crates/jcode-app-core/src/server/reload_tests.rs b/crates/jcode-app-core/src/server/reload_tests.rs
 index 72d5f5459..1aabe496c 100644
 --- a/crates/jcode-app-core/src/server/reload_tests.rs
@@ -7084,10 +8117,10 @@ index f8272fa9c..113483ee7 100644
  }
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
 new file mode 100644
-index 000000000..561dbd08a
+index 000000000..e7ef59b79
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
-@@ -0,0 +1,950 @@
+@@ -0,0 +1,1156 @@
 +//! Generated coordinator-visible tools for worker blueprints.
 +//!
 +//! Every valid effective blueprint generates a tool named `swarm_<id>`. The
@@ -7129,6 +8162,45 @@ index 000000000..561dbd08a
 +use async_trait::async_trait;
 +use serde::Deserialize;
 +use serde_json::{Value, json};
++
++/// A session-local report shadows registered and SDK tools without mutating
++/// the shared registry. Keep ownership of its read guard until dispatch has
++/// selected a tool, so dropping this view also releases the registry lock.
++pub(super) struct DispatchTools<'a> {
++    registered: tokio::sync::RwLockReadGuard<'a, std::collections::HashMap<String, std::sync::Arc<dyn Tool>>>,
++    report: Option<std::sync::Arc<dyn Tool>>,
++}
++
++impl std::ops::Deref for DispatchTools<'_> {
++    type Target = std::collections::HashMap<String, std::sync::Arc<dyn Tool>>;
++
++    fn deref(&self) -> &Self::Target {
++        &self.registered
++    }
++}
++
++impl DispatchTools<'_> {
++    pub(super) fn get(&self, name: &str) -> Option<&std::sync::Arc<dyn Tool>> {
++        if name == "submit_report" && self.report.is_some() {
++            self.report.as_ref()
++        } else {
++            self.registered.get(name)
++        }
++    }
++}
++
++pub(super) fn select_dispatch_tools<'a>(
++    registered: tokio::sync::RwLockReadGuard<'a, std::collections::HashMap<String, std::sync::Arc<dyn Tool>>>,
++    session_id: &str,
++    name: &str,
++    is_custom: bool,
++) -> (bool, DispatchTools<'a>) {
++    let report = (name == "submit_report")
++        .then(|| super::blueprint_report_tool(session_id))
++        .flatten()
++        .map(|report| report as std::sync::Arc<dyn Tool>);
++    (is_custom && report.is_none(), DispatchTools { registered, report })
++}
 +
 +/// Input parameters for a generated `swarm_<id>` tool.
 +#[derive(Debug, Deserialize)]
@@ -7178,6 +8250,7 @@ index 000000000..561dbd08a
 +/// worker's stored output deterministically. In resume mode it continues a
 +/// finished worker with a new task on its existing session.
 +pub struct BlueprintTool {
++    input_schema: Option<crate::worker_blueprint::BlueprintSchema>,
 +    /// Tool name: `swarm_<id>`.
 +    name: String,
 +    /// Tool description, derived from the blueprint's required description.
@@ -7387,6 +8460,7 @@ index 000000000..561dbd08a
 +             Pass `timeout_minutes` to override the blueprint's default.",
 +        );
 +        Self {
++            input_schema: None,
 +            name,
 +            description: desc,
 +            blueprint_id: blueprint_id.to_string(),
@@ -7396,7 +8470,7 @@ index 000000000..561dbd08a
 +
 +    /// Create a new generated tool from a `WorkerBlueprint`.
 +    pub fn from_blueprint(bp: &crate::worker_blueprint::WorkerBlueprint) -> Self {
-+        Self::new(
++        let mut tool = Self::new(
 +            &bp.name,
 +            &bp.description,
 +            bp.model.as_deref(),
@@ -7404,7 +8478,38 @@ index 000000000..561dbd08a
 +            bp.enabled_tools.as_deref(),
 +            bp.communication_policy.as_ref().map(|p| p.as_str()),
 +            bp.timeout_minutes,
-+        )
++        );
++        tool.input_schema = bp.input_schema.clone();
++        if tool.input_schema.is_some() {
++            tool.description = tool.description.replace("`task`", "`assignment`");
++            tool.description.push_str(
++                "\nSpawn and resume require an `assignment` object matching its schema, \
++                 including all required fields. Follow-up paging ignores `assignment`.",
++            );
++        }
++        tool
++    }
++
++    fn assignment(&self, input: &Value, task: Option<&str>) -> Result<String> {
++        let Some(schema) = self.input_schema.as_ref() else {
++            return Ok(task.map(str::trim).unwrap_or("").to_string());
++        };
++        let assignment = input.get("assignment").ok_or_else(|| {
++            let details = schema.validate(&json!({})).err().unwrap_or_else(|| {
++                "none (the assignment object is still required)".to_string()
++            });
++            anyhow::anyhow!(
++                "'assignment' is required for spawn and resume of blueprint tool '{}'; \
++                 pass an object matching its schema. Missing required fields:\n{}",
++                self.name,
++                details
++            )
++        })?;
++        schema.validate(assignment).map_err(anyhow::Error::msg)?;
++        Ok(format!(
++            "Assignment:\n```json\n{}\n```",
++            serde_json::to_string_pretty(assignment)?
++        ))
 +    }
 +}
 +
@@ -7448,7 +8553,7 @@ index 000000000..561dbd08a
 +    }
 +
 +    fn parameters_schema(&self) -> Value {
-+        json!({
++        let mut parameters = json!({
 +            "type": "object",
 +            "properties": {
 +                "task": {
@@ -7493,11 +8598,20 @@ index 000000000..561dbd08a
 +                    "description": "Optional timeout in minutes for spawn mode. Overrides the blueprint's timeout-minutes and the config default."
 +                }
 +            }
-+        })
++        });
++        if let Some(schema) = &self.input_schema {
++            let properties = parameters["properties"].as_object_mut().unwrap();
++            properties.remove("task");
++            properties.insert("assignment".to_string(), schema.value.clone());
++            properties.get_mut("resume_session").unwrap()["description"] = json!(
++                "Session ID from a prior spawn to continue with a new required assignment object. Keeps the same session, model, tools, and transcript. Cannot be combined with follow_up_session, working_dir, or spawn_mode."
++            );
++        }
++        parameters
 +    }
 +
 +    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-+        let params: BlueprintToolInput = serde_json::from_value(input)?;
++        let params: BlueprintToolInput = serde_json::from_value(input.clone())?;
 +
 +        // ── Mode conflict: a session may be read or resumed, never both ──
 +        let follow_up = nonblank_follow_up_session(params.follow_up_session.as_deref());
@@ -7519,7 +8633,7 @@ index 000000000..561dbd08a
 +
 +        // ── Resume mode: continue an existing worker with a new task ──
 +        if let Some(session_id) = resume {
-+            let task = params.task.as_deref().map(str::trim).unwrap_or("");
++            let task = self.assignment(&input, params.task.as_deref())?;
 +            if task.is_empty() {
 +                return Err(anyhow::anyhow!(
 +                    "'task' must not be blank when resuming worker session \
@@ -7552,12 +8666,12 @@ index 000000000..561dbd08a
 +                ));
 +            }
 +            return self
-+                .execute_resume(session_id, task, params.timeout_minutes, &ctx)
++                .execute_resume(session_id, &task, params.timeout_minutes, &ctx)
 +                .await;
 +        }
 +
 +        // ── Spawn mode: spawn, wait, return compact summary ──
-+        let task = params.task.as_deref().map(str::trim).unwrap_or("");
++        let task = self.assignment(&input, params.task.as_deref())?;
 +        if task.is_empty() {
 +            return Err(anyhow::anyhow!(
 +                "'task' must not be blank for blueprint tool '{}' (or pass \
@@ -7596,10 +8710,7 @@ index 000000000..561dbd08a
 +                ));
 +            }
 +            Err(e) => {
-+                return Err(anyhow::anyhow!(
-+                    "Failed to spawn blueprint worker: {}",
-+                    e
-+                ));
++                return Err(anyhow::anyhow!("Failed to spawn blueprint worker: {}", e));
 +            }
 +        };
 +
@@ -7660,10 +8771,7 @@ index 000000000..561dbd08a
 +                ));
 +            }
 +            Err(e) => {
-+                return Err(anyhow::anyhow!(
-+                    "Failed to await blueprint worker: {}",
-+                    e
-+                ));
++                return Err(anyhow::anyhow!("Failed to await blueprint worker: {}", e));
 +            }
 +        }
 +
@@ -7699,7 +8807,8 @@ index 000000000..561dbd08a
 +            }
 +            Ok(ServerEvent::Error { message, .. }) => Err(anyhow::anyhow!(
 +                "Blueprint worker '{}' completed but its output could not be read: {}",
-+                self.blueprint_id, message
++                self.blueprint_id,
++                message
 +            )),
 +            Ok(_) => Ok(ToolOutput::new(format!(
 +                "Blueprint '{}' worker completed (could not fetch output).\n\n\
@@ -7711,6 +8820,131 @@ index 000000000..561dbd08a
 +                e
 +            )),
 +        }
++    }
++}
++
++/// Agent-owned completion channel; validation is generic and never reads report fields.
++#[derive(Debug)]
++pub(crate) struct SubmitReportTool {
++    schema: crate::worker_blueprint::BlueprintSchema,
++    report: std::sync::Mutex<Option<Value>>,
++    last_error: std::sync::Mutex<Option<String>>,
++    invalid_submissions: std::sync::atomic::AtomicU32,
++}
++
++pub(crate) const REPORT_FAILURE_PREFIX: &str =
++    "Worker did not submit a valid completion report after two corrections:";
++
++#[derive(Debug)]
++struct ReportFailure(String);
++impl std::fmt::Display for ReportFailure {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(formatter, "{REPORT_FAILURE_PREFIX} {}", self.0)
++    }
++}
++impl std::error::Error for ReportFailure {}
++
++pub(crate) fn report_failure(error: &anyhow::Error) -> Option<String> {
++    error
++        .downcast_ref::<ReportFailure>()
++        .map(ToString::to_string)
++}
++
++impl SubmitReportTool {
++    pub(crate) fn new(schema: Value) -> Result<Self> {
++        Ok(Self {
++            schema: crate::worker_blueprint::BlueprintSchema::new(schema)
++                .map_err(anyhow::Error::msg)?,
++            report: std::sync::Mutex::new(None),
++            last_error: std::sync::Mutex::new(None),
++            invalid_submissions: std::sync::atomic::AtomicU32::new(0),
++        })
++    }
++
++    pub(crate) fn reset(&self) {
++        *self.report.lock().unwrap() = None;
++        *self.last_error.lock().unwrap() = None;
++        self.invalid_submissions
++            .store(0, std::sync::atomic::Ordering::Relaxed);
++    }
++
++    pub(crate) fn report(&self) -> Option<String> {
++        self.report
++            .lock()
++            .unwrap()
++            .as_ref()
++            .map(|value| serde_json::to_string_pretty(value).expect("validated JSON serializes"))
++    }
++
++    pub(crate) fn correction(&self, attempts: &mut u32) -> Result<String> {
++        let issue = self
++            .last_error
++            .lock()
++            .unwrap()
++            .clone()
++            .unwrap_or_else(|| "No valid submit_report call was made.".to_string());
++        if self.correction_count(*attempts) >= 2 {
++            return Err(ReportFailure(issue).into());
++        }
++        *attempts += 1;
++        Ok(format!(
++            "Your previous response did not satisfy the required structured-output contract. \
++            Call submit_report with corrected arguments matching its JSON Schema. \
++            Validation errors:\n{issue}"
++        ))
++    }
++
++    fn correction_count(&self, attempts: u32) -> u32 {
++        attempts.saturating_add(
++            self.invalid_submissions
++                .load(std::sync::atomic::Ordering::Relaxed),
++        )
++    }
++
++    pub(crate) fn check_failure(&self, attempts: u32) -> Result<()> {
++        if self.correction_count(attempts) > 2 {
++            return Err(ReportFailure(
++                self.last_error
++                    .lock()
++                    .unwrap()
++                    .clone()
++                    .unwrap_or_else(|| "No valid submit_report call was made.".to_string()),
++            )
++            .into());
++        }
++        Ok(())
++    }
++
++    pub(crate) fn definition(&self) -> crate::message::ToolDefinition {
++        crate::message::ToolDefinition {
++            name: self.name().to_string(),
++            description: self.description().to_string(),
++            input_schema: self.parameters_schema(),
++            defer_loading: false,
++        }
++    }
++}
++
++#[async_trait]
++impl Tool for SubmitReportTool {
++    fn name(&self) -> &str {
++        "submit_report"
++    }
++    fn description(&self) -> &str {
++        "Submit the completion report. Validated arguments end this worker turn."
++    }
++    fn parameters_schema(&self) -> Value {
++        self.schema.value.clone()
++    }
++    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        if let Err(error) = self.schema.validate(&input) {
++            *self.last_error.lock().unwrap() = Some(error.clone());
++            self.invalid_submissions
++                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++            return Err(anyhow::Error::msg(error));
++        }
++        *self.report.lock().unwrap() = Some(input);
++        Ok(ToolOutput::new("Completion report accepted."))
 +    }
 +}
 +
@@ -7745,16 +8979,11 @@ index 000000000..561dbd08a
 +                    session_id, scope, &text, offset, limit,
 +                )))
 +            }
-+            Ok(ServerEvent::Error { message, .. }) => {
-+                Err(anyhow::anyhow!("{}", message))
-+            }
++            Ok(ServerEvent::Error { message, .. }) => Err(anyhow::anyhow!("{}", message)),
 +            Ok(_) => Err(anyhow::anyhow!(
 +                "Unexpected response reading worker output."
 +            )),
-+            Err(e) => Err(anyhow::anyhow!(
-+                "Failed to read worker output: {}",
-+                e
-+            )),
++            Err(e) => Err(anyhow::anyhow!("Failed to read worker output: {}", e)),
 +        }
 +    }
 +
@@ -7957,6 +9186,11 @@ index 000000000..561dbd08a
 +                .iter()
 +                .find(|member| member.session_id == session_id)
 +                .is_some_and(|member| member.status == "failed" || member.status == "crashed");
++            let failure_report = members
++                .iter()
++                .find(|member| member.session_id == session_id)
++                .and_then(|member| member.completion_report.as_deref())
++                .filter(|report| report.starts_with(REPORT_FAILURE_PREFIX));
 +
 +            next_id += 1;
 +            let messages = match send_request(Request::CommReadContext {
@@ -8004,13 +9238,13 @@ index 000000000..561dbd08a
 +                    (true, Some(text)) => {
 +                        return Err(anyhow::anyhow!(
 +                            "Resumed worker '{session_id}' failed: {}",
-+                            text
++                            failure_report.unwrap_or(&text)
 +                        ));
 +                    }
 +                    (true, None) => {
 +                        return Err(anyhow::anyhow!(
 +                            "Resumed worker '{session_id}' failed: {}",
-+                            summary
++                            failure_report.unwrap_or(&summary)
 +                        ));
 +                    }
 +                    (false, None) => {}
@@ -8028,22 +9262,27 @@ index 000000000..561dbd08a
 +    /// Render a resumed worker's new report with the same session-footer
 +    /// contract as spawn mode, plus the resume hint.
 +    fn render_resume_report(&self, session_id: &str, summary: &str) -> String {
++        let assignment_parameter = if self.input_schema.is_some() {
++            "assignment"
++        } else {
++            "task"
++        };
 +        format!(
 +            "{summary}\n\n---\n\n\
 +             Worker session: {session_id}\n\
 +             (Pass `follow_up_session: \"{session_id}\"` with `offset`/`limit` \
 +             to page this report, `scope: \"transcript\"` for the whole \
 +             conversation newest first, or `resume_session: \"{session_id}\"` \
-+             with a new `task` to continue this worker again.)"
++              with a new `{assignment_parameter}` to continue this worker again.)"
 +        )
 +    }
 +}
 diff --git a/crates/jcode-app-core/src/tool/blueprint_tests.rs b/crates/jcode-app-core/src/tool/blueprint_tests.rs
 new file mode 100644
-index 000000000..c15c028b5
+index 000000000..8851103e7
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint_tests.rs
-@@ -0,0 +1,2430 @@
+@@ -0,0 +1,2450 @@
 +//! Phase two integration tests for worker blueprints.
 +//!
 +//! These tests verify the runtime integration of worker blueprints:
@@ -8082,6 +9321,8 @@ index 000000000..c15c028b5
 +    body: &str,
 +) -> WorkerBlueprint {
 +    WorkerBlueprint {
++        input_schema: None,
++        output_schema: None,
 +        source_path: PathBuf::from(format!("/tmp/{name}.md")),
 +        name: name.to_string(),
 +        description: description.to_string(),
@@ -8240,6 +9481,8 @@ index 000000000..c15c028b5
 +#[test]
 +fn generated_tool_description_includes_blueprint_metadata() {
 +    let bp = WorkerBlueprint {
++        input_schema: None,
++        output_schema: None,
 +        source_path: PathBuf::from("/tmp/reviewer.md"),
 +        name: "reviewer".to_string(),
 +        description: "Reviews changes for correctness.".to_string(),
@@ -8652,6 +9895,22 @@ index 000000000..c15c028b5
 +// ---------------------------------------------------------------------------
 +// Generated tool registration with blueprints
 +// ---------------------------------------------------------------------------
++
++#[test]
++fn blueprint_swarm_wildcard_policy_preserves_generic_swarm_boundary() {
++    let policy = std::collections::HashSet::from(["swarm_*".to_string()]);
++    for name in ["swarm_reviewer", "swarm_new-worker"] {
++        assert!(super::tool_name_is_allowed(&policy, name));
++        assert!(super::tool_name_is_disabled(&policy, name));
++    }
++    for name in ["swarm", "read", "swarmish"] {
++        assert!(!super::tool_name_is_allowed(&policy, name));
++        assert!(!super::tool_name_is_disabled(&policy, name));
++    }
++    let generic = std::collections::HashSet::from(["swarm".to_string()]);
++    assert!(!super::tool_name_is_disabled(&generic, "swarm_reviewer"));
++    assert!(!super::tool_name_is_allowed(&generic, "swarm_reviewer"));
++}
 +
 +#[test]
 +fn register_blueprint_tools_loads_from_configured_dir() {
@@ -10719,29 +11978,83 @@ index 734004add..673085dc2 100644
  async fn communicate_await_members_background_returns_immediately_and_notifies() {
      let _env_lock = crate::storage::lock_test_env();
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 269d040cc..be4695541 100644
+index 269d040cc..d10161ec5 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -1,4 +1,7 @@
  mod agentgrep;
-+mod blueprint;
++pub(crate) mod blueprint;
 +#[cfg(test)]
 +mod blueprint_tests;
  pub mod ambient;
  mod apply_patch;
  mod bash;
-@@ -93,6 +96,10 @@ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> b
-     disabled.contains(name) || (disabled.contains("mcp") && is_mcp_tool_name(name))
+@@ -63,6 +66,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
+
+ pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
+     allowed.contains(name)
++        || (allowed.contains("swarm_*") && name.starts_with("swarm_"))
+         || (allowed.contains("mcp") && is_mcp_tool_name(name))
+         || (name == "mcp" && allowed.iter().any(|tool| is_mcp_tool_name(tool)))
+         || (is_fixed_mcp_tool(name) && allowed.iter().any(|tool| tool.starts_with("mcp__")))
+@@ -90,7 +94,13 @@ fn ensure_mcp_action_allowed(session_id: &str, surface: &str) -> Result<()> {
  }
 
-+pub(crate) fn is_swarm_tool_name(name: &str) -> bool {
-+    name == "swarm" || name.starts_with("swarm_")
+ pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> bool {
+-    disabled.contains(name) || (disabled.contains("mcp") && is_mcp_tool_name(name))
++    disabled.contains(name)
++        || (disabled.contains("swarm_*") && name.starts_with("swarm_"))
++        || (disabled.contains("mcp") && is_mcp_tool_name(name))
 +}
 +
- fn is_fixed_mcp_tool(name: &str) -> bool {
-     matches!(name, "mcp_search" | "mcp_call")
++pub(crate) fn is_swarm_tool_name(name: &str) -> bool {
++    name == "swarm" || name.starts_with("swarm_")
  }
-@@ -587,16 +594,25 @@ impl Registry {
+
+ fn is_fixed_mcp_tool(name: &str) -> bool {
+@@ -110,6 +120,7 @@ pub(crate) use session_search::spawn_recent_index_warmup;
+
+ #[derive(Clone, Debug, Default)]
+ struct SessionToolPolicy {
++    blueprint_report: Option<Arc<blueprint::SubmitReportTool>>,
+     allowed_tools: Option<HashSet<String>>,
+     disabled_tools: HashSet<String>,
+     owner: Option<u64>,
+@@ -155,6 +166,7 @@ pub(crate) fn register_session_tool_policy(
+     policies.insert(
+         session_id.to_string(),
+         SessionToolPolicy {
++            blueprint_report: None,
+             allowed_tools,
+             disabled_tools,
+             owner: Some(owner),
+@@ -178,6 +190,7 @@ pub(crate) fn set_session_tool_policy(
+     policies.insert(
+         session_id.to_string(),
+         SessionToolPolicy {
++            blueprint_report: None,
+             allowed_tools,
+             disabled_tools,
+             owner: None,
+@@ -213,6 +226,17 @@ fn session_tool_policy(session_id: &str) -> Option<SessionToolPolicy> {
+     policy
+ }
+
++pub(crate) fn blueprint_report_tool(session_id: &str) -> Option<Arc<blueprint::SubmitReportTool>> {
++    SESSION_TOOL_POLICIES.read().unwrap_or_else(|e| e.into_inner())
++        .get(session_id).and_then(|policy| policy.blueprint_report.clone())
++}
++
++pub(crate) fn set_blueprint_report_tool(session_id: &str, tool: Option<Arc<blueprint::SubmitReportTool>>) {
++    if let Some(policy) = SESSION_TOOL_POLICIES.write().unwrap_or_else(|e| e.into_inner()).get_mut(session_id) {
++        policy.blueprint_report = tool;
++    }
++}
++
+ #[cfg(test)]
+ pub(crate) fn session_tool_policy_allows_tool_for_test(
+     session_id: &str,
+@@ -587,16 +611,25 @@ impl Registry {
          }
          let session_tools_ms = session_tools_start.elapsed().as_millis();
 
@@ -10768,7 +12081,7 @@ index 269d040cc..be4695541 100644
              write_ms,
              start.elapsed().as_millis()
          ));
-@@ -614,6 +630,7 @@ impl Registry {
+@@ -614,6 +647,7 @@ impl Registry {
              .filter(|(_, tool)| tool.model_visible())
              .filter(|(name, _)| allowed_tools.is_none_or(|set| self.tool_is_allowed(set, name)))
              .map(|(name, tool)| {
@@ -10776,7 +12089,7 @@ index 269d040cc..be4695541 100644
                  let mut def = tool.to_definition();
                  // Use registry key as the tool name (important for MCP tools where
                  // the registry key is "mcp__server__tool" but Tool::name() returns
-@@ -630,6 +647,44 @@ impl Registry {
+@@ -630,6 +664,44 @@ impl Registry {
          defs
      }
 
@@ -10821,7 +12134,7 @@ index 269d040cc..be4695541 100644
      pub async fn tool_names(&self) -> Vec<String> {
          let tools = self.tools.read().await;
          tools.keys().cloned().collect()
-@@ -651,6 +706,11 @@ impl Registry {
+@@ -651,6 +723,11 @@ impl Registry {
          defs
      }
 
@@ -10833,6 +12146,16 @@ index 269d040cc..be4695541 100644
      /// Enable test mode for memory tools (isolated storage)
      /// Called when session is marked as debug
      pub async fn enable_memory_test_mode(&self) {
+@@ -1032,6 +1109,9 @@ impl Registry {
+                 anyhow::bail!("Tool 'desktop_selfdev' requires a Jcode Desktop source checkout.");
+             }
+         }
++        let (is_custom, tools) = blueprint::select_dispatch_tools(
++            tools, &ctx.session_id, resolved_name, is_custom,
++        );
+         if !is_custom && let Some(policy) = session_tool_policy(&ctx.session_id) {
+             if let Some(allowed) = policy.allowed_tools.as_ref()
+                 && !self.tool_is_allowed(allowed, resolved_name)
 diff --git a/crates/jcode-app-core/src/tool/tests.rs b/crates/jcode-app-core/src/tool/tests.rs
 index dfb4d6fb8..31d67bb56 100644
 --- a/crates/jcode-app-core/src/tool/tests.rs
@@ -10856,6 +12179,23 @@ index dfb4d6fb8..31d67bb56 100644
          .filter(|def| !EXEMPT.contains(&def.name.as_str()))
          .filter(|def| def.description_token_estimate() > DESCRIPTION_TOKEN_CAP)
          .map(|def| {
+diff --git a/crates/jcode-base/Cargo.toml b/crates/jcode-base/Cargo.toml
+index 9fbd704fc..2f6f57186 100644
+--- a/crates/jcode-base/Cargo.toml
++++ b/crates/jcode-base/Cargo.toml
+@@ -33,6 +33,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
+ serde = { version = "1", features = ["derive"] }
+ serde_json = { version = "1", features = ["raw_value"] }
+ serde_yaml = "0.9"
++jsonschema = { version = "0.49.3", default-features = false }
+ toml = "0.8"
+ toml_edit = "0.20"
+
+@@ -162,4 +163,3 @@ jcode-terminal-prompt = { path = "../jcode-terminal-prompt" }
+ jcode-provider-openrouter-runtime = { path = "../jcode-provider-openrouter-runtime" }
+ # Paused-time (auto-advancing virtual clock) tests for the background stall watchdog.
+ tokio = { version = "1", features = ["test-util"] }
+-
 diff --git a/crates/jcode-base/src/config.rs b/crates/jcode-base/src/config.rs
 index 21b94419b..c27edd73b 100644
 --- a/crates/jcode-base/src/config.rs
@@ -11118,7 +12458,7 @@ index 0bdab9bef..c0f3b64c7 100644
  pub use embedding_stub as embedding;
  pub use jcode_core::{terminal_eprint, terminal_eprintln, terminal_print, terminal_println};
 diff --git a/crates/jcode-base/src/session.rs b/crates/jcode-base/src/session.rs
-index ee5d1ddc0..08afc7b12 100644
+index ee5d1ddc0..36df14781 100644
 --- a/crates/jcode-base/src/session.rs
 +++ b/crates/jcode-base/src/session.rs
 @@ -157,6 +157,9 @@ pub struct Session {
@@ -11131,12 +12471,15 @@ index ee5d1ddc0..08afc7b12 100644
      /// Session worker routing. Missing keys follow saved global defaults.
      #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
      pub agent_model_overrides: AgentModelOverrides,
-@@ -228,6 +231,20 @@ pub struct Session {
+@@ -228,6 +231,23 @@ pub struct Session {
      memory_profile_dirty: bool,
  }
 
 +#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 +pub struct WorkerBlueprintPolicy {
++    /// Validated output contract, persisted so resume does not reread blueprint files.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub output_schema: Option<serde_json::Value>,
 +    pub name: String,
 +    pub enabled_tools: Option<Vec<String>>,
 +    pub disabled_tools: Option<Vec<String>>,
@@ -11152,7 +12495,7 @@ index ee5d1ddc0..08afc7b12 100644
  #[derive(Debug, Deserialize)]
  struct SessionStartupStub {
      id: String,
-@@ -256,6 +273,8 @@ struct SessionStartupStub {
+@@ -256,6 +276,8 @@ struct SessionStartupStub {
      #[serde(default)]
      subagent_model: Option<String>,
      #[serde(default)]
@@ -11161,7 +12504,7 @@ index ee5d1ddc0..08afc7b12 100644
      agent_model_overrides: AgentModelOverrides,
      #[serde(default)]
      improve_mode: Option<SessionImproveMode>,
-@@ -372,6 +391,7 @@ impl Session {
+@@ -372,6 +394,7 @@ impl Session {
          session.route_api_method = stub.route_api_method;
          session.reasoning_effort = stub.reasoning_effort;
          session.subagent_model = stub.subagent_model;
@@ -11169,7 +12512,7 @@ index ee5d1ddc0..08afc7b12 100644
          session.agent_model_overrides = stub.agent_model_overrides;
          session.improve_mode = stub.improve_mode;
          session.autoreview_enabled = stub.autoreview_enabled;
-@@ -411,6 +431,7 @@ impl Session {
+@@ -411,6 +434,7 @@ impl Session {
          session.route_api_method = snapshot.route_api_method;
          session.reasoning_effort = snapshot.reasoning_effort;
          session.subagent_model = snapshot.subagent_model;
@@ -11177,7 +12520,7 @@ index ee5d1ddc0..08afc7b12 100644
          session.agent_model_overrides = snapshot.agent_model_overrides;
          session.improve_mode = snapshot.improve_mode;
          session.autoreview_enabled = snapshot.autoreview_enabled;
-@@ -552,6 +573,7 @@ impl Session {
+@@ -552,6 +576,7 @@ impl Session {
              model: self.model.clone(),
              reasoning_effort: self.reasoning_effort.clone(),
              subagent_model: self.subagent_model.clone(),
@@ -11185,7 +12528,7 @@ index ee5d1ddc0..08afc7b12 100644
              agent_model_overrides: self.agent_model_overrides.clone(),
              improve_mode: self.improve_mode,
              autoreview_enabled: self.autoreview_enabled,
-@@ -755,6 +777,7 @@ impl Session {
+@@ -755,6 +780,7 @@ impl Session {
          self.model = meta.model;
          self.reasoning_effort = meta.reasoning_effort;
          self.subagent_model = meta.subagent_model;
@@ -11193,7 +12536,7 @@ index ee5d1ddc0..08afc7b12 100644
          self.agent_model_overrides = meta.agent_model_overrides;
          self.improve_mode = meta.improve_mode;
          self.autoreview_enabled = meta.autoreview_enabled;
-@@ -798,6 +821,7 @@ impl Session {
+@@ -798,6 +824,7 @@ impl Session {
              route_api_method: None,
              reasoning_effort: None,
              subagent_model: None,
@@ -11201,7 +12544,7 @@ index ee5d1ddc0..08afc7b12 100644
              agent_model_overrides: AgentModelOverrides::new(),
              improve_mode: None,
              autoreview_enabled: None,
-@@ -856,6 +880,7 @@ impl Session {
+@@ -856,6 +883,7 @@ impl Session {
              route_api_method: None,
              reasoning_effort: None,
              subagent_model: None,
@@ -11209,7 +12552,7 @@ index ee5d1ddc0..08afc7b12 100644
              agent_model_overrides: AgentModelOverrides::new(),
              improve_mode: None,
              autoreview_enabled: None,
-@@ -1790,6 +1815,8 @@ struct RemoteStartupSessionSnapshot {
+@@ -1790,6 +1818,8 @@ struct RemoteStartupSessionSnapshot {
      #[serde(default)]
      subagent_model: Option<String>,
      #[serde(default)]
@@ -11249,10 +12592,10 @@ index db3a76aff..caa31409d 100644
          || prev.improve_mode != current.improve_mode
          || prev.autoreview_enabled != current.autoreview_enabled
 diff --git a/crates/jcode-base/src/session_tests/cases.rs b/crates/jcode-base/src/session_tests/cases.rs
-index e405956f6..2952ab535 100644
+index e405956f6..8dc454172 100644
 --- a/crates/jcode-base/src/session_tests/cases.rs
 +++ b/crates/jcode-base/src/session_tests/cases.rs
-@@ -622,6 +622,183 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
+@@ -622,6 +622,187 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
      Ok(())
  }
 
@@ -11266,6 +12609,7 @@ index e405956f6..2952ab535 100644
 +        (
 +            "enabled_empty",
 +            WorkerBlueprintPolicy {
++                output_schema: None,
 +                name: "restricted-worker".to_string(),
 +                enabled_tools: Some(Vec::new()),
 +                disabled_tools: None,
@@ -11275,6 +12619,7 @@ index e405956f6..2952ab535 100644
 +        (
 +            "disabled_empty",
 +            WorkerBlueprintPolicy {
++                output_schema: None,
 +                name: "open-worker".to_string(),
 +                enabled_tools: None,
 +                disabled_tools: Some(Vec::new()),
@@ -11383,6 +12728,7 @@ index e405956f6..2952ab535 100644
 +    std::fs::write(&path, serde_json::to_vec(&snapshot)?)?;
 +
 +    let expected = WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: "legacy-worker".to_string(),
 +        enabled_tools: None,
 +        disabled_tools: None,
@@ -11410,6 +12756,7 @@ index e405956f6..2952ab535 100644
 +    session.save()?;
 +
 +    let policy = WorkerBlueprintPolicy {
++        output_schema: None,
 +        name: "journal-worker".to_string(),
 +        enabled_tools: None,
 +        disabled_tools: Some(Vec::new()),
@@ -11438,10 +12785,10 @@ index e405956f6..2952ab535 100644
      let _env_lock = lock_env();
 diff --git a/crates/jcode-base/src/worker_blueprint.rs b/crates/jcode-base/src/worker_blueprint.rs
 new file mode 100644
-index 000000000..7dfd1353e
+index 000000000..03bb41e7c
 --- /dev/null
 +++ b/crates/jcode-base/src/worker_blueprint.rs
-@@ -0,0 +1,2541 @@
+@@ -0,0 +1,2639 @@
 +//! Worker blueprint discovery, parsing, validation, and override merging.
 +//!
 +//! This module owns the phase-one data and configuration boundary for worker
@@ -11461,10 +12808,68 @@ index 000000000..7dfd1353e
 +use std::collections::BTreeMap;
 +use std::fmt;
 +use std::path::{Path, PathBuf};
++use std::sync::Arc;
 +
 +use serde::Deserialize;
 +
 +use crate::config::WorkerBlueprintOverride;
++
++/// Compiled, setup-agnostic schema for a blueprint's assignment or report.
++#[derive(Debug, Clone)]
++pub struct BlueprintSchema {
++    pub value: serde_json::Value,
++    validator: Arc<jsonschema::Validator>,
++}
++
++impl BlueprintSchema {
++    pub fn new(value: serde_json::Value) -> Result<Self, String> {
++        if let Some(keyword) = ["allOf", "anyOf", "oneOf", "$ref", "not"]
++            .into_iter().find(|keyword| value.get(*keyword).is_some())
++        {
++            return Err(format!("root schema composition '{keyword}' is not supported"));
++        }
++        if value.get("type").and_then(serde_json::Value::as_str) != Some("object")
++            || value.get("properties").and_then(serde_json::Value::as_object).is_none()
++        {
++            return Err("schema root must declare type: object and properties".to_string());
++        }
++        const RESERVED: &[&str] = &[
++            "task", "follow_up_session", "resume_session", "offset", "limit",
++            "scope", "working_dir", "spawn_mode", "timeout_minutes", "intent",
++            "accept_large_output",
++        ];
++        let properties = value.get("properties").and_then(serde_json::Value::as_object);
++        let required = value.get("required").and_then(serde_json::Value::as_array);
++        for name in RESERVED {
++            if properties.is_some_and(|properties| properties.contains_key(*name))
++                || required.is_some_and(|required| {
++                    required.iter().any(|field| field.as_str() == Some(*name))
++                })
++            {
++                return Err(format!("reserved control parameter '{name}' cannot be declared"));
++            }
++        }
++        let validator = jsonschema::validator_for(&value).map_err(|error| error.to_string())?;
++        Ok(Self {
++            value,
++            validator: Arc::new(validator),
++        })
++    }
++
++    pub fn validate(&self, value: &serde_json::Value) -> Result<(), String> {
++        let errors: Vec<_> = self.validator.iter_errors(value)
++            .map(|error| {
++                let path = error.instance_path().to_string();
++                format!("{}: {}", if path.is_empty() { "/" } else { &path }, error)
++            })
++            .collect();
++        if errors.is_empty() {
++            Ok(())
++        } else {
++            Err(errors.join("\n"))
++        }
++    }
++}
 +
 +/// Reserved blueprint ID for the coordinator special file.
 +///
@@ -11571,6 +12976,8 @@ index 000000000..7dfd1353e
 +/// merging produce an effective [`WorkerBlueprint`].
 +#[derive(Debug, Clone)]
 +pub struct WorkerBlueprintSource {
++    pub input_schema: Option<BlueprintSchema>,
++    pub output_schema: Option<BlueprintSchema>,
 +    /// Filesystem path of the Markdown file.
 +    pub source_path: PathBuf,
 +    /// Blueprint ID from the `name` key.
@@ -11604,6 +13011,8 @@ index 000000000..7dfd1353e
 +/// This is the canonical representation that phase two consumes.
 +#[derive(Debug, Clone)]
 +pub struct WorkerBlueprint {
++    pub input_schema: Option<BlueprintSchema>,
++    pub output_schema: Option<BlueprintSchema>,
 +    /// Filesystem path of the source Markdown file.
 +    pub source_path: PathBuf,
 +    /// Blueprint ID matching `[a-z][a-z0-9_-]*`.
@@ -12197,6 +13606,8 @@ index 000000000..7dfd1353e
 +        "allowed-child-blueprints",
 +        "communication-policy",
 +        "timeout-minutes",
++        "input-schema",
++        "output-schema",
 +    ];
 +    let mut diags = Vec::new();
 +    if let serde_yaml::Value::Mapping(map) = &yaml_value {
@@ -12210,7 +13621,7 @@ index 000000000..7dfd1353e
 +                             known keys: name, description, model, effort, \
 +                             enabled-tools, disabled-tools, \
 +                             allowed-child-blueprints, communication-policy, \
-+                             timeout-minutes",
++                             timeout-minutes, input-schema, output-schema",
 +                            path.display()
 +                        ),
 +                    ));
@@ -12219,6 +13630,27 @@ index 000000000..7dfd1353e
 +        }
 +    }
 +
++    let parse_schema = |key: &str| -> Result<Option<BlueprintSchema>, String> {
++        yaml_value.get(key).map(|value| {
++            let value = serde_json::to_value(value).map_err(|error| error.to_string())?;
++            BlueprintSchema::new(value)
++        }).transpose()
++    };
++    let (input_schema, output_schema) = match (
++        parse_schema("input-schema"), parse_schema("output-schema")
++    ) {
++        (Ok(input), Ok(output)) => (input, output),
++        (input, output) => {
++            for (key, result) in [("input-schema", input), ("output-schema", output)] {
++                if let Err(error) = result {
++                    diags.push(WorkerBlueprintDiagnostic::file_excluded(
++                        path, format!("invalid {key}: {error}")
++                    ));
++                }
++            }
++            return (None, diags);
++        }
++    };
 +    let fm: FrontMatter = match serde_yaml::from_value(yaml_value) {
 +        Ok(fm) => fm,
 +        Err(e) => {
@@ -12376,6 +13808,8 @@ index 000000000..7dfd1353e
 +
 +    (
 +        Some(WorkerBlueprintSource {
++            input_schema,
++            output_schema,
 +            source_path: path.to_path_buf(),
 +            name,
 +            description,
@@ -12548,6 +13982,8 @@ index 000000000..7dfd1353e
 +
 +    (
 +        WorkerBlueprint {
++            input_schema: source.input_schema,
++            output_schema: source.output_schema,
 +            source_path: source.source_path,
 +            name: source.name,
 +            description: source.description,
@@ -12586,6 +14022,11 @@ index 000000000..7dfd1353e
 +    if let Some(dir) = resolve_blueprints_dir(blueprints_dir) {
 +        if dir.is_dir() {
 +            for path in discover_markdown_files(&dir) {
++                // The reserved file has its own schema and loader, not worker
++                // name/description fields. Do not diagnose it as a bad worker.
++                if path.file_name().and_then(|name| name.to_str()) == Some("coordinator.md") {
++                    continue;
++                }
 +                match std::fs::read_to_string(&path) {
 +                    Ok(raw) => {
 +                        let (source, file_diags) = parse_blueprint_file_with_diagnostics(&path, &raw);
@@ -13615,7 +15056,11 @@ index 000000000..7dfd1353e
 +        let dir = make_dir(&[(
 +            "coordinator.md",
 +            "---\nenabled-tools:\n  - read\n  - agentgrep\ndisabled-tools:\n  - bash\n---\n\nDelegate tasks to workers.",
-+        )]);
++        ), ("worker.md", MINIMAL_BP)]);
++        let workers = load_worker_blueprints(dir.path().to_str(), &BTreeMap::new());
++        assert_eq!(workers.registry.len(), 1);
++        assert!(workers.registry.get("shell-runner").is_some());
++        assert!(workers.diagnostics.is_empty());
 +        match load_coordinator_blueprint(dir.path().to_str()) {
 +            CoordinatorLoadResult::Ok(coord) => {
 +                assert_eq!(coord.enabled_tools.as_deref(), Some(&["read".to_string(), "agentgrep".to_string()][..]));

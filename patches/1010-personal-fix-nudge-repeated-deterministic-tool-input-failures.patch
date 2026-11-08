@@ -393,7 +393,7 @@ index 0c5601aef..23bec512c 100644
      async fn valid_tool_calls_reset_the_malformed_round_bound() {
          let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
 diff --git a/crates/jcode-app-core/src/agent/turn_loops.rs b/crates/jcode-app-core/src/agent/turn_loops.rs
-index 7d27ee84b..01035b1f6 100644
+index 671947d56..d5dbc11d4 100644
 --- a/crates/jcode-app-core/src/agent/turn_loops.rs
 +++ b/crates/jcode-app-core/src/agent/turn_loops.rs
 @@ -56,6 +56,8 @@ impl Agent {
@@ -405,7 +405,7 @@ index 7d27ee84b..01035b1f6 100644
          self.set_log_context();
          let usage_turn_id = self.model_usage_turn_id();
          crate::session_metrics::record_turn(&self.session.id);
-@@ -1239,7 +1241,15 @@ impl Agent {
+@@ -1256,7 +1258,15 @@ impl Agent {
                      model: Some(self.provider.model()),
                  }));
 
@@ -423,7 +423,7 @@ index 7d27ee84b..01035b1f6 100644
                  self.unlock_tools_if_needed(&tc.name);
                  let tool_elapsed = tool_start.elapsed();
 diff --git a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
-index be4e35f0f..b0c64505a 100644
+index ff4f79663..d001ab6ce 100644
 --- a/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 +++ b/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs
 @@ -61,6 +61,8 @@ impl Agent {
@@ -435,7 +435,7 @@ index be4e35f0f..b0c64505a 100644
          self.set_log_context();
          let usage_turn_id = self.model_usage_turn_id();
          // Mark this session as actively streaming for presence UIs (e.g. the
-@@ -1655,14 +1657,19 @@ impl Agent {
+@@ -1676,14 +1678,19 @@ impl Agent {
 
                  // Spawn tool in its own task so we can detach it to background on Alt+B
                  let registry_clone = self.registry.clone();
@@ -812,7 +812,7 @@ index 928dea08b..ed6c61559 100644
  fn action_message_is_compact() {
      let msg = format_action_message(
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index 3c466376c..f6905537c 100644
+index ebe56e325..867ceedd1 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
 @@ -41,6 +41,7 @@ mod open;
@@ -831,7 +831,7 @@ index 3c466376c..f6905537c 100644
  use std::sync::atomic::{AtomicU64, Ordering};
 
  pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
-@@ -312,6 +314,20 @@ pub struct Registry {
+@@ -329,6 +331,20 @@ pub struct Registry {
      compaction: Arc<RwLock<CompactionManager>>,
  }
 
@@ -852,7 +852,7 @@ index 3c466376c..f6905537c 100644
  /// Non-owning handle used by tools stored inside a registry.
  ///
  /// A tool cannot strongly own the registry containing it without creating an
-@@ -368,6 +384,24 @@ impl Registry {
+@@ -385,6 +401,24 @@ impl Registry {
          }
      }
 
@@ -877,7 +877,7 @@ index 3c466376c..f6905537c 100644
      fn downgrade(&self) -> WeakRegistry {
          WeakRegistry {
              tools: Arc::downgrade(&self.tools),
-@@ -1030,9 +1064,57 @@ impl Registry {
+@@ -1047,9 +1081,57 @@ impl Registry {
          }
      }
 
@@ -936,7 +936,7 @@ index 3c466376c..f6905537c 100644
          // Mark this call in-flight for the whole execution so the missing
          // tool-output repair paths do not mistake a slow tool for an
          // interrupted one and inject a duplicate synthetic result. See
-@@ -1040,6 +1122,10 @@ impl Registry {
+@@ -1057,6 +1139,10 @@ impl Registry {
          let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
          let tools = self.tools.read().await;
          let resolved_name = Self::resolve_tool_name_for_session(&ctx.session_id, name);
@@ -947,7 +947,7 @@ index 3c466376c..f6905537c 100644
          let is_custom = sdk::custom(&ctx.session_id, resolved_name);
          if is_custom && let Some(config) = sdk::config(&ctx.session_id) {
              let disabled = config.disabled.into_iter().collect();
-@@ -1087,25 +1173,10 @@ impl Registry {
+@@ -1107,25 +1193,10 @@ impl Registry {
                  return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
              }
          }
@@ -976,7 +976,7 @@ index 3c466376c..f6905537c 100644
          };
 
          // Drop the lock before executing
-@@ -1123,6 +1194,48 @@ impl Registry {
+@@ -1143,6 +1214,48 @@ impl Registry {
              input,
          )
          .await;
@@ -1025,7 +1025,7 @@ index 3c466376c..f6905537c 100644
 
          // User-configured pre_tool gate: external policy hook that can block
          // this call (exit 2). Skipped entirely when not configured.
-@@ -1981,3 +2094,269 @@ mod mcp_allow_list_tests {
+@@ -2001,3 +2114,269 @@ mod mcp_allow_list_tests {
 
  #[cfg(test)]
  mod tests;

@@ -126,7 +126,7 @@ index 1ad36b942..d7bdd0a51 100644
          serde_json::from_value::<ServerEvent>(json)?,
          ServerEvent::Pong {
 diff --git a/crates/jcode-app-core/src/server/client_lifecycle.rs b/crates/jcode-app-core/src/server/client_lifecycle.rs
-index 8f25fd7a7..3f7e792eb 100644
+index c6fac1a9a..5525a96e5 100644
 --- a/crates/jcode-app-core/src/server/client_lifecycle.rs
 +++ b/crates/jcode-app-core/src/server/client_lifecycle.rs
 @@ -49,8 +49,9 @@ use super::{

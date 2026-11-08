@@ -3,26 +3,26 @@
 This personal jcode catalog plugin replaces oversized successful tool results
 before they enter the coordinator's context. It emits a compact delegation
 nudge containing the result size and, when supplied by the runtime, the path to
-the full result. It never includes the original result in that nudge and does
-not choose a particular worker.
+the full result. It does not choose a particular worker.
 
 ## Source and updates
 
 This is local catalog content based on the design in
 `plans/delegation-guard-plugin.md`. Its integration depends on the runtime hook
-capabilities supplied by `0002-candidate-add-hook-context-and-post-tool-transform.patch`
+capabilities supplied by
+`0002-candidate-add-hook-context-and-post-tool-transform.patch`
 and worker blueprint context supplied by
 `1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`.
-To update it, compare its input and output contract with the current
+To update it, check its input and output contract against the current
 `post_tool_transform` hook, retain its fail-open behavior, and run the focused
 contract tests below. The runtime, not this plugin, creates the result files
 and removes them with its configured TTL cleanup.
 
 ## Install and configure
 
-Follow the [get started guide](../../../docs/get-started.md) to install the assets,
-then merge the hooks below into `~/.jcode/config.toml`. Without
-`post_tool_transform`, the guard does not run. Setup never changes your config.
+Follow the [get started guide](../../../docs/get-started.md) to install the
+assets. Without `post_tool_transform`, the guard does not run; merge these hooks
+if your existing configuration does not already include them.
 
 ```toml
 [hooks]
@@ -46,11 +46,20 @@ by jcode:
 export JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS=advanced,expert
 ```
 
-Only the built-in `advanced` and `expert` blueprint IDs can be selected. Routine,
-custom, and unknown worker blueprints remain unchanged. Selected workers are
-nudged to ask `swarm_routine` for bounded, read-only extraction from the saved
-result file. If that path is missing, the nudge says to report a blocker to the
-parent rather than retry blindly.
+Any listed blueprint ID is selected; unlisted worker blueprints remain
+unchanged. List only workers that may delegate. Selected workers are
+nudged to ask an allowed child worker for bounded, read-only extraction from
+the saved result file. If that path is missing, the nudge says to report a
+blocker to the parent rather than retry blindly.
+
+Selected worker nudges also include the last complete lines available within a
+bounded read of the saved output; coordinator nudges do not. Set either limit
+to zero to disable the tail. Invalid or negative values use the defaults:
+
+```text
+JCODE_DELEGATION_GUARD_TAIL_BYTES=1024
+JCODE_DELEGATION_GUARD_TAIL_LINES=20
+```
 
 ## Algorithm
 
@@ -58,25 +67,25 @@ parent rather than retry blindly.
    inactive when swarm is disabled.
 2. By default, only `coordinator` processes are transformed. Worker transforms
    require `JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS` to select their trusted
-   `blueprint_id`; only built-in `advanced` and `expert` IDs are eligible.
-   Internal processes and all other worker blueprints preserve their results.
+   `blueprint_id`. Internal processes and all other worker blueprints
+   preserve their results.
 3. Read precomputed `output_bytes` from the `post_tool_transform` JSON envelope.
    If it is at or below the configured threshold, emit nothing.
 4. For a larger coordinator result, emit exactly `{"tool_result":"..."}`.
    The replacement states the byte size and includes `tool_result_file` when it
    is available, so the coordinator can delegate inspection according to its
    own guidance. For a selected worker, the replacement directs bounded,
-   read-only extraction through `swarm_routine` and reports a blocker rather
-   than retrying if the file path is absent.
+   read-only extraction through an allowed child worker and reports a blocker
+   rather than retrying if the file path is absent.
 
-The script only reads standard input and environment variables. It neither
-creates nor deletes temporary files, and the runtime owns temporary-file TTL
-cleanup.
+The script reads standard input, environment variables, and a bounded tail of
+the saved worker result. It neither creates nor deletes temporary files, and the
+runtime owns temporary-file TTL cleanup.
 
 ## Test
 
-Run the isolated contract tests from the repository root:
+Run the isolated contract tests from the plugin directory:
 
 ```bash
-python3 customizations/plugins/delegation-guard/test_transform.py
+python3 ../../../tools/scripts/isolate_config.py -- python3 -m unittest -q
 ```

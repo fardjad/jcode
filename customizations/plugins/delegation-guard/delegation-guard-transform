@@ -9,7 +9,8 @@ import os
 import sys
 
 DEFAULT_THRESHOLD = 8192
-WORKER_BLUEPRINTS = {"advanced", "expert"}
+DEFAULT_TAIL_BYTES = 1024
+DEFAULT_TAIL_LINES = 20
 
 
 def threshold_from_environment() -> int:
@@ -23,12 +24,41 @@ def threshold_from_environment() -> int:
     return threshold if threshold >= 0 else DEFAULT_THRESHOLD
 
 
+def tail_limit(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+def output_tail(path: object) -> str:
+    byte_limit = tail_limit("JCODE_DELEGATION_GUARD_TAIL_BYTES", DEFAULT_TAIL_BYTES)
+    line_limit = tail_limit("JCODE_DELEGATION_GUARD_TAIL_LINES", DEFAULT_TAIL_LINES)
+    if not byte_limit or not line_limit or not isinstance(path, str) or not path:
+        return ""
+    try:
+        with open(path, "rb") as result:
+            result.seek(0, os.SEEK_END)
+            start = max(0, result.tell() - byte_limit)
+            result.seek(start)
+            data = result.read(byte_limit)
+    except (OSError, ValueError, OverflowError):
+        return ""
+    text = data.decode("utf-8", errors="replace")
+    if start:
+        _, separator, text = text.partition("\n")
+        if not separator:
+            return ""
+    return "\n".join(text.splitlines()[-line_limit:])
+
+
 def selected_worker_blueprints() -> set[str]:
     configured = os.environ.get("JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS", "")
     return {
         blueprint.strip()
         for blueprint in configured.split(",")
-        if blueprint.strip() in WORKER_BLUEPRINTS
+        if blueprint.strip()
     }
 
 
@@ -74,7 +104,7 @@ def main() -> None:
     if process_role == "worker":
         nudge = (
             f"Tool result was {output_bytes} bytes, which exceeds the delegation "
-            "guard threshold. Use swarm_routine for a bounded, read-only "
+            "guard threshold. Use an allowed child worker for a bounded, read-only "
             "extraction from the saved result file. If the saved result file "
             "path is missing, report that blocker to the parent instead of "
             "retrying blindly."
@@ -88,6 +118,10 @@ def main() -> None:
     result_file = envelope.get("tool_result_file")
     if isinstance(result_file, str) and result_file:
         nudge += f" Full output is available at: {result_file}"
+    if process_role == "worker":
+        tail = output_tail(result_file)
+        if tail:
+            nudge += f"\nLast lines of output:\n{tail}"
     json.dump({"tool_result": nudge}, sys.stdout, separators=(",", ":"))
 
 

@@ -6,6 +6,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 
 PLUGIN = pathlib.Path(__file__).with_name("delegation-guard-transform")
@@ -85,7 +86,8 @@ class DelegationGuardTransformTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         nudge = json.loads(result.stdout)["tool_result"]
-        self.assertIn("swarm_routine", nudge)
+        self.assertIn("an allowed child worker", nudge)
+        self.assertNotIn("swarm_routine", nudge)
         self.assertIn("bounded, read-only extraction", nudge)
         self.assertIn("/runtime/expert-result.txt", nudge)
 
@@ -99,36 +101,31 @@ class DelegationGuardTransformTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0)
-        self.assertIn("swarm_routine", json.loads(result.stdout)["tool_result"])
+        nudge = json.loads(result.stdout)["tool_result"]
+        self.assertIn("an allowed child worker", nudge)
+        self.assertNotIn("swarm_routine", nudge)
 
-    def test_routine_blueprint_is_never_selected(self):
+    def test_unlisted_blueprint_is_never_selected(self):
         result = self.run_plugin(
-            {"output_bytes": 9000, "swarm": {"blueprint_id": "routine"}},
+            {"output_bytes": 9000, "swarm": {"blueprint_id": "unlisted"}},
             **self.worker_environment(
-                JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS="advanced,expert,routine"
+                JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS="advanced,expert"
             ),
         )
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
 
-    def test_custom_and_unknown_blueprints_are_never_selected(self):
-        for blueprint_id in ("custom", "unknown"):
-            with self.subTest(blueprint_id=blueprint_id):
-                result = self.run_plugin(
-                    {
-                        "output_bytes": 9000,
-                        "swarm": {"blueprint_id": blueprint_id},
-                    },
-                    **self.worker_environment(
-                        JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS=(
-                            f"advanced,expert,{blueprint_id}"
-                        )
-                    ),
-                )
+    def test_any_listed_blueprint_is_selected(self):
+        result = self.run_plugin(
+            {"output_bytes": 9000, "swarm": {"blueprint_id": "planner"}},
+            **self.worker_environment(
+                JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS="planner"
+            ),
+        )
 
-                self.assertEqual(result.returncode, 0)
-                self.assertEqual(result.stdout, "")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("allowed child worker", result.stdout)
 
     def test_selected_worker_preserves_result_when_swarm_is_disabled(self):
         result = self.run_plugin(
@@ -167,6 +164,61 @@ class DelegationGuardTransformTests(unittest.TestCase):
         self.assertIn("report that blocker to the parent", nudge)
         self.assertIn("instead of retrying blindly", nudge)
         self.assertNotIn("available at:", nudge)
+
+    def test_worker_tail_is_bounded_and_coordinator_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output.txt"
+            path.write_bytes(b"discard partial\nold\nnew\xff\nlast\n")
+            payload = {"output_bytes": 9000, "tool_result_file": str(path)}
+            environment = self.worker_environment(
+                "expert",
+                JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS="expert",
+                JCODE_DELEGATION_GUARD_TAIL_BYTES="22",
+                JCODE_DELEGATION_GUARD_TAIL_LINES="2",
+            )
+            result = self.run_plugin(payload, **environment)
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(json.loads(result.stdout)["tool_result"].endswith(
+                "\nLast lines of output:\nnew\ufffd\nlast"
+            ))
+            environment["JCODE_DELEGATION_GUARD_TAIL_LINES"] = "20"
+            nudge = json.loads(self.run_plugin(payload, **environment).stdout)["tool_result"]
+            self.assertTrue(nudge.endswith("\nLast lines of output:\nold\nnew\ufffd\nlast"))
+            # An invalid limit falls back to the default; the full file fits.
+            environment["JCODE_DELEGATION_GUARD_TAIL_BYTES"] = "invalid"
+            environment["JCODE_DELEGATION_GUARD_TAIL_LINES"] = "-1"
+            nudge = json.loads(self.run_plugin(payload, **environment).stdout)["tool_result"]
+            self.assertIn("Last lines of output:\ndiscard partial\nold\nnew\ufffd\nlast", nudge)
+            coordinator = self.run_plugin(payload, **self.coordinator_environment())
+            self.assertNotIn("Last lines of output:", json.loads(coordinator.stdout)["tool_result"])
+
+    def test_worker_tail_disabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output.txt"
+            path.write_text("visible tail\n", encoding="utf-8")
+            payload = {"output_bytes": 9000, "tool_result_file": str(path)}
+            for variable in ("JCODE_DELEGATION_GUARD_TAIL_BYTES", "JCODE_DELEGATION_GUARD_TAIL_LINES"):
+                with self.subTest(variable=variable):
+                    result = self.run_plugin(payload, **self.worker_environment(
+                        "expert", JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS="expert",
+                        **{variable: "0"},
+                    ))
+                    self.assertEqual(result.returncode, 0)
+                    self.assertNotIn("Last lines of output:", json.loads(result.stdout)["tool_result"])
+
+    def test_worker_tail_missing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "missing.txt"
+            for candidate in (path, pathlib.Path(directory)):
+                with self.subTest(path=candidate):
+                    result = self.run_plugin(
+                        {"output_bytes": 9000, "tool_result_file": str(candidate)},
+                        **self.worker_environment("expert", JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS="expert"),
+                    )
+                    self.assertEqual(result.returncode, 0)
+                    nudge = json.loads(result.stdout)["tool_result"]
+                    self.assertIn(f"Full output is available at: {candidate}", nudge)
+                    self.assertNotIn("Last lines of output:", nudge)
 
     def test_below_threshold_preserves_result(self):
         result = self.run_plugin(

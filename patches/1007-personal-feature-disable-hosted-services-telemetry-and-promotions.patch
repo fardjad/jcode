@@ -6,7 +6,7 @@ Subject: [PATCH] fix: keep hosted services and telemetry inactive
 X-Jcode-Patch-Intent: Keep hosted services, telemetry, promotional content,
 sponsored discovery, and automatic onboarding present but never active
 X-Jcode-Patch-Kind: personal-feature
-X-Jcode-Patch-Depends-On: 1001-personal-provider-openrouter-eu-and-auth-provider-selection.patch, 1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch
+X-Jcode-Patch-Depends-On: 1001-personal-provider-openrouter-eu-and-auth-provider-selection.patch
 X-Jcode-Patch-File: 1007-personal-feature-disable-hosted-services-telemetry-and-promotions.patch
 
 Patch intent:
@@ -144,10 +144,10 @@ cargo test -p jcode-telemetry-core policy_sync_ --lib
  72 files changed, 1778 insertions(+), 789 deletions(-)
 
 diff --git a/crates/jcode-app-core/src/agent.rs b/crates/jcode-app-core/src/agent.rs
-index 2340d861d..eed14662f 100644
+index 90b414af9..f40b007a7 100644
 --- a/crates/jcode-app-core/src/agent.rs
 +++ b/crates/jcode-app-core/src/agent.rs
-@@ -1618,7 +1618,10 @@ impl Agent {
+@@ -1628,7 +1628,10 @@ impl Agent {
      }
 
      fn upload_transcript_telemetry(&mut self, end_reason: crate::telemetry::SessionEndReason) {
@@ -666,10 +666,10 @@ index 420432c05..c92aae063 100644
  //!
  //! `discover_tools` sends a model-written `query` and `reason` to a hosted
 diff --git a/crates/jcode-app-core/src/tool/mod.rs b/crates/jcode-app-core/src/tool/mod.rs
-index be4695541..3c466376c 100644
+index d10161ec5..ebe56e325 100644
 --- a/crates/jcode-app-core/src/tool/mod.rs
 +++ b/crates/jcode-app-core/src/tool/mod.rs
-@@ -446,12 +446,6 @@ impl Registry {
+@@ -463,12 +463,6 @@ impl Registry {
                  apply_patch::ApplyPatchTool::new,
              );
              Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
@@ -682,7 +682,7 @@ index be4695541..3c466376c 100644
              Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
              Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
              #[cfg(target_os = "macos")]
-@@ -582,16 +576,7 @@ impl Registry {
+@@ -599,16 +593,7 @@ impl Registry {
                  codemode::CodemodeTool::new(registry.downgrade()),
              );
          }
