@@ -2,6 +2,33 @@
 max_context_tokens = 0
 mode = "proactive"
 
+[provider]
+# Coordinator default: Sol via OpenRouter EU at medium effort.
+default_provider = "openrouter-eu"
+default_model = "openrouter-eu:openai/gpt-6.1-sol"
+# OpenRouter consumes this key and sends it as unified reasoning effort
+# ("reasoning": {"effort": "medium"}).
+openai_reasoning_effort = "medium"
+
+[agents]
+# Swarm workers default to Luna at xhigh; the swarm root inherits the
+# default Sol model and runs at medium effort.
+swarm_model = "openrouter-eu:openai/gpt-6-luna"
+swarm_effort = "xhigh"
+swarm_root_effort = "medium"
+
+[agents.worker_blueprints.routine]
+model = "openrouter-eu:openai/gpt-6-luna"
+effort = "xhigh"
+
+[agents.worker_blueprints.advanced]
+model = "openrouter-eu:openai/gpt-6.1-terra"
+effort = "medium"
+
+[agents.worker_blueprints.expert]
+model = "openrouter-eu:anthropic/claude-opus-5-5"
+effort = "medium"
+
 [display]
 compact_notifications = true
 pin_images = false

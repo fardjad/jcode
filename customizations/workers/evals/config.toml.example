@@ -21,16 +21,17 @@ auth = "bearer"
 
 [models]
 # Usual routing: Sol coordinates, judges, and simulates; Luna runs the swarm.
-coordinator = "sol"
-swarm = "luna"
-judge = "sol"
-simulator = "sol"
+# This example uses OpenRouter-style vendor-qualified model IDs.
+coordinator = "openai/gpt-6.1-sol"
+swarm = "openai/gpt-6-luna"
+judge = "openai/gpt-6.1-sol"
+simulator = "openai/gpt-6.1-sol"
 
 # Optional per-blueprint overrides; keys must match discovered worker names.
 [worker_models]
-routine = "luna"
-advanced = "terra"
-expert = "sol"
+routine = "openai/gpt-6-luna"
+advanced = "openai/gpt-6.1-terra"
+expert = "anthropic/claude-opus-5-5"
 
 [limits]
 # Usual budgets for scenarios without their own overrides.
@@ -45,7 +46,7 @@ acceptance_timeout_seconds = 300
 # provider's native request fields. The coordinator effort stays unspecified;
 # omitted values keep provider defaults.
 # [effort]
-# swarm = "low"
+# swarm = "xhigh"
 # judge = "medium"
 # simulator = "low"
 
@@ -53,6 +54,7 @@ acceptance_timeout_seconds = 300
 # A worker without an entry inherits the swarm effort; advanced and expert
 # run at medium by earlier approved intent.
 [worker_effort]
+routine = "xhigh"
 advanced = "medium"
 expert = "medium"
 

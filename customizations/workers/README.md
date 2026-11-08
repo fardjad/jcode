@@ -16,13 +16,16 @@ The shipped workers do not pin models. Choose models in your local config:
 
 ```toml
 [agents.worker_blueprints.routine]
-model = "provider:model-id"
+model = "openrouter-eu:openai/gpt-6-luna"
+effort = "xhigh"
 
 [agents.worker_blueprints.advanced]
-model = "provider:model-id"
+model = "openrouter-eu:openai/gpt-6.1-terra"
+effort = "medium"
 
 [agents.worker_blueprints.expert]
-model = "provider:model-id"
+model = "openrouter-eu:anthropic/claude-opus-5-5"
+effort = "medium"
 ```
 
 See [worker delegation features](../../docs/swarm-delegation-features.md) for

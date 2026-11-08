@@ -77,8 +77,10 @@ No credentials or private search endpoint are included.
 # delegates all execution to workers. Give it a larger, more intelligent
 # frontier model rather than optimizing only for cost.
 default_provider = "openrouter-eu"
-default_model = "openai/gpt-6.1-sol"
+default_model = "openrouter-eu:openai/gpt-6.1-sol"
 allowed_providers = ["openrouter-eu"]
+# OpenRouter reads this effort key and sends it as unified reasoning effort.
+openai_reasoning_effort = "medium"
 openai_service_tier = "flex"
 same_provider_account_failover = false
 retry_backoff_cap_secs = 300
@@ -86,20 +88,33 @@ retry_backoff_cap_secs = 300
 [agents]
 # Workers handle bounded tasks. A smaller, cheaper, faster model with higher
 # reasoning effort can be a good fit. Check that the model supports the effort.
-swarm_model = "openrouter-eu:z-ai/glm-5.3-flash"
+swarm_model = "openrouter-eu:openai/gpt-6-luna"
 swarm_root_effort = "medium"
 swarm_effort = "xhigh"
-memory_model = "openrouter-eu:z-ai/glm-5.3-flash"
+memory_model = "openrouter-eu:openai/gpt-6-luna"
+
+# Per-blueprint overrides replace front-matter model and effort values.
+[agents.worker_blueprints.routine]
+model = "openrouter-eu:openai/gpt-6-luna"
+effort = "xhigh"
+
+[agents.worker_blueprints.advanced]
+model = "openrouter-eu:openai/gpt-6.1-terra"
+effort = "medium"
+
+[agents.worker_blueprints.expert]
+model = "openrouter-eu:anthropic/claude-opus-5-5"
+effort = "medium"
 
 [ambient]
-model = "openrouter-eu:z-ai/glm-5.3-flash"
+model = "openrouter-eu:openai/gpt-6-luna"
 
 [autoreview]
 # Review is judgment-heavy, so this setup uses the larger model here too.
-model = "openrouter-eu:gpt-6.1-sol"
+model = "openrouter-eu:openai/gpt-6.1-sol"
 
 [autojudge]
-model = "openrouter-eu:z-ai/glm-5.3-flash"
+model = "openrouter-eu:openai/gpt-6-luna"
 
 [websearch]
 engine = "searxng"
