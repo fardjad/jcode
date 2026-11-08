@@ -1,94 +1,158 @@
 # Swarm worker delegation features
 
-These patches add reusable worker blueprints and runtime hook integration for
-swarm-based delegation. The coordinator prompt in
-`customizations/workers/blueprints/coordinator.md` guides when and how to delegate
-bounded tasks to capability tiers with appropriate configured models.
+Worker blueprints define reusable roles in Markdown. For why the shipped setup
+uses them, see the [efficiency rationale](llm-efficiency-rationale.md); for
+installing and configuring the shipped roles, see
+[worker blueprints](../customizations/workers/README.md).
 
-## Worker blueprints
+## Blueprint files
 
-Patch `1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
-enables reusable Markdown blueprints and coordinator delegation. The shipped
-blueprints provide three capability tiers: `swarm_routine` for low-ambiguity
-bounded work, `swarm_advanced` for moderate implementation/debugging and scoped
-Routine assistance, and `swarm_expert` for hard reasoning and scoped Advanced
-assistance. The coordinator selects a suitable tier; all can complete bounded
-inspect/edit/check assignments when authorized. Models are unspecified in the
-shipped blueprints, and global model restrictions still apply.
+Patch
+`1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
+loads direct `*.md` files from `~/.jcode/worker-blueprints/`. A missing
+directory is an empty registry. Set `agents.worker_blueprints_dir` to change
+the directory; `~` home expansion is supported.
 
-The old `swarm_fixer`, `swarm_investigator`, and `swarm_research` IDs are retired.
-Update personal overrides and assignments when upgrading. Coordination policy
-(the planning-only coordinator, routing, and the report contract) is owned by
-`customizations/workers/AGENTS.md`. Its blueprint front matter denies the
-generic execution and research tools while the empty enabled list keeps the
-generated tier tools, read, `skill_manage` skill access, and write available.
-Workers report to the parent. The shipped blueprints use
-child-blueprint allowlists: Advanced and Expert allow only Routine, while
-Routine allows no children. The generic native policy also honors explicit
-tool denials, and an allowed-child list cannot override a disabled tool. See
-`customizations/workers/README.md` for the effective persisted TOML override,
-default-deny behavior when no list is configured, the unchanged depth/model/
-parent-work access rules, and the bounded assignment, blocker assistance, and
-handback contract.
+An ordinary blueprint has YAML front matter and a Markdown body. The body is
+the worker's durable role prompt, followed by the runtime assignment. Its
+front matter supports:
 
-Child-blueprint allowlists are generic IDs, not a fixed tier registry. For
-example, a custom `reviewer` may allow a custom `summarizer` child through its
-persisted TOML configuration:
+- `name`: required ID matching `[a-z][a-z0-9_-]*`; `coordinator` is reserved.
+- `description`: required nonblank description for the generated tool.
+- `model`: optional model ID, route, `inherit`, or `coordinator`.
+- `effort`: optional reasoning effort (`none`, `minimal`, `low`, `medium`,
+  `high`, `xhigh`, `max`, `swarm`, or `swarm-deep`).
+- `enabled-tools` and `disabled-tools`: optional YAML lists defining tool
+  policy. An omitted enabled list adds no restriction; `[]` permits no tools.
+- `allowed-child-blueprints`: optional list of worker IDs eligible for nested
+  spawning; omission permits none.
+- `communication-policy`: `none`, `report-to-parent`, `parent-and-children`,
+  or `same-swarm`.
+- `timeout-minutes`: optional positive integer.
+- `input-schema` and `output-schema`: optional inline YAML JSON Schemas for
+  assignments and reports.
 
-```toml
-[agents.worker_blueprints.reviewer]
-allowed_child_blueprints = ["summarizer"]
+For example:
+
+```yaml
+---
+name: reviewer
+description: Reviews changes for correctness and missing tests.
+enabled-tools: [read, agentgrep, bash]
+communication-policy: report-to-parent
+timeout-minutes: 15
+---
+
+Review the assigned change and report findings with evidence.
 ```
 
-That setting controls child eligibility only. Tool denials and global
-restrictions still apply, and it does not change task authority, cost, or
-security approvals.
+Invalid schemas exclude the blueprint; other invalid values are diagnosed and
+may fall through to defaults. Unknown keys are diagnosed and ignored.
+`allowed-tools` is not accepted; use `enabled-tools`. Blueprint loading is
+nonfatal: a bad worker file does not prevent valid workers from loading.
 
-Configure a shared fallback model in `~/.jcode/config.toml` if desired. The
-shipped Routine, Advanced, and Expert model mappings are unspecified.
+The special `coordinator.md` derives its reserved ID from its filename, not a
+`name` key. It supplies a coordinator prompt segment and tool policy but never
+generates `swarm_coordinator`. Its YAML front matter declares `enabled-tools`
+and `disabled-tools`. A malformed file disables swarm without a partial
+surface; a missing file warns but permits swarm without that prompt or policy.
+
+The shipped coordinator permits `read`, `write`, `todo`, `skill_manage`, and
+`swarm_*`, and explicitly denies generic `swarm`. Its planning-only boundary
+is described in [AGENTS.md](../AGENTS.md); plan-only reads and writes are
+prompt discipline, not a sandbox.
+
+## Structured contracts
+
+When a worker declares `input-schema`, the generated tool accepts a structured
+`assignment` based on that schema for spawn and resume. Without it, the tool
+accepts a free-text `task`. With `output-schema`, the worker reports through
+the generated `submit_report` tool; its arguments are validated against the
+schema. Missing or invalid reports receive bounded correction attempts, then
+fail rather than silently succeeding. Schemas validate shape, not truth.
+Workers without an output schema retain the ordinary report behavior.
+
+The shipped tiers define their assignment fields and report structure directly
+in their blueprint front matter. Reserved generated-tool control parameters
+cannot be declared as assignment fields.
+
+## Generated tools and sessions
+
+Each valid ordinary blueprint produces a `swarm_<id>` tool. A name collision
+with a built-in, MCP, or another generated tool skips that tool and is logged.
+The modes are:
+
+- **Spawn:** provide an assignment or `task`; the response includes a compact
+  preview and a session ID. `working_dir`, `spawn_mode` (`visible`, `headless`,
+  `inline`, or `auto`), and `timeout_minutes` are optional controls.
+- **Follow-up:** provide `follow_up_session` and optional character `offset`
+  and `limit` to read completed output without starting or resuming a turn.
+  The default page limit is 2,000 characters.
+- **Resume:** provide `resume_session` and a new assignment or `task` to
+  continue a finished worker in the same session. Only the coordinator or
+  immediate parent can resume a worker through its own blueprint tool.
+  Active workers are rejected; `resume_session` cannot be combined with
+  `follow_up_session`, `working_dir`, or `spawn_mode`.
+
+The initial preview is limited to 2,000 characters; the complete report
+remains available through follow-up reads. A resumed turn returns its new
+report and the same session ID.
+
+## Configuration and policy
+
+Enable swarm and optionally set shared defaults:
 
 ```toml
 [features]
 swarm = true
 
 [agents]
-swarm_model = "openrouter-eu:gpt-4.1"
+swarm_model = "provider:model-id"
+swarm_effort = "medium"
+swarm_timeout_minutes = 20
+worker_blueprints_dir = "~/my-blueprints"
 ```
 
-## Swarm context and post-tool transform hook
-
-Patch `0002-candidate-add-hook-context-and-post-tool-transform.patch`
-exposes swarm state and process role to hooks via environment variables and
-structured JSON, and adds a synchronous post-tool transform hook. The hook lets
-plugins replace oversized tool results before they enter model context. Large
-hook payloads spill to temp files with TTL cleanup.
-
-Hooks can check `JCODE_HOOK_SWARM_ENABLED` and `JCODE_HOOK_PROCESS_ROLE` to
-behave differently for coordinators versus workers.
-
-Configure a post-tool transformer in `~/.jcode/config.toml`:
+Per-blueprint TOML overrides replace front-matter values at that scope:
 
 ```toml
-[hooks]
-post_tool_transform = ["~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
-post_tool_transform_timeout_ms = 500
+[agents.worker_blueprints.reviewer]
+model = "provider:model-id"
+effort = "high"
+timeout-minutes = 30
+enabled = ["read", "agentgrep"]
+disabled = ["bash"]
+allowed_child_blueprints = ["summarizer"]
 ```
 
-The `delegation-guard` plugin (see `customizations/plugins/delegation-guard/`) uses this hook
-to replace oversized coordinator tool results with a compact delegation nudge,
-keeping the coordinator's context small.
+An omitted override inherits the front matter; invalid values are diagnosed
+and fall through. `enabled = []` clears the override's enabled restriction,
+unlike `enabled-tools: []` in front matter. The reserved coordinator override
+accepts only `enabled` and `disabled`.
 
-## Pre-tool input transformers
+Tool policy is combined with global `[tools]` restrictions: a blueprint cannot
+restore a globally disabled tool. Exact names, aliases, `*`/`all`, anchored
+patterns such as `swarm_*`, and the `mcp` family shorthand are supported;
+disabled takes precedence. Child eligibility is separate from tool policy and
+assignment authority. A TOML `allowed_child_blueprints` list replaces the
+front-matter list; nested children remain subject to the native depth limit,
+explicit child model requirements, and parent-work access rules.
 
-Upstream jcode (since v0.89, merged from the former candidate patch
-`0001-candidate-pre-tool-input-transformers.patch`) provides a generic
-pre-tool transformer hook that lets plugins modify tool inputs before
-execution. The `rtk-transform` plugin (see `customizations/plugins/rtk/`) uses this to
-rewrite bash commands through RTK.
+Model precedence is per-invocation model, per-blueprint TOML override, front
+matter, global `swarm_model`, then coordinator identity. Explicit `inherit` or
+`coordinator` bypasses the global fallback. Effort follows the same structure;
+timeout precedence is per-call, blueprint or override, then the global default.
 
-Configure a pre-tool transformer in `~/.jcode/config.toml`:
+Communication policy is enforced in routing: `none` blocks ordinary messages
+but not a tool's completion result; `report-to-parent` permits parent reports;
+`parent-and-children` permits parent and child communication; `same-swarm`
+permits communication within the swarm.
 
-```toml
-[hooks]
-pre_tool_transform = ["~/.jcode/plugins/rtk/rtk-transform"]
-```
+## Hooks
+
+Patch `0002-candidate-add-hook-context-and-post-tool-transform.patch` exposes
+swarm state and role to hooks and adds a synchronous post-tool transform with
+temporary-file spilling. See the
+[delegation guard](../customizations/plugins/delegation-guard/README.md) for
+its configuration, and [plugins](../customizations/plugins/README.md) for the
+upstream pre-tool transform and RTK adapter.

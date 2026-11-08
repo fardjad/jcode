@@ -113,16 +113,7 @@ fallback_engines = []
   overrides together when choosing another provider.
 - Coordinator and worker model choices are a starting point, not a guarantee.
   Evaluate quality, latency, and cost on your own tasks.
-- Disabling the generic `swarm` tool leaves capability-tier blueprint tools
-  such as `swarm_routine`, `swarm_advanced`, and `swarm_expert` available.
-  The shipped coordinator blueprint is planning-only and additionally denies
-  generic execution and research tools; it retains `skill_manage` for reading
-  and reloading skill instructions, which grants no execution permission, and
-  read and write stay available for
-  authoring plan documents, a prompt-level restriction rather than a sandbox.
-  [Worker blueprints](../customizations/workers/README.md) describes bounded
-  assignments, the coordinator boundary, and model overrides. The shipped tier
-  models are unspecified; review tool policy and configure models before use.
+- See [worker blueprints](../customizations/workers/README.md) for model setup.
 - For hook details, see [plugins](../customizations/plugins/README.md). For
   provider choices, see [provider configuration](provider-features.md).
 
@@ -162,4 +153,5 @@ upgrade, since a linked main config follows the checkout immediately.
 
 Review release notes for new hook settings, then restart jcode. To select a
 binary version, use `bash tools/scripts/install.sh vX.Y.Z` or
-`& .\tools\scripts\install.ps1 -Version vX.Y.Z`. This does not pin the checkout's assets.
+`& .\tools\scripts\install.ps1 -Version vX.Y.Z`. This does not pin the
+checkout's assets.
