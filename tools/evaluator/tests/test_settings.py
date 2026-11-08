@@ -51,8 +51,6 @@ swarm="worker"
 turn_timeout_seconds=42
 swarm_timeout_minutes=2
 acceptance_timeout_seconds=84
-judge_max_calls=32
-judge_page_bytes=123456
 """
     )
     assert explicit.model_for("coordinator") == "coord"
@@ -69,8 +67,6 @@ judge_page_bytes=123456
     assert worker_settings.model_for_worker(unconfigured_worker_name) == "fixture-model"
     assert explicit.limits.turn_timeout_seconds == 42
     assert explicit.limits.acceptance_timeout_seconds == 84
-    assert explicit.limits.judge_max_calls == 32
-    assert explicit.limits.judge_page_bytes == 123456
     assert (
         tomllib.loads(profile_config(explicit))["providers"]["worker_acceptance"][
             "default_model"
@@ -83,7 +79,8 @@ judge_page_bytes=123456
         f'\n[worker_models]\n"worker-{uuid4().hex}"=""',
         '\n[worker_models]\ncoordinator="reserved-model"',
         f'\n[worker_models]\n"worker-{uuid4().hex}"=" model-with-padding "',
-        "\n[limits]\njudge_max_calls=0",
+        "\n[limits]\njudge_max_calls=32",
+        "\n[limits]\njudge_page_bytes=120000",
         "\n[limits]\nsimulator_max_turns=true",
         "\n[limits]\nacceptance_timeout_seconds=0",
     ):
@@ -93,25 +90,25 @@ judge_page_bytes=123456
 
 def test_delegation_guard_selection_defaults_empty_and_validation() -> None:
     default_settings = parse_settings(fixture_text())
-    assert default_settings.delegation_guard.worker_blueprints == (
-        "advanced",
-        "expert",
-    )
+    assert default_settings.delegation_guard.worker_blueprints == ()
     assert default_settings.delegation_guard.threshold == 8192
+    assert default_settings.delegation_guard.tail_bytes is None
     assert default_settings.delegation_guard_environment() == {
-        "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS": "advanced,expert",
+        "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS": "",
         "JCODE_DELEGATION_GUARD_THRESHOLD": "8192",
     }
     explicit = parse_settings(
         fixture_text()
-        + '\n[delegation_guard]\nworker_blueprints = ["expert", "advanced"]\n'
-        + "threshold = 4096"
+        + '\n[delegation_guard]\nworker_blueprints = ["worker-one", "custom"]\n'
+        + "threshold = 4096\ntail_bytes = 0"
     )
-    assert explicit.delegation_guard.worker_blueprints == ("expert", "advanced")
+    assert explicit.delegation_guard.worker_blueprints == ("worker-one", "custom")
     assert explicit.delegation_guard.threshold == 4096
+    assert explicit.delegation_guard.tail_bytes == 0
     assert explicit.delegation_guard_environment() == {
-        "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS": "expert,advanced",
+        "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS": "worker-one,custom",
         "JCODE_DELEGATION_GUARD_THRESHOLD": "4096",
+        "JCODE_DELEGATION_GUARD_TAIL_BYTES": "0",
     }
     disabled = parse_settings(
         fixture_text() + "\n[delegation_guard]\nworker_blueprints = []"
@@ -127,20 +124,29 @@ def test_delegation_guard_selection_defaults_empty_and_validation() -> None:
     zero = parse_settings(fixture_text() + "\n[delegation_guard]\nthreshold = 0")
     assert zero.delegation_guard.threshold == 0
     for extra in (
-        '\n[delegation_guard]\nworker_blueprints = ["routine"]',
-        '\n[delegation_guard]\nworker_blueprints = ["advanced", "custom"]',
-        '\n[delegation_guard]\nworker_blueprints = ["advanced", "unknown"]',
-        '\n[delegation_guard]\nworker_blueprints = "advanced"',
+        '\n[delegation_guard]\nworker_blueprints = ["worker-one", "worker-one"]',
+        '\n[delegation_guard]\nworker_blueprints = ["coordinator"]',
+        '\n[delegation_guard]\nworker_blueprints = [""]',
+        '\n[delegation_guard]\nworker_blueprints = ["worker-one,worker-two"]',
+        '\n[delegation_guard]\nworker_blueprints = "worker-one"',
         "\n[delegation_guard]\nworker_blueprints = [1]",
-        '\n[delegation_guard]\nworker_blueprints = [" advanced"]',
+        '\n[delegation_guard]\nworker_blueprints = [" worker-one"]',
         "\n[delegation_guard]\nthreshold = -1",
         '\n[delegation_guard]\nthreshold = "8192"',
         "\n[delegation_guard]\nthreshold = true",
+        "\n[delegation_guard]\ntail_bytes = -1",
+        '\n[delegation_guard]\ntail_bytes = "1024"',
+        "\n[delegation_guard]\ntail_bytes = true",
         "\n[delegation_guard]\nunknown_key = 1",
-        '\n[delegation_guard]\nworker_blueprints = ["advanced"]\nthreshold = 2.5',
+        '\n[delegation_guard]\nworker_blueprints = ["worker-one"]\nthreshold = 2.5',
     ):
         with pytest.raises(ValueError):
             parse_settings(fixture_text() + extra)
+    with pytest.raises(ValueError, match="unique"):
+        validate_scenario_overrides(
+            {"delegation_guard": {"worker_blueprints": ["worker-one", "worker-one"]}},
+            "scenario",
+        )
 
 
 def test_protocol_url_and_secret_free_profile() -> None:
@@ -204,9 +210,9 @@ def test_effort_tables_roles_workers_and_validation() -> None:
     # Worker override first, then the swarm fallback.
     assert explicit.effort_for_worker("worker-special") == "high"
     assert explicit.effort_for_worker("worker-other") == "low"
-    assert set(EFFORTS) == {"low", "medium", "high"}
+    assert set(EFFORTS) == {"low", "medium", "high", "xhigh"}
     for extra in (
-        '\n[effort]\ncoordinator = "xhigh"',
+        '\n[effort]\ncoordinator = "max"',
         '\n[effort]\ncoordinator = "swarm"',
         '\n[effort]\ncoordinator = "LOW"',
         '\n[effort]\nunknown_role = "low"',
@@ -347,7 +353,7 @@ def test_examples_are_credential_free_and_show_defaults_inheritance() -> None:
     assert defaults["provider"]["api_key"] == "REPLACE_WITH_YOUR_API_KEY"
     assert "--judge" not in example.read_text(encoding="utf-8")
     # Usual routing: Sol coordinates, judges, and simulates; Luna swarms;
-    # GLM and Opus run advanced and expert workers.
+    # Terra and Sol run advanced and expert workers.
     assert defaults["models"] == {
         "coordinator": "sol",
         "swarm": "luna",
@@ -356,13 +362,13 @@ def test_examples_are_credential_free_and_show_defaults_inheritance() -> None:
     }
     assert defaults["worker_models"] == {
         "routine": "luna",
-        "advanced": "glm",
-        "expert": "opus",
+        "advanced": "terra",
+        "expert": "sol",
     }
     assert defaults["limits"]["turn_timeout_seconds"] == 300
     assert "execution_timeout_seconds" not in defaults["limits"]
-    assert defaults["limits"]["judge_max_calls"] > 1
-    assert defaults["limits"]["judge_page_bytes"] > 0
+    assert "judge_max_calls" not in defaults["limits"]
+    assert "judge_page_bytes" not in defaults["limits"]
     guard = defaults["delegation_guard"]
     assert set(guard["worker_blueprints"]) == {"advanced", "expert"}
     assert guard["threshold"] == 8192
@@ -374,11 +380,10 @@ def test_examples_are_credential_free_and_show_defaults_inheritance() -> None:
     }
     assert set(scenarios) == scenario_ids
     escalation = scenarios["escalation-resumption"].settings
-    # Approved escalation routing: GLM coordinates, Luna runs every worker,
-    # and only the escalation budgets differ from the shared defaults.
+    # Injected failures: one cheap model for every worker tier, longer budgets.
     assert escalation == {
-        "models": {"coordinator": "z-ai/glm-5.3"},
         "worker_models": {
+            "routine": "openai/gpt-6-luna",
             "advanced": "openai/gpt-6-luna",
             "expert": "openai/gpt-6-luna",
         },
@@ -386,6 +391,7 @@ def test_examples_are_credential_free_and_show_defaults_inheritance() -> None:
             "turn_timeout_seconds": 1200,
             "execution_timeout_seconds": 1800,
         },
+        "delegation_guard": {"tail_bytes": 0},
     }
     # The usual scenarios inherit everything from the shared defaults.
     for scenario_id in scenario_ids - {"escalation-resumption"}:
@@ -431,12 +437,12 @@ def test_defaults_merge_keywise_with_scenario_overrides(tmp_path: Path) -> None:
         "worker_models": {"routine": "alpha-routine"},
         "delegation_guard": {"worker_blueprints": []},
     }
-    # A scenario without a settings mapping inherits all the defaults.
+    # A tail-only override keeps the shared guard selection and threshold.
     loaded = load_scenario_settings(
         config,
         ["alpha", "beta"],
         ["alpha", "beta"],
-        {"alpha": alpha_overrides, "beta": None},
+        {"alpha": alpha_overrides, "beta": {"delegation_guard": {"tail_bytes": 0}}},
     )
     alpha = loaded["alpha"].settings
     assert alpha.provider == "openai-compatible"
@@ -456,6 +462,11 @@ def test_defaults_merge_keywise_with_scenario_overrides(tmp_path: Path) -> None:
     assert alpha.delegation_guard.threshold == 8192
     assert alpha.worker_effort == {"advanced": "medium", "expert": "medium"}
     beta = loaded["beta"].settings
+    assert beta.delegation_guard.worker_blueprints == ("advanced", "expert")
+    assert beta.delegation_guard.threshold == 8192
+    assert (
+        beta.delegation_guard_environment()["JCODE_DELEGATION_GUARD_TAIL_BYTES"] == "0"
+    )
     assert beta.model_for("coordinator") == "defaults-coordinator"
     assert beta.model == "fixture-model"
     assert beta.worker_models == {
@@ -500,14 +511,14 @@ def test_partial_sources_reject_unknown_keys_and_type_conflicts(
     # would mask it with a valid value.
     _write_private(
         config,
-        fixture_text() + "\n[limits]\njudge_max_calls = 0\n",
+        fixture_text() + "\n[limits]\nturn_timeout_seconds = 0\n",
     )
     with pytest.raises(ValueError, match="positive integer"):
         load_scenario_settings(
             config,
             ["alpha"],
             ["alpha"],
-            {"alpha": {"limits": {"judge_max_calls": 32}}},
+            {"alpha": {"limits": {"turn_timeout_seconds": 32}}},
         )
 
 
@@ -530,69 +541,6 @@ def test_scenario_yaml_overrides_reject_credentials_and_secret_fields() -> None:
     ):
         with pytest.raises(ValueError):
             validate_scenario_overrides(bad, "scenario x settings")
-
-
-@pytest.mark.skipif(os.name == "nt", reason="requires POSIX permissions")
-def test_migrated_scenario_settings_preserve_former_effect(
-    tmp_path: Path,
-) -> None:
-    """The YAML settings migration preserves every effective setting.
-
-    The retired per-scenario TOML contents are reconstructed here as plain
-    mappings (credential-free) and must produce exactly the same effective
-    settings as the shipped scenario config settings merged over the same
-    shared config.
-    """
-
-    workers = Path(__file__).resolve().parents[3] / "customizations" / "workers"
-    scenarios = {
-        scenario.id: scenario
-        for scenario in load_scenarios(workers / "evals" / "scenarios")
-    }
-    config = tmp_path / "config.toml"
-    _write_private(config, DEFAULTS_FIXTURE)
-    former_toml_overrides = {
-        "escalation-resumption": {
-            "models": {"coordinator": "z-ai/glm-5.3"},
-            "worker_models": {
-                "advanced": "openai/gpt-6-luna",
-                "expert": "openai/gpt-6-luna",
-            },
-            "limits": {
-                "turn_timeout_seconds": 1200,
-                "execution_timeout_seconds": 1800,
-            },
-        },
-        **{
-            scenario_id: {"limits": {"turn_timeout_seconds": 300}}
-            for scenario_id in (
-                "polyglot-dot-dsl-rust-fixer",
-                "polyglot-rest-api-fixer",
-                "refactorbench-flask-debug-flag",
-                "stable-task-order",
-            )
-        },
-    }
-    loaded = load_scenario_settings(
-        config,
-        sorted(former_toml_overrides),
-        sorted(former_toml_overrides),
-        former_toml_overrides,
-    )
-    migrated = load_scenario_settings(
-        config,
-        sorted(former_toml_overrides),
-        sorted(former_toml_overrides),
-        {
-            scenario_id: scenarios[scenario_id].settings
-            for scenario_id in former_toml_overrides
-        },
-    )
-    for scenario_id in former_toml_overrides:
-        assert (
-            loaded[scenario_id].settings.sanitized_manifest()
-            == migrated[scenario_id].settings.sanitized_manifest()
-        )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX permissions")

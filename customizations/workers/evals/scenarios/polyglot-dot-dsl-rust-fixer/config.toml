@@ -2,7 +2,6 @@ id = "polyglot-dot-dsl-rust-fixer"
 fixture = "fixtures"
 prompt = "In the current workspace, implement the `dot_dsl` Rust crate according to README.md and tests/dot-dsl.rs, enable all ignored tests in tests/dot-dsl.rs, and ensure `cargo test` passes all 9 tests."
 accept = ["cargo", "test", "--", "--include-ignored"]
-metrics = ["tool_health"]
 
 [judge]
 criteria = [

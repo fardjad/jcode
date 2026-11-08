@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,7 +21,6 @@ BASE_TOML = """id = "real-code"
 fixture = "../../fixture"
 prompt = "Implement the requested outcome."
 accept = ["python3", "-c", "print('ok')"]
-metrics = ["tool_health"]
 
 [judge]
 criteria = ["Coordinator delegates appropriately and workers report verified results."]
@@ -63,8 +65,8 @@ def test_optional_settings_table_is_validated_and_not_leaked(
         BASE_TOML + "\n[settings.limits]\nunknown = 1\n",
         BASE_TOML + "\n[settings.unknown_table]\n",
         BASE_TOML.replace(
-            'metrics = ["tool_health"]',
-            'metrics = ["tool_health"]\nsettings = "not-a-mapping"',
+            'prompt = "Implement the requested outcome."',
+            'prompt = "Implement the requested outcome."\nsettings = "not-a-mapping"',
         ),
     ):
         path = make_scenario(tmp_path, bad)
@@ -93,6 +95,30 @@ def test_real_scenario_schema_and_materialized_diff(tmp_path: Path) -> None:
     original_digest = tree_digest(scenario.fixture)
     workspace = tmp_path / "workspace"
     pristine = materialize_scenario(scenario, workspace)
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(
+            ["git", *args], cwd=workspace, text=True
+        ).strip()
+
+    assert git("rev-list", "--count", "HEAD") == "1"
+    assert git("status", "--porcelain") == ""
+    assert git("log", "-1", "--format=%s") == "initial"
+    assert tree_digest(workspace) == original_digest
+    assert source_diff(workspace, scenario.fixture, pristine) == ""
+    second = tmp_path / "second"
+    materialize_scenario(scenario, second)
+    assert subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=second, text=True
+    ).strip() == git("rev-parse", "HEAD")
+    fixture_with_git = tmp_path / "fixture-with-git"
+    shutil.copytree(workspace, fixture_with_git)
+    (fixture_with_git / "old.txt").write_text("already modified\n")
+    existing = tmp_path / "existing"
+    materialize_scenario(replace(scenario, fixture=fixture_with_git), existing)
+    assert subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=existing, text=True
+    ).strip() == "M old.txt"
     (workspace / "old.txt").write_text("new\n", encoding="utf-8")
     (workspace / "delete.txt").unlink()
     (workspace / "added.txt").write_text("added\n", encoding="utf-8")
@@ -101,6 +127,7 @@ def test_real_scenario_schema_and_materialized_diff(tmp_path: Path) -> None:
     assert "-old" in diff and "+new" in diff
     assert "deleted file" in diff and "new file" in diff
     assert "Binary files differ" in diff
+    assert ".git/" not in diff
     verify_fixture_unchanged(scenario, original_digest)
     assert scenario.accept == ("python3", "-c", "print('ok')")
     assert set(scenario.manifest()) == {
@@ -111,12 +138,10 @@ def test_real_scenario_schema_and_materialized_diff(tmp_path: Path) -> None:
         "fixture_sha256",
         "prompt",
         "accept",
-        "metrics",
         "judge",
         "simulated_user",
         "settings",
     }
-    assert scenario.metrics == ("tool_health",)
     assert scenario.judge.criteria
     assert scenario.simulated_user.max_turns == 8
 
@@ -185,7 +210,6 @@ def test_directory_defaults_and_single_file_rules(tmp_path: Path) -> None:
         ('accept = ["python3", "-c", "print(\'ok\')"]', "accept = []"),
         ('accept = ["python3", "-c", "print(\'ok\')"]', 'accept = ["python3", 3]'),
         ('prompt = "Implement the requested outcome."', 'prompt = ""'),
-        ('metrics = ["tool_health"]', 'metrics = ["tool_health", "tool_health"]'),
         (
             'criteria = ["Coordinator delegates appropriately and workers report '
             'verified results."]',
@@ -200,8 +224,13 @@ def test_directory_defaults_and_single_file_rules(tmp_path: Path) -> None:
             'instructions = ""',
         ),
         (
-            'metrics = ["tool_health"]',
-            'metrics = ["tool_health"]\nversion = 1\nexpect_delegation = true',
+            'prompt = "Implement the requested outcome."',
+            'prompt = "Implement the requested outcome."\n'
+            "version = 1\nexpect_delegation = true",
+        ),
+        (
+            'prompt = "Implement the requested outcome."',
+            'prompt = "Implement the requested outcome."\nmetrics = ["tool_health"]',
         ),
     ],
 )
@@ -254,12 +283,6 @@ def test_all_bundled_scenarios_are_outcome_only_and_harness_focused() -> None:
         assert "task compliance" not in raw.lower()
         assert "${workspace}" not in scenario.prompt
         assert scenario.accept
-        assert "tool_health" in scenario.metrics
-        assert set(scenario.metrics) <= {
-            "tool_health",
-            "coordination",
-            "escalation_resumption",
-        }
         assert any(
             "Worker non-use" in criterion for criterion in scenario.judge.criteria
         )
@@ -293,8 +316,8 @@ def test_all_bundled_scenarios_are_outcome_only_and_harness_focused() -> None:
         scenario for scenario in loaded if scenario.id == "escalation-resumption"
     )
     assert escalation.settings == {
-        "models": {"coordinator": "z-ai/glm-5.3"},
         "worker_models": {
+            "routine": "openai/gpt-6-luna",
             "advanced": "openai/gpt-6-luna",
             "expert": "openai/gpt-6-luna",
         },
@@ -302,6 +325,7 @@ def test_all_bundled_scenarios_are_outcome_only_and_harness_focused() -> None:
             "turn_timeout_seconds": 1200,
             "execution_timeout_seconds": 1800,
         },
+        "delegation_guard": {"tail_bytes": 0},
     }
     for scenario in loaded:
         if scenario.id != "escalation-resumption":
@@ -313,3 +337,74 @@ def test_snapshot_detects_invalid_utf8_as_binary(tmp_path: Path) -> None:
     state = snapshot_tree(tmp_path)["bad.bin"]
     assert state.binary
     assert len(state.sha256) == 64
+
+
+PRIVATE_TOML = """
+[instrumentation]
+isolation = "blind"
+controller = "controller.py"
+journals = ["events.jsonl", "guard-events.jsonl"]
+[instrumentation.environment]
+JCODE_TEST_CONTROLLER_STATE_DIR = "{state_dir}"
+JCODE_TEST_CONTROLLER_WORKSPACE = "{workspace}"
+JCODE_TEST_CONTROLLER_GUARD = "{guard}"
+JCODE_TEST_CONTROLLER_MODE = "blind"
+"""
+
+
+def test_private_instrumentation_is_not_materialized_or_in_agent_text(tmp_path):
+    config = make_scenario(tmp_path, BASE_TOML + PRIVATE_TOML)
+    asset = config.parent / "controller.py"
+    asset.write_text("# private host hook\n")
+    scenario = load_scenarios(config)[0]
+    assert scenario.instrumentation.controller == asset.resolve()
+    assert scenario.instrumentation.isolation == "blind"
+    assert scenario.instrumentation.journals == ("events.jsonl", "guard-events.jsonl")
+    workspace = tmp_path / "workspace"
+    materialize_scenario(scenario, workspace)
+    assert not (workspace / "controller.py").exists()
+    assert "CONTROLLER" not in scenario.prompt
+    assert "CONTROLLER" not in scenario.simulated_user.instructions
+    assert "CONTROLLER" not in "\n".join(scenario.judge.criteria)
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ('controller = "controller.py"', 'controller = "../../fixture/private.py"'),
+        ('controller = "controller.py"', 'controller = "/etc/passwd"'),
+        ('isolation = "blind"', 'isolation = "host"'),
+        (
+            'journals = ["events.jsonl", "guard-events.jsonl"]',
+            'journals = ["../events.jsonl"]',
+        ),
+        ('JCODE_TEST_CONTROLLER_MODE = "blind"', 'JCODE_HOME = "{state_dir}"'),
+        (
+            'JCODE_TEST_CONTROLLER_MODE = "blind"',
+            'JCODE_TEST_CONTROLLER_MODE = "{unknown}"',
+        ),
+        ('isolation = "blind"', 'isolation = "blind"\ncommand = "unapproved"'),
+    ],
+)
+def test_unsafe_private_metadata_is_rejected(tmp_path, old, new):
+    config = make_scenario(tmp_path, BASE_TOML + PRIVATE_TOML.replace(old, new))
+    (config.parent / "controller.py").write_text("# private\n")
+    with pytest.raises(ValueError, match="instrumentation"):
+        load_scenarios(config)
+
+
+def test_private_controller_symlink_and_fixture_location_are_rejected(tmp_path):
+    config = make_scenario(tmp_path, BASE_TOML + PRIVATE_TOML)
+    target = tmp_path / "fixture/private.py"
+    target.write_text("# must not be exposed\n")
+    asset = config.parent / "controller.py"
+    asset.symlink_to(target)
+    with pytest.raises(ValueError, match="non-symlink"):
+        load_scenarios(config)
+    asset.unlink()
+    asset.write_text("# private\n")
+    config.write_text(
+        (BASE_TOML + PRIVATE_TOML).replace('fixture = "../../fixture"', 'fixture = "."')
+    )
+    with pytest.raises(ValueError, match="outside the fixture"):
+        load_scenarios(config)

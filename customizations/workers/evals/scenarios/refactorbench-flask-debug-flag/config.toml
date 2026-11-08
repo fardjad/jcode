@@ -2,7 +2,6 @@ id = "refactorbench-flask-debug-flag"
 fixture = "fixtures"
 prompt = "In the current workspace, update `get_debug_flag` in the Flask package so its module imports `logging` and the function accepts an optional boolean parameter `log: bool = False`. Update every production call across `src/flask/` to pass `log=True`, while keeping test calls without `log=True`. Verify the changes with `python3 refactorbench_verifiers/add-log-parameter-get-debug-flag-test.py`."
 accept = ["python3", "refactorbench_verifiers/add-log-parameter-get-debug-flag-test.py"]
-metrics = ["tool_health"]
 
 [judge]
 criteria = [

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import stat
@@ -17,13 +16,20 @@ from pathlib import Path
 from typing import Any
 
 _SECRET_ENV = "JCODE_ACCEPTANCE_API_KEY"
-_WARMUP_ENV = "JCODE_HOOK_WRAPPER_WARMUP"
 
 
 def _redact(raw: bytes, secrets: list[bytes]) -> bytes:
     for secret in secrets:
         if secret:
             raw = raw.replace(secret, b"[REDACTED]")
+            try:
+                text = secret.decode("utf-8")
+                for ascii_only in (True, False):
+                    escaped = json.dumps(text, ensure_ascii=ascii_only)[1:-1]
+                    for variant in (escaped, escaped.replace("/", r"\/")):
+                        raw = raw.replace(variant.encode(), b"[REDACTED]")
+            except UnicodeDecodeError:
+                pass
     return raw
 
 
@@ -93,13 +99,6 @@ def _context(payload: bytes, secrets: list[bytes]) -> dict[str, Any]:
         "JCODE_HOOK_WORKER_ID": "worker_id",
         "JCODE_HOOK_WORKER_BLUEPRINT_ID": "worker_blueprint",
         "JCODE_HOOK_WORKER_BLUEPRINT_NAME": "worker_blueprint_name",
-        "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS": (
-            "delegation_guard_worker_blueprints"
-        ),
-        "JCODE_DELEGATION_GUARD_THRESHOLD": "delegation_guard_threshold",
-        "JCODE_ESCALATION_CONTROLLER_STATE_DIR": ("escalation_controller_state_dir"),
-        "JCODE_ESCALATION_CONTROLLER_WORKSPACE": ("escalation_controller_workspace"),
-        "JCODE_ESCALATION_CONTROLLER_GUARD": "escalation_controller_guard",
     }
     for environment_key, context_key in environment_keys.items():
         if environment_key in os.environ:
@@ -160,7 +159,6 @@ def _retain_referenced_payloads(
             record.update(
                 path=str(destination.relative_to(invocation)),
                 bytes=len(raw),
-                sha256=hashlib.sha256(raw).hexdigest(),
             )
         except (OSError, ValueError) as error:
             record["error"] = _redact(str(error).encode(), secrets).decode(
@@ -189,19 +187,6 @@ def traced_hook_main() -> int:
         return 127
 
     payload = sys.stdin.buffer.read()
-    if os.environ.get(_WARMUP_ENV) == "1":
-        completed = subprocess.run(
-            command,
-            input=payload,
-            capture_output=True,
-            env=os.environ.copy(),
-            check=False,
-        )
-        return (
-            completed.returncode
-            if completed.returncode >= 0
-            else 128 + (-completed.returncode)
-        )
     sequence = _next_sequence(trace_root)
     invocation = trace_root / f"{sequence:012d}-{uuid.uuid4().hex}"
     invocation.mkdir(mode=0o700)
@@ -212,12 +197,10 @@ def traced_hook_main() -> int:
         "status": "running",
         "sequence": sequence,
         "plugin": plugin,
-        "production_command": command,
         "started_at": started,
         "context": _context(_redact(payload, secrets), secrets),
         "input": {
             "bytes": len(payload),
-            "sha256": hashlib.sha256(payload).hexdigest(),
             "path": "stdin.bin",
         },
     }
@@ -258,12 +241,10 @@ def traced_hook_main() -> int:
         spawn_error=spawn_error,
         output={
             "bytes": len(stdout),
-            "sha256": hashlib.sha256(stdout).hexdigest(),
             "path": "stdout.bin",
         },
         error={
             "bytes": len(stderr),
-            "sha256": hashlib.sha256(stderr).hexdigest(),
             "path": "stderr.bin",
         },
     )
@@ -303,21 +284,6 @@ def make_hook_wrapper(
         },
     )
     return destination
-
-
-def warm_hook_wrapper(wrapper: Path) -> None:
-    """Run one untraced no-op through the wrapper to warm OS/Python caches."""
-
-    environment = os.environ.copy()
-    environment[_WARMUP_ENV] = "1"
-    subprocess.run(
-        [str(wrapper)],
-        input=b"{}",
-        capture_output=True,
-        env=environment,
-        timeout=10,
-        check=False,
-    )
 
 
 if __name__ == "__main__":

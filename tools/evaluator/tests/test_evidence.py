@@ -6,9 +6,7 @@ from pathlib import Path
 
 from jcode_harness_client.evidence import (
     collect_evidence,
-    format_transcript,
-    paginate,
-    retain_tree,
+    write_cited_evidence,
 )
 from jcode_harness_client.redaction import Redactor
 
@@ -104,23 +102,10 @@ def test_journal_replacement_multiple_workers_and_stable_citations(
     assert bundle.complete, bundle.gaps
     citations = bundle.citations
     assert "session:session_parent:message:assistant-1" in citations
-    assert "session:session_parent:journal:2" in citations
     assert not any(record["id"].endswith(":message:old") for record in bundle.records)
     assert "outer:session_parent:tool_done:call-native" in citations
     workers = {session["worker"] for session in bundle.sessions}
     assert workers == {"coordinator", "arbitrary-worker", "renamed-later"}
-    replacement = next(
-        record
-        for record in bundle.records
-        if record["id"] == "session:session_parent:journal:2"
-    )
-    assert replacement["data"]["future_journal_field"] == 42
-    snapshot = next(
-        record
-        for record in bundle.records
-        if record["id"] == "session:session_parent:snapshot"
-    )
-    assert snapshot["data"]["future_field"] == {"retained": True}
 
 
 def test_native_journal_vectors_and_stale_prefix_replay(tmp_path: Path) -> None:
@@ -169,15 +154,7 @@ def test_native_journal_vectors_and_stale_prefix_replay(tmp_path: Path) -> None:
         session_listing=[{"session_id": "session_parent"}],
     )
     assert bundle.complete, bundle.gaps
-    journal = [record for record in bundle.records if record["kind"] == "journal-entry"]
-    assert journal[0]["replay_status"] == "stale-prefix"
-    assert journal[1]["replay_status"] == "applied"
-    prompts = [
-        record for record in bundle.records if record["kind"] == "request-prompt"
-    ]
     tools = [record for record in bundle.records if record["kind"] == "request-tools"]
-    assert len(prompts) == 1
-    assert prompts[0]["data"]["prompt"] == "actual system prompt"
     assert len(tools) == 1
     assert tools[0]["data"]["tools"] == [tool]
     final = next(
@@ -317,89 +294,36 @@ def test_repeated_stream_deltas_share_a_stable_grouped_citation(
     assert outer[0]["data"]["events"] == events
 
 
-def test_large_records_are_paged_completely_without_truncation(tmp_path: Path) -> None:
-    records = [
-        {"id": f"record-{index}", "data": {"text": chr(65 + index) * 2000}}
-        for index in range(5)
-    ]
-    pages = paginate(records, 2500)
-    assert [record["id"] for page in pages for record in page.records] == [
-        record["id"] for record in records
-    ]
-    assert len(pages) > 1
-    single = paginate([records[0]], 10)[0]
-    assert single.oversized_single_record
-    assert single.records[0]["data"]["text"] == "A" * 2000
-    transcript = format_transcript(
-        [
-            {
-                "id": "session:s:message:m",
-                "kind": "message",
-                "session_id": "s",
-                "worker": "coordinator",
-                "data": {
-                    "id": "m",
-                    "role": "tool",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "content": "X" * 5000,
-                            "is_error": False,
-                        }
-                    ],
-                },
-            }
-        ]
+def test_cited_only_retention_keeps_redacted_journals(tmp_path: Path) -> None:
+    sessions = tmp_path / "ephemeral" / "sessions"
+    snapshot = write_session(sessions, "session_parent", [
+        message("cited", "assistant", "secret-token"),
+        message("other", "assistant", "do not retain"),
+    ])
+    journal = snapshot.with_name("session_parent.journal.jsonl")
+    journal.write_text(json.dumps({"value": 'secret"token'}) + "\n")
+    (sessions / "session_escape.journal.jsonl").symlink_to(journal)
+    bundle = collect_evidence(
+        raw_dir=tmp_path / "ephemeral", coordinator_session_id="session_parent",
+        outer_events=[], session_listing=[],
     )
-    assert "X" * 5000 in transcript
-    assert "truncated" not in transcript
-
-
-def test_retention_redacts_every_copy_and_rejects_symlinks(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    write_session(
-        home / "sessions",
-        "session_parent",
-        [message("m", "user", "secret-token")],
+    output = tmp_path / "result"
+    citation = "session:session_parent:message:cited"
+    gaps = write_cited_evidence(
+        output, bundle.citation_map, [{"citations": [citation, "missing"]}],
+        sessions, Redactor(("secret-token", 'secret"token')),
     )
-    (home / "daemon.log").write_text("secret-token\n", encoding="utf-8")
-    (home / "config.toml").write_text("secret-token", encoding="utf-8")
-    (home / "escape").symlink_to(home / "daemon.log")
-    gaps, copied = retain_tree(
-        home,
-        tmp_path / "raw",
-        Redactor(("secret-token",)),
-        skip_private=True,
-    )
-    assert any("symlinked" in gap for gap in gaps)
-    assert any(item.get("skipped") == "private configuration" for item in copied)
-    for path in (tmp_path / "raw").rglob("*"):
+    assert "missing" in gaps
+    assert any("unsafe native journal" in gap for gap in gaps)
+    assert sorted(
+        p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()
+    ) == ["raw/cited.jsonl", "raw/sessions/session_parent.journal.jsonl"]
+    cited = (output / "raw/cited.jsonl").read_text()
+    assert citation in cited and "[REDACTED]" in cited and "do not retain" not in cited
+    retained_journal = output / "raw/sessions/session_parent.journal.jsonl"
+    assert json.loads(retained_journal.read_text())["value"] == "[REDACTED]"
+    for path in output.rglob("*"):
         if path.is_file():
             assert b"secret-token" not in path.read_bytes()
             if os.name == "posix":
                 assert path.stat().st_mode & 0o777 == 0o600
-
-
-def test_retain_tree_maps_controller_evidence_next_to_hook_traces(
-    tmp_path: Path,
-) -> None:
-    """The escalation_resumption analyzer depends on this retention layout."""
-
-    source = tmp_path / "instrumentation" / "escalation-resumption"
-    (source / "hook-traces").mkdir(parents=True)
-    (source / "artifacts").mkdir(parents=True)
-    (source / "events.jsonl").write_text('{"seq": 1}\n', encoding="utf-8")
-    (source / "guard-events.jsonl").write_text('{"seq": 1}\n', encoding="utf-8")
-    (source / "state.json").write_text("{}", encoding="utf-8")
-    (source / "hook-traces" / "trace.json").write_text("{}", encoding="utf-8")
-    (source / "artifacts" / "stage2-task.json").write_text("{}", encoding="utf-8")
-    raw = tmp_path / "raw"
-    redactor = Redactor(("secret",))
-    gaps, copied = retain_tree(source, raw, redactor, skip_private=False)
-    assert gaps == []
-    assert len(copied) == 5
-    assert (raw / "other" / "events.jsonl").is_file()
-    assert (raw / "other" / "guard-events.jsonl").is_file()
-    assert (raw / "other" / "state.json").is_file()
-    assert (raw / "hook-traces" / "trace.json").is_file()
-    assert (raw / "other" / "artifacts" / "stage2-task.json").is_file()

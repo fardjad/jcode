@@ -69,6 +69,38 @@ def token_message(msg_id: str, usage: dict) -> dict:
     return {"id": msg_id, "role": "assistant", "token_usage": usage}
 
 
+def test_usage_survives_replacement_and_corrupt_journal_entries(tmp_path: Path) -> None:
+    from jcode_harness_client.evidence import collect_evidence
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    write_session(sessions, "session_root", model="model", messages=[
+        token_message("before", {"cost": 0.123456789}),
+    ])
+    (sessions / "session_root.journal.jsonl").write_text(
+        '{bad json}\n' + json.dumps({"replace_messages": [
+            token_message("after", {"cost": 0.0}),
+            token_message("unpriced", {"input_tokens": 1}),
+        ]}) + "\n"
+    )
+    bundle = collect_evidence(
+        raw_dir=tmp_path, coordinator_session_id="session_root",
+        outer_events=[], session_listing=[],
+    )
+    assert bundle.gaps
+    tracker = UsageTracker()
+    for _ in range(2):
+        record_native_session_usage(
+            bundle=bundle, settings=settings("openai-compatible"),
+            coordinator_session_id="session_root", tracker=tracker,
+        )
+    result = tracker.summary()
+    assert result["calls"] == 3
+    assert result["cost_usd"] == 0.123456789
+    assert result["unpriced_calls"] == 1
+    assert result["unpriced"][0]["message_id"] == "unpriced"
+
+
 def test_openai_strict_schema_caching_and_sanitized_wire_retention(
     tmp_path: Path,
 ) -> None:
@@ -123,10 +155,7 @@ def test_openai_strict_schema_caching_and_sanitized_wire_retention(
     assert request_body["response_format"]["json_schema"]["strict"] is True
     assert request_body["response_format"]["json_schema"]["name"] == "test_schema"
     assert request_body["prompt_cache_key"].startswith("jcode-eval:scenario-a:")
-    assert b"secret-token" not in (tmp_path / "request.input.json").read_bytes()
-    saved_response = (tmp_path / "request.response.json").read_bytes()
-    assert b"secret-token" not in saved_response
-    assert b"[REDACTED]" in saved_response
+    assert not list(tmp_path.iterdir())
     usage = tracker.summary()
     assert usage["calls"] == 1
     assert usage["input_tokens"] == 100
@@ -380,12 +409,16 @@ def test_native_session_usage_aggregation_and_deduplication(tmp_path: Path) -> N
     assert summary["unpriced_reasons"] == {
         "no provider-reported cost in native session usage": 3
     }
-    assert summary["by_role"][worker_name]["unpriced_calls"] == 1
-    assert summary["by_model"]["observed-unpriced-model"]["calls"] == 1
-    assert summary["by_role"]["coordinator"]["calls"] == 2
-    assert summary["by_model"]["gpt-4o"]["calls"] == 2
-    assert summary["agent"]["calls"] == 3
-    assert summary["evaluation_overhead"]["calls"] == 0
+    assert {item["message_id"] for item in summary["unpriced"]} == {"m1", "m2", "w1"}
+    assert any(
+        item["role"] == worker_name and item["model"] == "observed-unpriced-model"
+        for item in summary["unpriced"]
+    )
+    record_native_session_usage(
+        raw_dir=tmp_path / "raw", settings=settings("openai-compatible", "gpt-4o"),
+        coordinator_session_id=coordinator_session_id, tracker=tracker,
+    )
+    assert tracker.summary()["calls"] == 3
     for reason in summary["unpriced_reasons"]:
         assert "secret-token" not in reason
         assert "endpoint.invalid" not in reason
@@ -474,14 +507,9 @@ def test_three_level_native_usage_counts_each_session_once(tmp_path: Path) -> No
     assert summary["unpriced_reasons"] == {
         "no provider-reported cost in native session usage": 4
     }
-    assert summary["by_role"]["coordinator"]["calls"] == 1
-    assert summary["by_role"][advanced_name]["calls"] == 2
-    assert summary["by_role"][routine_name]["calls"] == 1
-    assert summary["by_model"]["gpt-4o"]["calls"] == 1
-    assert summary["by_model"]["gpt-6.1-sol"]["calls"] == 2
-    assert summary["by_model"]["gpt-6-luna"]["calls"] == 1
-    assert summary["agent"]["calls"] == 4
-    assert summary["evaluation_overhead"]["calls"] == 0
+    assert {item["session_id"] for item in summary["unpriced"]} == {
+        root_id, advanced_id, routine_id
+    }
 
 
 def test_usage_tracker_breakdowns_separate_unpriced_overhead_calls() -> None:
@@ -511,10 +539,7 @@ def test_usage_tracker_breakdowns_separate_unpriced_overhead_calls() -> None:
     assert summary["calls"] == 2
     assert summary["unpriced_calls"] == 1
     assert summary["cost_usd"] == 0.25
-    assert summary["by_role"][worker_role]["unpriced_calls"] == 1
-    assert summary["by_model"]["review-model"]["output_tokens"] == 7
-    assert summary["agent"]["calls"] == 1
-    assert summary["evaluation_overhead"]["calls"] == 1
+    assert summary["unpriced"][0]["role"] == worker_role
 
 
 def test_caching_capability_validation() -> None:
@@ -569,7 +594,6 @@ def test_native_reported_cost_precedence_and_zero(tmp_path: Path) -> None:
     assert summary["cost_usd"] == 0.0123
     assert "unpriced_calls" not in summary
     assert summary["cost_sources"] == {"reported-native": 2}
-    assert summary["by_model"]["gpt-4o"]["cost_usd"] == 0.0123
     assert tracker.records[0].cost_source == "reported-native"
     assert tracker.records[1].cost_usd == 0.0 and tracker.records[1].priced
 
@@ -616,8 +640,6 @@ def test_native_missing_reported_cost_stays_unknown_with_safe_reason(
     assert summary["calls"] == 2
     assert summary["cost_usd"] is None
     assert summary["unpriced_calls"] == 2
-    assert summary["by_model"]["gpt-6.1-sol"]["cost_usd"] is None
-    assert summary["by_model"]["gpt-6-luna"]["cost_usd"] is None
     reasons = summary["unpriced_reasons"]
     assert reasons == {"no provider-reported cost in native session usage": 2}
     for reason in reasons:
@@ -958,11 +980,7 @@ def test_summary_unknown_cost_counts_are_accurate() -> None:
         "no provider-reported cost in native session usage": 1,
         "no provider-reported cost in wire response": 1,
     }
-    assert summary["by_role"]["swarm"]["unpriced_calls"] == 2
-    assert summary["by_role"]["coordinator"]["cost_usd"] == 0.5
-    assert summary["by_model"]["gpt-4o"]["cost_usd"] == 0.5
-    assert summary["agent"]["unpriced_calls"] == 2
-    assert summary["evaluation_overhead"]["cost_usd"] == 0.25
+    assert len(summary["unpriced"]) == 2
 
 
 def _effort_settings(provider: str, model: str) -> object:

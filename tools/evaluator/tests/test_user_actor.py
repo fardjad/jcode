@@ -22,7 +22,6 @@ def scenario(tmp_path: Path) -> Scenario:
         fixture=tmp_path,
         prompt="Implement the outcome.",
         accept=("python3", "accept.py"),
-        metrics=("tool_health",),
         judge=JudgeScenario(("Good workers make bounded progress.",)),
         simulated_user=SimulatedUserScenario(
             max_turns=8,

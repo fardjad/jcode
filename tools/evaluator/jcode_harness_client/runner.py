@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shlex
@@ -12,21 +11,17 @@ import subprocess
 import tempfile
 import time
 import tomllib
-from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
-from . import blind_runtime, escalation_controller, hook_broker
+from . import blind_runtime, hook_broker
 from .client import HarnessTimeoutError
-from .coordination import analyze_coordination
-from .escalation_resumption import analyze_escalation_resumption
+from .coordination import build_delegation
 from .evidence import (
     collect_evidence,
-    paginate,
     retain_native_runtime,
-    retain_tree,
-    write_bundle,
+    write_cited_evidence,
 )
 from .inventory import (
     PluginSnapshot,
@@ -36,10 +31,10 @@ from .inventory import (
     snapshot_plugins,
     traced_plugin_config,
 )
-from .judge import review_evidence, write_review_markdown
-from .judge_projection import build_judge_projection
+from .judge import prepare_judge_input, review_compact
 from .llm_backend import UsageTracker, record_native_session_usage
 from .redaction import Redactor, write_bytes, write_json, write_text
+from .report import render_report
 from .runtime import (
     BlindHarnessRuntime,
     HarnessRuntime,
@@ -52,8 +47,6 @@ from .scenarios import (
     Scenario,
     load_scenarios,
     materialize_scenario,
-    snapshot_tree,
-    source_diff,
     tree_digest,
     verify_fixture_unchanged,
 )
@@ -63,21 +56,13 @@ from .settings import (
     ScenarioSettings,
     profile_config,
 )
-from .tool_health import analyze_tool_health
 from .user_actor import next_user_reply
 
 _JSON = dict[str, Any]
-MetricAnalyzer = Callable[..., tuple[_JSON, list[_JSON]]]
 
-# The live scenario runtime stays on the host by default. Only the
-# escalation-resumption scenario opts into the blind boundary by default:
-# its escalation controller always runs in blind mode. Every other
-# scenario keeps the plain host-visible runtime even when bwrap is
-# installed. ``runtime_isolation`` is an explicit test/internal override
-# of these scenario defaults, never a live configuration option; preflight
-# failures still never fall back to a host launch.
+# Private instrumentation declares blind isolation in scenario metadata.
+# Explicit test/internal overrides never provide a preflight fallback.
 DEFAULT_RUNTIME_ISOLATION = "host"
-BLIND_DEFAULT_SCENARIOS = (escalation_controller.SCENARIO_ID,)
 RUNTIME_ISOLATIONS = ("blind", "host")
 
 
@@ -94,21 +79,18 @@ def validate_runtime_isolation(runtime_isolation: str | None) -> str | None:
 
 
 def resolve_runtime_isolation(
-    runtime_isolation: str | None, scenario_id: str | None = None
+    runtime_isolation: str | None, scenario: Scenario | None = None
 ) -> str:
     """Resolve and validate the effective runtime isolation for one scenario.
 
-    An explicit ``runtime_isolation`` is a test/internal override: when
-    given it wins after validation. Otherwise only the escalation-resumption
-    scenario defaults to the blind bwrap boundary (its controller mode is
-    blind); every other scenario keeps the host default. Blind stays
-    fail-closed: preflight failures abort instead of degrading to host.
+    Explicit test/internal overrides win; otherwise use private metadata.
+    Blind preflight failures abort instead of degrading to host.
     """
     explicit = validate_runtime_isolation(runtime_isolation)
     if explicit is not None:
         return explicit
-    if scenario_id in BLIND_DEFAULT_SCENARIOS:
-        return "blind"
+    if scenario is not None and scenario.instrumentation is not None:
+        return scenario.instrumentation.isolation
     return DEFAULT_RUNTIME_ISOLATION
 
 
@@ -162,32 +144,6 @@ def _blind_broker_operations(
             serialized=serialized,
         )
     return operations
-
-
-METRIC_ANALYZERS: dict[str, MetricAnalyzer] = {
-    "tool_health": analyze_tool_health,
-    "coordination": analyze_coordination,
-    "escalation_resumption": analyze_escalation_resumption,
-}
-_METRIC_CLEAN_STATUSES = {"clean", "healthy", "pass"}
-
-
-def _evaluator_identity() -> _JSON:
-    package = Path(__file__).resolve().parent
-    root = package.parent
-    paths = sorted(package.glob("*.py"))
-    paths += [root / "pyproject.toml", root / "uv.lock"]
-    files = {
-        path.relative_to(root).as_posix(): file_sha256(path)
-        for path in paths
-        if path.is_file()
-    }
-    return {
-        "files": files,
-        "sha256": hashlib.sha256(
-            json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
-    }
 
 
 def _acceptance_environment(root: Path, scenario_id: str) -> dict[str, str]:
@@ -314,74 +270,6 @@ def _list_tools(
         return None
 
 
-def _incomplete_review(
-    output: Path, reason: str, redactor: Redactor
-) -> tuple[_JSON, _JSON]:
-    review = {
-        "summary": f"Diagnostic review incomplete: {reason}",
-        "findings": [],
-        "review": "incomplete",
-        "review_complete": False,
-        "reviewed_sessions": [],
-        "unexercised_workers": [],
-    }
-    coverage = {
-        "complete": False,
-        "evidence_complete": False,
-        "evidence_gaps": [reason],
-        "raw_record_count": 0,
-        "record_count": 0,
-        "excluded_by_default": [],
-        "retrieved_citations": [],
-        "pages": [],
-        "synthesis": "not-run-no-native-session",
-        "judge_calls": 0,
-    }
-    write_json(output / "review.json", review, redactor)
-    write_json(output / "judge-coverage.json", coverage, redactor)
-    return review, coverage
-
-
-def _worker_coverage(blueprints: list[_JSON], sessions: list[_JSON]) -> _JSON:
-    exercised = sorted(
-        {
-            str(session["worker"])
-            for session in sessions
-            if session.get("worker") not in {None, "coordinator", "unknown"}
-        }
-    )
-    available = sorted(
-        str(blueprint["name"])
-        for blueprint in blueprints
-        if blueprint["name"] != "coordinator"
-    )
-    unknown = sorted(
-        {
-            str(session["session_id"])
-            for session in sessions
-            if session.get("worker") == "unknown"
-            and (
-                session.get("parent_session_id") is not None
-                or session.get("parent_id") is not None
-            )
-        }
-    )
-    return {
-        "available": available,
-        "sessions": [
-            {
-                "session_id": session["session_id"],
-                "worker": session["worker"],
-                "parent_session_id": session.get("parent_session_id"),
-            }
-            for session in sessions
-        ],
-        "exercised": exercised,
-        "not_exercised": [name for name in available if name not in exercised],
-        "unidentified_sessions": unknown,
-    }
-
-
 def _run_scenario(
     *,
     scenario: Scenario,
@@ -403,7 +291,10 @@ def _run_scenario(
     started = time.monotonic()
     blind = runtime_isolation == "blind"
     timeouts = settings.timeouts()
-    output.mkdir(parents=True)
+    output.mkdir(parents=True, exist_ok=True)
+    raw_dir = temporary_root / "native" / scenario.id
+    turns: list[float] = []
+    simulator_time = 0.0
     scenario_tracker = UsageTracker()
     workspace = temporary_root / "workspaces" / scenario.id
     fixture_digest = tree_digest(scenario.fixture)
@@ -430,6 +321,12 @@ def _run_scenario(
             staging_root, jcode_binary=binary, bridge=bridge
         )
         hook_proxy = hook_broker.install_public_proxy(staging.bin / "hook-proxy")
+        staged_blueprints = staging.config / "blueprints"
+        staged_blueprints.mkdir(mode=0o700)
+        for blueprint in blueprints:
+            name = blueprint["path"]
+            shutil.copy2(blueprint_dir / name, staged_blueprints / name)
+        blueprint_dir = staged_blueprints
     instrumentation = temporary_root / "instrumentation" / scenario.id
     trace_root = instrumentation / "hook-traces"
     guard_snapshot = next(
@@ -443,42 +340,37 @@ def _run_scenario(
     composite_controller: Path | None = None
     controller_environment: dict[str, str] = {}
     controller_provenance: _JSON | None = None
-    if scenario.id == escalation_controller.SCENARIO_ID:
+    if scenario.instrumentation is not None:
         if guard_snapshot is None:
             raise ValueError(
-                "scenario escalation-resumption requires the delegation-guard"
+                "private instrumentation requires the delegation-guard"
                 " plugin: the controller composes with the actual guard"
             )
-        composite_controller = Path(escalation_controller.__file__).resolve()
+        private = scenario.instrumentation
+        composite_controller = private.controller
         # In blind mode the agent edits the staged public workspace copy, so
         # the host-side controller must watch that tree, not the private one.
         controller_workspace = staging.workspace if staging is not None else workspace
+        private_paths = {
+            "{state_dir}": str(instrumentation),
+            "{workspace}": str(controller_workspace),
+            "{guard}": str(guard_snapshot.executable),
+        }
         controller_environment = {
-            escalation_controller.STATE_ENV: str(instrumentation),
-            escalation_controller.WORKSPACE_ENV: str(controller_workspace),
-            escalation_controller.GUARD_ENV: str(guard_snapshot.executable),
-            escalation_controller.GUARD_TIMEOUT_ENV: "1000",
-            # The controller mode is always set explicitly, never inherited
-            # from the caller's environment: the manifest and the effective
-            # provenance below record the effective blind mode of the run.
-            escalation_controller.MODE_ENV: escalation_controller.MODE_BLIND,
+            key: private_paths.get(value, value)
+            for key, value in private.environment.items()
         }
         controller_provenance = {
             "active": True,
             "scenario": scenario.id,
-            "mode": escalation_controller.MODE_BLIND,
             "controller_module": str(composite_controller),
             "controller_sha256": file_sha256(composite_controller),
             "state_dir": str(instrumentation),
-            "events_path": str(instrumentation / "events.jsonl"),
-            "guard_events_path": str(
-                instrumentation / escalation_controller.GUARD_EVENTS_NAME
-            ),
+            "journals": [str(instrumentation / name) for name in private.journals],
             "workspace": str(controller_workspace),
             "guard_executable": str(guard_snapshot.executable),
             "guard_sha256": file_sha256(guard_snapshot.executable),
             "threshold": settings.delegation_guard.threshold,
-            "guard_timeout_ms": 1000,
             "environment": dict(controller_environment),
         }
     hook_config, hook_commands = traced_plugin_config(
@@ -537,7 +429,7 @@ def _run_scenario(
         **({"environment": dict(guard_environment)} if guard_environment else {}),
     }
     if controller_provenance is not None:
-        effective["escalation_controller"] = controller_provenance
+        effective["private_instrumentation"] = controller_provenance
     effective["timeouts"] = {
         "scenario": scenario.id,
         **timeouts.manifest(),
@@ -558,9 +450,9 @@ def _run_scenario(
                 str(trace_root),
             ],
         }
-    write_json(output / "effective" / "config.json", effective, redactor)
+    write_json(instrumentation / "effective" / "config.json", effective, redactor)
     write_json(
-        output / "effective" / "hooks.json",
+        instrumentation / "effective" / "hooks.json",
         {"commands": hook_commands},
         redactor,
     )
@@ -588,7 +480,6 @@ def _run_scenario(
     retention_gaps: list[str] = list(blueprint_issues)
     retained_files: list[_JSON] = []
     coordinator_id: str | None = None
-    response_text = ""
     conversation: list[_JSON] = []
     simulated_user_calls = 0
     termination = "not-started"
@@ -613,7 +504,7 @@ def _run_scenario(
         gaps, copied = retain_native_runtime(
             home=runtime_holder["home"],
             runtime_dir=runtime_holder["root"] / "runtime",
-            raw_dir=output / "raw",
+            raw_dir=raw_dir,
             redactor=redactor,
         )
         retention_gaps.extend(gaps)
@@ -718,6 +609,7 @@ def _run_scenario(
                             "sent": True,
                         }
                     )
+                    turn_started = time.monotonic()
                     try:
                         response = session.send_message(
                             prompt,
@@ -725,7 +617,6 @@ def _run_scenario(
                             event_sink=events,
                             timeout=turn_budget,
                         )
-                        response_text = response.text
                         conversation.append(
                             {
                                 "role": "assistant",
@@ -752,13 +643,16 @@ def _run_scenario(
                         execution["error"] = str(error)
                         termination = "coordinator-error"
                         break
+                    finally:
+                        turns.append(time.monotonic() - turn_started)
+                    simulator_started = time.monotonic()
                     try:
                         simulated_user_calls += 1
                         reply = next_user_reply(
                             settings=settings,
                             scenario=scenario,
                             conversation=conversation,
-                            output=output
+                            output=instrumentation
                             / "raw"
                             / "simulated-user"
                             / f"turn-{turn_index:06d}",
@@ -769,6 +663,8 @@ def _run_scenario(
                         execution["error"] = f"simulated user: {error}"
                         termination = "simulated-user-error"
                         break
+                    finally:
+                        simulator_time += time.monotonic() - simulator_started
                     if (
                         reply.done
                         or turn_index + 1 == scenario.simulated_user.max_turns
@@ -806,49 +702,23 @@ def _run_scenario(
         execution["status"] = "runtime error"
         execution["error"] = str(error)
     retain_final()
-    if instrumentation.is_dir():
-        gaps, copied = retain_tree(
-            instrumentation, output / "raw", redactor, skip_private=False
-        )
-        retention_gaps.extend(gaps)
-        retained_files.extend(copied)
-    write_json(output / "raw" / "retention.json", retained_files, redactor)
-    write_text(
-        output / "events.ndjson",
-        "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
-        redactor,
-    )
     execution["duration_seconds"] = time.monotonic() - started
-    execution["response_text"] = response_text
     execution["termination"] = termination
-    execution["coordinator_turns"] = sum(
-        item["origin"] == "coordinator" for item in conversation
-    )
-    write_json(output / "conversation.json", conversation, redactor)
 
-    after_execution = snapshot_tree(eval_workspace)
     acceptance = run_acceptance(
         scenario,
         eval_workspace,
-        output,
+        instrumentation / "acceptance",
         temporary_root,
         settings.limits.acceptance_timeout_seconds,
         redactor,
     )
-    final = snapshot_tree(eval_workspace)
-    acceptance_generated = sorted(
-        name
-        for name in set(after_execution) | set(final)
-        if after_execution.get(name) != final.get(name)
-    )
-    acceptance["generated_or_modified_files"] = acceptance_generated
-    write_json(output / "acceptance.json", acceptance, redactor)
-    diff = source_diff(eval_workspace, pristine_workspace, pristine, final)
-    write_text(output / "changes.patch", diff, redactor)
     try:
         verify_fixture_unchanged(scenario, fixture_digest)
     except (OSError, ValueError, RuntimeError) as error:
         retention_gaps.append(str(error))
+        execution["status"] = "runtime error"
+        execution["error"] = f"fixture integrity: {error}"
     # The staged public tree has served acceptance and retention; remove it
     # so no evaluation copy lingers in a public location. A hard failure that
     # bypasses this point is backstopped by the caller's per-scenario finally.
@@ -856,7 +726,7 @@ def _run_scenario(
         shutil.rmtree(staging.root, ignore_errors=True)
 
     bundle = collect_evidence(
-        raw_dir=output / "raw",
+        raw_dir=raw_dir,
         coordinator_session_id=coordinator_id,
         outer_events=events,
         session_listing=session_listing,
@@ -866,208 +736,122 @@ def _run_scenario(
     if any(session.get("worker") == "unknown" for session in bundle.sessions):
         bundle.gaps.append("a native session has no usable worker blueprint identity")
     record_native_session_usage(
-        raw_dir=output / "raw",
+        bundle=bundle,
         settings=settings,
         coordinator_session_id=coordinator_id,
         tracker=scenario_tracker,
     )
-    workers = _worker_coverage(blueprints, bundle.sessions)
-    metric_reports: dict[str, _JSON] = {}
-    metric_records: list[_JSON] = []
-    for metric_name in scenario.metrics:
-        report, supplemental_records = METRIC_ANALYZERS[metric_name](
-            bundle.records,
-            trace_root=output / "raw" / "hook-traces",
-            evidence_gaps=bundle.gaps,
-        )
-        metric_reports[metric_name] = report
-        metric_records.extend(supplemental_records)
-    health = metric_reports.get(
-        "tool_health",
-        {
-            "status": "not requested",
-            "calls": [],
-            "hooks": [],
-            "issues": [],
-            "missing_evidence": [],
-        },
+    coordination = build_delegation(
+        bundle.records, trace_root=trace_root, evidence_gaps=bundle.gaps
     )
-    scenario_evidence = {
-        "citation": f"scenario:{scenario.id}:task",
-        "id": scenario.id,
-        "prompt": scenario.prompt,
-        "accept": list(scenario.accept),
-        "metrics": list(scenario.metrics),
-        "judge_criteria": list(scenario.judge.criteria),
-        "simulated_user": {
-            "max_turns": scenario.simulated_user.max_turns,
-            "instructions": scenario.simulated_user.instructions,
+    citations = bundle.citation_map
+    for record in coordination["hook_records"]:
+        if isinstance(record.get("id"), str):
+            citations[record["id"]] = record
+    extras = []
+    if scenario.instrumentation is not None:
+        for name in scenario.instrumentation.journals:
+            path = instrumentation / name
+            try:
+                if path.is_symlink():
+                    raise ValueError("unsafe journal")
+                for index, line in enumerate(
+                    path.read_text(encoding="utf-8").splitlines(), 1
+                ):
+                    event = json.loads(line)
+                    ref = f"scenario:{scenario.id}:journal:{name}:{index}"
+                    citations[ref] = event
+                    extras.append({"journal_event": event, "native_refs": [ref]})
+            except (OSError, ValueError, UnicodeError) as error:
+                coordination["evidence_gaps"].append(
+                    {"reason": f"journal {name} unavailable: {error}"}
+                )
+    data = prepare_judge_input(
+        scenario={
+            "id": scenario.id,
+            "prompt": scenario.prompt,
+            "judge_criteria": list(scenario.judge.criteria),
         },
-    }
-    supplemental: list[_JSON] = [
-        {
-            "id": scenario_evidence["citation"],
-            "kind": "scenario",
-            "data": scenario_evidence,
-        },
-        *[
-            {
-                "id": blueprint["citation"],
-                "kind": "blueprint",
-                "data": blueprint,
-            }
-            for blueprint in blueprints
-        ],
-        {
-            "id": acceptance["citation"],
-            "kind": "acceptance",
-            "data": acceptance,
-        },
-        {
-            "id": f"scenario:{scenario.id}:changes",
-            "kind": "source-diff",
-            "data": {"patch": diff},
-        },
-        {
-            "id": f"scenario:{scenario.id}:effective-config",
-            "kind": "effective-config",
-            "data": effective,
-        },
-        {
-            "id": f"scenario:{scenario.id}:execution",
-            "kind": "execution",
-            "data": execution,
-        },
-        *metric_records,
-    ]
-    bundle.records = [*supplemental, *bundle.records]
-    write_json(output / "metrics.json", metric_reports, redactor)
-    if "tool_health" in metric_reports:
-        write_json(output / "tool-health.json", health, redactor)
-    for metric_name, report in metric_reports.items():
-        bundle.records.append(
-            {
-                "id": f"scenario:{scenario.id}:metric:{metric_name}",
-                "kind": "metric",
-                "metric": metric_name,
-                "data": report,
-            }
-        )
-    write_bundle(output, bundle, redactor)
-    projection = build_judge_projection(bundle.records)
-    coordinator_snapshot = any(
-        session.get("session_id") == coordinator_id for session in bundle.sessions
-    )
-    if coordinator_id is None or not coordinator_snapshot:
-        reason = (
-            "no coordinator native session was established"
-            if coordinator_id is None
-            else "coordinator native snapshot is unavailable for complete review"
-        )
-        review, coverage = _incomplete_review(output, reason, redactor)
-        coverage["judge_max_calls"] = settings.limits.judge_max_calls
-        coverage["raw_record_count"] = len(bundle.records)
-        coverage["record_count"] = len(projection.records)
-        coverage["excluded_by_default"] = projection.excluded
-        write_json(output / "judge-coverage.json", coverage, redactor)
-    else:
-        review, coverage = review_evidence(
-            settings=settings,
-            scenario=scenario_evidence,
-            records=bundle.records,
-            evidence_gaps=bundle.gaps,
-            blueprints=blueprints,
-            plugins=[plugin.manifest() for plugin in plugins],
-            acceptance=acceptance,
-            tool_health=health,
-            workers=workers,
-            output=output,
-            usage_tracker=scenario_tracker,
-        )
-    review["unexercised_workers"] = workers["not_exercised"]
-    write_json(output / "review.json", review, redactor)
-    write_review_markdown(
-        output / "review.md",
-        review=review,
         acceptance=acceptance,
-        tool_health=health,
-        workers=workers,
-        coverage=coverage,
-        redactor=redactor,
+        coordination=coordination,
+        records=bundle.records,
+        scenario_extras=extras,
+        blueprints=blueprints,
+        plugins=[plugin.manifest() for plugin in plugins],
     )
+    judge_started = time.monotonic()
+    review = review_compact(
+        settings=settings,
+        judge_input=data,
+        citation_map=citations,
+        output=instrumentation / "judge",
+        usage_tracker=scenario_tracker,
+    )
+    judge_time = time.monotonic() - judge_started
+    if execution["status"] != "completed":
+        review["findings"].append(
+            {
+                "severity": "medium",
+                "category": "evaluator",
+                "text": f"Execution {execution['status']}: {execution['error']}",
+                "citations": [],
+                "fix_target": "evaluator execution",
+            }
+        )
+    if acceptance.get("error"):
+        review["findings"].append(
+            {
+                "severity": "medium",
+                "category": "evaluator",
+                "text": f"Acceptance error: {acceptance['error']}",
+                "citations": [],
+                "fix_target": "scenario acceptance",
+            }
+        )
+    missing = write_cited_evidence(
+        output, citations, review["findings"], raw_dir / "sessions", redactor
+    )
+    for reason in missing:
+        review["findings"].append(
+            {
+                "severity": "medium",
+                "category": "evaluator",
+                "text": reason,
+                "citations": [],
+                "fix_target": "evaluator evidence collection",
+            }
+        )
     for rec in scenario_tracker.records:
         run_tracker.add(rec)
-    usage_summary = scenario_tracker.summary()
-    result: _JSON = {
-        "id": scenario.id,
-        "scenario_source_sha256": scenario.source_sha256,
-        "settings": settings_manifest,
-        "fixture_sha256": fixture_digest,
-        "execution": execution,
-        "acceptance": {
-            key: value
-            for key, value in acceptance.items()
-            if key not in {"citation", "stdout", "stderr"}
+    usage = scenario_tracker.summary()
+    return {
+        "scenario": scenario.id,
+        "acceptance": acceptance["status"],
+        "cost_usd": usage["cost_usd"],
+        "unpriced_calls": usage.get("unpriced_calls", 0),
+        "wall": f"{time.monotonic() - started:.3f}s",
+        "time": {
+            "build_check": None,
+            "coordinator_turns": [f"{v:.3f}s" for v in turns],
+            "coordinator_turn_count": len(turns),
+            "simulator": f"{simulator_time:.3f}s",
+            "acceptance": f"{acceptance['duration_seconds']:.3f}s",
+            "judge": f"{judge_time:.3f}s",
+            "report": None,
         },
-        "evidence": {
-            "status": "complete" if not bundle.gaps else "incomplete",
-            "gaps": bundle.gaps,
-            "raw_record_count": len(bundle.records),
-            "record_count": len(projection.records),
-            "page_count": len(
-                paginate(projection.records, settings.limits.judge_page_bytes)
-            ),
-        },
-        "tool_health": health["status"],
-        "metrics": metric_reports,
-        "simulated_user": {
-            "calls": simulated_user_calls,
-            "max_turns": scenario.simulated_user.max_turns,
-            "termination": termination,
-        },
-        "review": review["review"],
-        "cost_usd": usage_summary["cost_usd"],
-        "usage": {
-            key: value
-            for key, value in usage_summary.items()
-            if key not in {"cost_usd", "unpriced_calls"}
-        },
-        "workers": workers,
-        "citations": {
-            "task": scenario_evidence["citation"],
-            "acceptance": acceptance["citation"],
-            "changes": f"scenario:{scenario.id}:changes",
-            "tool_health": (
-                f"scenario:{scenario.id}:metric:tool-health"
-                if "tool_health" in metric_reports
-                else None
-            ),
-            "metrics": {
-                name: f"scenario:{scenario.id}:metric:{name}" for name in metric_reports
+        "delegation": coordination["delegation"],
+        "effective_effort": {
+            "coordinator": settings.effort_for("coordinator"),
+            "workers": {
+                row["tier"]: settings.effort_for_worker(row["tier"])
+                for row in coordination["delegation"]
+                if row["tier"] not in ("coordinator", "unknown")
             },
-            "findings": sorted(
-                {
-                    citation
-                    for finding in review["findings"]
-                    for citation in finding["citations"]
-                }
-            ),
         },
-        "tool_calls": len(health["calls"]),
-        "tool_errors": sum(
-            call["native_outcome"] == "error" for call in health["calls"]
-        ),
+        "scenario_extras": extras,
         "findings": review["findings"],
-        "hook_commands": hook_commands,
-        "effective_config_sha256": hashlib.sha256(
-            json.dumps(redactor.value(effective), sort_keys=True).encode()
-        ).hexdigest(),
-        "duration_seconds": time.monotonic() - started,
+        "run_error": execution["status"] != "completed" or bool(review["error"]),
     }
-    if "unpriced_calls" in usage_summary:
-        result["unpriced_calls"] = usage_summary["unpriced_calls"]
-    write_json(output / "scenario-summary.json", result, redactor)
-    return result
 
 
 def run(
@@ -1085,9 +869,22 @@ def run(
 ) -> int:
     """Run selected real-code scenarios sequentially without repeated attempts."""
 
-    isolation_override = validate_runtime_isolation(runtime_isolation)
+    check_started = time.monotonic()
+    validate_runtime_isolation(runtime_isolation)
     if not binary.is_file() or not bridge.is_file():
         raise ValueError("explicit jcode and bridge binaries must exist")
+    binary_check_seconds = time.monotonic() - check_started
+    build_seconds = (build_provenance or {}).get("build_check_seconds")
+    if build_seconds is None:
+        build_timing = f"{binary_check_seconds:.3f}s (evaluator binary check only)"
+    elif (
+        isinstance(build_seconds, bool)
+        or not isinstance(build_seconds, (int, float))
+        or not 0 <= build_seconds < float("inf")
+    ):
+        raise ValueError("build_check_seconds must be a finite nonnegative number")
+    else:
+        build_timing = f"{build_seconds:.3f}s (catalog build check)"
     if output.exists() and any(output.iterdir()):
         raise ValueError(f"refusing to overwrite evaluation evidence: {output}")
     scenarios = load_scenarios(scenario_path, scenario_id)
@@ -1100,14 +897,8 @@ def run(
             f"missing: {', '.join(missing_settings) or 'none'}; "
             f"unknown: {', '.join(unknown_settings) or 'none'}"
         )
-    unknown_metrics = sorted(
-        {name for scenario in scenarios for name in scenario.metrics}
-        - set(METRIC_ANALYZERS)
-    )
-    if unknown_metrics:
-        raise ValueError(f"unknown evaluation metrics: {', '.join(unknown_metrics)}")
     isolation_by_scenario = {
-        scenario.id: resolve_runtime_isolation(runtime_isolation, scenario.id)
+        scenario.id: resolve_runtime_isolation(runtime_isolation, scenario)
         for scenario in scenarios
     }
     if "blind" in isolation_by_scenario.values():
@@ -1118,8 +909,10 @@ def run(
     redactor = Redactor(
         tuple(entry.settings.api_key for entry in settings_by_scenario.values())
     )
+    temporary_context = tempfile.TemporaryDirectory(prefix="jcode-worker-eval-")
+    temporary_root = Path(temporary_context.name)
     blueprints, blueprint_issues = snapshot_blueprints(
-        blueprints_dir, output / "effective" / "blueprints", redactor
+        blueprints_dir, temporary_root / "blueprints", redactor
     )
     discovered_workers = {
         str(blueprint["name"])
@@ -1144,35 +937,18 @@ def run(
                 f"scenario {scenario.id} worker_effort reference undiscovered "
                 "worker blueprint(s): " + ", ".join(unknown_worker_efforts)
             )
-    plugins = snapshot_plugins(plugins_dir, output / "effective" / "plugins", redactor)
-    manifest: _JSON = {
-        "transport": "harness-api-v1",
-        "binary": str(binary),
-        "binary_sha256": file_sha256(binary),
-        "bridge": str(bridge),
-        "bridge_sha256": file_sha256(bridge),
-        "build": build_provenance or {"status": "externally-selected-binaries"},
-        "evaluator": _evaluator_identity(),
-        "settings_by_scenario": {
-            scenario.id: settings_by_scenario[scenario.id].manifest()
-            for scenario in scenarios
-        },
-        "scenarios": [scenario.manifest() for scenario in scenarios],
-        "blueprints": [
-            {key: value for key, value in blueprint.items() if key != "content"}
-            for blueprint in blueprints
-        ],
-        "blueprint_issues": blueprint_issues,
-        "plugins": [plugin.manifest() for plugin in plugins],
-        "runtime_isolation": isolation_override,
-        "runtime_isolation_by_scenario": isolation_by_scenario,
-        "results": [],
-    }
-    write_json(output / "manifest.json", manifest, redactor)
+        unknown_guard_workers = sorted(
+            set(scenario_settings.delegation_guard.worker_blueprints) - discovered_workers
+        )
+        if unknown_guard_workers:
+            raise ValueError(
+                f"scenario {scenario.id} delegation_guard references undiscovered "
+                "worker blueprint(s): " + ", ".join(unknown_guard_workers)
+            )
+    plugins = snapshot_plugins(plugins_dir, temporary_root / "plugins", redactor)
     results: list[_JSON] = []
     run_tracker = UsageTracker()
-    with tempfile.TemporaryDirectory(prefix="jcode-worker-eval-") as temporary:
-        temporary_root = Path(temporary)
+    with temporary_context:
         for scenario in scenarios:
             staged_roots: list[Path] = []
             try:
@@ -1185,7 +961,7 @@ def run(
                     output=output / scenario.id,
                     blueprints=blueprints,
                     blueprint_issues=blueprint_issues,
-                    blueprint_dir=output / "effective" / "blueprints",
+                    blueprint_dir=temporary_root / "blueprints",
                     plugins=plugins,
                     temporary_root=temporary_root,
                     redactor=redactor,
@@ -1200,45 +976,29 @@ def run(
                 for staged_root in staged_roots:
                     shutil.rmtree(staged_root, ignore_errors=True)
             results.append(result)
-            manifest["results"].append(
-                {
-                    "id": scenario.id,
-                    "runtime_isolation": isolation_by_scenario[scenario.id],
-                    "effective_config_sha256": result["effective_config_sha256"],
-                    "hook_commands": result["hook_commands"],
-                    "settings": result["settings"],
-                }
-            )
-            run_usage = run_tracker.summary()
-            summary_payload: _JSON = {
-                "scenarios": results,
-                "cost_usd": run_usage["cost_usd"],
-                "usage": {
-                    key: value
-                    for key, value in run_usage.items()
-                    if key not in {"cost_usd", "unpriced_calls"}
-                },
-            }
-            if "unpriced_calls" in run_usage:
-                summary_payload["unpriced_calls"] = run_usage["unpriced_calls"]
-            write_json(output / "manifest.json", manifest, redactor)
-            write_json(output / "summary.json", summary_payload, redactor)
+            result["time"]["build_check"] = build_timing
             print(
-                f"{scenario.id}: execution={result['execution']['status']} "
-                f"acceptance={result['acceptance']['status']} "
-                f"evidence={result['evidence']['status']} "
-                f"tools={result['tool_health']} review={result['review']} "
+                f"{scenario.id}: acceptance={result['acceptance']} "
                 f"cost_usd={result['cost_usd']}"
             )
-    clean = all(
-        result["execution"]["status"] == "completed"
-        and result["acceptance"]["status"] == "pass"
-        and result["evidence"]["status"] == "complete"
-        and all(
-            report.get("status") in _METRIC_CLEAN_STATUSES
-            for report in result["metrics"].values()
+        # A report cannot contain the duration of its own final write. Measure
+        # the first complete render and atomic write, then publish that duration
+        # in the final render; the small final rewrite is not included.
+        report_started = time.monotonic()
+        write_text(
+            output / "report.md", render_report({"scenarios": results}), redactor
         )
-        and result["review"] == "clean"
-        for result in results
+        report_seconds = time.monotonic() - report_started
+        for result in results:
+            result["time"]["report"] = (
+                f"{report_seconds:.3f}s (initial render and write)"
+            )
+        write_text(
+            output / "report.md", render_report({"scenarios": results}), redactor
+        )
+    return (
+        0
+        if results
+        and all(not r["run_error"] and r["acceptance"] == "pass" for r in results)
+        else 1
     )
-    return 0 if results and clean else 1

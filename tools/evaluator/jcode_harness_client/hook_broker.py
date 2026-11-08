@@ -6,30 +6,6 @@ environment and state, but the callers that need their verdicts live inside
 the blind bwrap sandbox: a fresh PID namespace with no private host mount
 and a scrubbed environment. This module provides the bridge.
 
-Interface
-=========
-
-``HostHookBroker`` owns a host-side ``AF_UNIX`` stream socket:
-
-* ``endpoint`` must be created under the public staging runtime directory
-  (``<root>/runtime`` from :mod:`jcode_harness_client.blind_runtime`), which
-  is bind-mounted into the sandbox at its identical absolute path. The
-  sandboxed proxy connects through that public mount; no private host path,
-  ``/run`` socket, or extra mount is ever exposed.
-* ``operations`` map fixed operation names (``rtk``, ``controller``,
-  ``guard``) to host-configured hook commands. The request chooses only the
-  operation name; client command strings, source files, and state paths are
-  not part of the protocol.
-* ``register_native_pid(pid, command)`` is the only registration API and is
-  host-side only (never reachable through the socket). The host runner calls
-  it after launching a trusted native child inside the sandbox, recording
-  the child's host PID and exact launch argv; the broker re-verifies both
-  against ``/proc`` before accepting the registration.
-* ``start()``/``stop()`` manage the listener and one server thread per
-  request. Operations marked ``serialized`` share one atomic controller
-  lock so controller hooks keep single-writer semantics; the broker never
-  touches controller state itself.
-
 Authentication per connection, in this order:
 
 1. ``SO_PEERCRED`` gives the connecting process's host PID and UID. The UID
@@ -87,12 +63,9 @@ proxy sends a neutral empty JSON object so the strictly nonempty payload
 frame stays valid and payload-parsing host hooks see valid JSON instead of
 a closed stdin.
 
-Current staging integration: none yet. The runner will, in order: stage the
-sandbox, start the broker bound at ``<root>/runtime/hook-broker.sock`` with
-the configured private operations, install the proxy into ``<root>/bin``,
-launch the blind sandbox, register each trusted native child PID and argv,
-and pass the endpoint variable in the sandbox environment. The broker
-launches nothing itself and performs no runner integration here.
+runtime.py mounts only the public endpoint and installs host-configured
+operations with the validated payload runtime root. Serialized operations
+share a controller lock. Requests cannot select commands or private env.
 """
 
 from __future__ import annotations
@@ -381,13 +354,7 @@ def _run_bounded(
 
 
 class HostHookBroker:
-    """Host-side Unix socket broker executing private configured hooks.
-
-    The broker runs entirely on the host. Its endpoint must live under the
-    public staging runtime directory so sandboxed proxies reach it through
-    the existing bind mount. See the module docstring for the protocol and
-    authentication contract.
-    """
+    """Private host hooks reached through a public, authenticated endpoint."""
 
     def __init__(
         self,
@@ -425,8 +392,8 @@ class HostHookBroker:
                 if key.startswith("JCODE_HOOK_") or key in operation.allowed_hook_env:
                     raise ValueError("private env may not hold hook identity: " + key)
             for key in operation.allowed_hook_env:
-                if not isinstance(key, str) or not key.startswith("JCODE_HOOK_"):
-                    raise ValueError(f"operation {name!r} allows non-hook key: {key}")
+                if key not in CANONICAL_NATIVE_HOOK_ENV:
+                    raise ValueError(f"operation {name!r} allows non-native hook key: {key}")
             missing = operation.required_hook_env - operation.allowed_hook_env
             if missing:
                 raise ValueError(

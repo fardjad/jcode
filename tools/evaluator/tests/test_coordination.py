@@ -1,481 +1,466 @@
 from __future__ import annotations
 
-import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import yaml
 
-from jcode_harness_client.coordination import analyze_coordination
+from jcode_harness_client.coordination import analyze_coordination, build_delegation
+
+BLUEPRINT = (
+    Path(__file__).resolve().parents[3] / "customizations/workers/blueprints/routine.md"
+)
+METADATA = yaml.safe_load(BLUEPRINT.read_text().split("---", 2)[1])
+OUTPUT = METADATA["output-schema"]
+GENERATED = {
+    "type": "object",
+    "properties": {
+        "assignment": METADATA["input-schema"],
+        "resume_session": {"type": "string"},
+        "follow_up_session": {"type": "string"},
+    },
+}
 
 
-def record(
-    sid: str,
-    worker: str,
-    event: str,
-    source: object = None,
-    *,
-    task_id: object = "repair",
-    blocker_id: object = "parse",
-    include_task: bool = True,
-    include_blocker: bool = True,
-    parent: str = "parent",
-) -> dict:
-    packet = {"event": event}
-    if include_task:
-        packet["task_id"] = task_id
-    if include_blocker:
-        packet["blocker_id"] = blocker_id
-    if source is not None:
-        packet["source_session_id"] = source
+def snapshot(sid: str, tier: str, parent: str | None = None) -> dict:
     return {
-        "id": f"session:{sid}:message:{event}",
+        "id": f"session:{sid}:snapshot",
+        "kind": "session-snapshot",
+        "session_id": sid,
+        "worker": tier,
+        "data": {
+            "parent_id": parent,
+            "model": "observed-model",
+            "reasoning_effort": "high",
+            "worker_blueprint_policy": {"name": tier},
+        },
+    }
+
+
+def tools(sid: str, tier: str = "builder") -> dict:
+    return {
+        "id": f"session:{sid}:request-tools:0",
+        "kind": "request-tools",
+        "session_id": sid,
+        "snapshot_index": 0,
+        "data": {
+            "tools": [
+                {"name": f"swarm_{tier}", "input_schema": GENERATED},
+                {"name": "submit_report", "input_schema": OUTPUT},
+            ]
+        },
+    }
+
+
+def message(
+    sid: str, mid: str, blocks: list[dict], *, second: int = 1, role: str = "assistant"
+) -> dict:
+    return {
+        "id": f"session:{sid}:message:{mid}",
         "kind": "message",
         "session_id": sid,
-        "parent_session_id": parent,
-        "worker": worker,
         "data": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": "```coordination\n" + json.dumps(packet) + "\n```",
-                }
-            ]
+            "role": role,
+            "timestamp": f"2026-11-08T00:00:{second:02d}Z",
+            "request_snapshot": {"tools": 0},
+            "content": blocks,
         },
     }
 
 
-def call(
-    worker: str,
+def use(sid: str, cid: str, tool: str, arguments: dict, second: int = 1) -> dict:
+    return message(
+        sid,
+        cid,
+        [{"type": "tool_use", "id": cid, "name": tool, "input": arguments}],
+        second=second,
+    )
+
+
+def result(
+    sid: str,
+    cid: str,
+    text: str = "Completion report accepted.",
     *,
-    session_id: str = "parent",
-    parent_session_id: str | None = None,
-    task: str = "repair parse source sessions a b; bounded repair",
+    error: bool = False,
 ) -> dict:
-    entry: dict = {
-        "id": f"session:{session_id}:message:{worker}",
-        "kind": "message",
-        "session_id": session_id,
-        "worker": "coordinator",
-        "data": {
-            "content": [
-                {
-                    "type": "tool_use",
-                    "name": "swarm_" + worker,
-                    "id": worker,
-                    "input": {"task": task},
-                }
-            ]
+    return message(
+        sid,
+        cid + "-result",
+        [
+            {
+                "type": "tool_result",
+                "tool_use_id": cid,
+                "content": text,
+                "is_error": error,
+            }
+        ],
+        role="user",
+        second=50,
+    )
+
+
+def assignment(**extra: object) -> dict:
+    controls = {
+        key: extra.pop(key)
+        for key in ("resume_session", "follow_up_session")
+        if key in extra
+    }
+    return {
+        **controls,
+        "assignment": {
+            "task_id": "repair",
+            "blocker_id": None,
+            "source_session_id": None,
+            "objective": "Repair the parser",
+            "mode": "edit",
+            "inputs": ["parser.py"],
+            "allowed_paths": ["parser.py"],
+            "non_goals": [],
+            "acceptance": "pytest",
+            "time_budget_minutes": 5,
+            "attempt_cap": 2,
+            **extra,
         },
     }
-    if parent_session_id is not None:
-        entry["parent_session_id"] = parent_session_id
-    return entry
 
 
-def analyze(records: list[dict], tmp_path: Path) -> dict:
-    return analyze_coordination(records, trace_root=tmp_path, evidence_gaps=[])[0]
+def report(**extra: object) -> dict:
+    return {
+        "status": "done",
+        "outcome": "Repaired",
+        "findings": "evidence\n" * 2000,
+        "files_changed": ["parser.py"],
+        "unresolved": "",
+        "escalation": None,
+        "artifacts": ["/workspace/result.txt"],
+        "checks": [{"command": "pytest", "exit_code": 0, "result": "passed"}],
+        "coordination": {
+            "event": "done",
+            "task_id": "repair",
+            "blocker_id": None,
+            "source_session_id": None,
+        },
+        **extra,
+    }
 
 
-def test_correlates_assistance_and_fresh_worker_handback(tmp_path: Path) -> None:
-    report = analyze(
+def base() -> list[dict]:
+    return [
+        snapshot("root", "coordinator"),
+        tools("root"),
+        snapshot("child", "builder", "root"),
+        tools("child"),
+        use("root", "spawn", "swarm_builder", assignment()),
+        result("root", "spawn", "Worker session: child"),
+    ]
+
+
+def rows(data: dict) -> dict:
+    return {r["session"]: r for r in data["delegation"]}
+
+
+def test_native_schema_report_and_all_material_fields_survive(tmp_path: Path) -> None:
+    arguments = report()
+    data = build_delegation(
         [
-            call("builder"),
-            call("diagnostician"),
-            record("a", "builder", "blocked"),
-            record("b", "diagnostician", "assistance", "a"),
-            record("c", "builder", "handback", "b"),
+            *base(),
+            use("child", "finish", "submit_report", arguments),
+            result("child", "finish"),
         ],
-        tmp_path,
+        trace_root=tmp_path,
     )
-    assert report["status"] == "healthy"
-    assert [link["status"] for link in report["links"]] == ["correlated", "correlated"]
-
-
-@pytest.mark.parametrize("source", [None, "missing", "b"])
-def test_claim_alone_does_not_prove_escalation(
-    tmp_path: Path, source: str | None
-) -> None:
-    report = analyze([record("b", "helper", "assistance", source)], tmp_path)
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-
-
-def test_native_call_required_and_repeated_blocker_reported(tmp_path: Path) -> None:
-    report = analyze(
-        [
-            record("a", "builder", "blocked"),
-            record("b", "helper", "assistance", "a"),
-            record("c", "builder", "blocked"),
-        ],
-        tmp_path,
-    )
-    assert report["status"] == "incomplete"
-    assert report["repeated_blockers"][0]["blocker_id"] == "parse"
-
-
-def test_no_escalation_or_small_finish_is_not_a_failure(tmp_path: Path) -> None:
-    report = analyze([call("builder"), record("a", "builder", "done")], tmp_path)
-    assert report["status"] == "healthy"
-    assert report["links"] == []
-
-
-def test_missing_packets_are_unknown(tmp_path: Path) -> None:
-    assert analyze([call("builder")], tmp_path)["status"] == "incomplete"
-
-
-def test_malformed_packet_is_evidence_gap(tmp_path: Path) -> None:
-    item = record("a", "builder", "done")
-    item["data"]["content"][0]["text"] = "```coordination\nnot json\n```"
-    assert analyze([item], tmp_path)["status"] == "incomplete"
+    child = rows(data)["child"]
+    assert child == {
+        "session": "child",
+        "tier": "builder",
+        "parent": "root",
+        "model": "observed-model",
+        "effort": "high",
+        "status": "done",
+        "resumed": False,
+        "checks": arguments["checks"],
+        "native_refs": child["native_refs"],
+    }
+    assert data["assignments"][0]["input"] == assignment()
+    assert data["assignments"][0]["input_schema"] == GENERATED
+    assert data["reports"][0]["arguments"] == arguments
+    assert data["reports"][0]["output_schema"] == OUTPUT
+    assert data["reports"][0]["accepted_or_rejected"] == "accepted"
+    assert "tool:child:finish" in child["native_refs"]
+    assert not data["evidence_gaps"]
 
 
 @pytest.mark.parametrize(
-    ("task_id", "include_task"),
-    [(None, False), ("", True), (17, True), (["repair"], True)],
+    "outcome",
+    ["rejected", "missing", "wrong-call", "wrong-session", "no-schema", "prose"],
 )
-def test_missing_or_malformed_task_identity_is_not_reported_as_a_link(
-    tmp_path: Path, task_id: object, include_task: bool
+def test_only_schema_backed_matching_native_acceptance_sets_status(
+    tmp_path: Path, outcome: str
 ) -> None:
-    report = analyze(
-        [
-            record(
-                "a",
-                "builder",
-                "assistance",
-                "missing-source",
-                task_id=task_id,
-                include_task=include_task,
+    records = base()
+    if outcome == "no-schema":
+        records = [r for r in records if r["id"] != "session:child:request-tools:0"]
+    records.append(use("child", "finish", "submit_report", report()))
+    if outcome != "missing":
+        records.append(
+            result(
+                "stranger" if outcome == "wrong-session" else "child",
+                "different" if outcome == "wrong-call" else "finish",
+                "invalid schema"
+                if outcome == "rejected"
+                else "done"
+                if outcome == "prose"
+                else "Completion report accepted.",
+                error=outcome == "rejected",
             )
-        ],
-        tmp_path,
-    )
+        )
+    data = build_delegation(records, trace_root=tmp_path)
+    assert rows(data)["child"]["status"] == rows(data)["child"]["checks"] == "unknown"
+    assert data["evidence_gaps"]
+    if outcome == "rejected":
+        assert data["reports"][0]["accepted_or_rejected"] == "rejected"
+        assert data["tool_errors"][0]["input"] == report()
+        assert data["tool_errors"][0]["effective_schema"] == OUTPUT
 
-    assert report["status"] == "incomplete"
-    assert report["reported_events"] == []
-    assert report["links"] == []
 
-
-@pytest.mark.parametrize(
-    ("blocker_id", "include_blocker"),
-    [(None, False), (None, True), (17, True), (["parse"], True)],
-)
-def test_missing_or_malformed_blocker_identity_keeps_assistance_unknown(
-    tmp_path: Path, blocker_id: object, include_blocker: bool
-) -> None:
-    report = analyze(
+def test_fenced_report_prose_has_no_authority(tmp_path: Path) -> None:
+    data = build_delegation(
         [
-            call("helper", task="repair a parse; bounded assistance"),
-            record("a", "builder", "blocked"),
-            record(
-                "b",
-                "helper",
-                "assistance",
-                "a",
-                blocker_id=blocker_id,
-                include_blocker=include_blocker,
+            *base(),
+            message(
+                "child",
+                "prose",
+                [
+                    {
+                        "type": "text",
+                        "text": (
+                            '```coordination\n{"event":"done","task_id":"repair"}\n```'
+                        ),
+                    }
+                ],
             ),
         ],
-        tmp_path,
+        trace_root=tmp_path,
     )
-
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-    assert report["links"][0]["source_citations"] == []
+    assert not data["reports"]
+    assert rows(data)["child"]["status"] == "unknown"
 
 
-@pytest.mark.parametrize(("blocker_id", "include_blocker"), [(None, False), (17, True)])
-def test_blocked_event_without_valid_blocker_does_not_invent_a_link(
-    tmp_path: Path, blocker_id: object, include_blocker: bool
-) -> None:
-    report = analyze(
-        [
-            record(
-                "a",
-                "builder",
-                "blocked",
-                blocker_id=blocker_id,
-                include_blocker=include_blocker,
-            )
-        ],
-        tmp_path,
-    )
-
-    # Escalation notes are optional, and this analyzer does not require a
-    # blocker ID for an otherwise standalone blocked note.
-    assert report["status"] == "healthy"
-    assert report["links"] == []
-
-
-@pytest.mark.parametrize(
-    ("task_id", "blocker_id"),
-    [("different-task", "parse"), ("repair", "different-blocker")],
-)
-def test_mismatched_claimed_lineage_does_not_correlate(
-    tmp_path: Path, task_id: str, blocker_id: str
-) -> None:
-    report = analyze(
-        [
-            call("helper", task=f"{task_id} a {blocker_id}; bounded assistance"),
-            record("a", "builder", "blocked"),
-            record(
-                "b",
-                "helper",
-                "assistance",
-                "a",
-                task_id=task_id,
-                blocker_id=blocker_id,
-            ),
-        ],
-        tmp_path,
-    )
-
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-    assert report["links"][0]["source_citations"] == []
-
-
-@pytest.mark.parametrize("source", [None, "unobserved-session", 17])
-def test_missing_or_unknown_native_source_identity_is_not_fabricated(
-    tmp_path: Path, source: object
-) -> None:
-    report = analyze(
-        [
-            call("helper"),
-            record("b", "helper", "assistance", source),
-        ],
-        tmp_path,
-    )
-
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-    assert report["links"][0]["source_session_id"] == (
-        source if isinstance(source, str) else None
-    )
-    assert report["links"][0]["source_citations"] == []
-
-
-def test_mismatched_source_session_id_does_not_correlate(
+def test_rejected_correction_and_unfinished_resume_do_not_reuse_old_status(
     tmp_path: Path,
 ) -> None:
-    report = analyze(
+    records = [
+        *base(),
+        use("child", "old", "submit_report", report(), 5),
+        result("child", "old"),
+    ]
+    rejected = build_delegation(
         [
-            call("helper", task="repair parse source sessions a stranger"),
-            record("a", "builder", "blocked"),
-            record("b", "helper", "assistance", "stranger"),
+            *records,
+            use("child", "new", "submit_report", report(), 20),
+            result("child", "new", "schema invalid", error=True),
         ],
-        tmp_path,
+        trace_root=tmp_path,
+    )
+    assert rows(rejected)["child"]["status"] == "unknown"
+    assert [r["accepted_or_rejected"] for r in rejected["reports"]] == [
+        "accepted",
+        "rejected",
+    ]
+    resumed = build_delegation(
+        [
+            *records,
+            use(
+                "root",
+                "resume",
+                "swarm_builder",
+                assignment(resume_session="child"),
+                10,
+            ),
+            result("root", "resume", "Worker session: child"),
+            message(
+                "child", "active", [{"type": "text", "text": "working"}], second=20
+            ),
+        ],
+        trace_root=tmp_path,
+    )
+    assert rows(resumed)["child"]["resumed"] is True
+    assert (
+        rows(resumed)["child"]["status"]
+        == rows(resumed)["child"]["checks"]
+        == "unknown"
     )
 
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-    assert report["links"][0]["source_session_id"] == "stranger"
-    assert report["links"][0]["source_citations"] == []
 
-
-@pytest.mark.parametrize(
-    ("event", "blocker_id"), [("assistance", 17), ("handback", "")]
-)
-def test_malformed_blocker_on_link_claim_does_not_correlate(
-    tmp_path: Path, event: str, blocker_id: object
+def test_rejected_assignment_preserves_original_input_and_correlated_error(
+    tmp_path: Path,
 ) -> None:
-    report = analyze(
+    records = base()[:4]
+    bad = assignment(attempt_cap=99)
+    data = build_delegation(
         [
-            record(
-                "b",
-                "helper",
-                event,
-                "a",
-                blocker_id=blocker_id,
-            )
+            *records,
+            use("root", "bad", "swarm_builder", bad),
+            result("root", "bad", "attempt_cap exceeds maximum", error=True),
         ],
-        tmp_path,
+        trace_root=tmp_path,
     )
-
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-    assert report["links"][0]["blocker_id"] == blocker_id
+    assert data["assignments"][0]["input"] == bad
+    assert data["assignments"][0]["tool_result_validation"]["outcome"] == "error"
+    assert data["assignments"][0]["tool_result_validation"]["target_session_id"] is None
+    assert data["tool_errors"][0]["effective_schema"] == GENERATED
+    assert data["tool_errors"][0]["input"] == bad
 
 
 @pytest.mark.parametrize(
-    "native_call",
+    "mode,activity,confirmed,expected",
     [
-        call("other-worker"),
-        call("helper", session_id="other-parent"),
-        call("helper", task="repair a; bounded assistance"),
+        ("resume_session", "assistant", True, True),
+        ("resume_session", "tool", True, True),
+        ("resume_session", "user", True, False),
+        ("resume_session", "before", True, False),
+        ("resume_session", "no-time", True, False),
+        ("resume_session", "assistant", False, False),
+        ("follow_up_session", "assistant", True, False),
     ],
 )
-def test_mismatched_native_delegation_identity_keeps_link_unknown(
-    tmp_path: Path, native_call: dict
+def test_resume_requires_native_target_and_later_execution_not_paging(
+    tmp_path: Path,
+    mode: str,
+    activity: str,
+    confirmed: bool,
+    expected: bool,
 ) -> None:
-    report = analyze(
-        [
-            native_call,
-            record("a", "builder", "blocked"),
-            record("b", "helper", "assistance", "a"),
-        ],
-        tmp_path,
+    blocks = (
+        [{"type": "tool_use", "id": "read", "name": "read", "input": {}}]
+        if activity == "tool"
+        else [{"type": "text", "text": "continuing"}]
     )
-
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-    assert report["links"][0]["source_citations"] == ["session:a:message:blocked"]
-
-
-def test_sibling_source_spawn_must_carry_shared_task(tmp_path: Path) -> None:
-    report = analyze(
-        [
-            call("builder", task="different-task only"),
-            call("helper", task="targettask sourceid blocker"),
-            record(
-                "sourceid",
-                "builder",
-                "blocked",
-                task_id="targettask",
-                blocker_id="blocker",
-            ),
-            record(
-                "helper",
-                "helper",
-                "assistance",
-                "sourceid",
-                task_id="targettask",
-                blocker_id="blocker",
-            ),
-        ],
-        tmp_path,
+    later = message(
+        "child",
+        "later",
+        blocks,
+        second=5 if activity == "before" else 30,
+        role="user" if activity == "user" else "assistant",
     )
-
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-
-
-def test_task_identity_prefix_collision_keeps_link_unknown(tmp_path: Path) -> None:
-    report = analyze(
-        [
-            call("helper", task="task10 parse sessions a; bounded assistance"),
-            record("a", "builder", "blocked", task_id="task1"),
-            record("b", "helper", "assistance", "a", task_id="task1"),
-        ],
-        tmp_path,
-    )
-
-    # ``task1`` inside ``task10`` is a prefix substring, not the same task.
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-    assert report["links"][0]["source_citations"] == ["session:a:message:blocked"]
+    if activity == "no-time":
+        later["data"].pop("timestamp")
+    records = [
+        *base(),
+        use("root", "continue", "swarm_builder", assignment(**{mode: "child"}), 10),
+        later,
+    ]
+    if confirmed:
+        records.append(result("root", "continue", "Worker session: child"))
+    # Collection is grouped by session, so list position cannot prove chronology.
+    records.sort(key=lambda r: r["session_id"])
+    data = build_delegation(records, trace_root=tmp_path)
+    assert rows(data)["child"]["resumed"] is expected
+    assert len(data["delegation"]) == 2
 
 
-def test_source_identity_prefix_collision_keeps_link_unknown(
+def test_three_levels_use_native_ids_and_exact_structured_lineage(
     tmp_path: Path,
 ) -> None:
-    report = analyze(
-        [
-            call(
-                "helper",
-                task="repair parse sessions abc123 extended; bounded assistance",
+    records = base()
+    records[3] = tools("child", "extractor")
+    records += [
+        snapshot("grandchild", "extractor", "child"),
+        tools("grandchild"),
+        use("child", "extract", "swarm_extractor", assignment()),
+        result("child", "extract", "Worker session: grandchild"),
+        use(
+            "grandchild",
+            "blocked",
+            "submit_report",
+            report(
+                status="blocked",
+                coordination={
+                    "event": "blocked",
+                    "task_id": "repair",
+                    "blocker_id": "parse",
+                    "source_session_id": None,
+                },
             ),
-            record("abc12", "builder", "blocked"),
-            record("b", "helper", "assistance", "abc12"),
-        ],
-        tmp_path,
+        ),
+        result("grandchild", "blocked"),
+        use(
+            "root",
+            "help",
+            "swarm_builder",
+            assignment(
+                resume_session="child",
+                blocker_id="parse",
+                source_session_id="grandchild",
+            ),
+            10,
+        ),
+        result("root", "help", "Worker session: child"),
+        use(
+            "child",
+            "assist",
+            "submit_report",
+            report(
+                coordination={
+                    "event": "assistance",
+                    "task_id": "repair",
+                    "blocker_id": "parse",
+                    "source_session_id": "grandchild",
+                }
+            ),
+            30,
+        ),
+        result("child", "assist"),
+    ]
+    data = build_delegation(records, trace_root=tmp_path)
+    assert rows(data)["grandchild"]["parent"] == "child"
+    assert rows(data)["child"]["parent"] == "root"
+    assert rows(data)["child"]["resumed"] is True
+    assert not data["evidence_gaps"]
+    assert "tool:grandchild:blocked" in data["reports"][-1]["native_refs"]
+    for field, wrong in [
+        ("task_id", "repair-more"),
+        ("blocker_id", "parse-more"),
+        ("source_session_id", "grandchild-more"),
+    ]:
+        changed = deepcopy(records)
+        changed[-4]["data"]["content"][0]["input"]["assignment"][field] = wrong
+        broken = build_delegation(changed, trace_root=tmp_path)
+        assert any(
+            "exact native assignment/source lineage" in g.get("reason", "")
+            for g in broken["evidence_gaps"]
+        )
+
+
+def test_legacy_runner_adapter_has_no_health_gate(tmp_path: Path) -> None:
+    data, supplemental = analyze_coordination(
+        base(), trace_root=tmp_path, evidence_gaps=[]
     )
-
-    # ``abc12`` inside ``abc123`` is a prefix substring, not the same source.
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
-    assert report["links"][0]["source_session_id"] == "abc12"
-    assert report["links"][0]["source_citations"] == ["session:abc12:message:blocked"]
+    assert data["status"] == "observed"
+    assert data["missing_evidence"]
+    assert not supplemental
 
 
-def test_three_level_lineage_correlates_descendant_spawn_and_handback(
-    tmp_path: Path,
+@pytest.mark.parametrize("wrapped", [None, "invalid", {"task_id": "other"}])
+def test_flat_fields_cannot_substitute_for_nested_assignment_lineage(
+    tmp_path: Path, wrapped: object
 ) -> None:
-    task_id = "cap-descendant-lineage"
-    blocker_id = "nested-extraction"
-    report = analyze(
-        [
-            call(
-                "advanced",
-                session_id="root",
-                task=f"objective; task_id={task_id} blocker_id=null bounded",
-            ),
-            call(
-                "routine",
-                session_id="advanced",
-                parent_session_id="root",
-                task=f"read-only extraction; task_id={task_id} bounded",
-            ),
-            record(
-                "routine-child",
-                "routine",
-                "blocked",
-                task_id=task_id,
-                blocker_id=blocker_id,
-                parent="advanced",
-            ),
-            record(
-                "advanced",
-                "advanced",
-                "assistance",
-                "routine-child",
-                task_id=task_id,
-                blocker_id=blocker_id,
-                parent="root",
-            ),
-            record(
-                "routine-child",
-                "routine",
-                "handback",
-                "advanced",
-                task_id=task_id,
-                blocker_id=blocker_id,
-                parent="advanced",
-            ),
-        ],
-        tmp_path,
-    )
-
-    assert report["status"] == "healthy", report["missing_evidence"]
-    assert [link["status"] for link in report["links"]] == ["correlated", "correlated"]
-    spawns = {(spawn["session_id"], spawn["worker"]) for spawn in report["delegations"]}
-    assert spawns == {("root", "advanced"), ("advanced", "routine")}
-    parents = {
-        session["session_id"]: session.get("parent_session_id")
-        for session in report["worker_sessions"]
+    records = base()
+    records[-2]["data"]["content"][0]["input"] = {
+        **assignment()["assignment"],
+        "assignment": wrapped,
     }
-    assert parents["root"] is None
-    assert parents["advanced"] == "root"
-    assert parents["routine-child"] == "advanced"
-
-
-def test_three_level_unknown_source_never_fabricates_a_link(tmp_path: Path) -> None:
-    task_id = "cap-descendant-lineage"
-    report = analyze(
+    data = build_delegation(
         [
-            call(
-                "advanced",
-                session_id="root",
-                task=f"objective; task_id={task_id} bounded",
-            ),
-            call(
-                "routine",
-                session_id="advanced",
-                parent_session_id="root",
-                task=f"read-only extraction; task_id={task_id} bounded",
-            ),
-            record(
-                "routine-child",
-                "routine",
-                "handback",
-                "stranger-session",
-                task_id=task_id,
-                blocker_id="nested-extraction",
-                parent="advanced",
-            ),
+            *records,
+            use("child", "finish", "submit_report", report()),
+            result("child", "finish"),
         ],
-        tmp_path,
+        trace_root=tmp_path,
     )
-
-    # The claimed source is not the native parent, so nothing correlates.
-    assert report["status"] == "incomplete"
-    assert report["links"][0]["status"] == "unknown"
+    assert any(
+        "exact native assignment/source lineage" in gap.get("reason", "")
+        for gap in data["evidence_gaps"]
+    )

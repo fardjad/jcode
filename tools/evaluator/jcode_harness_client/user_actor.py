@@ -30,17 +30,6 @@ class _SimulatedUserReplyModel(BaseModel):
     message: str
 
 
-_USER_SCHEMA: _JSON = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["done", "message"],
-    "properties": {
-        "done": {"type": "boolean"},
-        "message": {"type": "string"},
-    },
-}
-
-
 @dataclass(frozen=True, slots=True)
 class SimulatedUserReply:
     done: bool

@@ -16,7 +16,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .blind_runtime import (
@@ -217,13 +217,6 @@ def launch_blind_harness(
         raise ValueError("CARGO_TARGET_DIR must stay inside the public staging root")
     explicit["CARGO_TARGET_DIR"] = str(staging.runtime / "cargo-target")
     (staging.runtime / "cargo-target").mkdir(parents=True, exist_ok=True)
-    broker: HostHookBroker | None = None
-    if broker_operations is not None:
-        explicit[PROXY_ENDPOINT_ENV] = str(endpoint)
-        broker = HostHookBroker(
-            endpoint=endpoint, operations=broker_operations, log_path=broker_log
-        )
-        broker.start()
     public_dirs = public_dirs_env(
         staging,
         {
@@ -236,6 +229,23 @@ def launch_blind_harness(
             "XDG_STATE_HOME": str(staging.runtime / "state"),
         },
     )
+    broker: HostHookBroker | None = None
+    if broker_operations is not None:
+        # Payload files share the public runtime mount, but its authoritative
+        # root is host-configured, never accepted from a proxy request.
+        def with_payload_root(operation: BrokerOperation) -> BrokerOperation:
+            return replace(
+                operation,
+                env={**operation.env, "JCODE_RUNTIME_DIR": public_dirs["JCODE_RUNTIME_DIR"]},
+            )
+
+        operations = (
+            {name: with_payload_root(op) for name, op in broker_operations.items()}
+            if isinstance(broker_operations, Mapping)
+            else [with_payload_root(op) for op in broker_operations]
+        )
+        explicit[PROXY_ENDPOINT_ENV] = str(endpoint)
+        broker = HostHookBroker(endpoint, operations, log_path=broker_log)
     command = build_blind_command(
         staging,
         ro_cache_paths=ro_cache_paths,
@@ -266,8 +276,8 @@ def launch_blind_harness(
         str(supervisor),
         str(daemon_socket),
         str(api_socket),
-        str(home / "daemon.log"),
-        str(home / "bridge.log"),
+        str(jcode_home / "daemon.log"),
+        str(jcode_home / "bridge.log"),
         "--",
         *daemon_argv,
         "--",
@@ -275,6 +285,8 @@ def launch_blind_harness(
     ]
     if created is not None:
         created(staging.root)
+    if broker is not None:
+        broker.start()
     process = subprocess.Popen(
         command.command(supervisor_argv),
         env=command.env,
@@ -313,31 +325,14 @@ def launch_blind_harness(
             stopped()
 
 
-def _expand_toolchain_path(raw_path: str) -> str:
-    """Resolve mise shims to direct tool bin directories so isolated XDG works."""
-    entries: list[str] = []
-    for entry in raw_path.split(os.pathsep):
-        if "mise" in entry and entry.endswith("shims"):
-            installs = Path(entry).parent / "installs"
-            if installs.is_dir():
-                for candidate in sorted(installs.glob("*/latest/bin")) + sorted(
-                    installs.glob("*/latest")
-                ):
-                    if candidate.is_dir():
-                        entries.append(str(candidate))
-        entries.append(entry)
-    return os.pathsep.join(entries)
-
-
 def runtime_environment(root: Path, explicit: dict[str, str]) -> dict[str, str]:
     """Start from a minimal environment, never inherited provider/config routing."""
     environment = {
         key: os.environ[key]
-        for key in ("PATH", "SYSTEMROOT", "LANG", "CARGO_HOME", "RUSTUP_HOME")
+        for key in ("SYSTEMROOT", "LANG")
         if key in os.environ
     }
-    if "PATH" in environment:
-        environment["PATH"] = _expand_toolchain_path(environment["PATH"])
+    environment["PATH"] = "/usr/bin:/bin"
     environment.update(explicit)
     environment.update(
         {

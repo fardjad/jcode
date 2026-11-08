@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,6 @@ from typing import Any
 from .settings import validate_scenario_overrides
 
 _ID = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
-_METRIC_ID = re.compile(r"[a-z][a-z0-9_-]{0,79}")
 CONFIG_NAME = "config.toml"
 FIXTURES_DIR_NAME = "fixtures"
 _FIELDS = {
@@ -25,10 +25,10 @@ _FIELDS = {
     "fixture",
     "prompt",
     "accept",
-    "metrics",
     "judge",
     "simulated_user",
     "settings",
+    "instrumentation",
 }
 
 
@@ -44,6 +44,90 @@ class SimulatedUserScenario:
 
 
 @dataclass(frozen=True, slots=True)
+class PrivateInstrumentation:
+    isolation: str
+    controller: Path
+    environment: dict[str, str]
+    journals: tuple[str, ...]
+
+
+def _private_instrumentation(
+    value: Any, source: Path, fixture: Path
+) -> PrivateInstrumentation | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "isolation",
+        "controller",
+        "environment",
+        "journals",
+    }:
+        raise ValueError(
+            "instrumentation requires exactly isolation, controller, "
+            "environment, journals"
+        )
+    if value["isolation"] != "blind":
+        raise ValueError("private instrumentation requires blind isolation")
+    name = value["controller"]
+    if (
+        not isinstance(name, str)
+        or not name
+        or Path(name).is_absolute()
+        or ".." in Path(name).parts
+    ):
+        raise ValueError("instrumentation controller must be a scenario-relative file")
+    controller = source.parent / name
+    if (
+        any(part.is_symlink() for part in (controller, *controller.parents))
+        or not controller.is_file()
+    ):
+        raise ValueError(
+            "instrumentation controller must be a regular non-symlink file"
+        )
+    controller = controller.resolve()
+    if not controller.is_relative_to(
+        source.parent.resolve()
+    ) or controller.is_relative_to(fixture):
+        raise ValueError(
+            "instrumentation controller must stay outside the fixture "
+            "in its scenario directory"
+        )
+    environment = value["environment"]
+    if not isinstance(environment, dict) or any(
+        not re.fullmatch(r"JCODE_[A-Z0-9_]+_CONTROLLER_[A-Z0-9_]+", key)
+        or not isinstance(item, str)
+        or not item
+        or "\x00" in item
+        or (
+            ("{" in item or "}" in item)
+            and item not in {"{state_dir}", "{workspace}", "{guard}"}
+        )
+        for key, item in environment.items()
+    ):
+        raise ValueError(
+            "instrumentation environment must contain private controller "
+            "variables and known path tokens"
+        )
+    journals = value["journals"]
+    if (
+        not isinstance(journals, list)
+        or not journals
+        or any(
+            not isinstance(item, str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.jsonl", item)
+            for item in journals
+        )
+        or len(set(journals)) != len(journals)
+    ):
+        raise ValueError(
+            "instrumentation journals must be unique private JSONL filenames"
+        )
+    return PrivateInstrumentation(
+        "blind", controller, dict(environment), tuple(journals)
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Scenario:
     """One outcome-only task, harness criteria, and independent acceptance command."""
 
@@ -51,12 +135,12 @@ class Scenario:
     fixture: Path
     prompt: str
     accept: tuple[str, ...]
-    metrics: tuple[str, ...]
     judge: JudgeScenario
     simulated_user: SimulatedUserScenario
     settings: dict[str, object]
     source: Path
     source_sha256: str
+    instrumentation: PrivateInstrumentation | None = None
 
     def manifest(self) -> dict[str, Any]:
         return {
@@ -67,7 +151,6 @@ class Scenario:
             "fixture_sha256": tree_digest(self.fixture),
             "prompt": self.prompt,
             "accept": list(self.accept),
-            "metrics": list(self.metrics),
             "judge": {"criteria": list(self.judge.criteria)},
             "simulated_user": {
                 "max_turns": self.simulated_user.max_turns,
@@ -105,7 +188,6 @@ def _load_file(path: Path, expected_id: str | None = None) -> Scenario:
         or not {
             "prompt",
             "accept",
-            "metrics",
             "judge",
             "simulated_user",
         }
@@ -113,7 +195,8 @@ def _load_file(path: Path, expected_id: str | None = None) -> Scenario:
     ):
         raise ValueError(
             "scenario config requires exactly id, fixture, prompt, accept, "
-            "metrics, judge, simulated_user, and optional settings; version "
+            "judge, simulated_user, and optional settings and "
+            "instrumentation; version "
             "is not supported"
         )
     scenario_id = data.get("id")
@@ -165,16 +248,6 @@ def _load_file(path: Path, expected_id: str | None = None) -> Scenario:
         or any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in accept)
     ):
         raise ValueError("scenario accept must be a nonempty argv string list")
-    metrics = data.get("metrics")
-    if (
-        not isinstance(metrics, list)
-        or any(
-            not isinstance(name, str) or not _METRIC_ID.fullmatch(name)
-            for name in metrics
-        )
-        or len(set(metrics)) != len(metrics)
-    ):
-        raise ValueError("scenario metrics must be unique lowercase metric IDs")
     judge = data.get("judge")
     if not isinstance(judge, dict) or set(judge) != {"criteria"}:
         raise ValueError("scenario judge requires exactly criteria")
@@ -202,12 +275,14 @@ def _load_file(path: Path, expected_id: str | None = None) -> Scenario:
         fixture=fixture,
         prompt=prompt.strip(),
         accept=tuple(accept),
-        metrics=tuple(metrics),
         judge=JudgeScenario(tuple(item.strip() for item in criteria)),
         simulated_user=SimulatedUserScenario(max_turns, instructions.strip()),
         settings=overrides,
         source=path.resolve(),
         source_sha256=hashlib.sha256(raw).hexdigest(),
+        instrumentation=_private_instrumentation(
+            data.get("instrumentation"), path, fixture
+        ),
     )
 
 
@@ -257,10 +332,12 @@ def load_scenarios(path: Path, scenario_id: str | None = None) -> list[Scenario]
 
 
 def snapshot_tree(root: Path) -> dict[str, FileState]:
-    """Hash every regular file, including files generated by tools or tests."""
+    """Hash workspace files, excluding root git metadata."""
 
     result: dict[str, FileState] = {}
     for path in sorted(root.rglob("*")):
+        if path.relative_to(root).parts[0] == ".git":
+            continue
         if path.is_symlink():
             raise ValueError(f"workspace contains a symlink: {path.relative_to(root)}")
         if not path.is_file():
@@ -300,6 +377,26 @@ def materialize_scenario(scenario: Scenario, workspace: Path) -> dict[str, FileS
     pristine = snapshot_tree(workspace)
     if pristine != snapshot_tree(scenario.fixture):
         raise RuntimeError("materialized fixture differs from its source")
+    if not (workspace / ".git").exists():
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(workspace),
+            "XDG_CONFIG_HOME": str(workspace),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
+            "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000",
+        }
+        git = [
+            "git", "-c", "user.name=Workspace",
+            "-c", "user.email=workspace@example.invalid",
+        ]
+        for args in (
+            ("init", "-q"),
+            ("add", "-A"),
+            ("commit", "-q", "--allow-empty", "-m", "initial"),
+        ):
+            subprocess.run([*git, *args], cwd=workspace, env=env, check=True)
     return pristine
 
 

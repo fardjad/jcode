@@ -229,59 +229,6 @@ def test_escalation_resumption_known_bad_fails_and_reference_passes(
         assert "passed" in marker["evidence"]
 
 
-def test_diagnostics_markers_report_actual_probe_results(tmp_path: Path) -> None:
-    workspace = _workspace(tmp_path, ESCALATION_RESUMPTION)
-
-    # Both probes run real checks and fail for their own observed evidence,
-    # not as a label-only rerun of one another.
-    for stage in STAGES:
-        markers = {}
-        for probe in ("primary", "secondary"):
-            proc = _run(
-                workspace, "diagnostics.py", "--stage", str(stage), "--probe", probe
-            )
-            assert proc.returncode == 1, proc.stdout + proc.stderr
-            marker = _marker(proc)
-            assert set(marker) == {"stage", "exit", "evidence", "probe"}
-            assert marker["stage"] == stage
-            assert marker["exit"] == 1
-            assert marker["probe"] == probe
-            assert marker["evidence"].startswith(f"probe {probe}: ")
-            assert f"stage {stage} failed" in marker["evidence"]
-            markers[probe] = marker
-        assert markers["primary"]["evidence"] != markers["secondary"]["evidence"], stage
-        # The secondary subset always runs at least one real error-path check.
-        assert "rejects" in markers["secondary"]["evidence"], stage
-
-    # Known-good reference: the partial secondary subset alone must not be
-    # mistakable for full acceptance, and both probes report their identity.
-    (workspace / "workflow.py").write_text(
-        ESCALATION_RESUMPTION_REFERENCE, encoding="utf-8"
-    )
-    for stage in STAGES:
-        for probe in ("primary", "secondary"):
-            proc = _run(
-                workspace, "diagnostics.py", "--stage", str(stage), "--probe", probe
-            )
-            assert proc.returncode == 0, proc.stdout + proc.stderr
-            assert _marker(proc)["probe"] == probe
-
-    # A bare run keeps the documented three-key marker shape.
-    bare = _run(workspace, "diagnostics.py", "--stage", "2")
-    assert bare.returncode == 0
-    assert set(_marker(bare)) == {"stage", "exit", "evidence"}
-
-    # Malformed usage is an explicit error, never a silent fallback.
-    bogus_probe = _run(workspace, "diagnostics.py", "--stage", "2", "--probe", "bogus")
-    assert bogus_probe.returncode == 2
-    unknown_flag = _run(workspace, "diagnostics.py", "--stage", "2", "--artifact", "x")
-    assert unknown_flag.returncode == 2
-    bad_stage = _run(workspace, "diagnostics.py", "--stage", "9")
-    assert bad_stage.returncode == 2
-    no_stage = _run(workspace, "diagnostics.py")
-    assert no_stage.returncode == 2
-
-
 def test_agent_visible_surfaces_carry_no_scenario_machinery(tmp_path: Path) -> None:
     """Blindness over the public surfaces an evaluated agent reads.
 

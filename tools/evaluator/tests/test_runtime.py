@@ -29,6 +29,7 @@ from jcode_harness_client.hook_broker import (
 from jcode_harness_client.runtime import (
     blind_preflight,
     launch_blind_harness,
+    runtime_environment,
 )
 
 SECRET_TEXT = "synthetic-private-canary"
@@ -44,6 +45,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 def main():
@@ -51,6 +53,7 @@ def main():
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(daemon_socket)
     listener.listen(1)
+    print("mock daemon started", flush=True)
     result = {
         "canary": "unreadable",
         "controller_source_present": None,
@@ -92,9 +95,16 @@ def main():
         result["legit_exit"] = -1
         result["forged_exit"] = -1
     else:
+        payload_root = Path(os.environ["JCODE_RUNTIME_DIR"]) / "jcode-tool-payloads"
+        payload_root.mkdir()
+        payload = {}
+        for key in ("tool_input_file", "tool_result_file"):
+            path = payload_root / key
+            path.write_text(key + " contents")
+            payload[key] = str(path)
         legit = subprocess.run(
             [proxy, "guard"],
-            input=b'{"probe": "legit"}',
+            input=json.dumps(payload).encode(),
             env=identity,
             capture_output=True,
         )
@@ -169,6 +179,7 @@ def handle(conn):
 
 def main():
     api_socket = sys.argv[1]
+    print("mock bridge started", flush=True)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(api_socket)
     listener.listen(4)
@@ -230,14 +241,21 @@ def _private_hook_operation(marker: Path) -> BrokerOperation:
         command=[
             blind_runtime.system_python(),
             "-c",
-            "import os, sys\n"
-            "payload = sys.stdin.read()\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "payload = json.load(sys.stdin)\n"
+            "root = Path(os.environ['JCODE_RUNTIME_DIR']) / 'jcode-tool-payloads'\n"
+            "contents = []\n"
+            "for value in payload.values():\n"
+            "    path = Path(value).resolve(strict=True)\n"
+            "    assert path.is_relative_to(root.resolve())\n"
+            "    contents.append(path.read_text())\n"
             "token = os.environ.get('GUARD_PRIVATE_TOKEN', 'none')\n"
-            "open(sys.argv[1], 'w').write(payload + '|' + token)\n"
+            "open(sys.argv[1], 'w').write('|'.join(contents) + '|' + token)\n"
             "print('GUARD-OK')\n",
             str(marker),
         ],
-        env={"GUARD_PRIVATE_TOKEN": PRIVATE_TOKEN},
+        env={"GUARD_PRIVATE_TOKEN": PRIVATE_TOKEN, "JCODE_RUNTIME_DIR": "/wrong-private-root"},
         serialized=True,
     )
 
@@ -277,6 +295,9 @@ def test_blind_launch_registers_daemon_and_runs_hook_turn(staging, tmp_path):
         assert runtime.broker is not None
         assert runtime.broker.registered_native_pids == {runtime.native_pid}
         assert os.path.exists(f"/proc/{runtime.native_pid}")
+        assert "mock daemon started" in (runtime.home / "daemon.log").read_text()
+        assert "mock bridge started" in (runtime.home / "bridge.log").read_text()
+        assert not (staging.home / "daemon.log").exists()
         trigger.write_text("go\n", encoding="utf-8")
         _wait_for_file(findings)
     result = json.loads(findings.read_text(encoding="utf-8"))
@@ -288,68 +309,37 @@ def test_blind_launch_registers_daemon_and_runs_hook_turn(staging, tmp_path):
     assert "denied" in result["forged_stderr"]
     # The private hook executed on the host with its private broker env.
     marker_text = marker.read_text(encoding="utf-8")
-    assert marker_text == '{"probe": "legit"}|' + PRIVATE_TOKEN
+    assert marker_text == 'tool_input_file contents|tool_result_file contents|' + PRIVATE_TOKEN
     # Broker details stay host-private; the log records the denial.
     log_text = broker_log.read_text(encoding="utf-8")
     assert '"event": "denied"' in log_text
     assert not staging.workspace.joinpath("hook-broker.log").exists()
-
-
-def test_blind_sandbox_hides_private_host_paths_and_controller_env(staging, tmp_path):
-    """Fresh sandbox processes see no private canary, controller env, or source."""
-    private = tmp_path / "private"
-    private.mkdir()
-    canary = private / "canary.txt"
-    canary.write_text(SECRET_TEXT, encoding="utf-8")
-    controller_source = private / "escalation_controller.py"
-    controller_source.write_text("# synthetic private evaluator source\n")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "task.txt").write_text("fixture\n", encoding="utf-8")
-    findings = staging.workspace / "findings.json"
-    trigger = staging.workspace / "hook-trigger"
-    with launch_blind_harness(
-        staging=staging,
-        config="",
-        profile="",
-        model="fixture",
-        workspace=workspace,
-        environment={
-            "TEST_CANARY_PATH": str(canary),
-            "TEST_CONTROLLER_SOURCE": str(controller_source),
-            "TEST_HOOK_TRIGGER": str(trigger),
-        },
-        broker_log=tmp_path / "broker.log",
-        turn_timeout=30,
-        daemon_prefix=[blind_runtime.system_python()],
-        bridge_prefix=[blind_runtime.system_python()],
-    ) as runtime:
-        assert runtime.workspace == staging.workspace
-        assert (runtime.workspace / "task.txt").read_text() == "fixture\n"
-        trigger.write_text("go\n", encoding="utf-8")
-        _wait_for_file(findings)
-    result = json.loads(findings.read_text(encoding="utf-8"))
     assert result["canary"] == "unreadable"
     assert result["controller_source_present"] is False
-    # Only public runtime-dir routing crosses (no broker in this run);
-    # controller/guard env never enters the sandbox.
     assert result["env_keys"] == [
-        "JCODE_HOME",
-        "JCODE_RUNTIME_DIR",
+        "JCODE_HOME", "JCODE_HOOK_BROKER_ENDPOINT", "JCODE_RUNTIME_DIR",
     ]
     assert result["home"] == str(staging.home)
     assert result["jcode_home"] == str(staging.runtime / "jcode")
-    # The host fixture copy is never the agent's live tree.
     assert not (workspace / "findings.json").exists()
-    assert (staging.workspace / "findings.json").is_file()
-    # The private canary is untouched on the host.
     assert canary.read_text() == SECRET_TEXT
+
+
+def test_runtime_environment_drops_personal_path_and_routing(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "/private/mise/shims:/private/bin")
+    monkeypatch.setenv("CARGO_HOME", "/private/cargo")
+    monkeypatch.setenv("RUSTUP_HOME", "/private/rustup")
+    monkeypatch.setenv("JCODE_HOME", "/private/jcode")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-inherited-secret")
+    env = runtime_environment(tmp_path, {"EXPLICIT_KEY": "synthetic"})
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["JCODE_HOME"] == str(tmp_path / "jcode")
+    assert env["EXPLICIT_KEY"] == "synthetic"
+    assert not {"CARGO_HOME", "RUSTUP_HOME", "OPENAI_API_KEY"} & env.keys()
 
 
 def test_blind_preflight_fails_closed_without_bwrap(monkeypatch, tmp_path):
     """A missing bwrap aborts the launch; there is no pretend-blind fallback."""
-    if not _bwrap_available():
-        pytest.skip("bwrap is not available")
     monkeypatch.setattr(
         "jcode_harness_client.runtime.blind_preflight",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -386,7 +376,6 @@ def test_find_child_and_group_discovery(tmp_path):
     """Exact-command discovery matches only the expected child processes."""
     if not _bwrap_available():
         pytest.skip("bwrap or a plain system python is not available")
-    marker = tmp_path / "marker"
     command = [
         blind_runtime.system_python(),
         "-c",
@@ -417,7 +406,6 @@ def test_find_child_and_group_discovery(tmp_path):
                     process.pid, decoy, timeout=0.3, poll_interval=0.05
                 )
             assert child.pid > 0
-            marker.write_text("ok", encoding="utf-8")
         finally:
             child.kill()
             child.wait()
@@ -428,21 +416,14 @@ def test_find_child_and_group_discovery(tmp_path):
 
 # -- actual-native blind hook regression (provider-free) ----------------------
 #
-# Uses the retained built native artifacts (no compile, no rebuild): the
-# stamp under .tools/worker-eval/builds/<stamp>/success.json records the exact
-# binary paths and sha256 hashes (jcode ee30def7a106... for the accepted
-# stamp 4bc640519ef7...). The test verifies the recorded hashes against the
-# files, skips when no verified build is retained, and never touches the
-# real user configuration: the sandbox config, workspace, and host debug
-# client env are all synthetic and disposable. No provider is configured and
-# no paid network call is made: the daemon runs with --model fixture and the
-# read tool is driven through the host-side debug socket.
+# Retained hash-verified binaries only; never build or call a provider.
 
 _NATIVE_GUARD_DUMP_CODE = (
     "import json, os, sys\n"
     "record = {'payload': sys.stdin.read(),\n"
     "          'env': {k: v for k, v in os.environ.items()\n"
-    "                  if k.startswith('JCODE_HOOK_') or k.startswith('GUARD_')}}\n"
+    "                  if k.startswith('JCODE_HOOK_') or k.startswith('GUARD_')\n"
+    "                  or k == 'JCODE_RUNTIME_DIR'}}\n"
     "with open(sys.argv[1], 'a') as handle:\n"
     "    handle.write(json.dumps(record) + '\\n')\n"
     "# Neutral stdout for post_tool_transform: no replacement requested.\n"
@@ -559,6 +540,11 @@ def test_actual_native_blind_hook_round_trip_is_accepted(native_staging, tmp_pat
     probe = workspace / "probe.txt"
     probe.write_text("blind native hook regression ok\n", encoding="utf-8")
     proxy = staging.bin / "hook-proxy"
+    blueprint_source = Path(__file__).resolve().parents[3] / "customizations/workers/blueprints"
+    blueprints = staging.config / "blueprints"
+    shutil.copytree(blueprint_source, blueprints)
+    worker_ids = {path.stem for path in blueprints.glob("*.md")} - {"coordinator"}
+    assert worker_ids
     # HookCommands entries are full command lines (not argv): one command
     # line per entry. post_tool_transform carries the real envelope payload
     # on stdin with TOOL_CALL_ID; post_tool is an observer with null stdin
@@ -573,6 +559,8 @@ def test_actual_native_blind_hook_round_trip_is_accepted(native_staging, tmp_pat
         f"post_tool_transform = [{hook_line}]\n"
         "post_tool_transform_timeout_ms = 5000\n"
         f"post_tool = [{hook_line}]\n"
+        "\n[agents]\n"
+        f"worker_blueprints_dir = {json.dumps(str(blueprints))}\n"
     )
     operation = BrokerOperation(
         name="guard",
@@ -597,12 +585,23 @@ def test_actual_native_blind_hook_round_trip_is_accepted(native_staging, tmp_pat
         profile="",
         model="fixture",
         workspace=workspace,
+        environment={"JCODE_SWARM_ENABLED": "true", "JCODE_SWARM_SPAWN_MODE": "headless"},
         broker_operations={"guard": operation},
         broker_log=broker_log,
         turn_timeout=30,
     ) as runtime:
         assert runtime.broker is not None
         assert runtime.broker.registered_native_pids == {runtime.native_pid}
+        session = runtime.client.create_session(working_dir=runtime.workspace)
+        tools = {tool.name for tool in runtime.client.list_tools(session.session_id)}
+        # Effective coordinator policy, not merely staged file presence.
+        assert {"read", "write", "todo", "skill_manage"} <= tools
+        assert not {"bash", "edit", "glob", "grep", "swarm"} & tools
+        diagnostics = [
+            line for path in runtime.home.rglob("*.log")
+            for line in path.read_text(errors="replace").splitlines()
+            if "blueprint" in line.lower()
+        ]
         created = subprocess.run(
             [str(jcode), "debug", "-s", str(daemon_socket), "create_session"],
             capture_output=True,
@@ -671,6 +670,7 @@ def test_actual_native_blind_hook_round_trip_is_accepted(native_staging, tmp_pat
         # host-side to the hook, never part of the sandbox request.
         assert env["GUARD_SELECTOR"] == "strict"
         assert env["GUARD_THRESHOLD"] == "3"
+        assert env["JCODE_RUNTIME_DIR"] == str(staging.runtime)
     # The synchronous transform received the real envelope payload on stdin
     # (the framed payload crosses byte-exact, not as an env var).
     assert "probe.txt" in transform["payload"]
@@ -685,3 +685,8 @@ def test_actual_native_blind_hook_round_trip_is_accepted(native_staging, tmp_pat
     assert '"event": "denied"' not in log_text
     assert log_text.count('"event": "hook_end"') == len(records)
     assert '"exit_code": 0' in log_text
+    assert {"swarm_" + worker_id for worker_id in worker_ids} <= tools, (
+        "Staged workers are missing from the retained-native effective tools: "
+        + repr(sorted(tools)) + "\n" + "\n".join(diagnostics)
+    )
+    assert not any("[excluded]" in line for line in diagnostics), diagnostics

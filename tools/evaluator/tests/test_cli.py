@@ -53,7 +53,6 @@ def test_retired_migration_commands_reject_before_filesystem_access(
 SCENARIO_TOML = """id = "{id}"
 prompt = "Do the bounded task."
 accept = ["true"]
-metrics = ["tool_health"]
 
 [judge]
 criteria = ["Good bounded coordination."]

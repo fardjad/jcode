@@ -41,7 +41,7 @@ strict = true
 files = ["jcode_harness_client"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "../../customizations/workers/evals/scenarios/escalation-resumption/controller_test.py"]
 
 [tool.ruff.lint.per-file-ignores]
 "smoke/mock_completions.py" = ["E402"]

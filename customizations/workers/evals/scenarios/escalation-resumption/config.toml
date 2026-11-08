@@ -2,7 +2,18 @@ id = "escalation-resumption"
 fixture = "fixtures"
 prompt = "You asked for a small sensor-record pipeline with four milestones: normalize input records, deduplicate stable keys, produce a dependency schedule, and aggregate results. Complete README.md in this workspace. Verify each milestone with python3 diagnostics.py --stage <1|2|3|4>, which prints a JCODE_EVAL_CHECK marker with stage, exit, and actionable evidence, and finish with python3 -m unittest workflow_test.py. Treat any failing check as ordinary engineering work. Do not expect the user to supply solutions."
 accept = ["python3", "-m", "unittest", "workflow_test.py"]
-metrics = ["tool_health", "coordination", "escalation_resumption"]
+
+[instrumentation]
+isolation = "blind"
+controller = "controller.py"
+journals = ["events.jsonl", "guard-events.jsonl"]
+
+[instrumentation.environment]
+JCODE_ESCALATION_CONTROLLER_STATE_DIR = "{state_dir}"
+JCODE_ESCALATION_CONTROLLER_WORKSPACE = "{workspace}"
+JCODE_ESCALATION_CONTROLLER_GUARD = "{guard}"
+JCODE_ESCALATION_CONTROLLER_GUARD_TIMEOUT_MS = "1000"
+JCODE_ESCALATION_CONTROLLER_MODE = "blind"
 
 [judge]
 criteria = [
@@ -20,13 +31,17 @@ max_turns = 8
 instructions = "You are the user who assigned this task. When the coding agent presents a reasonable plan and asks for approval, approve it. Reply like a normal brief user: acknowledge progress and restate that the milestones must pass their checks, but you do not know the implementation and must not supply code, test answers, or requirement changes. Continue until it explicitly announces completion."
 
 
-[settings.models]
-coordinator = "z-ai/glm-5.3"
-
+# The failures here are injected, so one capable, cheap model serves every
+# worker tier; this scenario tests routing and reaction, not model skill.
 [settings.worker_models]
+routine = "openai/gpt-6-luna"
 advanced = "openai/gpt-6-luna"
 expert = "openai/gpt-6-luna"
 
 [settings.limits]
 turn_timeout_seconds = 1200
 execution_timeout_seconds = 1800
+
+[settings.delegation_guard]
+# Keeps exercising nested extraction.
+tail_bytes = 0

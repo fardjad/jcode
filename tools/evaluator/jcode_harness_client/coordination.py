@@ -1,43 +1,359 @@
-"""Observed delegation and structured handback facts, not quality verdicts."""
+"""Schema-native delegation facts; worker prose never proves completion."""
 
 from __future__ import annotations
 
-import json
 import re
+from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .tool_health import _blocks, native_calls, select_tool_errors
+
 _JSON = dict[str, Any]
-_PACKET = re.compile(r"```coordination\s*\n(.*?)\n```", re.DOTALL)
-_EVENTS = {"blocked", "assistance", "handback", "done"}
-_IDENTIFIER_CHAR = re.compile(r"[0-9A-Za-z_-]")
 
 
-def _mentions_identity(assignment: str, identity: str) -> bool:
-    """Exact identifier-token match; prefix substrings never correlate."""
-    if not identity:
-        return False
-    for match in re.finditer(re.escape(identity), assignment):
-        before = assignment[match.start() - 1] if match.start() else ""
-        after = assignment[match.end()] if match.end() < len(assignment) else ""
-        if not _IDENTIFIER_CHAR.match(before) and not _IDENTIFIER_CHAR.match(after):
-            return True
-    return False
-
-
-def _grounded_spawn(
-    calls: list[_JSON], spawner: Any, worker: Any, identities: tuple[str, ...]
-) -> bool:
-    """A native swarm call by ``spawner`` of ``worker`` carrying the identities."""
-    return any(
-        call["session_id"] == spawner
-        and call["worker"] == worker
-        and all(
-            _mentions_identity(str(call["assignment"]), identity)
-            for identity in identities
+def _result_text(result: _JSON | None) -> str:
+    content = (result or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and isinstance(b.get("text"), str)
         )
-        for call in calls
+    return ""
+
+
+def _timestamp(data: _JSON) -> datetime | None:
+    value = data.get("timestamp")
+    if isinstance(value, str):
+        try:
+            stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return stamp if stamp.tzinfo is not None else None
+        except ValueError:
+            pass
+    return None
+
+
+def build_delegation(
+    records: list[_JSON],
+    *,
+    trace_root: Path,
+    evidence_gaps: Sequence[Any] = (),
+) -> _JSON:
+    """Produce Delegation rows, assignments, reports and correlated errors.
+
+    Validation is native: the matching submit_report result must confirm
+    acceptance, with the effective output schema retained. No second, partial
+    JSON Schema implementation or front-matter assumption substitutes for it.
+    Cross-session chronology uses native timestamps, not collection order
+    (the collector groups messages by session).
+    """
+    sessions: dict[str, _JSON] = {}
+    messages: dict[str, _JSON] = {}
+    gaps = list(evidence_gaps)
+    for record in records:
+        sid, data = record.get("session_id"), record.get("data", {})
+        if not isinstance(sid, str) or not isinstance(data, dict):
+            continue
+        policy = data.get("worker_blueprint_policy")
+        policy = policy if isinstance(policy, dict) else {}
+        row = sessions.setdefault(
+            sid,
+            {
+                "session": sid,
+                "tier": "unknown",
+                "parent": None,
+                "model": "unknown",
+                "effort": "unknown",
+                "status": "unknown",
+                "resumed": False,
+                "checks": "unknown",
+                "native_refs": [],
+            },
+        )
+        worker = record.get("worker") or policy.get("name")
+        if worker and worker != "unknown":
+            row["tier"] = worker
+        parent = (
+            record.get("parent_session_id")
+            or data.get("parent_session_id")
+            or data.get("parent_id")
+        )
+        if parent:
+            row["parent"] = parent
+        if record.get("kind") == "session-snapshot":
+            row["model"] = data.get("model") or "unknown"
+            row["effort"] = data.get("reasoning_effort") or "unknown"
+            row["native_refs"].append(record["id"])
+        if record.get("kind") == "message":
+            messages[record["id"]] = data
+            if not row["native_refs"]:
+                row["native_refs"].append(record["id"])
+
+    calls = native_calls(records)
+    assignments, reports = [], []
+    resumed_at: dict[str, datetime] = {}
+    for call in calls:
+        tool, sid = call["tool"], call["session_id"]
+        if not isinstance(tool, str) or not (
+            tool.startswith("swarm_") or tool == "submit_report"
+        ):
+            continue
+        refs = call["native_refs"]
+        if call["schema_evidence_gap"]:
+            gaps.append({"reason": call["schema_evidence_gap"], "native_refs": refs})
+        if call["native_outcome"] == "unknown":
+            gaps.append(
+                {
+                    "reason": "no matching terminal native tool result",
+                    "native_refs": refs,
+                }
+            )
+        if tool == "submit_report":
+            outcome = "rejected" if call["native_outcome"] == "error" else "unknown"
+            if (
+                call["native_outcome"] == "completed"
+                and isinstance(call["effective_schema"], dict)
+                and call["schema_evidence_gap"] is None
+                and isinstance(call["input"], dict)
+                and _result_text(call["result"]).strip()
+                == "Completion report accepted."
+            ):
+                outcome = "accepted"
+            report = {
+                "session_id": sid,
+                "call_id": call["call_id"],
+                "output_schema": call["effective_schema"],
+                "arguments": call["input"],
+                "accepted_or_rejected": outcome,
+                "native_refs": refs,
+            }
+            reports.append(report)
+            sessions[sid]["status"] = sessions[sid]["checks"] = "unknown"
+            if outcome == "accepted":
+                row = sessions[sid]
+                row["status"] = call["input"].get("status", "unknown")
+                row["checks"] = call["input"].get("checks", "unknown")
+                row["native_refs"].extend(refs)
+            else:
+                gaps.append(
+                    {
+                        "reason": (
+                            f"submit_report {outcome}; "
+                            "status/checks not established by this call"
+                        ),
+                        "native_refs": refs,
+                    }
+                )
+            continue
+
+        inputs = call["input"] if isinstance(call["input"], dict) else {}
+        mode = (
+            "paging"
+            if inputs.get("follow_up_session")
+            else "resume"
+            if inputs.get("resume_session")
+            else "spawn"
+        )
+        # This line is a native blueprint tool result envelope, not worker prose.
+        targets = re.findall(
+            r"^Worker session: ([^\s]+)$", _result_text(call["result"]), re.MULTILINE
+        )
+        target = targets[0] if len(targets) == 1 else None
+        if mode == "paging":
+            target = inputs.get("follow_up_session")
+        native = sessions.get(target, {})
+        grounded = (
+            call["native_outcome"] == "completed"
+            and native.get("parent") == sid
+            and native.get("tier") == tool.removeprefix("swarm_")
+            and isinstance(call["effective_schema"], dict)
+        )
+        if mode == "resume":
+            grounded = grounded and target == inputs.get("resume_session")
+        assignments.append(
+            {
+                "session_id": sid,
+                "call_id": call["call_id"],
+                "tool": tool,
+                "input_schema": call["effective_schema"],
+                "input": call["input"],
+                "tool_result_validation": {
+                    "outcome": call["native_outcome"],
+                    "result": call["result"],
+                    "mode": mode,
+                    "target_session_id": target if grounded else None,
+                },
+                "native_refs": refs,
+            }
+        )
+        if mode != "paging" and not grounded:
+            gaps.append(
+                {
+                    "reason": "assignment lacks confirmed native target/parent/worker",
+                    "native_refs": refs,
+                }
+            )
+        if grounded:
+            native["native_refs"].extend(refs)
+        if mode == "resume" and grounded:
+            started = _timestamp(messages.get(refs[0], {}))
+            later = [
+                r
+                for r in records
+                if r.get("kind") == "message"
+                and r.get("session_id") == target
+                and isinstance(r.get("data"), dict)
+                and (
+                    r["data"].get("role") == "assistant"
+                    or any(
+                        b.get("type") in {"tool_use", "tool_result"}
+                        for b in _blocks(r["data"])
+                    )
+                )
+                and started is not None
+                and _timestamp(r["data"]) is not None
+                and _timestamp(r["data"]) > started
+            ]
+            if later:
+                native["resumed"] = True
+                native["native_refs"].extend(r["id"] for r in later)
+                if started is not None:
+                    resumed_at[target] = max(started, resumed_at.get(target, started))
+            else:
+                gaps.append(
+                    {
+                        "reason": (
+                            "resume target confirmed but later "
+                            "assistant/tool activity unavailable"
+                        ),
+                        "native_refs": refs,
+                    }
+                )
+
+    # Exact structured identities only. A source claim is not native lineage.
+    for report in reports:
+        if report["accepted_or_rejected"] != "accepted":
+            continue
+        arguments = report["arguments"]
+        coordination = arguments.get("coordination")
+        if not isinstance(coordination, dict):
+            gaps.append(
+                {
+                    "reason": "accepted report lacks coordination identities",
+                    "native_refs": report["native_refs"],
+                }
+            )
+            continue
+        sid = report["session_id"]
+        matching = [
+            a
+            for a in assignments
+            if a["tool_result_validation"]["target_session_id"] == sid
+            and a["tool_result_validation"]["mode"] != "paging"
+            and isinstance(a["input"], dict)
+            and isinstance(a["input"].get("assignment"), dict)
+            and a["input"]["assignment"].get("task_id") == coordination.get("task_id")
+        ]
+        source = coordination.get("source_session_id")
+        if source is not None:
+            matching = [
+                a
+                for a in matching
+                if a["input"]["assignment"].get("source_session_id") == source
+                and a["input"]["assignment"].get("blocker_id") == coordination.get("blocker_id")
+            ]
+            origins = [
+                r
+                for r in reports
+                if r["accepted_or_rejected"] == "accepted"
+                and r["session_id"] == source
+                and isinstance(r["arguments"].get("coordination"), dict)
+                and r["arguments"]["coordination"].get("task_id")
+                == coordination.get("task_id")
+                and r["arguments"]["coordination"].get("blocker_id")
+                == coordination.get("blocker_id")
+            ]
+            source_row = sessions.get(source, {})
+            target_row = sessions[sid]
+            related = (
+                source_row.get("parent") == sid
+                or target_row.get("parent") == source
+                or (
+                    target_row.get("parent") is not None
+                    and source_row.get("parent") == target_row.get("parent")
+                )
+            )
+            if not origins or source not in sessions or source == sid or not related:
+                matching = []
+            else:
+                report["native_refs"] = [
+                    *report["native_refs"],
+                    *[ref for r in origins for ref in r["native_refs"]],
+                ]
+        if not matching:
+            gaps.append(
+                {
+                    "reason": (
+                        "report identities lack exact native assignment/source lineage"
+                    ),
+                    "native_refs": report["native_refs"],
+                }
+            )
+        else:
+            report["native_refs"] = [
+                *report["native_refs"],
+                *[ref for a in matching for ref in a["native_refs"]],
+            ]
+    for row in sessions.values():
+        row["native_refs"] = list(dict.fromkeys(row["native_refs"]))
+        if row["session"] in resumed_at:
+            latest = [r for r in reports if r["session_id"] == row["session"]]
+            stamp = (
+                _timestamp(messages.get(latest[-1]["native_refs"][0], {}))
+                if latest
+                else None
+            )
+            if stamp is None or stamp <= resumed_at[row["session"]]:
+                row["status"] = row["checks"] = "unknown"
+                gaps.append(
+                    {
+                        "reason": "resumed worker has no later accepted report",
+                        "session_id": row["session"],
+                    }
+                )
+        if (
+            row["tier"] == "unknown"
+            or row["model"] == "unknown"
+            or row["effort"] == "unknown"
+        ):
+            gaps.append(
+                {
+                    "reason": "native worker/model/effort context unavailable",
+                    "session_id": row["session"],
+                }
+            )
+        if row["tier"] != "coordinator" and row["status"] == "unknown":
+            gaps.append(
+                {
+                    "reason": "worker has no accepted submit_report",
+                    "session_id": row["session"],
+                }
+            )
+    errors, hooks, error_gaps = select_tool_errors(
+        records, trace_root=trace_root, calls=calls
     )
+    return {
+        "delegation": list(sessions.values()),
+        "assignments": assignments,
+        "reports": reports,
+        "tool_errors": errors,
+        "evidence_gaps": [*gaps, *error_gaps],
+        "hook_records": hooks,
+    }
 
 
 def analyze_coordination(
@@ -46,202 +362,13 @@ def analyze_coordination(
     trace_root: Path,
     evidence_gaps: list[Any],
 ) -> tuple[_JSON, list[_JSON]]:
-    """Correlate claimed task lineage with observed native worker identities.
-
-    Reports intentionally cannot infer task difficulty, helpfulness, or whether
-    a retry was meaningful. Packet text is untrusted worker-reported evidence.
-    """
-    del trace_root
-    sessions: dict[str, _JSON] = {}
-    calls: list[_JSON] = []
-    packets: list[_JSON] = []
-    missing = list(evidence_gaps)
-    for record in records:
-        sid = record.get("session_id")
-        if not isinstance(sid, str):
-            continue
-        data = record.get("data", {})
-        if not isinstance(data, dict):
-            continue
-        policy = data.get("worker_blueprint_policy", {})
-        worker = record.get("worker") or (
-            policy.get("name") if isinstance(policy, dict) else None
-        )
-        parent = record.get("parent_session_id") or data.get("parent_session_id")
-        session = sessions.setdefault(sid, {"session_id": sid})
-        if worker:
-            session["worker"] = worker
-        if parent:
-            session["parent_session_id"] = parent
-        if record.get("kind") != "message":
-            continue
-        for block in data.get("content", []):
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "tool_use":
-                name = block.get("name", "")
-                if isinstance(name, str) and name.startswith("swarm_"):
-                    inputs = block.get("input", {})
-                    if isinstance(inputs, dict) and inputs.get("task"):
-                        calls.append(
-                            {
-                                "session_id": sid,
-                                "worker": name.removeprefix("swarm_"),
-                                "call_id": block.get("id"),
-                                "citation": record.get("id"),
-                                "assignment": inputs["task"],
-                            }
-                        )
-            if block.get("type") != "text":
-                continue
-            text = block.get("text", "")
-            if not isinstance(text, str):
-                continue
-            for match in _PACKET.finditer(text):
-                try:
-                    packet = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    missing.append(
-                        {
-                            "citation": record.get("id"),
-                            "reason": "invalid coordination JSON",
-                        }
-                    )
-                    continue
-                if (
-                    not isinstance(packet, dict)
-                    or not isinstance(packet.get("event"), str)
-                    or packet["event"] not in _EVENTS
-                ):
-                    missing.append(
-                        {
-                            "citation": record.get("id"),
-                            "reason": "invalid coordination event",
-                        }
-                    )
-                    continue
-                if not isinstance(packet.get("task_id"), str) or not packet["task_id"]:
-                    missing.append(
-                        {
-                            "citation": record.get("id"),
-                            "reason": "missing task identity",
-                        }
-                    )
-                    continue
-                packets.append(
-                    {"packet": packet, "session_id": sid, "citation": record.get("id")}
-                )
-
-    links: list[_JSON] = []
-    for item in packets:
-        packet = item["packet"]
-        if packet["event"] not in {"assistance", "handback"}:
-            continue
-        source_value = packet.get("source_session_id")
-        source = source_value if isinstance(source_value, str) else None
-        origins = [
-            other
-            for other in packets
-            if other["session_id"] == source
-            and other["packet"]["task_id"] == packet["task_id"]
-            and other["packet"].get("blocker_id") == packet.get("blocker_id")
-            and other["packet"]["event"]
-            == ("blocked" if packet["event"] == "assistance" else "assistance")
-        ]
-        target_session = sessions.get(item["session_id"], {})
-        source_session = sessions.get(source, {}) if source is not None else {}
-        parent = target_session.get("parent_session_id")
-        source_parent = source_session.get("parent_session_id")
-        task_id = packet["task_id"]
-        blocker_id = str(packet.get("blocker_id"))
-        # Sibling helpers share the coordinator parent, whose assignment
-        # carried the full task/source/blocker identity triple. The source
-        # worker must also have been natively spawned for this shared task.
-        sibling_source_call = (
-            parent is not None
-            and parent == source_parent
-            and _grounded_spawn(calls, parent, source_session.get("worker"), (task_id,))
-        )
-        sibling_call = (
-            parent is not None
-            and parent == source_parent
-            and sibling_source_call
-            and _grounded_spawn(
-                calls,
-                parent,
-                target_session.get("worker"),
-                (task_id, str(source), blocker_id),
-            )
-        )
-        # A child hands back to its own parent: grounded by that parent's
-        # native spawn call and the task identity, not by prose claims. The
-        # blocker is discovered later, so only the packets must agree on it.
-        child_handback_call = (
-            source is not None
-            and source == parent
-            and _grounded_spawn(calls, source, target_session.get("worker"), (task_id,))
-        )
-        # A parent assists its own child: grounded by its native spawn of the
-        # reported source session and the shared task identity.
-        parent_assistance_call = (
-            source is not None
-            and source_parent == item["session_id"]
-            and _grounded_spawn(
-                calls, item["session_id"], source_session.get("worker"), (task_id,)
-            )
-        )
-        native_call = sibling_call or child_handback_call or parent_assistance_call
-        correlated = bool(
-            source
-            and source != item["session_id"]
-            and origins
-            and packet.get("blocker_id")
-            and parent
-            and native_call
-        )
-        links.append(
-            {
-                "event": packet["event"],
-                "task_id": packet["task_id"],
-                "blocker_id": packet.get("blocker_id"),
-                "source_session_id": source,
-                "session_id": item["session_id"],
-                "status": "correlated" if correlated else "unknown",
-                "citation": item["citation"],
-                "source_citations": [origin["citation"] for origin in origins],
-            }
-        )
-        if not correlated:
-            missing.append(
-                {
-                    "citation": item["citation"],
-                    "reason": "lineage or native delegation not correlated",
-                }
-            )
-
-    if calls and not packets:
-        missing.append({"reason": "workers observed without structured task lineage"})
-    repeated: list[_JSON] = []
-    blocked: dict[tuple[str, str], list[Any]] = {}
-    for item in packets:
-        packet = item["packet"]
-        if packet["event"] == "blocked" and packet.get("blocker_id"):
-            key = (packet["task_id"], str(packet["blocker_id"]))
-            blocked.setdefault(key, []).append(item["citation"])
-    for (task_id, blocker_id), citations in blocked.items():
-        if len(citations) > 1:
-            repeated.append(
-                {"task_id": task_id, "blocker_id": blocker_id, "citations": citations}
-            )
+    """Keep the old runner callable until its report pipeline is migrated."""
+    report = build_delegation(
+        records, trace_root=trace_root, evidence_gaps=evidence_gaps
+    )
+    hooks = report.pop("hook_records")
     return {
-        "status": "incomplete" if missing else "healthy",
-        "delegations": calls,
-        "worker_sessions": list(sessions.values()),
-        "reported_events": packets,
-        "links": links,
-        "repeated_blockers": repeated,
-        "missing_evidence": missing,
-        "note": (
-            "Correlated facts are not proof of useful escalation, scope, or quality."
-        ),
-    }, []
+        **report,
+        "status": "observed",
+        "missing_evidence": report["evidence_gaps"],
+    }, hooks

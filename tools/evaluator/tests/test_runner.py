@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import re
 import shlex
 import shutil
 import sys
@@ -15,19 +17,16 @@ from uuid import uuid4
 
 import pytest
 
-from jcode_harness_client import escalation_controller
 from jcode_harness_client.cli import main as cli_main
 from jcode_harness_client.client import HarnessTimeoutError
-from jcode_harness_client.inventory import file_sha256
 from jcode_harness_client.llm_backend import CallUsageRecord
 from jcode_harness_client.runner import (
-    BLIND_DEFAULT_SCENARIOS,
     DEFAULT_RUNTIME_ISOLATION,
-    METRIC_ANALYZERS,
     resolve_runtime_isolation,
     run,
 )
 from jcode_harness_client.runtime import runtime_environment
+from jcode_harness_client.scenarios import load_scenarios
 from jcode_harness_client.settings import ScenarioSettings, parse_settings
 from jcode_harness_client.user_actor import SimulatedUserReply
 
@@ -38,21 +37,15 @@ WORKER_SESSION_ID = f"session_{uuid4().hex}"
 COORDINATOR_SESSION_ID = f"session_{uuid4().hex}"
 
 
-@pytest.fixture(autouse=True)
-def _host_runtime_isolation():
-    """Pin these runner tests to the host runtime by default.
-
-    Production scopes the blind bwrap boundary to the escalation-resumption
-    scenario only; every other scenario stays host. The explicit
-    ``runtime_isolation`` override is a test/internal knob, never a live
-    configuration option, so this fixture pins the scenario defaults to
-    host and each test opts into blind explicitly where needed.
-    """
-    with (
-        patch("jcode_harness_client.runner.DEFAULT_RUNTIME_ISOLATION", "host"),
-        patch("jcode_harness_client.runner.BLIND_DEFAULT_SCENARIOS", ()),
-    ):
-        yield
+CONTROLLER_ASSET = (
+    Path(__file__).resolve().parents[3]
+    / "customizations/workers/evals/scenarios/escalation-resumption/controller.py"
+)
+_controller_spec = importlib.util.spec_from_file_location(
+    "private_escalation_controller", CONTROLLER_ASSET
+)
+escalation_controller = importlib.util.module_from_spec(_controller_spec)
+_controller_spec.loader.exec_module(escalation_controller)
 
 
 def evaluation_settings(
@@ -82,8 +75,6 @@ simulator = "gpt-4o-mini"
 [limits]
 swarm_timeout_minutes = 2
 acceptance_timeout_seconds = 20
-judge_max_calls = 8
-judge_page_bytes = 100000
 """
         if "turn_timeout_seconds" not in limits:
             base += "turn_timeout_seconds = 42\n"
@@ -104,8 +95,6 @@ simulator = "gpt-4o-mini"
 turn_timeout_seconds = 42
 swarm_timeout_minutes = 2
 acceptance_timeout_seconds = 20
-judge_max_calls = 8
-judge_page_bytes = 100000
 """
     guard = ""
     if guard_blueprints is not None or guard_threshold is not None:
@@ -160,7 +149,6 @@ def make_inputs(root: Path) -> tuple[Path, Path, Path, Path, Path]:
         'fixture = "../../fixture"\n'
         'prompt = "Implement the outcome in the current workspace."\n'
         f"accept = {json.dumps(accept)}\n"
-        'metrics = ["tool_health"]\n'
         "\n[judge]\n"
         'criteria = ["Good coordination uses suitable workers and verifies results."]\n'
         "\n[simulated_user]\n"
@@ -215,6 +203,9 @@ def fake_harness(timeout: bool = False, captured: dict | None = None):
                 (home / "bridge.log").write_text("bridge log", encoding="utf-8")
                 parent_id = COORDINATOR_SESSION_ID
                 worker_id = WORKER_SESSION_ID
+                (sessions / f"{parent_id}.journal.jsonl").write_text(
+                    json.dumps({"append_messages": []}) + "\n", encoding="utf-8"
+                )
                 parent_snapshot = {
                     "session_id": parent_id,
                     "model": "gpt-4o",
@@ -386,21 +377,91 @@ def clean_review(**kwargs: Any):
                 category="evaluation-overhead",
             )
         )
-    return (
-        {
-            "summary": "Clean diagnostic review.",
-            "findings": [],
-            "review": "clean",
-            "review_complete": True,
-            "reviewed_sessions": [COORDINATOR_SESSION_ID, WORKER_SESSION_ID],
-            "unexercised_workers": [],
-        },
-        {
-            "complete": True,
-            "evidence_gaps": [],
-            "judge_calls": 1,
-            "judge_max_calls": 8,
-        },
+    return {"findings": [], "error": None}
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [("finding", 0), ("judge-error", 1), ("accept-fail", 1), ("timeout", 1)],
+)
+def test_report_pipeline_exit_and_retention(
+    tmp_path: Path, case: str, expected: int
+) -> None:
+    scenario_dir, blueprints, binary, bridge, fixture = make_inputs(tmp_path)
+    if case == "accept-fail":
+        config = scenario_dir / "real-code" / "config.toml"
+        text = config.read_text()
+        text = text.replace(
+            "assert Path('target.txt').read_text() == 'NEW\\\\n'", "assert False"
+        )
+        config.write_text(text)
+    output = tmp_path / "output"
+    ref = f"session:{COORDINATOR_SESSION_ID}:message:assistant-0"
+    finding = {
+        "severity": "high",
+        "category": "blueprint",
+        "text": "Review this",
+        "citations": [ref],
+        "fix_target": "coordinator",
+    }
+    response = {"findings": [finding]}
+    with (
+        patch(
+            "jcode_harness_client.runner.launch_harness",
+            fake_harness(timeout=case == "timeout"),
+        ),
+        patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
+        patch(
+            "jcode_harness_client.judge.complete",
+            side_effect=RuntimeError("judge failed") if case == "judge-error" else None,
+            return_value=response,
+        ) as judge,
+    ):
+        code = run(
+            binary=binary,
+            bridge=bridge,
+            settings_by_scenario=settings_for("real-code", evaluation_settings()),
+            output=output,
+            scenario_path=scenario_dir,
+            scenario_id=None,
+            blueprints_dir=blueprints,
+            plugins_dir=None,
+            build_provenance={"build_check_seconds": 1.234},
+        )
+    assert code == expected
+    assert judge.call_count == 1
+    report = (output / "report.md").read_text()
+    assert (
+        "acceptance PASS" in report
+        if case != "accept-fail"
+        else "acceptance FAIL" in report
+    )
+    assert "## Time" in report and "## Delegation" in report
+    assert "build check 1.234s (catalog build check)" in report
+    assert re.search(r"report \d+\.\d{3}s \(initial render and write\)", report)
+    assert (fixture / "target.txt").read_text() == "OLD\n"
+    if case == "finding":
+        assert ref in report
+        assert ref in (output / "real-code" / "raw" / "cited.jsonl").read_text()
+        assert "evaluator" in report
+        assert sorted(
+            p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()
+        ) == [
+            "real-code/raw/cited.jsonl",
+            f"real-code/raw/sessions/{COORDINATOR_SESSION_ID}.journal.jsonl",
+            "report.md",
+        ]
+    assert (
+        output
+        / "real-code"
+        / "raw"
+        / "sessions"
+        / f"{COORDINATOR_SESSION_ID}.journal.jsonl"
+    ).is_file()
+    assert all(
+        SECRET not in path.read_text(errors="replace")
+        for path in output.rglob("*")
+        if path.is_file()
     )
 
 
@@ -417,7 +478,7 @@ def test_live_pipeline_dynamic_workers_cost_secret_retention_and_independent_dif
             fake_harness(captured=captured),
         ),
         patch(
-            "jcode_harness_client.runner.review_evidence", side_effect=clean_review
+            "jcode_harness_client.runner.review_compact", side_effect=clean_review
         ) as judge,
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
@@ -434,61 +495,27 @@ def test_live_pipeline_dynamic_workers_cost_secret_retention_and_independent_dif
         )
     assert result == 0
     assert (fixture / "target.txt").read_bytes() == original
-    run_summary = json.loads((output / "summary.json").read_text())
-    summary = run_summary["scenarios"][0]
-    assert summary["execution"]["status"] == "completed"
-    assert summary["acceptance"]["status"] == "pass"
-    assert summary["evidence"]["status"] == "complete"
-    assert summary["workers"]["exercised"] == [WORKER_NAME]
-    assert summary["workers"]["not_exercised"] == [UNUSED_WORKER_NAME]
-    assert summary["review"] == "clean"
-    assert "task_compliance" not in summary
-    assert summary["cost_usd"] == 0.011
-    assert summary["unpriced_calls"] == 2
-    assert run_summary["cost_usd"] == summary["cost_usd"]
-    assert summary["usage"]["input_tokens"] == 485
-    assert summary["usage"]["by_role"][WORKER_NAME]["calls"] == 1
-    assert summary["usage"]["by_model"]["gpt-4o-mini"]["calls"] == 2
-    assert summary["usage"]["agent"]["calls"] == 2
-    assert summary["usage"]["evaluation_overhead"]["calls"] == 2
-    assert summary["usage"]["cache_read_tokens"] == 260
-    assert summary["metrics"]["tool_health"]["status"] == "healthy"
-    assert summary["simulated_user"] == {
-        "calls": 1,
-        "max_turns": 8,
-        "termination": "simulated-user-done",
-    }
-    assert "+NEW" in (output / "real-code" / "changes.patch").read_text()
-    assert (
-        "future_native_field" in (output / "real-code" / "transcript.jsonl").read_text()
-    )
+    report = (output / "report.md").read_text()
+    assert "acceptance PASS" in report
+    assert "$0.011" in report and "2 calls unpriced" in report
+    assert re.search(r"build check \d+\.\d{3}s \(evaluator binary check only\)", report)
+    assert WORKER_SESSION_ID in report and WORKER_NAME in report
     assert captured["profile"] == "worker_acceptance"
     assert captured["turn_timeout"] == 42
     assert captured["environment"]["JCODE_ACCEPTANCE_API_KEY"] == SECRET
-    assert captured["environment"]["JCODE_SWARM_MODEL"] == (
-        "worker_acceptance:gpt-4o-mini"
+    assert (
+        captured["environment"]["JCODE_SWARM_MODEL"] == "worker_acceptance:gpt-4o-mini"
     )
-    judged_blueprints = judge.call_args.kwargs["blueprints"]
-    assert {item["name"] for item in judged_blueprints} == {
-        "coordinator",
-        WORKER_NAME,
-        UNUSED_WORKER_NAME,
-    }
-    assert judge.call_args.kwargs["scenario"]["judge_criteria"] == [
+    data = judge.call_args.kwargs["judge_input"]
+    assert set(data["blueprints"]) == {"coordinator", WORKER_NAME, UNUSED_WORKER_NAME}
+    assert data["scenario"]["judge_criteria"] == [
         "Good coordination uses suitable workers and verifies results."
     ]
-    manifest = json.loads((output / "manifest.json").read_text())
-    scenario_settings = manifest["settings_by_scenario"]["real-code"]
-    assert scenario_settings["settings"]["models"]["simulator"] == "gpt-4o-mini"
-    assert scenario_settings["settings"]["worker_models"] == {}
-    assert len(scenario_settings["effective_sha256"]) == 64
-    assert scenario_settings["defaults"] is None
-    assert "api_key" not in json.dumps(scenario_settings)
-    assert SECRET not in json.dumps(scenario_settings)
-    assert manifest["build"]["fingerprint"] == "abc"
-    assert manifest["scenarios"][0]["id"] == "real-code"
-    assert manifest["evaluator"]["files"]["jcode_harness_client/runner.py"]
-    assert len(manifest["evaluator"]["sha256"]) == 64
+    assert sorted(
+        path.relative_to(output).as_posix()
+        for path in output.rglob("*")
+        if path.is_file()
+    ) == [f"real-code/raw/sessions/{COORDINATOR_SESSION_ID}.journal.jsonl", "report.md"]
     for path in output.rglob("*"):
         if path.is_file():
             assert SECRET not in path.read_bytes().decode("utf-8", errors="ignore")
@@ -500,9 +527,13 @@ def test_worker_model_overrides_manifest_effective_config_and_preflight_rejects_
     scenario_dir, blueprints, binary, bridge, _ = make_inputs(tmp_path)
     output = tmp_path / "output"
     override = f"worker-model-{uuid4().hex}"
+    captured: dict = {}
     with (
-        patch("jcode_harness_client.runner.launch_harness", fake_harness()),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch(
+            "jcode_harness_client.runner.launch_harness",
+            fake_harness(captured=captured),
+        ),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -518,18 +549,10 @@ def test_worker_model_overrides_manifest_effective_config_and_preflight_rejects_
             plugins_dir=None,
         )
     assert result == 0
-    manifest = json.loads((output / "manifest.json").read_text())
+    config = tomllib.loads(captured["config"])
     assert (
-        manifest["settings_by_scenario"]["real-code"]["settings"]["worker_models"][
-            WORKER_NAME
-        ]
-        == override
-    )
-    effective = json.loads(
-        (output / "real-code" / "effective" / "config.json").read_text()
-    )
-    assert effective["agents"]["worker_blueprints"][WORKER_NAME]["model"] == (
-        "worker_acceptance:" + override
+        config["agents"]["worker_blueprints"][WORKER_NAME]["model"]
+        == "worker_acceptance:" + override
     )
 
     typo_output = tmp_path / "typo-output"
@@ -545,6 +568,24 @@ def test_worker_model_overrides_manifest_effective_config_and_preflight_rejects_
                 "real-code", evaluation_settings({typo: override})
             ),
             output=typo_output,
+            scenario_path=scenario_dir,
+            scenario_id="real-code",
+            blueprints_dir=blueprints,
+            plugins_dir=None,
+        )
+    launch.assert_not_called()
+
+    with (
+        patch("jcode_harness_client.runner.launch_harness") as launch,
+        pytest.raises(ValueError, match="delegation_guard references undiscovered worker"),
+    ):
+        run(
+            binary=binary,
+            bridge=bridge,
+            settings_by_scenario=settings_for(
+                "real-code", evaluation_settings(guard_blueprints=[typo])
+            ),
+            output=tmp_path / "guard-typo-output",
             scenario_path=scenario_dir,
             scenario_id="real-code",
             blueprints_dir=blueprints,
@@ -568,7 +609,7 @@ def test_delegation_guard_env_is_explicit_with_manifest_and_config_provenance(
             "jcode_harness_client.runner.launch_harness",
             fake_harness(captured=captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -576,7 +617,7 @@ def test_delegation_guard_env_is_explicit_with_manifest_and_config_provenance(
             bridge=bridge,
             settings_by_scenario=settings_for(
                 "real-code",
-                evaluation_settings(guard_blueprints=["expert"], guard_threshold=1234),
+                evaluation_settings(guard_blueprints=[WORKER_NAME], guard_threshold=1234),
             ),
             output=output,
             scenario_path=scenario_dir,
@@ -586,30 +627,11 @@ def test_delegation_guard_env_is_explicit_with_manifest_and_config_provenance(
         )
     assert result == 0
     assert captured["environment"]["JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS"] == (
-        "expert"
+        WORKER_NAME
     )
     assert captured["environment"]["JCODE_DELEGATION_GUARD_THRESHOLD"] == "1234"
     assert "post_tool_transform" in captured["config"]
-    manifest = json.loads((output / "manifest.json").read_text())
-    assert manifest["settings_by_scenario"]["real-code"]["settings"][
-        "delegation_guard"
-    ] == {
-        "worker_blueprints": ["expert"],
-        "threshold": 1234,
-    }
-    effective = json.loads(
-        (output / "real-code" / "effective" / "config.json").read_text()
-    )
-    assert effective["delegation_guard"] == {
-        "active": True,
-        "worker_blueprints": ["expert"],
-        "threshold": 1234,
-        "environment": {
-            "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS": "expert",
-            "JCODE_DELEGATION_GUARD_THRESHOLD": "1234",
-        },
-    }
-    # Default opt-in selection and threshold come from settings, not the env.
+    # Default selection and threshold come from settings, not the env.
     default_output = tmp_path / "default-output"
     default_captured: dict = {}
     with (
@@ -617,7 +639,7 @@ def test_delegation_guard_env_is_explicit_with_manifest_and_config_provenance(
             "jcode_harness_client.runner.launch_harness",
             fake_harness(captured=default_captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         run(
@@ -632,7 +654,7 @@ def test_delegation_guard_env_is_explicit_with_manifest_and_config_provenance(
         )
     assert (
         default_captured["environment"]["JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS"]
-        == "advanced,expert"
+        == ""
     )
     assert default_captured["environment"]["JCODE_DELEGATION_GUARD_THRESHOLD"] == (
         "8192"
@@ -663,7 +685,7 @@ def test_delegation_guard_is_not_implied_without_the_plugin(
             "jcode_harness_client.runner.launch_harness",
             fake_harness(captured=captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -679,21 +701,7 @@ def test_delegation_guard_is_not_implied_without_the_plugin(
     assert result == 0
     assert "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS" not in captured["environment"]
     assert "JCODE_DELEGATION_GUARD_THRESHOLD" not in captured["environment"]
-    manifest = json.loads((output / "manifest.json").read_text())
-    assert manifest["settings_by_scenario"]["real-code"]["settings"][
-        "delegation_guard"
-    ] == {
-        "worker_blueprints": ["advanced", "expert"],
-        "threshold": 8192,
-    }
-    effective = json.loads(
-        (output / "real-code" / "effective" / "config.json").read_text()
-    )
-    assert effective["delegation_guard"] == {
-        "active": False,
-        "worker_blueprints": ["advanced", "expert"],
-        "threshold": 8192,
-    }
+    assert "hooks" not in tomllib.loads(captured["config"])
 
 
 def test_acceptance_still_runs_after_coordinator_timeout(tmp_path: Path) -> None:
@@ -701,7 +709,7 @@ def test_acceptance_still_runs_after_coordinator_timeout(tmp_path: Path) -> None
     output = tmp_path / "output"
     with (
         patch("jcode_harness_client.runner.launch_harness", fake_harness(timeout=True)),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply") as user_reply,
     ):
         result = run(
@@ -716,14 +724,16 @@ def test_acceptance_still_runs_after_coordinator_timeout(tmp_path: Path) -> None
         )
     assert result == 1
     user_reply.assert_not_called()
-    scenario_output = output / "real-code"
-    summary = json.loads((scenario_output / "scenario-summary.json").read_text())
-    assert summary["execution"]["status"] == "timeout"
-    assert summary["acceptance"]["status"] == "pass"
-    assert summary["acceptance"]["exit_status"] == 0
-    assert "fixture timeout" in summary["execution"]["error"]
-    assert (scenario_output / "acceptance.log").is_file()
-    assert "+NEW" in (scenario_output / "changes.patch").read_text()
+    report = (output / "report.md").read_text()
+    assert "acceptance PASS" in report
+    assert "fixture timeout" in report
+    assert (
+        output
+        / "real-code"
+        / "raw"
+        / "sessions"
+        / f"{COORDINATOR_SESSION_ID}.journal.jsonl"
+    ).is_file()
 
 
 def test_simulated_user_approves_and_conversation_continues_to_completion(
@@ -741,7 +751,7 @@ def test_simulated_user_approves_and_conversation_continues_to_completion(
             "jcode_harness_client.runner.launch_harness",
             fake_harness(captured=captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=replies),
     ):
         result = run(
@@ -756,23 +766,9 @@ def test_simulated_user_approves_and_conversation_continues_to_completion(
         )
     assert result == 0
     assert captured["prompts"][1] == "Yes, please proceed."
-    scenario_output = output / "real-code"
-    conversation = json.loads((scenario_output / "conversation.json").read_text())
-    assert [item["origin"] for item in conversation] == [
-        "scenario",
-        "coordinator",
-        "simulated-user",
-        "coordinator",
-        "simulated-user",
-    ]
-    assert conversation[-1]["done"] is True
-    assert conversation[-1]["sent"] is False
-    summary = json.loads((scenario_output / "scenario-summary.json").read_text())
-    assert summary["execution"]["coordinator_turns"] == 2
-    assert summary["simulated_user"]["calls"] == 2
-    assert summary["simulated_user"]["termination"] == "simulated-user-done"
-    assert summary["acceptance"]["status"] == "pass"
-    assert summary["evidence"]["status"] == "complete"
+    report = (output / "report.md").read_text()
+    assert "acceptance PASS" in report
+    assert "coordinator turns" in report and "(2)" in report
 
 
 def test_simulated_user_turn_cap_still_runs_acceptance(tmp_path: Path) -> None:
@@ -786,7 +782,7 @@ def test_simulated_user_turn_cap_still_runs_acceptance(tmp_path: Path) -> None:
     )
     with (
         patch("jcode_harness_client.runner.launch_harness", fake_harness()),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch(
             "jcode_harness_client.runner.next_user_reply",
             return_value=SimulatedUserReply(done=False, message="Keep going."),
@@ -803,54 +799,9 @@ def test_simulated_user_turn_cap_still_runs_acceptance(tmp_path: Path) -> None:
             plugins_dir=None,
         )
     assert result == 1
-    summary = json.loads(
-        (tmp_path / "output" / "real-code" / "scenario-summary.json").read_text()
-    )
-    assert summary["execution"]["status"] == "runtime error"
-    assert summary["simulated_user"]["termination"] == "turn-cap"
-    assert summary["acceptance"]["status"] == "pass"
-
-
-def test_future_metric_registration_needs_no_scenario_schema_change(
-    tmp_path: Path,
-) -> None:
-    scenario_dir, blueprints, binary, bridge, _ = make_inputs(tmp_path)
-    scenario_file = scenario_dir / "real-code" / "config.toml"
-    scenario_file.write_text(
-        scenario_file.read_text(encoding="utf-8").replace(
-            'metrics = ["tool_health"]', 'metrics = ["custom_metric"]'
-        ),
-        encoding="utf-8",
-    )
-
-    def custom_metric(*args: Any, **kwargs: Any):
-        return {"status": "healthy", "observed": 1}, [
-            {"id": "custom-metric-evidence", "kind": "metric-evidence", "data": {}}
-        ]
-
-    with (
-        patch.dict(METRIC_ANALYZERS, {"custom_metric": custom_metric}),
-        patch("jcode_harness_client.runner.launch_harness", fake_harness()),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
-        patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
-    ):
-        result = run(
-            binary=binary,
-            bridge=bridge,
-            settings_by_scenario=settings_for("real-code", evaluation_settings()),
-            output=tmp_path / "output",
-            scenario_path=scenario_dir,
-            scenario_id="real-code",
-            blueprints_dir=blueprints,
-            plugins_dir=None,
-        )
-    assert result == 0
-    summary = json.loads((tmp_path / "output" / "summary.json").read_text())[
-        "scenarios"
-    ][0]
-    assert summary["metrics"]["custom_metric"] == {"status": "healthy", "observed": 1}
-    assert summary["tool_health"] == "not requested"
-    assert not (tmp_path / "output" / "real-code" / "tool-health.json").exists()
+    report = (tmp_path / "output" / "report.md").read_text()
+    assert "acceptance PASS" in report
+    assert "turn cap reached" in report
 
 
 def test_unknown_scenario_and_nonempty_output_make_no_live_calls(
@@ -883,24 +834,6 @@ def test_unknown_scenario_and_nonempty_output_make_no_live_calls(
                 blueprints_dir=blueprints,
                 plugins_dir=None,
             )
-        scenario_file = scenario_dir / "real-code" / "config.toml"
-        scenario_file.write_text(
-            scenario_file.read_text(encoding="utf-8").replace(
-                'metrics = ["tool_health"]', 'metrics = ["future_metric"]'
-            ),
-            encoding="utf-8",
-        )
-        with pytest.raises(ValueError, match="unknown evaluation metrics"):
-            run(
-                binary=binary,
-                bridge=bridge,
-                settings_by_scenario=settings_for("real-code", evaluation_settings()),
-                output=tmp_path / "unknown-metric",
-                scenario_path=scenario_dir,
-                scenario_id="real-code",
-                blueprints_dir=blueprints,
-                plugins_dir=None,
-            )
     launch.assert_not_called()
 
 
@@ -930,12 +863,22 @@ def test_cli_rejects_removed_cases_flags() -> None:
 def write_escalation_scenario(scenario_dir: Path) -> None:
     escalation_dir = scenario_dir / "escalation-resumption"
     escalation_dir.mkdir()
+    shutil.copy2(CONTROLLER_ASSET, escalation_dir / "controller.py")
     (escalation_dir / "config.toml").write_text(
         'id = "escalation-resumption"\n'
         'fixture = "../../fixture"\n'
         'prompt = "Resolve the milestone workflow in the current workspace."\n'
         'accept = ["true"]\n'
-        'metrics = ["tool_health"]\n'
+        "\n[instrumentation]\n"
+        'isolation = "blind"\n'
+        'controller = "controller.py"\n'
+        'journals = ["events.jsonl", "guard-events.jsonl"]\n'
+        "\n[instrumentation.environment]\n"
+        'JCODE_ESCALATION_CONTROLLER_STATE_DIR = "{state_dir}"\n'
+        'JCODE_ESCALATION_CONTROLLER_WORKSPACE = "{workspace}"\n'
+        'JCODE_ESCALATION_CONTROLLER_GUARD = "{guard}"\n'
+        'JCODE_ESCALATION_CONTROLLER_GUARD_TIMEOUT_MS = "1000"\n'
+        'JCODE_ESCALATION_CONTROLLER_MODE = "blind"\n'
         "\n[judge]\n"
         'criteria = ["Blocked stages are delegated and verified."]\n'
         "\n[simulated_user]\n"
@@ -953,12 +896,29 @@ def test_escalation_resumption_composes_controller_with_actual_guard_entry(
     plugins = make_plugins(tmp_path)
     output = tmp_path / "output"
     captured: dict = {}
+    launch = fake_harness(captured=captured)
+
+    def inspect_launch(**kwargs):
+        guard = Path(kwargs["environment"][escalation_controller.GUARD_ENV])
+        assert guard.is_file()
+        hooks = tomllib.loads(kwargs["config"])["hooks"]
+        post = Path(hooks["post_tool_transform"][0])
+        pre = Path(hooks["pre_tool_transform"][0])
+        guard_wrapper = json.loads(post.with_suffix(".json").read_text())
+        rtk_wrapper = json.loads(pre.with_suffix(".json").read_text())
+        assert guard_wrapper["command"] == [
+            sys.executable,
+            str((scenario_dir / "escalation-resumption/controller.py").resolve()),
+        ]
+        assert rtk_wrapper["command"][0].endswith("rtk-transform")
+        return launch(**kwargs)
+
     with (
         patch(
             "jcode_harness_client.runner.launch_harness",
-            fake_harness(captured=captured),
+            inspect_launch,
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -972,6 +932,7 @@ def test_escalation_resumption_composes_controller_with_actual_guard_entry(
             scenario_id="escalation-resumption",
             blueprints_dir=blueprints,
             plugins_dir=plugins,
+            runtime_isolation="host",
         )
     assert result == 0
     environment = captured["environment"]
@@ -980,56 +941,11 @@ def test_escalation_resumption_composes_controller_with_actual_guard_entry(
     guard_env = environment[escalation_controller.GUARD_ENV]
     assert state_dir.endswith("instrumentation/escalation-resumption")
     assert workspace_env.endswith("workspaces/escalation-resumption")
-    assert Path(guard_env).is_file()
     assert "delegation-guard" in guard_env
     assert environment[escalation_controller.GUARD_TIMEOUT_ENV] == "1000"
     # The effective controller mode is explicit, never inherited or implied.
     assert environment[escalation_controller.MODE_ENV] == "blind"
-    # Hook command records expose the composite to analyzers.
-    hooks_json = json.loads(
-        (output / "escalation-resumption" / "effective" / "hooks.json").read_text()
-    )
-    guard_record = next(
-        command
-        for command in hooks_json["commands"]
-        if command["plugin"] == "delegation-guard"
-    )
-    rtk_record = next(
-        command for command in hooks_json["commands"] if command["plugin"] == "rtk"
-    )
-    controller = Path(escalation_controller.__file__).resolve()
-    assert guard_record["composite"] is True
-    assert guard_record["controller_module"] == str(controller)
-    assert guard_record["guard_executable"] == guard_env
-    assert guard_record["production_command"] == [sys.executable, str(controller)]
-    assert "delegation-guard-transform" not in guard_record["production_command"]
-    assert guard_record["traced_command"][0].endswith("delegation-guard-trace")
-    assert "composite" not in rtk_record
-    assert rtk_record["production_command"][0].endswith("rtk-transform")
-    # Exactly one entry per hook: the composite replaced the guard, and the
-    # RTK pre-transform stays untouched.
-    hooks = tomllib.loads(captured["config"])["hooks"]
-    assert hooks["post_tool_transform"] == guard_record["traced_command"]
-    assert hooks["pre_tool_transform"] == rtk_record["traced_command"]
-    assert hooks["post_tool_transform_timeout_ms"] == 2000
-    # Runtime settings snapshot provenance records the composite selection.
-    effective = json.loads(
-        (output / "escalation-resumption" / "effective" / "config.json").read_text()
-    )
-    provenance = effective["escalation_controller"]
-    assert provenance["controller_module"] == str(controller)
-    assert provenance["controller_sha256"] == file_sha256(controller)
-    assert provenance["mode"] == "blind"
-    assert provenance["state_dir"] == state_dir
-    assert provenance["events_path"] == str(Path(state_dir) / "events.jsonl")
-    assert provenance["guard_events_path"] == str(
-        Path(state_dir) / "guard-events.jsonl"
-    )
-    assert provenance["workspace"] == workspace_env
-    assert provenance["guard_executable"] == guard_env
-    assert provenance["threshold"] == 8192
-    assert provenance["environment"][escalation_controller.STATE_ENV] == state_dir
-    assert provenance["environment"][escalation_controller.MODE_ENV] == "blind"
+    assert "acceptance PASS" in (output / "report.md").read_text()
 
 
 def test_escalation_resumption_requires_the_delegation_guard_plugin(
@@ -1052,6 +968,7 @@ def test_escalation_resumption_requires_the_delegation_guard_plugin(
             scenario_id="escalation-resumption",
             blueprints_dir=blueprints,
             plugins_dir=None,
+            runtime_isolation="host",
         )
     launch.assert_not_called()
 
@@ -1067,7 +984,7 @@ def test_limits_bound_turns_and_record_provenance(
             "jcode_harness_client.runner.launch_harness",
             fake_harness(captured=captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -1092,32 +1009,7 @@ def test_limits_bound_turns_and_record_provenance(
     assert captured["turn_timeout"] == 77
     # Each turn ran under the explicit 77s budget, below the 500s deadline.
     assert captured["send_timeouts"] == [77]
-    effective = json.loads(
-        (output / "real-code" / "effective" / "config.json").read_text()
-    )
-    assert effective["timeouts"] == {
-        "scenario": "real-code",
-        "turn_timeout_seconds": 77,
-        "execution_timeout_seconds": 500,
-        "sources": {
-            "turn_timeout": "limits",
-            "execution_timeout": "limits",
-        },
-    }
-    manifest = json.loads((output / "manifest.json").read_text())
-    scenario_settings = manifest["settings_by_scenario"]["real-code"]
-    assert scenario_settings["settings"]["limits"]["turn_timeout_seconds"] == 77
-    assert scenario_settings["settings"]["limits"]["execution_timeout_seconds"] == 500
-    summary = json.loads((output / "real-code" / "scenario-summary.json").read_text())
-    assert summary["execution"]["applied_timeouts"] == {
-        "turn_timeout_seconds": 77,
-        "execution_timeout_seconds": 500,
-        "sources": {
-            "turn_timeout": "limits",
-            "execution_timeout": "limits",
-        },
-    }
-    assert summary["execution"]["deadline_exceeded"] is False
+    assert "acceptance PASS" in (output / "report.md").read_text()
 
 
 class SteadyClock:
@@ -1148,7 +1040,7 @@ def test_execution_deadline_stops_before_negative_wait_and_preserves_evidence(
             "jcode_harness_client.runner.launch_harness",
             fake_harness(captured=captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch(
             "jcode_harness_client.runner.next_user_reply",
             side_effect=lambda **kwargs: SimulatedUserReply(
@@ -1179,18 +1071,9 @@ def test_execution_deadline_stops_before_negative_wait_and_preserves_evidence(
     # started, so no unconditional negative wait was ever passed.
     assert len(captured["send_timeouts"]) == 1
     assert 0 < captured["send_timeouts"][0] <= 1
-    summary = json.loads((output / "real-code" / "scenario-summary.json").read_text())
-    execution = summary["execution"]
-    assert execution["status"] == "timeout"
-    assert execution["termination"] == "execution-deadline"
-    assert execution["deadline_exceeded"] is True
-    assert "execution deadline of 1s exceeded" in execution["error"]
-    assert execution["applied_timeouts"]["execution_timeout_seconds"] == 1
-    # Timeout preserved evidence and never retried: acceptance still ran.
-    assert summary["acceptance"]["status"] == "pass"
-    assert "+NEW" in (output / "real-code" / "changes.patch").read_text()
-    conversation = json.loads((output / "real-code" / "conversation.json").read_text())
-    assert len(conversation) >= 2
+    report = (output / "report.md").read_text()
+    assert "execution deadline of 1s exceeded" in report
+    assert "acceptance PASS" in report
 
 
 def test_escalation_resumption_limits_apply_from_its_own_settings_file(
@@ -1206,7 +1089,7 @@ def test_escalation_resumption_limits_apply_from_its_own_settings_file(
             "jcode_harness_client.runner.launch_harness",
             fake_harness(captured=captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -1226,49 +1109,14 @@ def test_escalation_resumption_limits_apply_from_its_own_settings_file(
             scenario_id="escalation-resumption",
             blueprints_dir=blueprints,
             plugins_dir=plugins,
+            runtime_isolation="host",
         )
     assert result == 0
     # The scenario's own settings file carries the approved budgets.
     assert captured["turn_timeout"] == 1200
     # Worker waits happen inside a turn, so min(1200, remaining 1800s) applies.
     assert captured["send_timeouts"] == [1200]
-    effective = json.loads(
-        (output / "escalation-resumption" / "effective" / "config.json").read_text()
-    )
-    assert effective["timeouts"] == {
-        "scenario": "escalation-resumption",
-        "turn_timeout_seconds": 1200,
-        "execution_timeout_seconds": 1800,
-        "sources": {
-            "turn_timeout": "limits",
-            "execution_timeout": "limits",
-        },
-    }
-    manifest = json.loads((output / "manifest.json").read_text())
-    escalation_settings = manifest["settings_by_scenario"]["escalation-resumption"]
-    assert escalation_settings["settings"]["limits"] == {
-        **escalation_settings["settings"]["limits"],
-        "turn_timeout_seconds": 1200,
-        "execution_timeout_seconds": 1800,
-    }
-    summary = json.loads(
-        (output / "escalation-resumption" / "scenario-summary.json").read_text()
-    )
-    assert summary["execution"]["applied_timeouts"] == {
-        "turn_timeout_seconds": 1200,
-        "execution_timeout_seconds": 1800,
-        "sources": {
-            "turn_timeout": "limits",
-            "execution_timeout": "limits",
-        },
-    }
-    assert summary["execution"]["deadline_exceeded"] is False
-
-
-def test_builtin_metric_registry_resolves_scenario_metrics() -> None:
-    assert "escalation_resumption" in METRIC_ANALYZERS
-    assert METRIC_ANALYZERS["escalation_resumption"] is not None
-    assert {"tool_health", "coordination"} <= set(METRIC_ANALYZERS)
+    assert "acceptance PASS" in (output / "report.md").read_text()
 
 
 def fake_blind_harness(captured: dict | None = None):
@@ -1280,6 +1128,61 @@ def fake_blind_harness(captured: dict | None = None):
         return inner(**kwargs)
 
     return launch
+
+
+def test_blind_config_references_staged_blueprints_and_hooks(tmp_path: Path) -> None:
+    scenario_dir, blueprints, binary, bridge, _ = make_inputs(tmp_path)
+    write_escalation_scenario(scenario_dir)
+    plugins = make_plugins(tmp_path)
+    expected = {path.name: path.read_bytes() for path in blueprints.glob("*.md")}
+    inspected = False
+    fake = fake_blind_harness()
+
+    def inspect_launch(**kwargs: Any):
+        nonlocal inspected
+        staging = kwargs["staging"]
+        config = tomllib.loads(kwargs["config"])
+        directory = Path(config["agents"]["worker_blueprints_dir"])
+        assert directory.is_relative_to(staging.config)
+        assert {
+            path.name: path.read_bytes() for path in directory.iterdir()
+        } == expected
+        for hook in ("pre_tool_transform", "post_tool_transform"):
+            for command in config["hooks"][hook]:
+                executable = Path(shlex.split(command)[0])
+                assert executable.is_relative_to(staging.bin)
+                assert executable.is_file()
+        assert not any(
+            value.startswith("/home/") for value in kwargs["environment"].values()
+        )
+        assert escalation_controller.STATE_ENV not in kwargs["environment"]
+        assert kwargs["broker_operations"]["delegation-guard"].serialized
+        inspected = True
+        return fake(**kwargs)
+
+    with (
+        patch("jcode_harness_client.runner.blind_preflight"),
+        patch("jcode_harness_client.runner.launch_blind_harness", inspect_launch),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
+        patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
+    ):
+        assert (
+            run(
+                binary=binary,
+                bridge=bridge,
+                settings_by_scenario=settings_for(
+                    "escalation-resumption", evaluation_settings()
+                ),
+                output=tmp_path / "output",
+                scenario_path=scenario_dir,
+                scenario_id="escalation-resumption",
+                blueprints_dir=blueprints,
+                plugins_dir=plugins,
+                runtime_isolation="blind",
+            )
+            == 0
+        )
+    assert inspected
 
 
 def test_blind_runtime_isolation_wires_proxy_hooks_and_private_broker_ops(
@@ -1298,7 +1201,7 @@ def test_blind_runtime_isolation_wires_proxy_hooks_and_private_broker_ops(
             "jcode_harness_client.runner.launch_blind_harness",
             fake_blind_harness(captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -1337,28 +1240,8 @@ def test_blind_runtime_isolation_wires_proxy_hooks_and_private_broker_ops(
     proxy = str(staging.bin / "hook-proxy")
     assert hooks["pre_tool_transform"] == [shlex.join([proxy, "rtk"])]
     assert hooks["post_tool_transform"] == [shlex.join([proxy, "delegation-guard"])]
-    hooks_json = json.loads(
-        (output / "real-code" / "effective" / "hooks.json").read_text()
-    )
-    assert all(
-        record["blind_command"] == [proxy, record["plugin"]]
-        for record in hooks_json["commands"]
-    )
-    effective = json.loads(
-        (output / "real-code" / "effective" / "config.json").read_text()
-    )
-    isolation = effective["filesystem_isolation"]
-    assert isolation["mode"] == "blind"
-    assert isolation["runtime"] == "bwrap"
-    assert isolation["staging_root"] == str(staging.root)
-    assert isolation["hook_transport"] == "host-broker"
-    manifest = json.loads((output / "manifest.json").read_text())
-    assert manifest["runtime_isolation"] == "blind"
-    # Acceptance and diffs followed the staged public workspace during the
-    # run (the fake wrote NEW there); the fixture copy stays pristine.
     assert (fixture / "target.txt").read_bytes() == b"OLD\n"
-    scenario_output = output / "real-code"
-    assert "+NEW" in (scenario_output / "changes.patch").read_text()
+    assert "acceptance PASS" in (output / "report.md").read_text()
 
 
 def test_blind_preflight_failure_is_fail_closed(tmp_path: Path) -> None:
@@ -1398,35 +1281,19 @@ def test_blind_preflight_failure_is_fail_closed(tmp_path: Path) -> None:
             )
 
 
-def test_runtime_isolation_defaults_are_scenario_scoped() -> None:
-    """Only the escalation-resumption scenario defaults to the blind bwrap
-    boundary; every other scenario keeps the host default, and the explicit
-    override is a validated test/internal knob that wins for any scenario."""
-    with (
-        patch(
-            "jcode_harness_client.runner.DEFAULT_RUNTIME_ISOLATION",
-            DEFAULT_RUNTIME_ISOLATION,
-        ),
-        patch(
-            "jcode_harness_client.runner.BLIND_DEFAULT_SCENARIOS",
-            BLIND_DEFAULT_SCENARIOS,
-        ),
-    ):
-        assert DEFAULT_RUNTIME_ISOLATION == "host"
-        assert escalation_controller.SCENARIO_ID in BLIND_DEFAULT_SCENARIOS
-        assert (
-            resolve_runtime_isolation(None, escalation_controller.SCENARIO_ID)
-            == "blind"
-        )
-        assert resolve_runtime_isolation(None, "real-code") == "host"
-        assert resolve_runtime_isolation(None) == "host"
-        assert (
-            resolve_runtime_isolation("host", escalation_controller.SCENARIO_ID)
-            == "host"
-        )
-        assert resolve_runtime_isolation("blind", "real-code") == "blind"
-        with pytest.raises(ValueError, match="runtime_isolation"):
-            resolve_runtime_isolation("sandbox", "real-code")
+def test_runtime_isolation_defaults_come_from_metadata(tmp_path) -> None:
+    scenario_dir, *_ = make_inputs(tmp_path)
+    write_escalation_scenario(scenario_dir)
+    private = load_scenarios(scenario_dir, "escalation-resumption")[0]
+    ordinary = load_scenarios(scenario_dir, "real-code")[0]
+    assert DEFAULT_RUNTIME_ISOLATION == "host"
+    assert resolve_runtime_isolation(None, private) == "blind"
+    assert resolve_runtime_isolation(None, ordinary) == "host"
+    assert resolve_runtime_isolation(None) == "host"
+    assert resolve_runtime_isolation("host", private) == "host"
+    assert resolve_runtime_isolation("blind", ordinary) == "blind"
+    with pytest.raises(ValueError, match="runtime_isolation"):
+        resolve_runtime_isolation("sandbox", ordinary)
 
 
 def test_non_escalation_scenario_never_uses_bwrap(tmp_path: Path) -> None:
@@ -1438,10 +1305,13 @@ def test_non_escalation_scenario_never_uses_bwrap(tmp_path: Path) -> None:
     output = tmp_path / "output"
     captured: dict = {}
     with (
-        patch("jcode_harness_client.runner.launch_harness", fake_harness(captured)),
+        patch(
+            "jcode_harness_client.runner.launch_harness",
+            fake_harness(captured=captured),
+        ),
         patch("jcode_harness_client.runner.blind_preflight") as preflight,
         patch("jcode_harness_client.runner.launch_blind_harness") as blind_launch,
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -1457,10 +1327,6 @@ def test_non_escalation_scenario_never_uses_bwrap(tmp_path: Path) -> None:
     assert result == 0
     preflight.assert_not_called()
     blind_launch.assert_not_called()
-    manifest = json.loads((output / "manifest.json").read_text())
-    assert manifest["runtime_isolation"] is None
-    assert manifest["runtime_isolation_by_scenario"] == {"real-code": "host"}
-    assert manifest["results"][0]["runtime_isolation"] == "host"
 
 
 def test_escalation_resumption_defaults_to_blind_boundary(tmp_path: Path) -> None:
@@ -1476,14 +1342,10 @@ def test_escalation_resumption_defaults_to_blind_boundary(tmp_path: Path) -> Non
     captured: dict = {}
     with (
         patch(
-            "jcode_harness_client.runner.BLIND_DEFAULT_SCENARIOS",
-            BLIND_DEFAULT_SCENARIOS,
-        ),
-        patch(
             "jcode_harness_client.runner.launch_blind_harness",
             fake_blind_harness(captured),
         ),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -1510,19 +1372,8 @@ def test_escalation_resumption_defaults_to_blind_boundary(tmp_path: Path) -> Non
     operations = captured["broker_operations"]
     controller_env = operations["delegation-guard"].env
     assert controller_env[escalation_controller.MODE_ENV] == "blind"
-    manifest = json.loads((output / "manifest.json").read_text())
-    assert manifest["runtime_isolation"] is None
-    assert manifest["runtime_isolation_by_scenario"] == {
-        "escalation-resumption": "blind"
-    }
-    effective = json.loads(
-        (output / "escalation-resumption" / "effective" / "config.json").read_text()
-    )
-    assert effective["filesystem_isolation"]["mode"] == "blind"
-    provenance = effective["escalation_controller"]
-    assert provenance["mode"] == "blind"
-    assert provenance["workspace"] == str(staging.workspace)
-    assert "+NEW" in ((output / "escalation-resumption" / "changes.patch").read_text())
+    assert controller_env[escalation_controller.WORKSPACE_ENV] == str(staging.workspace)
+    assert "acceptance PASS" in (output / "report.md").read_text()
 
 
 def test_explicit_host_override_pins_host_for_escalation(tmp_path: Path) -> None:
@@ -1536,13 +1387,12 @@ def test_explicit_host_override_pins_host_for_escalation(tmp_path: Path) -> None
     captured: dict = {}
     with (
         patch(
-            "jcode_harness_client.runner.BLIND_DEFAULT_SCENARIOS",
-            BLIND_DEFAULT_SCENARIOS,
+            "jcode_harness_client.runner.launch_harness",
+            fake_harness(captured=captured),
         ),
-        patch("jcode_harness_client.runner.launch_harness", fake_harness(captured)),
         patch("jcode_harness_client.runner.blind_preflight") as preflight,
         patch("jcode_harness_client.runner.launch_blind_harness") as blind_launch,
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -1561,11 +1411,6 @@ def test_explicit_host_override_pins_host_for_escalation(tmp_path: Path) -> None
     assert result == 0
     preflight.assert_not_called()
     blind_launch.assert_not_called()
-    manifest = json.loads((output / "manifest.json").read_text())
-    assert manifest["runtime_isolation"] == "host"
-    assert manifest["runtime_isolation_by_scenario"] == {
-        "escalation-resumption": "host"
-    }
 
 
 def test_escalation_blind_default_is_fail_closed(tmp_path: Path) -> None:
@@ -1574,10 +1419,6 @@ def test_escalation_blind_default_is_fail_closed(tmp_path: Path) -> None:
     scenario_dir, blueprints, binary, bridge, _ = make_inputs(tmp_path)
     write_escalation_scenario(scenario_dir)
     with (
-        patch(
-            "jcode_harness_client.runner.BLIND_DEFAULT_SCENARIOS",
-            BLIND_DEFAULT_SCENARIOS,
-        ),
         patch(
             "jcode_harness_client.runner.blind_preflight",
             side_effect=RuntimeError("bwrap is required for the blind runtime"),
@@ -1709,7 +1550,6 @@ def test_each_scenario_uses_its_own_settings_in_one_run(tmp_path: Path) -> None:
         'fixture = "../../fixture"\n'
         'prompt = "Implement the outcome in the current workspace."\n'
         f"accept = {json.dumps(accept)}\n"
-        'metrics = ["tool_health"]\n'
         "\n[judge]\n"
         'criteria = ["Good coordination uses suitable workers and verifies results."]\n'
         "\n[simulated_user]\n"
@@ -1738,7 +1578,7 @@ def test_each_scenario_uses_its_own_settings_in_one_run(tmp_path: Path) -> None:
         "[worker_effort]\n"
         f'{json.dumps(WORKER_NAME)} = "medium"\n'
         "[delegation_guard]\n"
-        'worker_blueprints = ["expert"]\n'
+        f'worker_blueprints = [{json.dumps(WORKER_NAME)}]\n'
     )
     second = parse_settings(
         "[provider]\n"
@@ -1757,9 +1597,16 @@ def test_each_scenario_uses_its_own_settings_in_one_run(tmp_path: Path) -> None:
         "worker_blueprints = []\n"
         "threshold = 4096\n"
     )
+    launches = []
+    fake = fake_harness()
+
+    def capture_launch(**kwargs):
+        launches.append(kwargs)
+        return fake(**kwargs)
+
     with (
-        patch("jcode_harness_client.runner.launch_harness", fake_harness()),
-        patch("jcode_harness_client.runner.review_evidence", side_effect=clean_review),
+        patch("jcode_harness_client.runner.launch_harness", capture_launch),
+        patch("jcode_harness_client.runner.review_compact", side_effect=clean_review),
         patch("jcode_harness_client.runner.next_user_reply", side_effect=done_user),
     ):
         result = run(
@@ -1782,52 +1629,19 @@ def test_each_scenario_uses_its_own_settings_in_one_run(tmp_path: Path) -> None:
             plugins_dir=None,
         )
     assert result == 0
-    manifest = json.loads((output / "manifest.json").read_text())
-    assert set(manifest["settings_by_scenario"]) == {"real-code", "second-code"}
+    assert len(launches) == 2
+    first_config, second_config = (tomllib.loads(item["config"]) for item in launches)
+    assert first_config["agents"]["swarm_root_effort"] == "high"
+    assert first_config["agents"]["swarm_effort"] == "low"
     assert (
-        manifest["settings_by_scenario"]["real-code"]["effective_sha256"]
-        != manifest["settings_by_scenario"]["second-code"]["effective_sha256"]
+        first_config["agents"]["worker_blueprints"][WORKER_NAME]["effort"] == "medium"
     )
-    first_effective = json.loads(
-        (output / "real-code" / "effective" / "config.json").read_text()
-    )
-    second_effective = json.loads(
-        (output / "second-code" / "effective" / "config.json").read_text()
-    )
-    # Efforts route into the native [agents] section per scenario.
-    assert first_effective["agents"]["swarm_root_effort"] == "high"
-    assert first_effective["agents"]["swarm_effort"] == "low"
-    assert (
-        first_effective["agents"]["worker_blueprints"][WORKER_NAME]["effort"]
-        == "medium"
-    )
-    assert first_effective["agents"]["worker_blueprints"][UNUSED_WORKER_NAME].get(
-        "effort"
-    ) in (None, "low")
-    assert "swarm_root_effort" not in second_effective["agents"]
-    assert "swarm_effort" not in second_effective["agents"]
-    # Models, limits, guard, and timeouts stay per scenario.
-    assert first_effective["timeouts"]["turn_timeout_seconds"] == 42
-    assert first_effective["timeouts"]["execution_timeout_seconds"] == 500
-    assert second_effective["timeouts"]["turn_timeout_seconds"] == 99
-    assert second_effective["timeouts"]["execution_timeout_seconds"] is None
-    assert (
-        first_effective["providers"]["worker_acceptance"]["default_model"] == "gpt-4o"
-    )
-    assert manifest["settings_by_scenario"]["real-code"]["settings"][
-        "delegation_guard"
-    ]["worker_blueprints"] == ["expert"]
-    assert (
-        manifest["settings_by_scenario"]["second-code"]["settings"]["delegation_guard"][
-            "worker_blueprints"
-        ]
-        == []
-    )
-    for scenario_id in ("real-code", "second-code"):
-        summary = json.loads(
-            (output / scenario_id / "scenario-summary.json").read_text()
-        )
-        assert summary["acceptance"]["status"] == "pass"
+    assert "swarm_root_effort" not in second_config["agents"]
+    assert "swarm_effort" not in second_config["agents"]
+    assert [item["turn_timeout"] for item in launches] == [42, 99]
+    report = (output / "report.md").read_text()
+    assert "# real-code — acceptance PASS" in report
+    assert "# second-code — acceptance PASS" in report
 
 
 def test_cli_config_preflight_validates_all_before_any_launch(
@@ -1846,7 +1660,6 @@ def test_cli_config_preflight_validates_all_before_any_launch(
         'fixture = "../../fixture"\n'
         'prompt = "Implement the outcome in the current workspace."\n'
         f"accept = {json.dumps(accept)}\n"
-        'metrics = ["tool_health"]\n'
         "\n[judge]\n"
         'criteria = ["Good coordination uses suitable workers and verifies results."]\n'
         "\n[simulated_user]\n"

@@ -19,6 +19,12 @@ from pathlib import Path
 import pytest
 
 from jcode_harness_client import blind_runtime
+from jcode_harness_client.scenarios import (
+    JudgeScenario,
+    Scenario,
+    SimulatedUserScenario,
+    materialize_scenario,
+)
 
 PUBLIC_BASE = Path("/var/tmp")
 
@@ -108,10 +114,9 @@ def test_public_dirs_env_channel_authorizes_only_staged_paths(
     assert command.env["JCODE_HOME"] == str(jcode_home)
     assert command.env["JCODE_RUNTIME_DIR"] == str(staging.runtime)
     # The scrubbed keys stay rejected through the free-form channel.
-    with pytest.raises(ValueError, match="scrubbed"):
-        blind_runtime.build_blind_env(
-            staging, extra_env={"JCODE_HOME": "/home/leak/.jcode"}
-        )
+    for key in ("HOME", "JCODE_HOME", "JCODE_RUNTIME_DIR", "TMPDIR"):
+        with pytest.raises(ValueError, match="scrubbed"):
+            blind_runtime.build_blind_env(staging, extra_env={key: "/private/leak"})
     # Unknown dir keys are not a global custom env channel.
     with pytest.raises(ValueError, match="not a public sandbox dir"):
         blind_runtime.build_blind_env(
@@ -120,6 +125,12 @@ def test_public_dirs_env_channel_authorizes_only_staged_paths(
     # Values must resolve inside the public staging root.
     with pytest.raises(ValueError, match="inside the public staging root"):
         blind_runtime.build_blind_env(staging, public_dirs={"HOME": "/home/leak"})
+    escape = staging.runtime / "escape"
+    escape.symlink_to("/var/tmp")
+    with pytest.raises(ValueError, match="inside the public staging root"):
+        blind_runtime.build_blind_env(
+            staging, public_dirs={"JCODE_RUNTIME_DIR": str(escape)}
+        )
 
 
 def test_argv_mounts_minimal_system_and_no_host_root(
@@ -228,33 +239,33 @@ def test_public_path_validation_rejects_private_roots() -> None:
         shutil.rmtree(plan.root, ignore_errors=True)
 
 
-def test_staging_copies_native_binaries_into_public_bin(
-    staging: blind_runtime.StagingPlan,
-) -> None:
-    staged = staging.bin / "jcode"
-    assert staged.is_file()
-    assert staged.stat().st_mode & 0o111
-    source = Path(blind_runtime.system_python())
-    assert staged.read_bytes() == source.read_bytes()
-    assert (staging.runtime / "home").is_dir()
-
-
-def test_system_python_is_plain_public_and_modern() -> None:
-    interpreter = Path(blind_runtime.system_python())
-    assert interpreter.is_absolute()
-    assert str(interpreter).startswith("/usr/bin/")
-    assert interpreter.exists()
-    name = interpreter.name
-    if name.startswith("python3."):
-        minor = int(name.rsplit(".", 1)[1])
-        assert (3, minor) >= blind_runtime.MINIMUM_PYTHON
-
-
 def test_blind_fixture_is_readable_and_writable(
-    bwrap_ok: None, staging: blind_runtime.StagingPlan
+    bwrap_ok: None, staging: blind_runtime.StagingPlan, tmp_path: Path
 ) -> None:
-    (staging.workspace / "in.txt").write_text("hello-blind")
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "in.txt").write_text("hello-blind")
+    scenario = Scenario(
+        id="test",
+        fixture=fixture,
+        prompt="test",
+        accept=("true",),
+        judge=JudgeScenario(("test",)),
+        simulated_user=SimulatedUserScenario(1, "test"),
+        settings={},
+        source=tmp_path / "config.toml",
+        source_sha256="",
+    )
+    host_workspace = tmp_path / "workspace"
+    materialize_scenario(scenario, host_workspace)
+    shutil.copytree(host_workspace, staging.workspace, dirs_exist_ok=True)
     command = blind_runtime.build_blind_command(staging, host_env=os.environ)
+    git = _launch(command, ["git", "status", "--porcelain"])
+    assert git.returncode == 0, git.stderr
+    assert git.stdout == ""
+    uid = _launch(command, [command.python, "-c", "import os; print(os.getuid())"])
+    assert uid.returncode == 0, uid.stderr
+    assert int(uid.stdout) == host_workspace.stat().st_uid
     inner = [
         command.python,
         "-c",

@@ -1,4 +1,4 @@
-"""Pydantic AI backend with caching, raw wire retention, and usage accounting."""
+"""Pydantic AI backend with caching and provider-reported usage accounting."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
-from .redaction import Redactor, write_json
+from .redaction import Redactor
 from .settings import ProviderSettings
 
 _JSON = dict[str, Any]
@@ -49,7 +49,10 @@ def _finite_cost_value(value: Any) -> float | None:
     """
 
     if isinstance(value, int | float) and not isinstance(value, bool):
-        cost = float(value)
+        try:
+            cost = float(value)
+        except OverflowError:
+            return None
         if math.isfinite(cost) and cost >= 0.0:
             return cost
     return None
@@ -83,6 +86,8 @@ class CallUsageRecord:
     category: str = "agent"
     cost_source: str | None = None
     cost_unknown_reason: str | None = None
+    session_id: str | None = None
+    message_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -90,6 +95,7 @@ class UsageTracker:
     """Collect per-call usage across simulator, judge, and native sessions."""
 
     records: list[CallUsageRecord] = field(default_factory=list)
+    native_messages: set[tuple[str, str]] = field(default_factory=set)
 
     def add(self, record: CallUsageRecord) -> None:
         self.records.append(record)
@@ -121,9 +127,8 @@ class UsageTracker:
             if not records:
                 cost_usd: float | None = 0.0
             elif priced_records:
-                cost_usd = round(
-                    sum(float(record.cost_usd or 0.0) for record in priced_records),
-                    8,
+                cost_usd = math.fsum(
+                    float(record.cost_usd) for record in priced_records
                 )
             else:
                 cost_usd = None
@@ -144,34 +149,17 @@ class UsageTracker:
             return result
 
         result = aggregate(self.records)
-        by_role: dict[str, list[CallUsageRecord]] = {}
-        by_model: dict[str, list[CallUsageRecord]] = {}
-        for record in self.records:
-            by_role.setdefault(record.role, []).append(record)
-            by_model.setdefault(record.model, []).append(record)
-        result["by_role"] = {
-            role: aggregate(records) for role, records in sorted(by_role.items())
-        }
-        result["by_model"] = {
-            model: aggregate(records) for model, records in sorted(by_model.items())
-        }
-        result["by_category"] = {
-            category: aggregate(
-                [record for record in self.records if record.category == category]
-            )
-            for category in ("agent", "evaluation-overhead")
-            if any(record.category == category for record in self.records)
-        }
-        result["agent"] = aggregate(
-            [record for record in self.records if record.category == "agent"]
-        )
-        result["evaluation_overhead"] = aggregate(
-            [
-                record
-                for record in self.records
-                if record.category == "evaluation-overhead"
-            ]
-        )
+        result["unpriced"] = [
+            {
+                "role": record.role,
+                "model": record.model,
+                "session_id": record.session_id,
+                "message_id": record.message_id,
+                "reason": record.cost_unknown_reason or "cost unknown",
+            }
+            for record in self.records
+            if not record.priced or record.cost_usd is None
+        ]
         return result
 
 
@@ -330,136 +318,76 @@ def _extract_wire_usage(
 
 def record_native_session_usage(
     *,
-    raw_dir: Path,
+    raw_dir: Path | None = None,
     settings: ProviderSettings,
     coordinator_session_id: str | None,
     tracker: UsageTracker,
+    bundle: Any | None = None,
 ) -> None:
-    """Aggregate native coordinator/worker token_usage without double counting."""
+    """Account for the same reconstructed messages used by evidence selection."""
+    if bundle is None:
+        if raw_dir is None:
+            raise ValueError("raw_dir or replayed bundle is required")
+        from .evidence import collect_evidence
 
-    session_root = raw_dir / "sessions"
-    if not session_root.is_dir():
-        return
-    seen_messages: set[tuple[str, str]] = set()
-    for path in sorted(session_root.glob("session_*.json")):
-        if path.is_symlink() or not path.is_file():
+        bundle = collect_evidence(
+            raw_dir=raw_dir, coordinator_session_id=coordinator_session_id,
+            outer_events=(), session_listing=(),
+        )
+    snapshots = {
+        r["session_id"]: r["data"] for r in bundle.records
+        if r.get("kind") == "session-snapshot"
+    }
+    for record in bundle.usage_messages:
+        session_id = record["session_id"]
+        msg_id = record["message_id"]
+        key = (session_id, msg_id)
+        msg = record["data"]
+        token_usage = msg.get("token_usage")
+        if key in tracker.native_messages or not isinstance(token_usage, dict):
             continue
-        try:
-            snapshot = json.loads(path.read_text(encoding="utf-8"))
-        except OSError, ValueError, UnicodeError:
-            continue
-        if not isinstance(snapshot, dict):
-            continue
-        session_id = str(snapshot.get("session_id") or snapshot.get("id") or path.stem)
-        role = "coordinator" if session_id == coordinator_session_id else "swarm"
-        worker_name: str | None = None
-        if role != "coordinator":
-            policy = snapshot.get("worker_blueprint_policy")
-            if isinstance(policy, dict):
-                blueprint_name = policy.get("name")
-                if (
-                    isinstance(blueprint_name, str)
-                    and blueprint_name.strip()
-                    and blueprint_name != "coordinator"
-                ):
-                    worker_name = blueprint_name
-                    role = blueprint_name
+        tracker.native_messages.add(key)
+        snapshot = snapshots.get(session_id, {})
+        role = (
+            "coordinator"
+            if session_id == coordinator_session_id
+            else record.get("worker", "unknown")
+        )
+        if role == "unknown":
+            role = "swarm"
         raw_model = snapshot.get("model")
         model_name = (
-            str(raw_model).split(":", 1)[-1]
+            raw_model.split(":", 1)[-1]
             if isinstance(raw_model, str) and raw_model.strip()
-            else (
-                settings.model_for("coordinator")
-                if role == "coordinator"
-                else (
-                    settings.model_for_worker(worker_name)
-                    if worker_name is not None
-                    else settings.model_for("swarm")
-                )
-            )
+            else settings.model_for("coordinator") if role == "coordinator"
+            else settings.model_for("swarm") if role == "swarm"
+            else settings.model_for_worker(role)
         )
-        messages: dict[str, _JSON] = {}
-        raw_messages = snapshot.get("messages")
-        if isinstance(raw_messages, list):
-            for msg in raw_messages:
-                if isinstance(msg, dict) and isinstance(msg.get("id"), str):
-                    messages[msg["id"]] = msg
-        journal = path.with_name(
-            (path.name[:-5] if path.name.endswith(".json") else path.stem)
-            + ".journal.jsonl"
-        )
-        if journal.is_file() and not journal.is_symlink():
-            try:
-                for line in journal.read_text(encoding="utf-8").splitlines():
-                    entry = json.loads(line)
-                    if not isinstance(entry, dict):
-                        continue
-                    if isinstance(entry.get("replace_messages"), list):
-                        messages = {
-                            str(msg["id"]): msg
-                            for msg in entry["replace_messages"]
-                            if isinstance(msg, dict) and isinstance(msg.get("id"), str)
-                        }
-                    if isinstance(entry.get("append_messages"), list):
-                        for msg in entry["append_messages"]:
-                            if isinstance(msg, dict) and isinstance(msg.get("id"), str):
-                                msg_id = str(msg["id"])
-                                if msg_id not in messages:
-                                    messages[msg_id] = msg
-            except OSError, ValueError, UnicodeError:
-                pass
-
-        for msg_id, msg in messages.items():
-            key = (session_id, msg_id)
-            if key in seen_messages:
-                continue
-            seen_messages.add(key)
-            token_usage = msg.get("token_usage")
-            if not isinstance(token_usage, dict):
-                continue
-            cache_read = int(token_usage.get("cache_read_input_tokens") or 0)
-            cache_write = int(token_usage.get("cache_creation_input_tokens") or 0)
-            raw_in = int(token_usage.get("input_tokens") or 0)
-            prompt_tok = token_usage.get("prompt_tokens")
-            if isinstance(prompt_tok, int) and not isinstance(prompt_tok, bool):
-                in_tok = prompt_tok
-            elif settings.provider == "anthropic-compatible":
-                in_tok = raw_in + cache_read + cache_write
-            else:
-                in_tok = max(raw_in, cache_read + cache_write)
-            out_tok = int(token_usage.get("output_tokens") or 0)
-            reported_cost = _native_reported_cost(token_usage)
-            cost_usd: float | None
-            cost_source: str | None
-            cost_reason: str | None
-            if reported_cost is not None:
-                cost_usd = reported_cost
-                cost_source = COST_SOURCE_REPORTED_NATIVE
-                cost_reason = None
-            else:
-                cost_usd = None
-                cost_source = None
-                cost_reason = COST_UNKNOWN_NATIVE
-            tracker.add(
-                CallUsageRecord(
-                    role=role,
-                    model=model_name,
-                    provider=settings.provider,
-                    input_tokens=in_tok,
-                    output_tokens=out_tok,
-                    cache_read_tokens=cache_read,
-                    cache_write_tokens=cache_write,
-                    cost_usd=cost_usd,
-                    priced=cost_usd is not None,
-                    completed=True,
-                    cost_source=cost_source,
-                    cost_unknown_reason=cost_reason,
-                )
-            )
+        cache_read = int(token_usage.get("cache_read_input_tokens") or 0)
+        cache_write = int(token_usage.get("cache_creation_input_tokens") or 0)
+        raw_in = int(token_usage.get("input_tokens") or 0)
+        prompt_tok = token_usage.get("prompt_tokens")
+        if isinstance(prompt_tok, int) and not isinstance(prompt_tok, bool):
+            in_tok = prompt_tok
+        elif settings.provider == "anthropic-compatible":
+            in_tok = raw_in + cache_read + cache_write
+        else:
+            in_tok = max(raw_in, cache_read + cache_write)
+        cost = _native_reported_cost(token_usage)
+        tracker.add(CallUsageRecord(
+            role=role, model=model_name, provider=settings.provider,
+            input_tokens=in_tok,
+            output_tokens=int(token_usage.get("output_tokens") or 0),
+            cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+            cost_usd=cost, priced=cost is not None, completed=True,
+            cost_source=COST_SOURCE_REPORTED_NATIVE if cost is not None else None,
+            cost_unknown_reason=COST_UNKNOWN_NATIVE if cost is None else None,
+            session_id=session_id, message_id=msg_id,
+        ))
 
 
 class _WireRecordingTransport(httpx.AsyncBaseTransport):
-    """Intercept raw HTTP wire bodies and persist sanitized evidence."""
+    """Capture response usage in memory without persisting provider traffic."""
 
     def __init__(
         self,
@@ -469,8 +397,7 @@ class _WireRecordingTransport(httpx.AsyncBaseTransport):
         redactor: Redactor,
     ) -> None:
         self._inner = inner
-        self._output = output
-        self._redactor = redactor
+        del output, redactor
         self.last_request_body: _JSON | None = None
         self.last_response_body: _JSON | None = None
         self.status_code: int | None = None
@@ -483,11 +410,6 @@ class _WireRecordingTransport(httpx.AsyncBaseTransport):
             parsed_req = {"raw": raw_req.decode("utf-8", errors="replace")}
         if isinstance(parsed_req, dict):
             self.last_request_body = parsed_req
-        write_json(
-            self._output.with_suffix(".input.json"),
-            parsed_req,
-            self._redactor,
-        )
         response = await self._inner.handle_async_request(request)
         raw_resp = await response.aread()
         self.status_code = response.status_code
@@ -500,11 +422,6 @@ class _WireRecordingTransport(httpx.AsyncBaseTransport):
             }
         if isinstance(parsed_resp, dict):
             self.last_response_body = parsed_resp
-        write_json(
-            self._output.with_suffix(".response.json"),
-            parsed_resp,
-            self._redactor,
-        )
         return response
 
     async def aclose(self) -> None:

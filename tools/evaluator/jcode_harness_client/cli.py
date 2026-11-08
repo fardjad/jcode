@@ -8,7 +8,6 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from .comparison import compare_runs
 from .runner import run
 from .scenarios import Scenario, load_scenarios
 from .settings import initialize, load_scenario_settings
@@ -50,7 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     init_parser.add_argument("config", type=Path)
     run_parser = subparsers.add_parser(
         "run",
-        help="Run correctness, evidence, tool-health, and diagnostic-judge stages.",
+        help="Run independent acceptance and diagnostic review.",
     )
     run_parser.add_argument("--binary", type=Path, required=True)
     run_parser.add_argument("--bridge", type=Path, required=True)
@@ -61,11 +60,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser.add_argument("--output", type=Path, required=True)
     run_parser.add_argument("--scenario")
     run_parser.add_argument("--build-provenance", type=Path)
-    compare_parser = subparsers.add_parser(
-        "compare", help="Compare two saved run summaries offline, without paid calls."
-    )
-    compare_parser.add_argument("baseline", type=Path)
-    compare_parser.add_argument("candidate", type=Path)
     validate_parser = subparsers.add_parser(
         "validate-settings",
         help=(
@@ -78,13 +72,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     validate_parser.add_argument("--scenario")
     args = parser.parse_args(argv)
     try:
-        if args.command == "compare":
-            before = json.loads(args.baseline.read_text(encoding="utf-8"))
-            after = json.loads(args.candidate.read_text(encoding="utf-8"))
-            if not isinstance(before, dict) or not isinstance(after, dict):
-                raise ValueError("run summaries must be JSON objects")
-            print(json.dumps(compare_runs(before, after), indent=2))
-            return 0
         if args.command == "init-config":
             path = initialize(args.config)
             print(f"Created {path} with owner-only permissions.")

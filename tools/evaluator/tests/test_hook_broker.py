@@ -60,6 +60,7 @@ NATIVE_ENV = {
 # filter out (never forwarded, never accepted): the payload mirror, an
 # untrusted synthetic secret, and credential-shaped extras.
 UNEXPECTED_ENV = {
+    "JCODE_RUNTIME_DIR": "/untrusted-payload-root",
     "JCODE_HOOK_PAYLOAD": '{"future":"payload-mirror"}',
     "JCODE_HOOK_UNTRUSTED": "synthetic-untrusted-secret-424242",
     "JCODE_HOOK_API_TOKEN": "synthetic-token-state",
@@ -395,7 +396,6 @@ def _run_proxy_request(
     *,
     op: str,
     payload: str = PAYLOAD_TEXT,
-    register: bool = True,
     unregister: bool = False,
     extra_env: dict | None = None,
 ) -> dict:
@@ -453,45 +453,6 @@ def test_authorized_direct_child_proxy_runs_hook(workdir):
     _no_private_leak(result["stdout"] + result["stderr"], workdir)
 
 
-def test_canonical_native_hook_env_whitelist_is_shared_and_explicit():
-    """Broker default, proxy filter, and the curated key set agree exactly."""
-    assert hook_broker.DEFAULT_ALLOWED_HOOK_ENV == hook_broker.CANONICAL_NATIVE_HOOK_ENV
-    # The curated full native context, as explicit strings: identity
-    # (event, session, tool call, tool name, swarm role, worker, blueprint),
-    # tool metadata (input, status, duration, output bytes, error), cwd,
-    # and the safe native model identifier.
-    assert set(hook_broker.CANONICAL_NATIVE_HOOK_ENV) == {
-        "JCODE_HOOK_CWD",
-        "JCODE_HOOK_DURATION_MS",
-        "JCODE_HOOK_ERROR",
-        "JCODE_HOOK_EVENT",
-        "JCODE_HOOK_MODEL",
-        "JCODE_HOOK_OUTPUT_BYTES",
-        "JCODE_HOOK_PROCESS_ROLE",
-        "JCODE_HOOK_SESSION_ID",
-        "JCODE_HOOK_STATUS",
-        "JCODE_HOOK_SWARM_ENABLED",
-        "JCODE_HOOK_SWARM_MODE",
-        "JCODE_HOOK_TOOL_CALL_ID",
-        "JCODE_HOOK_TOOL_INPUT",
-        "JCODE_HOOK_TOOL_NAME",
-        "JCODE_HOOK_WORKER_BLUEPRINT_ID",
-        "JCODE_HOOK_WORKER_BLUEPRINT_NAME",
-        "JCODE_HOOK_WORKER_ID",
-    }
-    for forbidden in (
-        "JCODE_HOOK_PAYLOAD",
-        "JCODE_HOOK_BROKER_ENDPOINT",
-        "JCODE_HOOK_UNTRUSTED",
-        "JCODE_HOOK_API_TOKEN",
-    ):
-        assert forbidden not in hook_broker.CANONICAL_NATIVE_HOOK_ENV
-    # The standalone stdlib proxy embeds the exact same explicit key set.
-    namespace: dict = {"__name__": "hook_proxy_under_test"}
-    exec(hook_broker.public_proxy_source(), namespace)  # noqa: S102
-    assert namespace["ALLOWED_HOOK_ENV"] == hook_broker.CANONICAL_NATIVE_HOOK_ENV
-
-
 def test_proxy_forwards_only_canonical_native_env(workdir):
     """The full native env crosses filtered to the whitelist, accepted."""
     _write_scripts(workdir)
@@ -524,26 +485,6 @@ def test_proxy_forwards_only_canonical_native_env(workdir):
     log_text = (workdir / "private" / "broker.log").read_text()
     assert '"event": "invalid"' not in log_text
     _no_private_leak(result["stdout"] + result["stderr"], workdir)
-
-
-def test_full_canonical_native_hook_env_is_accepted(workdir):
-    """A raw request carrying the full curated native context runs the hook."""
-    _write_scripts(workdir)
-    hook_broker.install_public_proxy(workdir / "hook-proxy")
-    marker = workdir / "guard-ran.txt"
-    operation = _make_operation(
-        "guard", [sys.executable, str(workdir / "guard_hook.py"), str(marker)]
-    )
-    extra = {
-        key: value for key, value in NATIVE_ENV.items() if key not in IDENTITY and value
-    }
-    with _start_broker(workdir, [operation]) as broker:
-        response = _run_raw_request(
-            broker, workdir, _request_code(_valid_header(hook_env_extra=extra))
-        )
-    assert response["ok"] is True, response
-    assert response["exit_code"] == 0
-    assert marker.read_text() == "ran"
 
 
 def test_native_tool_input_size_bound_is_exact(workdir):
@@ -637,7 +578,7 @@ def test_unregistered_native_parent_is_denied(workdir):
     )
     with _start_broker(workdir, [operation]) as broker:
         result = _run_proxy_request(
-            broker, workdir, op="guard", register=True, unregister=True
+            broker, workdir, op="guard", unregister=True
         )
     assert result["returncode"] == hook_broker.BROKER_FAILURE_EXIT
     assert "denied" in result["stderr"]
@@ -787,6 +728,11 @@ def test_request_format_violations_are_rejected(workdir):
             "invalid_request",
         ),
         (
+            "untrusted payload root",
+            _request_code(_valid_header(hook_env_extra={"JCODE_RUNTIME_DIR": "/var/tmp"})),
+            "invalid_request",
+        ),
+        (
             "unknown operation",
             _request_code(_valid_header(op="controller")),
             "unknown_operation",
@@ -799,6 +745,28 @@ def test_request_format_violations_are_rejected(workdir):
             assert response["error"] == expected, (label, response)
             _no_private_leak(json.dumps(response), workdir)
     assert not marker.exists()
+
+
+def test_operations_cannot_expand_native_env_whitelist(workdir):
+    operation = _make_operation(
+        "guard", [sys.executable, "-c", "pass"],
+        allowed_hook_env=hook_broker.CANONICAL_NATIVE_HOOK_ENV | {"JCODE_HOOK_API_TOKEN"},
+    )
+    with pytest.raises(ValueError, match="non-native hook key"):
+        hook_broker.HostHookBroker(workdir / "broker.sock", [operation])
+
+
+def test_hook_output_is_bounded_and_byte_exact(workdir):
+    _write_scripts(workdir)
+    hook_broker.install_public_proxy(workdir / "hook-proxy")
+    operation = _make_operation(
+        "guard", [sys.executable, "-c",
+                  "import sys; sys.stdout.buffer.write(b'x' * 100000); "
+                  "sys.stderr.buffer.write(b'y' * 100000)"],
+    )
+    with _start_broker(workdir, [operation], max_output_bytes=32) as broker:
+        result = _run_proxy_request(broker, workdir, op="guard")
+    assert result == {"returncode": 0, "stdout": "x" * 32, "stderr": "y" * 32}
 
 
 def test_hook_failure_and_timeout_are_generic(workdir, monkeypatch):

@@ -1,10 +1,10 @@
-"""Complete native evidence retention, stable citations, and pagination."""
+"""Replay native evidence and retain only cited slices and native journals."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,10 +22,18 @@ _SKIPPED_PRIVATE_NAMES = {
 _VECTORS = {
     "request_prompt_snapshots": "append_request_prompt_snapshots",
     "request_tool_snapshots": "append_request_tool_snapshots",
-    "env_snapshots": "append_env_snapshots",
-    "memory_injections": "append_memory_injections",
-    "replay_events": "append_replay_events",
 }
+
+
+def _redact_serialized(raw: bytes, redactor: Redactor) -> bytes:
+    raw = redactor.data(raw)
+    for secret in redactor.secrets:
+        if secret:
+            for ascii_only in (True, False):
+                escaped = json.dumps(secret, ensure_ascii=ascii_only)[1:-1]
+                for variant in (escaped, escaped.replace("/", r"\/")):
+                    raw = raw.replace(variant.encode(), b"[REDACTED]")
+    return raw
 
 
 @dataclass(slots=True)
@@ -33,6 +41,7 @@ class EvidenceBundle:
     records: list[_JSON]
     sessions: list[_JSON]
     gaps: list[str]
+    usage_messages: list[_JSON] = field(default_factory=list)
 
     @property
     def citations(self) -> set[str]:
@@ -42,18 +51,70 @@ class EvidenceBundle:
     def complete(self) -> bool:
         return not self.gaps
 
-
-@dataclass(frozen=True, slots=True)
-class EvidencePage:
-    index: int
-    records: tuple[_JSON, ...]
-    byte_count: int
-    sha256: str
-    oversized_single_record: bool
-
     @property
-    def record_ids(self) -> list[str]:
-        return [str(record["id"]) for record in self.records]
+    def citation_map(self) -> dict[str, _JSON]:
+        from .tool_health import native_calls
+
+        result = {record["id"]: record for record in self.records}
+        for record in self.records:
+            if record.get("kind") == "session-snapshot":
+                result[record["session_id"]] = record
+        for call in native_calls(self.records):
+            if call.get("call_id"):
+                result[f"tool:{call['session_id']}:{call['call_id']}"] = call
+        return result
+
+
+def write_cited_evidence(
+    output: Path,
+    citation_map: Mapping[str, Any],
+    findings: Sequence[_JSON],
+    journal_root: Path,
+    redactor: Redactor,
+) -> list[str]:
+    """Persist cited records and native journals from ephemeral collection.
+
+    The caller owns the temporary source and its lifetime. Never walk or prune
+    the destination: it may contain user data. Missing citations are reported.
+    """
+    refs = sorted(
+        {
+            ref
+            for finding in findings
+            for ref in finding.get("citations", [])
+            if isinstance(ref, str) and ref
+        }
+    )
+    missing = [ref for ref in refs if ref not in citation_map]
+    selected = [
+        {"id": ref, "source": citation_map[ref]}
+        for ref in refs
+        if ref in citation_map
+    ]
+    if selected:
+        write_text(
+            output / "raw" / "cited.jsonl",
+            "".join(
+                json.dumps(redactor.value(record), ensure_ascii=False) + "\n"
+                for record in selected
+            ),
+        )
+    if journal_root.is_symlink():
+        return [*missing, "unsafe native journal directory"]
+    if not journal_root.is_dir():
+        return [*missing, "native journal directory is missing"]
+    for path in sorted(journal_root.glob("session_*.journal.jsonl")):
+        if path.is_symlink() or not path.is_file():
+            missing.append(f"unsafe native journal: {path.name}")
+            continue
+        try:
+            write_bytes(
+                output / "raw" / "sessions" / path.name,
+                _redact_serialized(path.read_bytes(), redactor),
+            )
+        except OSError:
+            missing.append(f"unreadable native journal: {path.name}")
+    return missing
 
 
 @dataclass(slots=True)
@@ -64,7 +125,6 @@ class _Replay:
     )
     policy: _JSON | None = None
     parent_id: str | None = None
-    compaction: Any = None
 
 
 def _destination(raw_dir: Path, relative: Path, category: str | None) -> Path:
@@ -143,49 +203,32 @@ def retain_native_runtime(
     raw_dir: Path,
     redactor: Redactor,
 ) -> tuple[list[str], list[_JSON]]:
-    """Retain only native evidence allowlists after process shutdown."""
+    """Stage native snapshots and journals after shutdown, before temp cleanup.
 
+    ``raw_dir`` must be temporary collection storage. Persist journals and
+    cited slices separately with :func:`write_cited_evidence` after review.
+    """
+    del runtime_dir
     gaps: list[str] = []
     copied: list[_JSON] = []
-    for source, category in (
-        (home / "sessions", "sessions"),
-        (home / "logs", "logs"),
-        (runtime_dir / "jcode-tool-payloads", "hook-payloads"),
-        (runtime_dir / "durable-state", "durable-state"),
-    ):
-        if not source.exists():
-            # Empty runtimes need not have payload or durable-state directories.
-            if category in {"sessions", "logs"}:
-                gaps.append(f"native evidence directory is missing: {source}")
+    source = home / "sessions"
+    if source.is_symlink() or not source.is_dir():
+        return [f"native evidence directory is missing or unsafe: {source}"], copied
+    for path in sorted(source.glob("session_*")):
+        if not (path.name.endswith(".json") or path.name.endswith(".journal.jsonl")):
             continue
-        new_gaps, new_copies = retain_tree(
-            source,
-            raw_dir,
-            redactor,
-            skip_private=True,
-            category=category,
-        )
-        gaps.extend(new_gaps)
-        copied.extend(new_copies)
-    for name in ("daemon.log", "bridge.log"):
-        source = home / name
-        if not source.is_file() or source.is_symlink():
-            gaps.append(f"native log is missing or unsafe: {name}")
+        if path.is_symlink() or not path.is_file():
+            gaps.append(f"unsafe native session evidence: {path.name}")
             continue
         try:
-            payload = source.read_bytes()
-            write_bytes(raw_dir / "logs" / name, payload, redactor)
+            write_bytes(
+                raw_dir / "sessions" / path.name,
+                _redact_serialized(path.read_bytes(), redactor),
+            )
         except OSError as error:
-            gaps.append(f"unreadable native log {name}: {error.strerror}")
+            gaps.append(f"unreadable native session {path.name}: {error.strerror}")
             continue
-        copied.append(
-            {
-                "source": name,
-                "path": f"logs/{name}",
-                "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
-        )
+        copied.append({"source": path.name, "path": f"sessions/{path.name}"})
     return gaps, copied
 
 
@@ -254,7 +297,6 @@ def _initial_replay(snapshot: _JSON, session_id: str, gaps: list[str]) -> _Repla
         parent_id=snapshot.get("parent_id")
         if isinstance(snapshot.get("parent_id"), str)
         else None,
-        compaction=snapshot.get("compaction"),
     )
     for name in _VECTORS:
         value = snapshot.get(name, [])
@@ -312,7 +354,6 @@ def _apply_entry(
     session_id: str,
     position: int,
     gaps: list[str],
-    append_ids: list[str],
 ) -> None:
     if "replace_messages" in entry:
         replay.messages = _message_map(
@@ -345,66 +386,6 @@ def _apply_entry(
         replay.policy = policy
     if isinstance(meta.get("parent_id"), str):
         replay.parent_id = meta["parent_id"]
-    if not meta.get("compaction_unchanged", False):
-        replay.compaction = meta.get("compaction")
-
-
-def _vector_records(session_id: str, worker: str, replay: _Replay) -> list[_JSON]:
-    records: list[_JSON] = []
-    styles = {
-        "request_prompt_snapshots": ("request-prompt", "prompt"),
-        "request_tool_snapshots": ("request-tools", "tools"),
-        "env_snapshots": ("environment", "snapshot"),
-        "memory_injections": ("memory", "snapshot"),
-        "replay_events": ("replay", "events"),
-    }
-    for vector_name, values in replay.vectors.items():
-        kind, payload_key = styles[vector_name]
-        for index, value in enumerate(values):
-            records.append(
-                {
-                    "id": f"session:{session_id}:{kind}:{index}",
-                    "kind": kind,
-                    "session_id": session_id,
-                    "worker": worker,
-                    "snapshot_index": index,
-                    "data": {
-                        "session_id": session_id,
-                        "snapshot_index": index,
-                        payload_key: value,
-                    },
-                }
-            )
-    return records
-
-
-def _auxiliary_records(raw_dir: Path, gaps: list[str]) -> list[_JSON]:
-    records: list[_JSON] = []
-    for root, kind in (
-        (raw_dir / "durable-state", "durable-state"),
-        (raw_dir / "logs", "native-log"),
-    ):
-        if not root.is_dir():
-            continue
-        for path in sorted(root.rglob("*")):
-            if path.is_symlink() or not path.is_file():
-                continue
-            if kind == "native-log" and path.name.startswith("acceptance."):
-                continue
-            relative = path.relative_to(raw_dir).as_posix()
-            citation = f"{kind}:{relative}"
-            try:
-                raw = path.read_bytes()
-                if kind == "durable-state" and path.suffix == ".json":
-                    data: Any = json.loads(raw)
-                else:
-                    data = raw.decode("utf-8", errors="replace")
-                records.append(
-                    {"id": citation, "kind": kind, "path": relative, "data": data}
-                )
-            except (OSError, ValueError) as error:
-                gaps.append(f"unreadable auxiliary evidence {relative}: {error}")
-    return records
 
 
 def collect_evidence(
@@ -416,10 +397,11 @@ def collect_evidence(
     tool_snapshots: Sequence[_JSON] = (),
     retention_gaps: Sequence[str] = (),
 ) -> EvidenceBundle:
-    """Replay native snapshots/journals while preserving every raw entry."""
+    """Replay native snapshots/journals once from ephemeral storage."""
 
     records: list[_JSON] = []
     sessions: list[_JSON] = []
+    usage_messages: list[_JSON] = []
     gaps = list(retention_gaps)
     used_ids: set[str] = set()
 
@@ -514,6 +496,7 @@ def collect_evidence(
         )
         snapshot_ids.add(session_id)
         replay = _initial_replay(snapshot, session_id, gaps)
+        usage_by_id = dict(replay.messages)
         journal = _journal_path(path)
         seen_new = False
         if journal.exists():
@@ -527,6 +510,18 @@ def collect_evidence(
                         entry = json.loads(line)
                         if not isinstance(entry, dict):
                             raise ValueError("journal entry is not an object")
+                        for key in ("replace_messages", "append_messages"):
+                            values = entry.get(key, [])
+                            if isinstance(values, list):
+                                for message in values:
+                                    if isinstance(message, dict) and isinstance(
+                                        message.get("id"), str
+                                    ):
+                                        previous = usage_by_id.get(message["id"])
+                                        if previous is None or not isinstance(
+                                            previous.get("token_usage"), dict
+                                        ):
+                                            usage_by_id[message["id"]] = message
                         append_ids = _append_message_ids(
                             entry, gaps, session_id, position
                         )
@@ -537,20 +532,10 @@ def collect_evidence(
                             seen_new,
                             append_ids,
                         )
-                        add(
-                            {
-                                "id": citation,
-                                "kind": "journal-entry",
-                                "session_id": session_id,
-                                "journal_position": position,
-                                "replay_status": "stale-prefix" if stale else "applied",
-                                "data": entry,
-                            }
-                        )
                         if not stale:
                             seen_new = True
                             _apply_entry(
-                                entry, replay, session_id, position, gaps, append_ids
+                                entry, replay, session_id, position, gaps
                             )
                     except (ValueError, UnicodeError) as error:
                         gaps.append(
@@ -569,6 +554,16 @@ def collect_evidence(
             except (OSError, ValueError, UnicodeError) as error:
                 gaps.append(f"unreadable native journal for {session_id}: {error}")
         worker = _worker_name(replay.policy, session_id, coordinator_session_id)
+        usage_messages.extend(
+            {
+                "session_id": session_id,
+                "message_id": message_id,
+                "worker": worker,
+                "data": message,
+            }
+            for message_id, message in usage_by_id.items()
+            if isinstance(message.get("token_usage"), dict)
+        )
         listing = listing_by_id.get(session_id, {})
         # Safe fallback only: when the listing carries no usable report-back
         # parent, the actual transcript parent is the native ancestry fact.
@@ -613,13 +608,11 @@ def collect_evidence(
             }
         )
         reconstructed = {
-            **snapshot,
             "session_id": session_id,
             "parent_id": replay.parent_id,
             "worker_blueprint_policy": replay.policy,
-            "messages": list(replay.messages.values()),
-            **replay.vectors,
-            "compaction": replay.compaction,
+            "model": snapshot.get("model"),
+            "reasoning_effort": snapshot.get("reasoning_effort"),
         }
         add(
             {
@@ -631,8 +624,15 @@ def collect_evidence(
                 "data": reconstructed,
             }
         )
-        for record in _vector_records(session_id, worker, replay):
-            add(record)
+        for index, tools in enumerate(replay.vectors["request_tool_snapshots"]):
+            add({
+                "id": f"session:{session_id}:request-tools:{index}",
+                "kind": "request-tools",
+                "session_id": session_id,
+                "worker": worker,
+                "snapshot_index": index,
+                "data": {"tools": tools},
+            })
         for message_id, message in replay.messages.items():
             reference = message.get("request_snapshot")
             if reference is not None and not isinstance(reference, dict):
@@ -677,51 +677,9 @@ def collect_evidence(
         gaps.append("coordinator native session snapshot is missing")
     if not paths:
         gaps.append("no native session snapshots were retained")
-    for record in _auxiliary_records(raw_dir, gaps):
-        add(record)
-    return EvidenceBundle(records=records, sessions=sessions, gaps=gaps)
-
-
-def paginate(records: Sequence[_JSON], maximum_bytes: int) -> list[EvidencePage]:
-    """Page every record without truncation; one huge record forms one page."""
-
-    if maximum_bytes < 1:
-        raise ValueError("evidence page size must be positive")
-    pages: list[EvidencePage] = []
-    current: list[_JSON] = []
-    current_size = 0
-
-    def encoded_size(items: Iterable[_JSON]) -> int:
-        return len(
-            json.dumps(list(items), ensure_ascii=False, separators=(",", ":")).encode()
-        )
-
-    def finish() -> None:
-        nonlocal current, current_size
-        if not current:
-            return
-        encoded = json.dumps(current, ensure_ascii=False, separators=(",", ":"))
-        pages.append(
-            EvidencePage(
-                index=len(pages),
-                records=tuple(current),
-                byte_count=len(encoded.encode()),
-                sha256=hashlib.sha256(encoded.encode()).hexdigest(),
-                oversized_single_record=len(current) == 1
-                and encoded_size(current) > maximum_bytes,
-            )
-        )
-        current = []
-        current_size = 0
-
-    for record in records:
-        size = encoded_size([record])
-        if current and current_size + size > maximum_bytes:
-            finish()
-        current.append(record)
-        current_size = encoded_size(current)
-    finish()
-    return pages
+    return EvidenceBundle(
+        records=records, sessions=sessions, gaps=gaps, usage_messages=usage_messages
+    )
 
 
 def format_transcript(records: Sequence[_JSON]) -> str:

@@ -2,7 +2,6 @@ id = "polyglot-rest-api-fixer"
 fixture = "fixtures"
 prompt = "In the current workspace, implement the RestAPI class according to README.md so that python3 -m unittest rest_api_test.py passes completely."
 accept = ["python3", "-m", "unittest", "rest_api_test.py"]
-metrics = ["tool_health"]
 
 [judge]
 criteria = [

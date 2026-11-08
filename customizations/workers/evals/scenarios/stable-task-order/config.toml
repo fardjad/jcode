@@ -2,7 +2,6 @@ id = "stable-task-order"
 fixture = "fixtures"
 prompt = "Repair the task scheduler to satisfy README.md, including stable dependency ordering and invalid-input handling. Preserve the acceptance tests and run python3 -m unittest scheduler_test.py to verify the result."
 accept = ["python3", "-m", "unittest", "scheduler_test.py"]
-metrics = ["tool_health", "coordination"]
 
 [judge]
 criteria = [

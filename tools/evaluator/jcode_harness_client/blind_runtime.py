@@ -1,45 +1,11 @@
 """Bubblewrap blind-runtime command construction for evaluator harness runs.
 
-This module builds, but never launches, the sandbox command prefix used to
-run evaluator workloads with a blind runtime: the sandbox sees a minimal
-read-only system, a fresh PID namespace, and only explicitly staged public
-paths. Launching a real provider session is out of scope; the broker owns
-process lifecycle and parent-PID authentication.
-
-Exact mount and environment interface (for the next broker integration):
-
-* Root: ``bwrap --tmpfs /``. The sandbox root is empty; no host directory,
-  and never the host root, is bound across. ``/home``, ``/run``, ``/root``,
-  and every other private host path are absent rather than mounted.
-* System, read-only: ``--ro-bind /usr /usr`` and ``--ro-bind /etc /etc``
-  (TLS certificates and ``/etc/resolv.conf`` DNS stay usable). ``/bin``,
-  ``/lib``, ``/lib64``, and ``/sbin`` are bound read-only when they are real
-  directories and recreated with ``--symlink`` when the host uses merged
-  ``/usr`` layout.
-* Fresh namespaces: ``--unshare-pid`` with ``--proc /proc`` (host processes
-  and their environments are invisible), ``--dev /dev`` for a new device
-  tree, and ``--tmpfs /tmp``. Host networking is preserved: no network
-  namespace is created.
-* Public staging: the caller stages native binaries (the jcode binary and
-  bridge), workspace, config, and runtime state under one public host root
-  such as ``/var/tmp/<run>/``. The ``bin``, ``workspace``, ``config``, and
-  ``runtime`` subdirectories are the only read-write binds and are mounted
-  at their identical absolute host paths, with ``--dir`` entries for their
-  parent directories. The sandbox HOME is ``<root>/runtime/home``.
-* DNS: ``/etc/resolv.conf`` on the host is frequently a symlink into the
-  hidden ``/run`` tree (systemd-resolved, NetworkManager). When it is a
-  symlink to a ``/run/`` target, the planner snapshots its content into
-  ``<root>/config/resolv.conf`` and the builder mounts that snapshot
-  read-only at the symlink's target path inside the otherwise absent
-  ``/run`` tree. Only this synthetic file appears under ``/run``; user
-  sockets and the rest of the host ``/run`` stay hidden.
-* Optional read-only caches: explicit non-private toolchain cache paths are
-  exposed read-only at their identical absolute paths.
-* Environment: rebuilt from scratch. PATH is only ``<root>/bin:/usr/bin:/bin``
-  plus the staged binaries; evaluator virtualenvs, source trees, and the
-  inherited PATH never leak. DBus, XDG runtime, SSH, GPG, jcode, and
-  toolchain-home variables are scrubbed. ``TERM`` and ``LC_*``/``LANG`` pass
-  through. Callers may add explicit extra variables unless scrubbed.
+Builds an empty-root sandbox with read-only system/TLS/DNS, fresh PID/proc
+and device trees, tmpfs /tmp, and host networking. Only public staged paths
+and explicitly validated read-only caches are mounted. A resolver symlink
+into /run gets a synthetic public snapshot, not a host /run mount.
+Environment is rebuilt; directory routing uses the validated public channel.
+Lifecycle and trusted native PID registration live in runtime.py.
 """
 
 from __future__ import annotations
@@ -163,15 +129,7 @@ _PYTHON_NAME_PATTERN = re.compile(r"^python3\.(\d+)$")
 
 @dataclass(frozen=True)
 class StagingPlan:
-    """Public host paths staged for one blind sandbox run.
-
-    ``root`` is a public (non-private) host directory such as
-    ``/var/tmp/<run>/``. ``dirs`` are the four read-write mounts, exposed
-    inside the sandbox at their identical absolute paths. ``files`` are the
-    native binaries (typically the caller's jcode binary and bridge) that
-    :func:`stage_files` copies into ``root/bin``. ``home`` is the sandbox
-    HOME directory under the read-write runtime mount.
-    """
+    """Public mounts and native binary copies for one blind sandbox run."""
 
     root: Path
     dirs: tuple[Path, ...]
@@ -202,12 +160,7 @@ class StagingPlan:
 
 @dataclass(frozen=True)
 class BlindCommand:
-    """A ready-to-launch sandbox command prefix plus its public environment.
-
-    The caller appends its own command and passes ``env`` verbatim to the
-    subprocess: ``[*command.argv, *inner_argv]`` with ``env=command.env``.
-    This module never launches the sandbox or any provider.
-    """
+    """Sandbox prefix and rebuilt environment; append the inner command."""
 
     argv: tuple[str, ...]
     env: dict[str, str]
@@ -611,19 +564,7 @@ def build_blind_env(
     extra_env: Mapping[str, str] | None = None,
     public_dirs: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Return the scrubbed environment for processes inside the sandbox.
-
-    The environment is rebuilt from scratch: PATH contains only the staged
-    public ``bin`` directory and public system paths, HOME points into the
-    read-write runtime mount, and TMPDIR is the sandbox tmpfs. Inherited
-    user sockets, runtimes, agent variables, and toolchain or jcode homes
-    never cross the boundary. ``extra_env`` entries are applied last and
-    may not reintroduce scrubbed variables. ``public_dirs`` is the only
-    authoritative channel for directory variables such as ``HOME`` and
-    ``JCODE_HOME``: each entry must be a :data:`PUBLIC_DIR_ENV_KEYS` name
-    whose value resolves inside the public staging root (see
-    :func:`public_dirs_env`), not a global custom environment value.
-    """
+    """Rebuild env; only public_dirs may set validated directory routing."""
     env: dict[str, str] = {
         "PATH": ":".join([str(staging.bin), "/usr/bin", "/bin"]),
         "HOME": str(staging.home),
@@ -636,7 +577,7 @@ def build_blind_env(
                 env[key] = value
     if extra_env is not None:
         for key, value in extra_env.items():
-            if key in SCRUBBED_ENV_KEYS:
+            if key in SCRUBBED_ENV_KEYS or key in PUBLIC_DIR_ENV_KEYS:
                 raise ValueError(f"refusing to pass scrubbed variable: {key}")
             env[key] = value
     if public_dirs is not None:

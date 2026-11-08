@@ -122,3 +122,22 @@ def test_blueprints_do_not_leak_catalog_procedure_paths() -> None:
         text = path.read_text(encoding="utf-8")
         for marker in CATALOG_PROCEDURE_MARKERS:
             assert marker not in text, (path.name, marker)
+
+
+def test_tier_schemas_and_shared_block_match() -> None:
+    allowed_differences: set[str] = set()
+    tiers = {name: _blueprint(name) for name in ("routine", "advanced", "expert")}
+    baseline, body = tiers["routine"]
+    start, end = "<!-- shared:start -->", "<!-- shared:end -->"
+    assert body.count(start) == body.count(end) == 1
+    shared = body.split(start, 1)[1].split(end, 1)[0]
+    for name, (metadata, text) in tiers.items():
+        assert text.count(start) == text.count(end) == 1, name
+        assert text.index(start) < text.index(end), name
+        assert text.split(start, 1)[1].split(end, 1)[0] == shared, name
+        for key in ("input-schema", "output-schema"):
+            assert key in metadata, (name, key)
+            assert key in allowed_differences or metadata[key] == baseline[key], (
+                name,
+                key,
+            )

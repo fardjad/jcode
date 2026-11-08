@@ -6,6 +6,8 @@ import tomllib
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from jcode_harness_client.inventory import (
     blueprint_config,
     snapshot_blueprints,
@@ -73,6 +75,15 @@ def test_invalid_blueprint_registration_is_explicit(tmp_path: Path) -> None:
     snapshots, issues = snapshot_blueprints(source, tmp_path / "output", Redactor())
     assert snapshots[-1]["name"] == worker_id
     assert any("mismatch" in issue for issue in issues)
+
+
+def test_staging_never_writes_or_rewrites_a_configured_secret(tmp_path: Path) -> None:
+    source = tmp_path / "blueprints"
+    source.mkdir()
+    (source / "coordinator.md").write_text(blueprint_text(None) + "secret-token")
+    with pytest.raises(ValueError, match="configured secret"):
+        snapshot_blueprints(source, tmp_path / "stage", Redactor(("secret-token",)))
+    assert not list((tmp_path / "stage").glob("*.md"))
 
 
 def test_plugin_snapshot_and_trace_commands_retain_production_identity(

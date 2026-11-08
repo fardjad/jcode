@@ -18,10 +18,10 @@ from urllib.parse import urlsplit
 CONFIG_NAME = "config.toml"
 EXAMPLE_SUFFIX = ".example"
 KEY_ENV = "JCODE_ACCEPTANCE_API_KEY"
-DELEGATION_GUARD_BLUEPRINTS = ("advanced", "expert")
 DELEGATION_GUARD_THRESHOLD = 8192
 GUARD_BLUEPRINTS_ENV = "JCODE_DELEGATION_GUARD_WORKER_BLUEPRINTS"
 GUARD_THRESHOLD_ENV = "JCODE_DELEGATION_GUARD_THRESHOLD"
+GUARD_TAIL_BYTES_ENV = "JCODE_DELEGATION_GUARD_TAIL_BYTES"
 PROVIDERS = {
     "openai-compatible",
     "anthropic-compatible",
@@ -32,14 +32,12 @@ ROLES = ("coordinator", "swarm", "judge", "simulator")
 # Plain reasoning-effort levels routed to each provider's real request
 # fields. No recursion aliases such as "swarm": a worker without an
 # explicit override simply inherits the swarm effort at resolution time.
-EFFORTS = ("low", "medium", "high")
+EFFORTS = ("low", "medium", "high", "xhigh")
 _LIMITS = {
     "turn_timeout_seconds",
     "execution_timeout_seconds",
     "swarm_timeout_minutes",
     "acceptance_timeout_seconds",
-    "judge_max_calls",
-    "judge_page_bytes",
 }
 _TABLES = (
     "provider",
@@ -72,12 +70,8 @@ turn_timeout_seconds = 300
 # execution_timeout_seconds = 1800
 swarm_timeout_minutes = 10
 acceptance_timeout_seconds = 300
-# Positive cost guard; exhaustion before complete coverage is incomplete.
-judge_max_calls = 32
-# Maximum evidence bytes per judge request, not a transcript truncation limit.
-judge_page_bytes = 120000
 
-# Optional plain reasoning efforts (low, medium, high) routed to each
+# Optional plain reasoning efforts (low, medium, high, xhigh) routed to each
 # provider's native request fields. Omitted values keep provider defaults.
 [effort]
 coordinator = "REPLACE_WITH_COORDINATOR_EFFORT_OR_OMIT"
@@ -88,16 +82,17 @@ simulator = "REPLACE_WITH_SIMULATOR_EFFORT_OR_OMIT"
 # Optional per-worker effort overrides keyed by discovered worker ID.
 # A worker without an entry inherits the swarm effort.
 [worker_effort]
-advanced = "REPLACE_WITH_ADVANCED_EFFORT_OR_OMIT"
-expert = "REPLACE_WITH_EXPERT_EFFORT_OR_OMIT"
+worker_one = "REPLACE_WITH_WORKER_EFFORT_OR_OMIT"
+worker_two = "REPLACE_WITH_WORKER_EFFORT_OR_OMIT"
 
 [delegation_guard]
-# Worker blueprints the guard nudges toward delegation. Only advanced and
-# expert are supported; an empty list disables worker-role guarding while
-# the coordinator nudge stays active.
-worker_blueprints = ["advanced", "expert"]
+# Discovered worker IDs the guard nudges toward delegation. An empty list
+# disables worker-role guarding while the coordinator nudge stays active.
+worker_blueprints = ["worker_one", "worker_two"]
 # Oversized tool-result byte threshold that triggers the delegation nudge.
 threshold = 8192
+# Optional worker output tail byte limit; 0 disables the tail.
+# tail_bytes = 1024
 """
 
 
@@ -115,8 +110,6 @@ class EvaluationLimits:
     execution_timeout_seconds: int | None = None
     swarm_timeout_minutes: int = 10
     acceptance_timeout_seconds: int = 300
-    judge_max_calls: int = 32
-    judge_page_bytes: int = 120_000
 
 
 @dataclass(frozen=True)
@@ -161,13 +154,15 @@ class ScenarioTimeouts:
 class DelegationGuardSettings:
     """Explicit delegation-guard worker selection and threshold."""
 
-    worker_blueprints: tuple[str, ...] = DELEGATION_GUARD_BLUEPRINTS
+    worker_blueprints: tuple[str, ...] = ()
     threshold: int = DELEGATION_GUARD_THRESHOLD
+    tail_bytes: int | None = None
 
     def manifest(self) -> dict[str, object]:
         return {
             "worker_blueprints": list(self.worker_blueprints),
             "threshold": self.threshold,
+            "tail_bytes": self.tail_bytes,
         }
 
 
@@ -227,10 +222,13 @@ class ProviderSettings:
     def delegation_guard_environment(self) -> dict[str, str]:
         """Explicit guard env; injected only when the plugin is installed."""
 
-        return {
+        environment = {
             GUARD_BLUEPRINTS_ENV: ",".join(self.delegation_guard.worker_blueprints),
             GUARD_THRESHOLD_ENV: str(self.delegation_guard.threshold),
         }
+        if self.delegation_guard.tail_bytes is not None:
+            environment[GUARD_TAIL_BYTES_ENV] = str(self.delegation_guard.tail_bytes)
+        return environment
 
     def sanitized_manifest(self) -> dict[str, object]:
         """Secret-free settings record for per-scenario run manifests."""
@@ -304,6 +302,21 @@ def _validate_worker_key(worker_id: str) -> None:
         raise ValueError(
             "worker IDs must not contain surrounding whitespace or controls"
         )
+
+
+def _validate_guard_blueprints(blueprints: object, source: str) -> list[str]:
+    if not isinstance(blueprints, list):
+        raise ValueError(f"{source} delegation_guard worker_blueprints must be a list")
+    seen: set[str] = set()
+    for blueprint in blueprints:
+        _validate_worker_key(blueprint)
+        # The guard receives IDs in a comma-separated environment variable.
+        if "," in blueprint:
+            raise ValueError("delegation_guard worker IDs must not contain commas")
+        if blueprint in seen:
+            raise ValueError("delegation_guard worker IDs must be unique")
+        seen.add(blueprint)
+    return blueprints
 
 
 def parse_settings(text: str) -> ProviderSettings:
@@ -479,26 +492,25 @@ def _validate_partial(data: dict[str, object], source: str) -> dict[str, object]
         if not isinstance(guard, dict) or set(guard) - {
             "worker_blueprints",
             "threshold",
+            "tail_bytes",
         }:
             raise ValueError(
-                f"{source} delegation_guard supports worker_blueprints and "
-                "threshold only"
+                f"{source} delegation_guard supports worker_blueprints, "
+                "threshold, and tail_bytes only"
             )
         if "worker_blueprints" in guard:
-            blueprints = guard["worker_blueprints"]
-            if not isinstance(blueprints, list) or not all(
-                isinstance(blueprint, str) and blueprint in DELEGATION_GUARD_BLUEPRINTS
-                for blueprint in blueprints
-            ):
-                raise ValueError(
-                    f"{source} delegation_guard worker_blueprints support "
-                    "advanced and expert only"
-                )
+            _validate_guard_blueprints(guard["worker_blueprints"], source)
         if "threshold" in guard:
             threshold = guard["threshold"]
             if type(threshold) is not int or threshold < 0:
                 raise ValueError(
                     f"{source} delegation_guard threshold must be a nonnegative integer"
+                )
+        if "tail_bytes" in guard:
+            value = guard["tail_bytes"]
+            if type(value) is not int or value < 0:
+                raise ValueError(
+                    f"{source} delegation_guard tail_bytes must be a nonnegative integer"
                 )
     return data
 
@@ -663,21 +675,21 @@ def _settings_from_data(data: dict[str, object]) -> ProviderSettings:
                 f"worker effort for {worker_id!r} must be plain low, medium, or high"
             )
     guard = data.get("delegation_guard", {})
-    if not isinstance(guard, dict) or set(guard) - {"worker_blueprints", "threshold"}:
+    if not isinstance(guard, dict) or set(guard) - {
+        "worker_blueprints", "threshold", "tail_bytes"
+    }:
         raise ValueError(
-            "delegation_guard supports worker_blueprints and threshold only"
+            "delegation_guard supports worker_blueprints, threshold, and tail_bytes only"
         )
-    blueprints = guard.get("worker_blueprints", list(DELEGATION_GUARD_BLUEPRINTS))
-    if not isinstance(blueprints, list) or not all(
-        isinstance(blueprint, str) and blueprint in DELEGATION_GUARD_BLUEPRINTS
-        for blueprint in blueprints
-    ):
-        raise ValueError(
-            "delegation_guard worker_blueprints support advanced and expert only"
-        )
+    blueprints = _validate_guard_blueprints(guard.get("worker_blueprints", []), "settings")
     guard_threshold = guard.get("threshold", DELEGATION_GUARD_THRESHOLD)
     if type(guard_threshold) is not int or guard_threshold < 0:
         raise ValueError("delegation_guard threshold must be a nonnegative integer")
+    guard_tail_bytes = guard.get("tail_bytes")
+    if "tail_bytes" in guard and (
+        type(guard_tail_bytes) is not int or guard_tail_bytes < 0
+    ):
+        raise ValueError("delegation_guard tail_bytes must be a nonnegative integer")
     provider_data = data["provider"]
     if not isinstance(provider_data, dict) or set(provider_data) - {
         "type",
@@ -773,7 +785,7 @@ def _settings_from_data(data: dict[str, object]) -> ProviderSettings:
         dict(worker_models),
         EvaluationEfforts(**effort),
         dict(worker_effort),
-        DelegationGuardSettings(tuple(blueprints), guard_threshold),
+        DelegationGuardSettings(tuple(blueprints), guard_threshold, guard_tail_bytes),
     )
 
 

@@ -29,8 +29,8 @@ simulator = "sol"
 # Optional per-blueprint overrides; keys must match discovered worker names.
 [worker_models]
 routine = "luna"
-advanced = "glm"
-expert = "opus"
+advanced = "terra"
+expert = "sol"
 
 [limits]
 # Usual budgets for scenarios without their own overrides.
@@ -40,12 +40,8 @@ turn_timeout_seconds = 300
 swarm_timeout_minutes = 10
 # Independent acceptance command limit; a timeout does not erase source evidence.
 acceptance_timeout_seconds = 300
-# Positive paid-call guard. If pages + synthesis exceed it, review is incomplete.
-judge_max_calls = 32
-# Evidence bytes per page. Oversized records remain whole; nothing is truncated.
-judge_page_bytes = 120000
 
-# Optional plain reasoning efforts (low, medium, high) routed to each
+# Optional plain reasoning efforts (low, medium, high, xhigh) routed to each
 # provider's native request fields. The coordinator effort stays unspecified;
 # omitted values keep provider defaults.
 # [effort]
@@ -67,3 +63,5 @@ expert = "medium"
 worker_blueprints = ["advanced", "expert"]
 # Oversized tool-result byte threshold that triggers the delegation nudge.
 threshold = 8192
+# Optional worker output tail byte limit; 0 disables the tail.
+# tail_bytes = 1024
