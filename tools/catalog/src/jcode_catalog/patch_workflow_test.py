@@ -1,5 +1,5 @@
 """Contracts for shared patch workflow ordering and failure recovery."""
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 import io
 import unittest
@@ -16,6 +16,9 @@ class PatchWorkflowTests(unittest.TestCase):
         self.root = Path('/catalog')
         self.tree = Path('/catalog/worktree')
         self.calls = []
+        self.lock = object()
+        self.stack.enter_context(patch('jcode_catalog.patch_workflow.exclusive_lock',
+                                       return_value=nullcontext(self.lock)))
         targets = {
             'resolve_base': 'base',
             'validate_catalog': None,
@@ -26,6 +29,7 @@ class PatchWorkflowTests(unittest.TestCase):
             'patch_worktree.cleanup': None,
             'run_nextest.execute': 0,
             'ensure_branch': None,
+            'check_workspace': None,
         }
         self.mocks = {}
         for name, result in targets.items():
@@ -40,16 +44,24 @@ class PatchWorkflowTests(unittest.TestCase):
     def names(self):
         return [name for name, _, _ in self.calls]
 
-    def test_patch_test_runs_declared_validation_then_compatibility_and_retains(self):
+    def test_gate_then_patch_check_reuses_source_and_runs_compatibility_once(self):
+        workflow.execute(self.root, 'gate', preflight=False)
         workflow.execute(self.root, 'test', 'patches/0005-candidate-example.patch')
         self.assertEqual(self.names(), [
+            'resolve_base', 'patch_worktree.create', 'apply_patches.apply',
+            'check_workspace', 'validate_patch_commands.validate', 'run_nextest.execute',
             'resolve_base', 'validate_catalog', 'patch_worktree.create',
-            'apply_patches.apply', 'validate_patch_commands.validate', 'run_nextest.execute'])
-        self.mocks['apply_patches.apply'].assert_called_once_with(
+            'apply_patches.apply', 'check_workspace', 'validate_patch_commands.validate'])
+        self.mocks['apply_patches.apply'].assert_called_with(
             self.root, self.tree, '0005-candidate-example.patch', None)
         self.mocks['run_nextest.execute'].assert_called_once_with(
-            self.root, 'test', self.tree, 'base')
-        self.assertIn('patch passed; worktree retained:', self.output.getvalue())
+            self.root, 'test', self.tree, 'base', held_lock=self.lock)
+        for call in self.mocks['patch_worktree.create'].call_args_list:
+            self.assertEqual(call.args[1], 'patch-validation')
+            self.assertTrue(call.kwargs['disposable'])
+        self.assertEqual(self.mocks['validate_patch_commands.validate'].call_args_list[0].args[2], None)
+        self.assertEqual(self.mocks['validate_patch_commands.validate'].call_args.args[2], '0005-candidate-example.patch')
+        self.mocks['patch_worktree.cleanup'].assert_not_called()
 
     def test_candidate_checks_kind_validates_then_branches_and_cleans_without_compat(self):
         workflow.execute(self.root, 'candidate', '0005-candidate-example.patch')
@@ -67,19 +79,20 @@ class PatchWorkflowTests(unittest.TestCase):
             workflow.execute(self.root, 'candidate', '0005-candidate-example.patch')
         self.mocks['ensure_branch'].assert_not_called()
         self.mocks['patch_worktree.cleanup'].assert_not_called()
-        self.assertIn('workflow failed; worktree retained:', self.errors.getvalue())
+        self.assertIn('workflow failed in:', self.errors.getvalue())
 
     def test_apply_failure_retains_tree_and_does_not_validate(self):
         self.mocks['apply_patches.apply'].side_effect = CatalogError('conflict')
         with self.assertRaises(CatalogError):
             workflow.execute(self.root, 'test', '0005-candidate-example.patch')
         self.mocks['validate_patch_commands.validate'].assert_not_called()
-        self.assertIn('cleanup:', self.errors.getvalue())
+        self.assertIn('rerunning patch validation resets', self.errors.getvalue())
 
     def test_compatibility_failure_is_failure_not_a_pass(self):
-        self.mocks['run_nextest.execute'].side_effect = lambda *args: 1
+        self.mocks['run_nextest.execute'].return_value = 1
+        self.mocks['run_nextest.execute'].side_effect = None
         with self.assertRaises(CatalogError):
-            workflow.execute(self.root, 'test', '0005-candidate-example.patch')
+            workflow.execute(self.root, 'test', '0005-candidate-example.patch', compat_each=True)
         self.assertNotIn('patch passed', self.output.getvalue())
         self.mocks['patch_worktree.cleanup'].assert_not_called()
 
@@ -88,7 +101,7 @@ class PatchWorkflowTests(unittest.TestCase):
         self.assertEqual(self.names(), ['resolve_base', 'patch_worktree.create',
             'run_nextest.execute', 'validate_patch_commands.learn', 'patch_worktree.cleanup'])
         self.mocks['run_nextest.execute'].assert_called_once_with(
-            self.root, 'learn', self.tree, 'base')
+            self.root, 'learn', self.tree, 'base', held_lock=self.lock)
 
     def test_learning_failure_preserves_clean_upstream_worktree(self):
         self.mocks['validate_patch_commands.learn'].side_effect = CatalogError('failure')
@@ -105,11 +118,11 @@ class PatchWorkflowTests(unittest.TestCase):
         self.mocks['run_nextest.execute'].assert_not_called()
 
     def test_compile_failure_prevents_compatibility_and_preserves_tree(self):
-        with patch('jcode_catalog.patch_workflow.subprocess.run', side_effect=OSError('compile failed')):
-            with self.assertRaises(OSError):
-                workflow.execute(self.root, 'validate')
+        self.mocks['check_workspace'].side_effect = OSError('compile failed')
+        with self.assertRaises(OSError):
+            workflow.execute(self.root, 'validate')
         self.mocks['run_nextest.execute'].assert_not_called()
-        self.assertIn('worktree retained:', self.errors.getvalue())
+        self.assertIn('workflow failed in:', self.errors.getvalue())
 
 
 class CandidateBranchTests(unittest.TestCase):

@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -86,7 +87,9 @@ def main() -> int:
             evaluation_directory(root) / "build.lock",
             "worker evaluation build and live run",
         ) as lock:
+            build_started = time.monotonic()
             build = prepare(root, held_lock=lock)
+            build["build_check_seconds"] = time.monotonic() - build_started
             provenance.write_text(
                 json.dumps(build, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",

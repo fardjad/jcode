@@ -32,13 +32,13 @@ class CompatibilityCacheTests(unittest.TestCase):
                 "X-Jcode-Patch-Kind: upstream-candidate\n\nValidation:\n"
                 "cargo test --lib smoke\n---\n")
             validate(root, source, "0001-smoke.patch", "fixture-base")
-            declared = list((root / ".tools/cargo-target/patch-validation").glob("*/debug/deps/*"))
+            declared = list((root / ".tools/cargo-target/patch-validation").glob("debug/deps/*"))
             self.assertTrue(declared)
             self.assertEqual(run(str(binaries[0]), root, source, []), 0)
             report = source / "target/nextest/compat/junit.xml"
             self.assertTrue(report.is_file())
             self.assertIn("smoke", report.read_text())
-            caches = list((root / ".tools/cargo-target/compatibility").glob("*/debug/deps/libjcode*.rlib"))
+            caches = list((root / ".tools/cargo-target/patch-validation").glob("debug/deps/libjcode*.rlib"))
             self.assertEqual(len(caches), 1)
             self.assertFalse((source / "target/debug").exists())
 

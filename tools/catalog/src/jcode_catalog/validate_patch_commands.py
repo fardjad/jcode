@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 from .isolate_config import isolated_environment
-from .patch_catalog import CatalogError, dependency_order, fail, patches, repository_root, resolve_patch, validation_commands
+from .patch_catalog import CatalogError, fail, patches, repository_root, resolve_patch, validation_commands
 from .run_nextest import config_path, load_validation_names
 from .validation_state import exclusive_lock, source_cache
 from .metadata import is_rust_test
@@ -57,23 +58,24 @@ def write_validation_names(root: Path, base: str, names: list[str]) -> Path:
     return destination
 
 
-def learn(root: Path, worktree: Path, base: str) -> list[str]:
+def learn(root: Path, worktree: Path, base: str, *, held_lock=None) -> list[str]:
     """Run cargo Validation commands on clean upstream and record failing tests."""
     catalog = patches(root)
-    cargo_target = source_cache(root, worktree, "patch-validation")
+    cargo_target = source_cache(root, worktree, "upstream-learning")
     names: set[str] = set()
     for patch in (catalog[name] for name in sorted(catalog)):
         for command in validation_commands(patch.path):
             if not is_rust_test(command):
                 continue
             print(f"learning validation exclusions from {patch.path.name}: {command}")
-            with isolated_environment() as environment, exclusive_lock(
-                    cargo_target / "catalog.lock", "baseline validation cache"):
+            with isolated_environment() as environment, (nullcontext(held_lock) if held_lock else
+                    exclusive_lock(cargo_target / "catalog.lock", "baseline validation cache")) as lock:
                 environment["CARGO_TARGET_DIR"] = str(cargo_target)
                 environment["JCODE_CATALOG_ROOT"] = str(root)
                 result = subprocess.run(
                     ["bash", "-c", command], cwd=worktree, env=environment,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    **({"pass_fds": (lock.fileno(),)} if os.name != "nt" else {}),
                 )
             names.update(parse_failed_tests(result.stdout))
     found = sorted(names)
@@ -82,13 +84,13 @@ def learn(root: Path, worktree: Path, base: str) -> list[str]:
     return found
 
 
-def validate(root: Path, worktree: Path, target: str | None, base: str | None = None) -> None:
-    """Run all or target closure validations; never apply or create worktrees."""
+def validate(root: Path, worktree: Path, target: str | None, base: str | None = None, *, held_lock=None) -> None:
+    """Run all or only the target's validations; never apply or create worktrees."""
     if not worktree.is_dir() or not (worktree / ".git").exists():
         raise CatalogError(f"existing Git worktree required: {worktree}")
     catalog = patches(root)
     ordered = ([catalog[name] for name in sorted(catalog)]
-               if target is None else dependency_order(root, resolve_patch(root, target)))
+               if target is None else [catalog[resolve_patch(root, target).name]])
     base = base or resolve_base(root)
     exclusions = load_validation_names(root, base)
     print(f"validation exclusions: {len(exclusions)}")
@@ -100,11 +102,12 @@ def validate(root: Path, worktree: Path, target: str | None, base: str | None = 
             print(f"validating {patch.path.name}: {command}")
             try:
                 with isolated_environment() as environment:
-                    # Compiler metadata belongs to this clean source tree only.
                     environment["CARGO_TARGET_DIR"] = str(cargo_target)
                     environment["JCODE_CATALOG_ROOT"] = str(root)
-                    with exclusive_lock(cargo_target / "catalog.lock", "declared validation cache"):
-                        subprocess.run(["bash", "-c", command], cwd=worktree, env=environment, check=True)
+                    with (nullcontext(held_lock) if held_lock else exclusive_lock(
+                            cargo_target / "catalog.lock", "declared validation cache")) as lock:
+                        subprocess.run(["bash", "-c", command], cwd=worktree, env=environment, check=True,
+                                       **({"pass_fds": (lock.fileno(),)} if os.name != "nt" else {}))
             except subprocess.CalledProcessError as error:
                 raise CatalogError(f"validation failed in {patch.path.name}: {command}") from error
 

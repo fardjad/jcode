@@ -10,6 +10,7 @@ import subprocess
 import time
 
 from .patch_catalog import CatalogError, dependency_order, git, resolve_patch
+from .isolate_config import isolated_environment
 
 
 def digest(value: object) -> str:
@@ -26,25 +27,23 @@ def closure_identity(root: Path, name: str, base: str) -> dict:
 
 
 def validation_identity(root: Path, name: str, base: str) -> str:
-    # Tooling, baseline exclusions, and toolchain changes invalidate cached passes.
-    files = [root / "justfile", root / "nextest.toml"]
-    files += sorted((root / "tools/scripts").glob("*.py"))
-    files += sorted((root / "tools/catalog/src/jcode_catalog").glob("*.py"))
-    files += [root / "tools/catalog/pyproject.toml", root / "tools/catalog/uv.lock"]
+    from .bootstrap_nextest import VERSION
+
+    config = root / "nextest.toml"
     exclusions = root / ".tools/nextest/exclusions" / f"{base}.json"
-    inputs = {str(p.relative_to(root)): blob(root, p) for p in files if p.is_file()}
-    inputs["exclusions"] = blob(root, exclusions) if exclusions.is_file() else None
-    rustc = subprocess.check_output(["rustc", "-Vv"], text=True).strip()
-    return digest({"closure": closure_identity(root, name, base), "workflow": inputs,
-                   "rustc": rustc, "schema": 1})
+    with isolated_environment() as environment:
+        rustc = subprocess.check_output(["rustc", "-Vv"], env=environment, text=True).strip()
+    return digest({"closure": closure_identity(root, name, base), "rustc": rustc,
+                   "exclusions": blob(root, exclusions) if exclusions.is_file() else None,
+                   "nextest": VERSION, "config": blob(root, config) if config.is_file() else None,
+                   "schema": 2})
 
 
 def source_cache(root: Path, worktree: Path, purpose: str) -> Path:
-    # Clean tree identity, not a mutable shared pathname, owns compiler metadata.
+    # One active runner per purpose; Cargo owns incremental source invalidation.
     if git("status", "--porcelain", "--untracked-files=no", cwd=worktree):
         raise CatalogError("validation requires clean tracked source before selecting a cache")
-    tree = git("rev-parse", "HEAD^{tree}", cwd=worktree)
-    destination = root / ".tools/cargo-target" / purpose / tree
+    destination = root / ".tools/cargo-target" / purpose
     destination.mkdir(parents=True, exist_ok=True)
     return destination
 

@@ -7,10 +7,8 @@ description: Review a chosen canonical jcode stable release against the patch ca
 
 Invoke from a jcode session whose workspace is this catalog, for example
 `/plan-upstream-sync v0.98.1`. This project-local skill needs no global install.
-Follow `AGENTS.md`, especially Upstream syncs, Patch design, Configuration
-isolation, Delegating patch work, and the commit-first workflow. That file holds
-the rules; this skill is the step-by-step procedure, not an alternate
-patch-intent source.
+Follow `AGENTS.md` and /patch-workflow. This skill is the step-by-step sync
+procedure, not an alternate patch-intent source.
 
 ## Scope and approval
 
@@ -48,11 +46,8 @@ instructions, and independently verify consequential findings.
    tag/hash, and ordered patch filenames/content hashes. These identify reviewed
    inputs, not a second definition of intent.
 
-All validation and test commands run through `tools/scripts/isolate_config.py`
-or the existing isolated recipes (see Configuration isolation in `AGENTS.md`).
-Inspect
-commands before running them; do not incur meaningful cost or consequential
-effects beyond the approved scope.
+Inspect commands before running them; do not incur meaningful cost or
+consequential effects beyond the approved scope.
 
 ## 1. Prepare scratch and collect upstream context
 
@@ -119,8 +114,7 @@ For each patch, map relevant upstream changes and identify aligned directions,
 conflicting directions, shared integration points, and possible adoption.
 Compare actual behavior and test coverage against the full patch intent.
 Distinguish full adoption, partial overlap, independent value, and uncertainty.
-Make residual gaps explicit. No removal recommendation is proven merely by
-similar wording, touching the same files, or a patch applying cleanly.
+Make residual gaps explicit and drop only covered parts when the rest has value.
 
 If source commits and derived patch metadata disagree, flag the inconsistency
 for resolution through the existing commit-first workflow, not report edits.
@@ -133,9 +127,7 @@ Write `sync-scratch/4-sync-plan.md` referencing reports 1 through 3. Include:
 - Patches requiring trivial adaptation, retained patches, and removal candidates
   with equivalent behavior/test evidence and any residual differences.
 - A proposed dependency-safe order and any splits or consolidations. Every
-  patch must deliver one end-user feature or fix. Coherent blueprint-worker
-  support may be one patch; unrelated Ctrl-D session deletion must stay separate.
-  Account for declared dependencies and lexicographic application order. For
+  patch must deliver one end-user feature or fix. Account for declared dependencies and lexicographic application order. For
   removals, reorders and splits, list the new `X-Jcode-Patch-File` names and
   `Depends-On` updates, and note where `just snapshot-patches --prune` is used.
 - A temporary decision table: ID, question, options, recommendation, consequences,
@@ -198,9 +190,8 @@ Start only after the user explicitly approves execution of this plan.
    adapt, remove, reorder, or split as approved. Resolve trivial conflicts
    directly and keep existing tests compiling. Amend each owning commit and
    metadata, including planned `X-Jcode-Patch-File` and `Depends-On` updates.
-   Keep follow-up fixes attributed as required by Patch update and commit
-   discipline in `AGENTS.md`, never bury them in later commits. Use focused
-   checks when needed to resolve a concrete adaptation question, not full
+   Keep follow-up fixes attributed as described in /patch-workflow. Use
+   focused checks when needed to resolve a concrete adaptation question, not full
    workspace suites after every application. If a patch needs reconstruction,
    preserve its message and diff first, then restore it at the planned position
    through a non-interactive, explicitly scoped history edit. Do not discard
@@ -213,31 +204,20 @@ Start only after the user explicitly approves execution of this plan.
    Verify application reproduces the intended source tree exactly and fix
    dependency isolation before builds. Regeneration can change candidate blob
    identities even when behavior is unchanged.
-7. Run combined workspace compilation and compatibility through
-   `just validate-patched-copy`. Run full suites for every gating patch's
-   touched crates, compared with clean upstream. If using the full workspace
-   suite, record the exact command, test totals, skipped baseline tests, and
-   retries actually used. Fix failures in owning commits, re-snapshot, and
-   repeat the affected checks. Never learn patched failures as exclusions.
-8. After combined validation passes, run `just test-all-patches` sequentially
-   with one runner owning results and shared caches. This runs each patch's
-   declared commands and compatibility with only its dependencies. Keep
-   persistent logs and completion status independently of monitoring calls.
-   Audit all results against current patch hashes and the pin, not just pass
-   counts. For failures, inspect retained worktree source and cache resolution
-   before changing code or dependencies. Fix the owner, regenerate, and rerun
-   affected combined, isolation, and individual checks. Apply Validation
-   execution discipline in `AGENTS.md` rather than launching overlapping runs.
-   Run `uv run --project tools/catalog jcode-catalog patches test --all --audit`
-   after the last regeneration to check all current validation fingerprints.
-   Complete final review records with the source commit and closure identities
-   as required by Review evidence and instruction changes in `AGENTS.md`.
-   Initialize pending templates with the review script's `init` action, fill
-   claim/code/test findings from actual review, then run its `check` action.
-   Do not backfill unsupported review claims from passing tests. Re-review
-   changed records and invalidate affected validation evidence before finishing.
-9. Update or remove the affected feature docs. Retire adopted candidate branches
-   locally; closing upstream PRs or deleting remote branches needs the user.
+7. Run `just test-all-patches --compat-each`. The gate checks the full
+   workspace, runs every patch's Validation commands, and runs compatibility
+   once on the full stack. Closures without current passes then get a
+   workspace check, their own Validation commands, and compatibility for this
+   upstream sync. Ensure gating patches declare the full touched-crate suites
+   required by `AGENTS.md`. Keep persistent logs and completion status.
+8. Inspect failures before rerunning: the tool-owned `patch-validation`
+   worktree persists, but the next run resets it. Fix the owning source
+   commit, regenerate, and repeat the gate after changes. Verify current
+   outcomes, not just pass counts, and never learn patched failures as
+   exclusions.
+9. Update or remove the affected feature docs. Propose retiring adopted
+   candidate branches; deleting local or remote branches and closing upstream
+   PRs need the user's explicit ask.
    Refresh each retained candidate's branch on the new base with
    `just create-upstream-candidate-branch-from patches/<file>.patch`.
 10. Report the result with the catalog diff summary. The pin, patches, and docs
@@ -259,7 +239,7 @@ Do not rebase `.patched-jcode` while a background run builds from it.
 
 ### Delegating execution
 
-Follow Delegating patch work and Worker blueprint boundaries in `AGENTS.md`.
+Follow Delegation and shared state and Workers and evaluation in `AGENTS.md`.
 Put catalog-specific paths, isolation commands, ownership, and acceptance
 contracts in assignments, never in reusable blueprints. Delegate only bounded
 mechanical objectives. Adapt first, validate the combined result, then verify

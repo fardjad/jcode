@@ -18,8 +18,8 @@ def normalize_checkout(path: Path) -> None:
     )
 
 
-def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-", destination: Path | None = None) -> Path:
-    """Create or safely reset clean detached worktree at revision."""
+def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-", destination: Path | None = None, *, disposable: bool = False) -> Path:
+    """Reset detached source; only tool-owned validation may discard failed state."""
     if not name or Path(name).name != name or ".." in name:
         raise CatalogError(f"invalid worktree name: {name}")
     path = destination or worktree_path(root, name, prefix)
@@ -56,7 +56,13 @@ def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-"
         }
         if path not in registered:
             raise CatalogError(f"path is not a registered Git worktree: {path}")
-        if git("status", "--porcelain", cwd=path):
+        if disposable:
+            am_state = Path(git("rev-parse", "--git-path", "rebase-apply", cwd=path))
+            if not am_state.is_absolute():
+                am_state = path / am_state
+            if am_state.exists():
+                git("am", "--abort", cwd=path)
+        elif git("status", "--porcelain", cwd=path):
             raise CatalogError(f"existing worktree is dirty: {path}")
         print(f"reusing worktree {path}", file=sys.stderr)
         previous_head = git("rev-parse", "HEAD", cwd=path)
@@ -69,7 +75,7 @@ def create(root: Path, name: str, revision: str, prefix: str = "patch-worktree-"
         # Use reset --hard instead of checkout --detach to avoid git's
         # "leaving N commits behind" warning when the worktree HEAD already
         # has commits not on any branch.
-        git("checkout", "--detach", resolved_revision, cwd=path, quiet=True)
+        git("checkout", "--detach", *(["--force"] if disposable else []), resolved_revision, cwd=path, quiet=True)
         git("reset", "--hard", resolved_revision, cwd=path, quiet=True)
     else:
         git("worktree", "add", "--detach", str(path), revision)

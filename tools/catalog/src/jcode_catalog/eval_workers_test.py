@@ -1,5 +1,6 @@
 """Preflight-before-build contracts for eval workers."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -62,6 +63,11 @@ class EvalWorkersTests(unittest.TestCase):
             patch.object(eval_workers, "exclusive_lock", _fake_lock),
             patch.object(
                 eval_workers,
+                "time",
+                SimpleNamespace(monotonic=iter([10.0, 12.5]).__next__),
+            ),
+            patch.object(
+                eval_workers,
                 "prepare",
                 side_effect=lambda *a, **k: (
                     order.append("prepare")
@@ -90,6 +96,13 @@ class EvalWorkersTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(order[:2], ["preflight", "prepare"])
         self.assertNotIn("run", order[:1])
+        evaluation_command = next(
+            call.args[0] for call in run.call_args_list if "run" in call.args[0]
+        )
+        provenance = Path(
+            evaluation_command[evaluation_command.index("--build-provenance") + 1]
+        )
+        self.assertEqual(json.loads(provenance.read_text())["build_check_seconds"], 2.5)
         validate_calls = [
             call for call in run.call_args_list if "validate-settings" in call.args[0]
         ]
@@ -101,9 +114,7 @@ class EvalWorkersTests(unittest.TestCase):
         )
         self.assertEqual(
             command[command.index("--scenarios") + 1],
-            str(
-                self.root / "customizations" / "workers" / "evals" / "scenarios"
-            ),
+            str(self.root / "customizations" / "workers" / "evals" / "scenarios"),
         )
 
     def test_selected_scenario_is_passed_to_the_preflight(self):

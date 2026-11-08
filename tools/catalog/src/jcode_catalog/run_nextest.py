@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 import json
 import subprocess
 import sys
@@ -113,21 +114,23 @@ def load_validation_names(root: Path, base: str) -> list[str]:
         raise RuntimeError(f"invalid nextest exclusions {path}: {error}") from error
 
 
-def run(binary: str, root: Path, worktree: Path, names: list[str]) -> int:
+def run(binary: str, root: Path, worktree: Path, names: list[str], *, purpose="patch-validation", held_lock=None) -> int:
     command = [binary, "nextest", "run", "--manifest-path", str(worktree / "Cargo.toml"), "--config-file", str(root / "nextest.toml"), "--profile", "compat", "--lib", "--bin", "jcode"]
     if names:
         command += ["--filterset", " and ".join(f"not test(={name})" for name in names)]
     with isolated_environment() as environment:
         environment["JCODE_DEV_FEATURE_PROFILE"] = "minimal"
-        cargo_target = source_cache(root, worktree, "compatibility")
+        cargo_target = source_cache(root, worktree, purpose)
         environment["CARGO_TARGET_DIR"] = str(cargo_target)
         # Preserve the public report location while separating compiled artifacts.
-        with exclusive_lock(cargo_target / "catalog.lock", "compatibility cache"):
+        with (nullcontext(held_lock) if held_lock else exclusive_lock(
+                cargo_target / "catalog.lock", "compatibility cache")) as lock:
             report = cargo_target / "nextest/compat/junit.xml"
             destination = worktree / "target/nextest/compat/junit.xml"
             report.unlink(missing_ok=True)
             destination.unlink(missing_ok=True)
-            code = subprocess.run(command, env=environment).returncode
+            code = subprocess.run(command, env=environment,
+                                  **({"pass_fds": (lock.fileno(),)} if os.name != "nt" else {})).returncode
             # nextest may keep its store at workspace/target despite Cargo's
             # artifact override. Accept either actual location, never old data.
             if report.exists():
@@ -149,7 +152,7 @@ def main() -> int:
     return execute(root, mode, worktree, base)
 
 
-def execute(root: Path, mode: str, worktree: Path, base: str) -> int:
+def execute(root: Path, mode: str, worktree: Path, base: str, *, held_lock=None) -> int:
     """Run compatibility testing or clean-upstream exclusion learning."""
     report = worktree / "target" / "nextest" / "compat" / "junit.xml"
     try:
@@ -162,7 +165,9 @@ def execute(root: Path, mode: str, worktree: Path, base: str) -> int:
         report.unlink(missing_ok=True)
         names = [] if mode == "learn" else (load_names(root, base) or [])
         print(f"nextest exclusions: {'loaded' if names else 'none'} ({len(names)} tests)")
-        result = run(binary, root, worktree, names)
+        result = run(binary, root, worktree, names,
+                     purpose="upstream-learning" if mode == "learn" else "patch-validation",
+                     held_lock=held_lock)
         if mode == "learn":
             names = failed_test_names(report)
             if result != 0 and not names:

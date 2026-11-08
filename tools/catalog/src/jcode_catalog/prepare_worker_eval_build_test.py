@@ -137,7 +137,7 @@ class FakeEvaluation:
         self.cache_calls.append((root, worktree, purpose))
         if purpose != "worker-evaluation":
             raise AssertionError("wrong source cache purpose")
-        destination = root / ".tools" / "cargo-target" / purpose / self.tree
+        destination = root / ".tools" / "cargo-target" / purpose
         destination.mkdir(parents=True, exist_ok=True)
         return destination
 
@@ -297,7 +297,7 @@ class WorkerEvaluationBuildTests(unittest.TestCase):
                          {"jcode", "jcode-harness-api-bridge"})
         for name, recorded_path in result["binary_paths"].items():
             path = Path(recorded_path)
-            self.assertEqual(path, expected_binary_paths(self.root, self.fake.tree)[name])
+            self.assertEqual(path, expected_binary_paths(self.root)[name])
             self.assertEqual(result["binaries"][name]["sha256"], hash_file(path))
         self.assertNotIn(decoy, self.fake.source_calls)
         command = self.fake.launch_calls[0][0]

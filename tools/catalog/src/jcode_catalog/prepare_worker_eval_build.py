@@ -176,10 +176,8 @@ def binary_paths(cargo_target: Path) -> dict[str, Path]:
     }
 
 
-def expected_binary_paths(root: Path, tree: str) -> dict[str, Path]:
-    return binary_paths(
-        root / ".tools" / "cargo-target" / "worker-evaluation" / tree
-    )
+def expected_binary_paths(root: Path) -> dict[str, Path]:
+    return binary_paths(root / ".tools" / "cargo-target" / "worker-evaluation")
 
 
 def stamp_identity(fingerprint: str, inputs: dict) -> dict:
@@ -212,7 +210,7 @@ def read_valid_stamp(root: Path, fingerprint: str, inputs: dict) -> dict | None:
             return None
 
         binaries = stamp["binaries"]
-        expected_paths = expected_binary_paths(root, source["tree"])
+        expected_paths = expected_binary_paths(root)
         if set(binaries) != {binary for _, binary in BUILD_TARGETS}:
             return None
         for name, expected_path in expected_paths.items():
@@ -398,8 +396,8 @@ def prepare(root: Path, held_lock=None) -> dict:
             if final_source != initial_source:
                 raise CatalogError("worker evaluation source HEAD/tree changed during build")
             actual_paths = binary_paths(cargo_target)
-            if actual_paths != expected_binary_paths(root, final_source["tree"]):
-                raise CatalogError("worker evaluation cache is not keyed by the clean source tree")
+            if actual_paths != expected_binary_paths(root):
+                raise CatalogError("worker evaluation cache has an unexpected purpose path")
             binaries = {
                 name: {"path": str(path), "sha256": hash_file(path)}
                 for name, path in actual_paths.items()

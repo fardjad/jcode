@@ -41,10 +41,10 @@ def workflow_environment():
             os.environ.update(original)
 
 
-def workflow(operation: str, patch: str | None = None):
+def workflow(operation: str, patch: str | None = None, **options):
     from .patch_workflow import execute
 
-    execute(repository_root(), operation, patch)
+    execute(repository_root(), operation, patch, **options)
 
 
 @patches_app.command("check")
@@ -91,19 +91,24 @@ def list_patches():
 def test_patch(
     patch: Annotated[str | None, typer.Argument()] = None,
     all_patches: Annotated[bool, typer.Option("--all")] = False,
-    only: Annotated[list[str] | None, typer.Option("--only")] = None,
+    only: Annotated[list[str] | None, typer.Option("--only", help="Run selected closures without the full-stack gate.")] = None,
     force: bool = False,
-    audit: bool = False,
+    compat_each: Annotated[bool, typer.Option("--compat-each", help="Run compatibility for each closure (upstream syncs).")] = False,
 ):
-    if all_patches or audit or only:
+    """Check a patch closure, or gate changed full-stack inputs then changed closures with --all.
+
+    Source and compiler cache persist at one tool-owned patch-validation path.
+    Rerunning resets failed source; per-patch compatibility is opt-in.
+    """
+    if all_patches or only:
         if patch:
             raise typer.BadParameter("use a patch argument or --all/--only, not both")
         from .run_all_patch_tests import run_all
 
-        raise typer.Exit(run_all(repository_root(), only, force, audit))
+        raise typer.Exit(run_all(repository_root(), only, force, compat_each))
     if not patch:
         raise typer.BadParameter("provide PATCH or --all")
-    workflow("test", patch)
+    workflow("test", patch, **({"compat_each": True} if compat_each else {}))
 
 
 @patches_app.command("candidate")
@@ -114,14 +119,6 @@ def candidate(patch: str):
 @patches_app.command("learn")
 def learn():
     workflow("learn")
-
-
-@patches_app.command("reviews")
-def reviews(action: str, directory: Path = Path("sync-scratch/reviews")):
-    from .check_patch_reviews import main
-
-    with arguments(["reviews", action, "--directory", str(directory)]):
-        main()
 
 
 @contextmanager

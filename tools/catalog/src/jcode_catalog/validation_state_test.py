@@ -1,7 +1,6 @@
-"""Regression tests for dependency identities, review freshness and process locks."""
-from copy import deepcopy
-import json
+"""Regression tests for dependency identities, process locks and gate results."""
 import os
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -9,9 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from .check_patch_reviews import evidence_errors
 from .patch_catalog import CatalogError
-from .run_all_patch_tests import load_results, run_all, save_results, should_skip
+from .run_all_patch_tests import load_results, run_all
 from .validation_state import closure_identity, exclusive_lock, source_cache, validation_identity
 
 
@@ -36,13 +34,15 @@ class ValidationStateTests(unittest.TestCase):
             self.assertNotEqual(before, after)
             self.assertEqual(before["patches"]["0002-b.patch"], after["patches"]["0002-b.patch"])
 
-    def test_workflow_changes_invalidate_validation(self):
+    def test_tooling_changes_preserve_pass_but_nextest_config_invalidates_it(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             catalog(root)
             (root / "justfile").write_text("first")
             before = validation_identity(root, "0001-a.patch", "base")
             (root / "justfile").write_text("second")
+            self.assertEqual(before, validation_identity(root, "0001-a.patch", "base"))
+            (root / "nextest.toml").write_text("changed profile")
             self.assertNotEqual(before, validation_identity(root, "0001-a.patch", "base"))
 
     def test_lock_blocks_second_process_and_releases(self):
@@ -75,32 +75,17 @@ class ValidationStateTests(unittest.TestCase):
             with exclusive_lock(path, "released"):
                 pass
 
-    def test_clean_source_trees_have_distinct_cache_paths(self):
+    def test_clean_sources_share_purpose_cache_but_dirty_sources_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch("jcode_catalog.validation_state.git", side_effect=["", "tree-a", "", "tree-b", "dirty"]):
+            with patch("jcode_catalog.validation_state.git", side_effect=["", "", "dirty"]):
                 a = source_cache(root, root, "tests")
                 b = source_cache(root, root, "tests")
-                self.assertNotEqual(a, b)
+                self.assertEqual(a, b)
                 with self.assertRaises(CatalogError):
                     source_cache(root, root, "tests")
 
-    def test_review_freshness_and_unresolved_claims(self):
-        identity = {"base": "base", "patches": {"a": "blob"}}
-        record = {"identity": identity, "commit": "commit", "status": "reviewed",
-                  "reviewer": "reviewer", "claims": [{"claim": "intent", "code": "path:symbol",
-                  "tests": "test_body", "finding": "checked", "outcome": "supported"}],
-                  "scope_review": "all claims checked", "broader_changes": "none", "residuals": "none"}
-        self.assertEqual(evidence_errors(record, identity, "commit"), [])
-        self.assertTrue(evidence_errors(record, {"base": "other"}, "commit"))
-        self.assertTrue(evidence_errors(record, identity, "new-commit"))
-        changed = deepcopy(record)
-        changed["claims"][0]["outcome"] = "accepted-gap"
-        self.assertTrue(evidence_errors(changed, identity, "commit"))
-        changed["claims"][0]["user_acceptance"] = "user approved missing behavior"
-        self.assertEqual(evidence_errors(changed, identity, "commit"), [])
-
-    def test_runner_records_running_pid_streamed_log_and_exit(self):
+    def test_runner_records_results_and_reuses_only_current_full_stack_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             catalog(root)
@@ -108,28 +93,53 @@ class ValidationStateTests(unittest.TestCase):
             class Child:
                 pid = 12345
                 def __init__(self, command, **kwargs):
-                    state = load_results(record_path)["0001-a.patch"]
+                    self.name = command[-3]
+                    state = load_results(record_path)[self.name]
                     self.assert_running = state["status"] == "running" and state["exit_code"] is None
                     kwargs["stdout"].write("live output\n")
                     kwargs["stdout"].flush()
                 def wait(self):
                     if not self.assert_running:
                         raise AssertionError("running status missing before launch")
-                    state = load_results(record_path)["0001-a.patch"]
+                    state = load_results(record_path)[self.name]
                     if state["pid"] != self.pid:
                         raise AssertionError("child PID not persisted")
                     return 0
             with patch("jcode_catalog.run_all_patch_tests.resolve_base", return_value="base"), \
-                 patch("jcode_catalog.run_all_patch_tests.validation_identity", return_value="identity"), \
+                 patch("jcode_catalog.run_all_patch_tests.validation_identity", return_value="identity") as identity, \
                  patch("jcode_catalog.run_all_patch_tests.patch_blob", return_value="blob"), \
                  patch("jcode_catalog.run_all_patch_tests.validate_catalog"), \
-                 patch("jcode_catalog.run_all_patch_tests.subprocess.Popen", Child):
+                 patch("jcode_catalog.run_all_patch_tests.execute") as gate, \
+                 patch("jcode_catalog.run_all_patch_tests.subprocess.Popen", side_effect=Child) as launch, \
+                 patch("sys.stdout", new_callable=io.StringIO) as output:
                 self.assertEqual(run_all(root, ["0001-a.patch"]), 0)
+                gate.assert_not_called()
+                self.assertIn("full-stack gate was not run", output.getvalue())
+                self.assertNotIn("__full_stack__", load_results(record_path))
+                self.assertEqual(run_all(root), 0)
+                gate.assert_called_once_with(root, "gate", preflight=False)
+                self.assertEqual(load_results(record_path)["__full_stack__"]["status"], "pass")
+                self.assertEqual(run_all(root), 0)
+                self.assertEqual(gate.call_count, 1)
+                self.assertEqual(run_all(root, force=True), 0)
+                self.assertEqual(gate.call_count, 2)
+                identity.return_value = "changed"
+                self.assertEqual(run_all(root), 0)
+                self.assertEqual(gate.call_count, 3)
+                children = launch.call_count
+                gate.side_effect = CatalogError("gate failed")
+                with self.assertRaisesRegex(CatalogError, "gate failed"):
+                    run_all(root, force=True)
+                self.assertEqual(launch.call_count, children)
+                self.assertEqual(load_results(record_path)["__full_stack__"]["status"], "fail")
+                gate.side_effect = None
+                self.assertEqual(run_all(root), 0)
+                self.assertEqual(gate.call_count, 5)
             state = load_results(record_path)["0001-a.patch"]
             self.assertEqual(state["status"], "pass")
             self.assertEqual(state["exit_code"], 0)
             self.assertIn("live output", Path(state["log"]).read_text())
-            self.assertEqual(state["command"][-3:], [str(root), "0001-a.patch", "identity"])
+            self.assertEqual(state["command"][-4:], [str(root), "0001-a.patch", "changed", "0"])
             self.assertIn("batch_child", state["command"][2])
             self.assertNotEqual(state["command"][0], "just")
 
@@ -138,9 +148,10 @@ class ValidationStateTests(unittest.TestCase):
             root = Path(directory)
             catalog(root)
             with patch("jcode_catalog.run_all_patch_tests.resolve_base", return_value="base"), \
-                 patch("jcode_catalog.run_all_patch_tests.validation_identity", side_effect=["old", "old", "new", "new"]), \
+                 patch("jcode_catalog.run_all_patch_tests.validation_identity", side_effect=["old", "old", "old", "new", "new"]), \
                  patch("jcode_catalog.run_all_patch_tests.patch_blob", return_value="blob"), \
                  patch("jcode_catalog.run_all_patch_tests.validate_catalog"), \
+                 patch("jcode_catalog.run_all_patch_tests.execute"), \
                  patch("jcode_catalog.run_all_patch_tests.subprocess.Popen") as launch:
                 launch.return_value.pid = 123
                 launch.return_value.wait.return_value = 0

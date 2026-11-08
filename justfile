@@ -14,7 +14,7 @@ check-patch-isolation:
 create-patched-copy:
     uv run --project tools/catalog jcode-catalog patches create
 
-# Refresh .patched-jcode, compile the workspace, and run compatibility tests.
+# Refresh .patched-jcode, check the workspace, run all Validation commands and compatibility.
 validate-patched-copy:
     uv run --project tools/catalog jcode-catalog patches validate
 
@@ -30,11 +30,11 @@ list-patches:
 test-catalog:
     uv run --project tools/catalog jcode-catalog test
 
-# Apply one patch's dependency closure and run its validation and compatibility tests.
+# Check one patch's dependency closure and run only its own Validation commands.
 test-patch-file patch:
     uv run --project tools/catalog jcode-catalog patches test "{{patch}}"
 
-# Test every patch resumably, keeping logs and skipping unchanged current passes.
+# Gate the full stack once, then check closures without current passes; --compat-each for syncs.
 test-all-patches *args:
     uv run --project tools/catalog jcode-catalog patches test --all {{args}}
 
