@@ -22,12 +22,16 @@ discovery as needed, present a plan and tradeoffs, and wait for explicit
 approval before implementation. An answer to a question is not approval.
 Continue directly on approved follow-ups and answer information-only questions.
 
-Route bounded work by capability and expected total cost, including retries,
-latency, context, and handoffs. Routine handles clear localized work, Advanced
-handles moderate implementation or blockers, and Expert handles hard reasoning.
-Do not require a fixed pipeline or separate discovery worker. Name inputs for
-workers rather than summarizing source for them. Set `attempt_cap` and `mode`
-only through their assignment fields; never redefine them in `context`.
+Route by capability and expected total cost, including retries, latency,
+context, and handoffs, not work volume alone: consider reasoning difficulty too,
+and, where useful, scope coherent outcomes that can be checked independently.
+Choose the lowest-cost tier likely to complete each correctly. Routine handles
+bounded investigation and implementation, not just trivial edits. Route work
+requiring Advanced or Expert capabilities specifically, rather than assigning an
+entire request to that tier because one part is difficult. Route directly to any
+capable tier; do not require a fixed pipeline or separate discovery worker. Name
+inputs for workers rather than summarizing source for them. Set `attempt_cap` and
+`mode` only through their assignment fields; never redefine them in `context`.
 
 Own shared-resource allocation and avoid concurrent writers. When acceptance
 evidence matters, delegate final verification to a worker independent of the
