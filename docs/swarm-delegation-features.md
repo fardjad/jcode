@@ -3,12 +3,17 @@
 Worker blueprints define reusable roles in Markdown. For why the shipped setup
 uses them, see the [efficiency rationale](llm-efficiency-rationale.md); for
 installing and configuring the shipped roles, see
-[worker blueprints](../customizations/workers/README.md).
+[worker blueprints](../customizations/workers/README.md). The native policy
+dispatcher, check limits, assistance model, and deployment status are described
+in [policy-driven delegation](policy-driven-delegation.md). The checkout copy
+of the external guard plugin is retired. The native guard needs no plugin or
+setup hook, but requires a binary built with patch `0008-blueprints-and-policy-driven-dispatcher.patch`. The running
+installation has not been updated or verified for this behavior.
 
 ## Blueprint files
 
 Patch
-`1003-personal-feature-worker-blueprints-and-session-lifecycle-fixes.patch`
+`0008-blueprints-and-policy-driven-dispatcher.patch`
 loads direct `*.md` files from `~/.jcode/worker-blueprints/`. A missing
 directory is an empty registry. Set `agents.worker_blueprints_dir` to change
 the directory; `~` home expansion is supported.
@@ -148,11 +153,12 @@ but not a tool's completion result; `report-to-parent` permits parent reports;
 `parent-and-children` permits parent and child communication; `same-swarm`
 permits communication within the swarm.
 
-## Hooks
+## Tool output and command hooks
 
-Patch `0002-candidate-add-hook-context-and-post-tool-transform.patch` exposes
-swarm state and role to hooks and adds a synchronous post-tool transform with
-temporary-file spilling. See the
-[delegation guard](../customizations/plugins/delegation-guard/README.md) for
-its configuration, and [plugins](../customizations/plugins/README.md) for the
-upstream pre-tool transform and RTK adapter.
+The native worker output guard bounds each result, not cumulative output from
+many small reads. It saves withheld payloads in a private runtime directory for
+authorized extraction. Configure it as described in
+[policy-driven delegation](policy-driven-delegation.md).
+
+The [RTK plugin](../customizations/plugins/README.md) uses upstream's
+`pre_tool_transform` hook to rewrite eligible bash commands.

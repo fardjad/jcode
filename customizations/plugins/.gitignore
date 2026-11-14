@@ -8,7 +8,6 @@ __pycache__/
 
 # Plugin allowlist: every plugin directory needs a matching !/name/ entry
 # here, otherwise its contents stay ignored and are never copied by
-# tools/scripts/setup_assets.py.
+# tools/scripts/setup_assets.ts.
 /*/
 !/rtk/
-!/delegation-guard/

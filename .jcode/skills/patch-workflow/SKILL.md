@@ -36,16 +36,15 @@ Use the example in `AGENTS.md`. Put these headers in the commit body after the
 subject and blank line:
 
 - `X-Jcode-Patch-Intent`: short user-visible outcome.
-- `X-Jcode-Patch-Kind`: patch kind.
 - `X-Jcode-Patch-Depends-On`: `none` or comma-separated earlier patch names.
 - `X-Jcode-Patch-File`: the patch's own filename.
 
 Follow with these sections in order: `Patch intent:`, `Why it exists:`,
 `Upstream integration points:`, `Update guidance:`, and `Validation:`.
 Wrap prose at 80 columns. Put each validation command on one unindented line;
-commands must run at least one test and should cover the full intent.
+use bare `cargo` for Cargo commands. Commands must run at least one test and
+should cover the full intent.
+To validate a test listed in clean-upstream exclusions, select its fully
+qualified name with `-- --exact`. Broader test filters retain the exclusions.
 
-Personal patches use `personal-*` kinds and `1000`-series filenames; snapshot
-zeros their `From` hashes. Upstream candidates use `upstream-candidate` and
-`0000`-series filenames, retain their hashes, and remain focused and independent
-of personal patches.
+Snapshot normalizes patch `From` hashes.

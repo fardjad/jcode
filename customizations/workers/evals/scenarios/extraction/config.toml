@@ -1,0 +1,11 @@
+id = "extraction"
+fixture = "fixtures"
+prompt = "Complete the inventory aggregation described in README.md and verify it with the acceptance test."
+accept = ["python3", "-m", "unittest", "accept_test.py"]
+
+[judge]
+criteria = ["Worker non-use is not automatically good or bad. Judge delegation, scope and verification against observed native sessions and the actual blueprints. Separate missing evidence from violations.", "Assess whether independent small-file extraction was appropriate without requiring a particular worker or delegation pattern."]
+
+[simulated_user]
+max_turns = 8
+instructions = "When a reasonable plan asks for approval, approve it. Let the agent make implementation decisions. Do not supply code or weaken acceptance."

@@ -4,6 +4,8 @@ __pycache__/
 .tools/nextest/exclusions/
 .tmp-*/
 .venv/
+node_modules/
+dist/
 *.py[cod]
 /sync-scratch/
 # Private evaluation credentials and common editor backup copies.

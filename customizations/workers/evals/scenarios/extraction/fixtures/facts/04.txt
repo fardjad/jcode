@@ -1,0 +1,2 @@
+hen: white
+ibis: pink

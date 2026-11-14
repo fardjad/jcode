@@ -2,12 +2,12 @@
 
 This directory is the complete, versioned plugin installation. Follow the
 [get started guide](../../docs/get-started.md) for portable installation and
-upgrades with `python3 tools/scripts/setup_assets.py`. It links plugins, worker
+upgrades with `bun tools/scripts/setup_assets.ts`. It links plugins, worker
 blueprints, and skills together, or copies them when symlinks are unavailable.
 
 Run setup from the catalog repository root, then configure the hooks below.
-Asset setup and plugins require plain Python 3.14 or newer as `python3` on PATH.
-They do not require uv.
+Setup requires Bun. The RTK plugin requires Python 3.14 or newer as `python3`
+on PATH.
 
 ## RTK command transformer
 
@@ -34,37 +34,8 @@ pre_tool_transform = ["python3 ~/.jcode/plugins/rtk/rtk-transform"]
 Run isolated contract tests from repository root:
 
 ```bash
-python3 tools/scripts/isolate_config.py -- python3 customizations/plugins/rtk/test_rtk_transform.py
+bun tools/scripts/isolate_config.ts -- python3 customizations/plugins/rtk/test_rtk_transform.py
 ```
 
-jcode-side generic pre-tool transformer implementation is supplied by the
-candidate patch, including `crates/jcode-base/src/hooks.rs` and
-`crates/jcode-app-core/src/tool/mod.rs`.
-
-## Delegation guard transformer
-
-`delegation-guard/delegation-guard-transform` is the executable source at
-`~/.jcode/plugins/delegation-guard/delegation-guard-transform`. It intercepts jcode's
-post-tool-transform event and replaces oversized successful tool results with
-a compact delegation nudge before they enter the coordinator's context. It
-fires only when swarm is enabled and the process role is coordinator. Workers
-and non-swarm sessions are unaffected. It fails open on any error.
-
-The delegation guard requires the post-tool transform hook from
-`0002-candidate-add-hook-context-and-post-tool-transform.patch` to be
-applied and configured with `post_tool_transform`. Plugin source remains
-external catalog content.
-
-Configure transformer in jcode config:
-
-```toml
-[hooks]
-post_tool_transform = ["python3 ~/.jcode/plugins/delegation-guard/delegation-guard-transform"]
-post_tool_transform_timeout_ms = 500
-```
-
-Run isolated contract tests from repository root:
-
-```bash
-python3 tools/scripts/isolate_config.py -- python3 customizations/plugins/delegation-guard/test_transform.py
-```
+The pre-tool transformer is supplied by upstream jcode in
+`crates/jcode-base/src/hooks.rs` and `crates/jcode-app-core/src/tool/mod.rs`.

@@ -25,6 +25,6 @@ automatically an improvement if total cost or failure rates increase.
 
 For the mechanics see
 [worker delegation features](swarm-delegation-features.md),
-[the delegation guard](../customizations/plugins/delegation-guard/README.md),
+[native delegation policy](policy-driven-delegation.md),
 and [completion quality gates](completion-search-features.md). For evaluation
 usage see the [evaluator guide](../tools/evaluator/README.md).

@@ -12,21 +12,25 @@ blueprints with the binary, plugins, and skills.
 
 ## Configure
 
-The shipped workers do not pin models. Choose models in your local config:
+Select worker models and reasoning effort in `~/.jcode/config.private.toml`:
 
 ```toml
 [agents.worker_blueprints.routine]
-model = "openrouter-eu:openai/gpt-6-luna"
+model = "openrouter:openai/gpt-6-luna"
 effort = "xhigh"
 
 [agents.worker_blueprints.advanced]
-model = "openrouter-eu:openai/gpt-6.1-terra"
+model = "openrouter:openai/gpt-6.1-terra"
 effort = "medium"
 
 [agents.worker_blueprints.expert]
-model = "openrouter-eu:anthropic/claude-opus-5-5"
+model = "openrouter:anthropic/claude-opus-5-5"
 effort = "medium"
 ```
+
+To use the EU endpoint for `openrouter:` models, set
+`provider.openrouter_api_base` in the same file. See
+[provider features](../../docs/provider-features.md) for endpoint configuration.
 
 See [worker delegation features](../../docs/swarm-delegation-features.md) for
 front matter, structured contracts, tool policy, overrides, and session modes.

@@ -1,0 +1,269 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fardjad Davari <public@fardjad.com>
+Date: Fri, 13 Nov 2026 04:17:09 +0100
+Subject: [PATCH] fix: use unified reasoning for named OpenRouter profiles
+
+X-Jcode-Patch-Intent: Allow reasoning effort on named OpenRouter profiles with OpenRouter wire format
+X-Jcode-Patch-Depends-On: 0006-provider-improvements.patch
+X-Jcode-Patch-File: 0009-named-openrouter-reasoning.patch
+
+Patch intent:
+Named OpenRouter profiles accept reasoning effort for routed models and send
+OpenRouter unified reasoning fields, including after a session fork.
+
+Why it exists:
+Named profiles lose their OpenRouter identity in the reasoning capability
+check. This rejects effort for prefixed models and can send the incompatible
+OpenAI or DeepSeek field for other model names. Explicit disable remains valid.
+
+Upstream integration points:
+OpenRouterProvider named construction, reasoning capability checks, request
+body construction, effort selection, and fork in jcode-provider-openrouter-runtime.
+
+Update guidance:
+Keep named OpenRouter identity separate from header and cache identity. Honor
+explicit disable and use the unified field regardless of model-family names.
+
+Validation:
+cargo test -p jcode-provider-openrouter-runtime named_openrouter_profile_uses_unified_reasoning --lib
+---
+ .../src/lib.rs                                | 37 ++++++++++++++----
+ .../src/openai_compatible_runtime.rs          |  1 +
+ .../src/openrouter_provider_impl.rs           | 13 ++-----
+ .../src/openrouter_tests.rs                   | 38 +++++++++++++++++++
+ 4 files changed, 72 insertions(+), 17 deletions(-)
+
+diff --git a/crates/jcode-provider-openrouter-runtime/src/lib.rs b/crates/jcode-provider-openrouter-runtime/src/lib.rs
+index 24b6e9c45..06dde657b 100644
+--- a/crates/jcode-provider-openrouter-runtime/src/lib.rs
++++ b/crates/jcode-provider-openrouter-runtime/src/lib.rs
+@@ -822,6 +822,8 @@ pub struct OpenRouterProvider {
+     profile_id: Option<String>,
+     /// The built-in Azure route uses Responses; a named profile with the same ID does not.
+     builtin_azure: bool,
++    /// Named OpenRouter profiles use the unified reasoning wire format.
++    named_openrouter: bool,
+     /// Explicit `supports_reasoning_effort` override from named-profile config.
+     /// `None` means auto-detect (deepseek profile id or DeepSeek-family model).
+     reasoning_effort_support: Option<bool>,
+@@ -885,10 +887,7 @@ impl OpenRouterProvider {
+                 return false;
+             }
+             request["reasoning_effort"] = serde_json::json!(effort);
+-        } else if Self::profile_supports_unified_reasoning(
+-            self.profile_id.as_deref(),
+-            self.send_openrouter_headers,
+-        ) {
++        } else if self.supports_unified_reasoning() {
+             let effort = if effort == "max" { "xhigh" } else { effort };
+             request["reasoning"] = serde_json::json!({"effort": effort});
+         } else {
+@@ -918,6 +917,9 @@ impl OpenRouterProvider {
+     /// deepseek profile, then the active model family for direct compat
+     /// endpoints (never for real OpenRouter, which uses unified reasoning).
+     pub(crate) fn supports_deepseek_reasoning_effort(&self) -> bool {
++        if self.named_openrouter {
++            return false;
++        }
+         if self.model_reasoning_support() == Some(false) {
+             return false;
+         }
+@@ -954,6 +956,9 @@ impl OpenRouterProvider {
+     /// reasoning models, and only when no explicit config override or
+     /// DeepSeek-style support already applies.
+     pub(crate) fn supports_openai_reasoning_effort(&self) -> bool {
++        if self.named_openrouter {
++            return false;
++        }
+         if let Some(explicit) = self.model_reasoning_support() {
+             return explicit;
+         }
+@@ -1008,10 +1013,7 @@ impl OpenRouterProvider {
+     pub(crate) fn supports_any_reasoning_effort(&self) -> bool {
+         self.supports_deepseek_reasoning_effort()
+             || self.supports_openai_reasoning_effort()
+-            || Self::profile_supports_unified_reasoning(
+-                self.profile_id.as_deref(),
+-                self.send_openrouter_headers,
+-            )
++            || self.supports_unified_reasoning()
+     }
+
+     pub(crate) fn normalize_reasoning_effort_for_self(&self, effort: &str) -> Option<String> {
+@@ -1055,6 +1057,17 @@ impl OpenRouterProvider {
+         matches!(profile_id, Some(id) if id.eq_ignore_ascii_case("deepseek") || id.eq_ignore_ascii_case("zai"))
+     }
+
++    fn supports_unified_reasoning(&self) -> bool {
++        if self.named_openrouter {
++            return self.reasoning_effort_support != Some(false)
++                && self.model_reasoning_support() != Some(false);
++        }
++        Self::profile_supports_unified_reasoning(
++            self.profile_id.as_deref(),
++            self.send_openrouter_headers,
++        )
++    }
++
+     fn profile_supports_unified_reasoning(
+         profile_id: Option<&str>,
+         send_openrouter_headers: bool,
+@@ -1457,6 +1470,10 @@ impl OpenRouterProvider {
+             )),
+             profile_id: Some(profile_name.to_string()),
+             builtin_azure: false,
++            named_openrouter: matches!(
++                profile.provider_type,
++                jcode_base::config::NamedProviderType::OpenRouter
++            ),
+             reasoning_effort_support: profile.supports_reasoning_effort,
+             disable_reasoning_heuristics: profile.disable_reasoning_heuristics,
+             static_reasoning_config,
+@@ -1719,6 +1736,7 @@ impl OpenRouterProvider {
+             supports_model_catalog,
+             profile_id,
+             builtin_azure,
++            named_openrouter: false,
+             reasoning_effort_support: None,
+             disable_reasoning_heuristics: false,
+             static_reasoning_config: HashMap::new(),
+@@ -1778,6 +1796,7 @@ impl OpenRouterProvider {
+             supports_model_catalog: false,
+             profile_id: Some("grok-build".to_string()),
+             builtin_azure: false,
++            named_openrouter: false,
+             reasoning_effort_support: Some(false),
+             disable_reasoning_heuristics: true,
+             static_reasoning_config: HashMap::new(),
+@@ -1825,6 +1844,7 @@ impl OpenRouterProvider {
+             supports_model_catalog: true,
+             profile_id: None,
+             builtin_azure: false,
++            named_openrouter: false,
+             reasoning_effort_support: None,
+             disable_reasoning_heuristics: false,
+             static_reasoning_config: HashMap::new(),
+@@ -2026,6 +2046,7 @@ impl OpenRouterProvider {
+                 supports_model_catalog: true,
+                 profile_id: None,
+                 builtin_azure: false,
++                named_openrouter: false,
+                 reasoning_effort_support: None,
+                 disable_reasoning_heuristics: false,
+                 static_reasoning_config: HashMap::new(),
+diff --git a/crates/jcode-provider-openrouter-runtime/src/openai_compatible_runtime.rs b/crates/jcode-provider-openrouter-runtime/src/openai_compatible_runtime.rs
+index c0bf61653..ff2ab6a36 100644
+--- a/crates/jcode-provider-openrouter-runtime/src/openai_compatible_runtime.rs
++++ b/crates/jcode-provider-openrouter-runtime/src/openai_compatible_runtime.rs
+@@ -70,6 +70,7 @@ impl OpenRouterProvider {
+             supports_model_catalog: true,
+             profile_id: Some(resolved.id.clone()),
+             builtin_azure: false,
++            named_openrouter: false,
+             reasoning_effort_support: None,
+             disable_reasoning_heuristics: false,
+             static_reasoning_config: HashMap::new(),
+diff --git a/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs b/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
+index 7f86099f5..969dcbb3e 100644
+--- a/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
++++ b/crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs
+@@ -156,14 +156,11 @@ impl Provider for OpenRouterProvider {
+             "stream": true,
+         });
+
+-        if self.official_openrouter
+-            || self.send_openrouter_headers
+-            || self.supports_provider_features
+-        {
++        if self.official_openrouter || self.named_openrouter || self.send_openrouter_headers {
+             request["usage"] = serde_json::json!({
+                 "include": true,
+             });
+-        } else {
++        } else if !self.supports_provider_features {
+             request["stream_options"] = serde_json::json!({
+                 "include_usage": true,
+             });
+@@ -553,10 +550,7 @@ impl Provider for OpenRouterProvider {
+             jcode_provider_core::DEEPSEEK_SELECTABLE_EFFORTS.to_vec()
+         } else if self.supports_openai_reasoning_effort() {
+             jcode_provider_core::OPENAI_SELECTABLE_EFFORTS.to_vec()
+-        } else if Self::profile_supports_unified_reasoning(
+-            self.profile_id.as_deref(),
+-            self.send_openrouter_headers,
+-        ) {
++        } else if self.supports_unified_reasoning() {
+             jcode_provider_core::OPENROUTER_SELECTABLE_EFFORTS.to_vec()
+         } else {
+             vec![]
+@@ -871,6 +865,7 @@ impl Provider for OpenRouterProvider {
+             supports_model_catalog: self.supports_model_catalog,
+             profile_id: self.profile_id.clone(),
+             builtin_azure: self.builtin_azure,
++            named_openrouter: self.named_openrouter,
+             reasoning_effort_support: self.reasoning_effort_support,
+             disable_reasoning_heuristics: self.disable_reasoning_heuristics,
+             static_reasoning_config: self.static_reasoning_config.clone(),
+diff --git a/crates/jcode-provider-openrouter-runtime/src/openrouter_tests.rs b/crates/jcode-provider-openrouter-runtime/src/openrouter_tests.rs
+index b77b7b252..971d8943e 100644
+--- a/crates/jcode-provider-openrouter-runtime/src/openrouter_tests.rs
++++ b/crates/jcode-provider-openrouter-runtime/src/openrouter_tests.rs
+@@ -1495,6 +1495,7 @@ fn make_provider() -> OpenRouterProvider {
+         supports_model_catalog: true,
+         profile_id: None,
+         builtin_azure: false,
++        named_openrouter: false,
+         reasoning_effort_support: None,
+         disable_reasoning_heuristics: false,
+         static_reasoning_config: HashMap::new(),
+@@ -1532,6 +1533,7 @@ fn make_custom_compatible_provider() -> OpenRouterProvider {
+         supports_model_catalog: true,
+         profile_id: None,
+         builtin_azure: false,
++        named_openrouter: false,
+         reasoning_effort_support: None,
+         disable_reasoning_heuristics: false,
+         static_reasoning_config: HashMap::new(),
+@@ -3450,6 +3452,42 @@ fn named_profile_supports_reasoning_effort_config_override() {
+     );
+ }
+
++#[test]
++fn named_openrouter_profile_uses_unified_reasoning() {
++    let _lock = ENV_LOCK.lock();
++    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
++    let mut config = jcode_base::config::NamedProviderConfig {
++        provider_type: jcode_base::config::NamedProviderType::OpenRouter,
++        base_url: "https://openrouter.example.test/api/v1".to_string(),
++        api_key: Some("test".to_string()),
++        default_model: Some("openai/gpt-6.1-sol".to_string()),
++        ..Default::default()
++    };
++    for override_value in [None, Some(true)] {
++        config.supports_reasoning_effort = override_value;
++        let provider =
++            OpenRouterProvider::new_named_openai_compatible("worker_acceptance", &config).unwrap();
++        for model in ["openai/gpt-6.1-sol", "deepseek/deepseek-v4", "gpt-5.5"] {
++            provider.set_model(model).unwrap();
++            provider.set_reasoning_effort("medium").unwrap();
++            let mut request = serde_json::json!({});
++            assert!(provider.apply_resolved_reasoning_effort(&mut request, "medium", false));
++            assert_eq!(
++                request,
++                serde_json::json!({"reasoning": {"effort": "medium"}})
++            );
++            let fork = provider.fork();
++            assert_eq!(fork.reasoning_effort().as_deref(), Some("medium"));
++            fork.set_reasoning_effort("high").unwrap();
++        }
++    }
++    config.supports_reasoning_effort = Some(false);
++    let disabled =
++        OpenRouterProvider::new_named_openai_compatible("worker_acceptance", &config).unwrap();
++    assert!(disabled.available_efforts().is_empty());
++    assert!(disabled.set_reasoning_effort("medium").is_err());
++}
++
+ /// Issue #352: named profiles construct with the user's configured
+ /// `openai_reasoning_effort` when the profile supports effort, instead of
+ /// silently ignoring the config.

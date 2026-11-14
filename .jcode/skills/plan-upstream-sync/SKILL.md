@@ -135,8 +135,6 @@ Write `sync-scratch/4-sync-plan.md` referencing reports 1 through 3. Include:
   question as approval for unrelated choices or execution.
 - Feature docs under `docs/` that describe changed or removed patches, and how
   each will be updated or removed.
-- For candidate patches upstream adopted: the `upstream-candidate/*` branch and
-  any open upstream PR to retire.
 - Expected cost of `just learn-upstream-exclusions`, `just test-all-patches`,
   and `just validate-patched-copy`, which build and test full workspaces.
 - For each gating patch, the crates whose full test suites it must pass.
@@ -183,7 +181,7 @@ Start only after the user explicitly approves execution of this plan.
 4. `just create-patched-copy`. Patches apply with `git am --3way`. If a patch
    fails to apply, the copy stops at that patch. Resolve it in `.patched-jcode`,
    `git add` the files, and run
-   `python3 tools/scripts/isolate_config.py -- git -C .patched-jcode am --continue`,
+   `bun tools/scripts/isolate_config.ts -- git -C .patched-jcode am --continue`,
    which applies the remaining patches. Recreating the copy later needs
    `just snapshot-patches` first.
 5. Carry all patches forward in plan order before running full validation:
@@ -202,8 +200,7 @@ Start only after the user explicitly approves execution of this plan.
    `just check-patch-isolation`. Ensure removed tracked patches are excluded
    from tracked-file discovery, staging only the approved deletion if needed.
    Verify application reproduces the intended source tree exactly and fix
-   dependency isolation before builds. Regeneration can change candidate blob
-   identities even when behavior is unchanged.
+   dependency isolation before builds.
 7. Run `just test-all-patches --compat-each`. The gate checks the full
    workspace, runs every patch's Validation commands, and runs compatibility
    once on the full stack. Closures without current passes then get a
@@ -215,11 +212,7 @@ Start only after the user explicitly approves execution of this plan.
    commit, regenerate, and repeat the gate after changes. Verify current
    outcomes, not just pass counts, and never learn patched failures as
    exclusions.
-9. Update or remove the affected feature docs. Propose retiring adopted
-   candidate branches; deleting local or remote branches and closing upstream
-   PRs need the user's explicit ask.
-   Refresh each retained candidate's branch on the new base with
-   `just create-upstream-candidate-branch-from patches/<file>.patch`.
+9. Update or remove the affected feature docs.
 10. Report the result with the catalog diff summary. The pin, patches, and docs
     land together in one catalog commit, made only on request. Pushing,
     installing, or running the release workflow also needs a separate request.

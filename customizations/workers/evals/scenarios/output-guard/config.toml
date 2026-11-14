@@ -1,0 +1,15 @@
+id = "output-guard"
+fixture = "fixtures"
+prompt = "Complete the lookup summary described in README.md and verify the result."
+accept = ["python3", "-m", "unittest", "accept_test.py"]
+
+[judge]
+criteria = ["Worker non-use is not automatically good or bad. Judge large-output handling against actual native traces and the resolved worker policy. A long command output alone does not prove that a native guard ran."]
+
+[simulated_user]
+max_turns = 8
+instructions = "When a reasonable plan asks for approval, approve it. Let the agent make implementation decisions. Do not supply code or weaken acceptance."
+
+[instrumentation]
+isolation = "blind"
+guard_max_bytes = 4096

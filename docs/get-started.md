@@ -2,7 +2,8 @@
 
 ## Install
 
-You need Git and Python 3.14 or newer, available as `python3` on PATH.
+You need Git and Bun on PATH. The shipped RTK hook also requires Python 3.14
+or newer, available as `python3` on PATH.
 
 **macOS / Linux** (also requires `curl`, `tar`, and `sha256sum` or `shasum`):
 
@@ -10,7 +11,7 @@ You need Git and Python 3.14 or newer, available as `python3` on PATH.
 git clone --branch personalized https://github.com/fardjad/jcode.git "$HOME/.jcode/source"
 cd "$HOME/.jcode/source"
 bash tools/scripts/install.sh
-python3 tools/scripts/setup_assets.py
+bun tools/scripts/setup_assets.ts
 ```
 
 **Windows PowerShell:**
@@ -19,7 +20,7 @@ python3 tools/scripts/setup_assets.py
 git clone --branch personalized https://github.com/fardjad/jcode.git "$HOME\.jcode\source"
 Set-Location "$HOME\.jcode\source"
 & .\tools\scripts\install.ps1
-python3 tools/scripts/setup_assets.py
+bun tools/scripts/setup_assets.ts
 ```
 
 Run each command only after the previous one succeeds. Follow the installer's
@@ -41,6 +42,9 @@ Copies include only allowlisted content: shipped plugins and skills need an
 explicit `!/name/` entry in their source directory's `.gitignore`. Unlisted
 local plugins and skills stay out of copies.
 
+Passing `--copy` also converts links created by setup into copies. Later runs
+do not recognize those copies as managed assets.
+
 An existing unmanaged `config.toml`, including a symlink to your dotfiles, is
 preserved and skipped with a notice. Merge the template settings yourself if
 you keep that file. Setup never manages `config.private.toml` and does not
@@ -49,11 +53,11 @@ move the conflicting destination yourself before retrying.
 
 ## Configure
 
-The [generic template](../customizations/config.toml) contains display,
-feature, tool, hook, and compaction defaults. It uses Python hook commands,
-enables blueprint-based delegation, and leaves provider and model choices to
-your private configuration. Its context budget is derived from the selected
-model rather than fixed to one model's capacity.
+The [shipped template](../customizations/config.toml) sets display, feature,
+tool, hook, and compaction settings. Compaction starts at 80% of the model
+window or a 250,000-token budget, whichever is smaller. At 95% of that budget,
+jcode may drop older messages without summarizing them if compaction is not
+ready. Set your provider, endpoint, models, and reasoning effort privately.
 
 Keep personal settings in `~/.jcode/config.private.toml`, beside the logical
 `config.toml` path, even when the main file is symlinked elsewhere. Private
@@ -66,9 +70,9 @@ Create the private file locally, outside version control. On macOS or Linux,
 restrict its permissions with `chmod 600 ~/.jcode/config.private.toml`; on
 Windows, restrict access using the file's security permissions.
 
-The following example reflects this fork's model setup. Model availability,
-provider identifiers, prices, and supported reasoning levels can change, so
-adapt it to your provider rather than treating these names as requirements.
+The following example selects OpenRouter models and its EU endpoint. Model
+availability, provider identifiers, prices, and supported reasoning levels can
+change, so adapt it to your provider.
 No credentials or private search endpoint are included.
 
 ```toml
@@ -76,9 +80,11 @@ No credentials or private search endpoint are included.
 # The coordinator is planning-only: it handles planning and judgment and
 # delegates all execution to workers. Give it a larger, more intelligent
 # frontier model rather than optimizing only for cost.
-default_provider = "openrouter-eu"
-default_model = "openrouter-eu:openai/gpt-6.1-sol"
-allowed_providers = ["openrouter-eu"]
+default_provider = "openrouter"
+default_model = "openrouter:openai/gpt-6.1-sol"
+# Omit this setting to use the global OpenRouter endpoint.
+openrouter_api_base = "https://eu.openrouter.ai/api/v1"
+allowed_providers = ["openrouter"]
 # OpenRouter reads this effort key and sends it as unified reasoning effort.
 openai_reasoning_effort = "medium"
 openai_service_tier = "flex"
@@ -88,33 +94,33 @@ retry_backoff_cap_secs = 300
 [agents]
 # Workers handle bounded tasks. A smaller, cheaper, faster model with higher
 # reasoning effort can be a good fit. Check that the model supports the effort.
-swarm_model = "openrouter-eu:openai/gpt-6-luna"
+swarm_model = "openrouter:openai/gpt-6-luna"
 swarm_root_effort = "medium"
 swarm_effort = "xhigh"
-memory_model = "openrouter-eu:openai/gpt-6-luna"
+memory_model = "openrouter:openai/gpt-6-luna"
 
 # Per-blueprint overrides replace front-matter model and effort values.
 [agents.worker_blueprints.routine]
-model = "openrouter-eu:openai/gpt-6-luna"
+model = "openrouter:openai/gpt-6-luna"
 effort = "xhigh"
 
 [agents.worker_blueprints.advanced]
-model = "openrouter-eu:openai/gpt-6.1-terra"
+model = "openrouter:openai/gpt-6.1-terra"
 effort = "medium"
 
 [agents.worker_blueprints.expert]
-model = "openrouter-eu:anthropic/claude-opus-5-5"
+model = "openrouter:anthropic/claude-opus-5-5"
 effort = "medium"
 
 [ambient]
-model = "openrouter-eu:openai/gpt-6-luna"
+model = "openrouter:openai/gpt-6-luna"
 
 [autoreview]
 # Review is judgment-heavy, so this setup uses the larger model here too.
-model = "openrouter-eu:openai/gpt-6.1-sol"
+model = "openrouter:openai/gpt-6.1-sol"
 
 [autojudge]
-model = "openrouter-eu:openai/gpt-6-luna"
+model = "openrouter:openai/gpt-6-luna"
 
 [websearch]
 engine = "searxng"
@@ -143,7 +149,7 @@ will not refresh the config template, plugins, blueprints, or skills.
 cd "$HOME/.jcode/source"
 git pull --ff-only
 bash tools/scripts/install.sh
-python3 tools/scripts/setup_assets.py
+bun tools/scripts/setup_assets.ts
 ```
 
 **Windows PowerShell:**
@@ -153,14 +159,15 @@ Set-Location "$HOME\.jcode\source"
 git pull --ff-only
 if ($LASTEXITCODE -ne 0) { throw "Checkout update failed" }
 & .\tools\scripts\install.ps1
-python3 tools/scripts/setup_assets.py
+bun tools/scripts/setup_assets.ts
 ```
 
-Stop if any step fails. Setup retains its existing copy mode. Linked assets
-update with the checkout; copied assets and a managed copied config refresh
-when setup runs. Local changes to managed copies stop the update rather than
-being overwritten. Existing unmanaged configs continue to be skipped. Keep
-`.setup-assets-state.json` in your jcode home so setup can recognize its copies.
+Stop if any step fails. Linked assets update with the checkout. Setup refuses
+to overwrite existing copied asset directories, even copies made by an earlier
+setup. To refresh them, back up and move those directories yourself, then run
+setup again with `--copy` if you want copies. A copied `config.toml` is treated
+as unmanaged and skipped; review and merge template changes yourself, or back
+it up and move it before rerunning setup. Setup does not use a state ledger.
 
 When using a linked config, put personal overrides in `config.private.toml`
 instead of editing the shared template. Review upstream template changes on

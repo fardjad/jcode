@@ -1,0 +1,14 @@
+id = "recovery"
+fixture = "fixtures"
+prompt = "Complete the checkpointed batch task described in README.md and verify the result."
+accept = ["python3", "-m", "unittest", "accept_test.py"]
+
+[judge]
+criteria = ["Worker non-use is not automatically good or bad. Evaluate recovery from the observed tool process failure and verification using native session evidence. This scenario does not establish worker interruption or dispatcher restart behavior."]
+
+[simulated_user]
+max_turns = 8
+instructions = "When a reasonable plan asks for approval, approve it. Let the agent make implementation decisions. Do not supply code or weaken acceptance."
+
+[settings.limits]
+turn_timeout_seconds = 600

@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["bun"],
+    "paths": {
+      "@1jehuang/jcode-sdk": ["../.tools/sdk/typescript/src/index.ts"],
+      "ajv": ["./node_modules/ajv"]
+    }
+  },
+  "include": ["catalog/**/*.ts", "evaluator/**/*.ts", "scripts/**/*.ts", "../.tools/sdk/typescript/src/**/*.ts"]
+}

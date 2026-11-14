@@ -4,7 +4,7 @@ This patch customizes post-completion quality gates.
 
 ## Completion quality gates
 
-Patch `1004-personal-feature-completion-quality-gates-respect-review.patch`
+Patch `0007-completion-quality-gates-respect-review.patch`
 makes automatic post-completion todo quality checks respect the review
 settings. When both automatic review and judging are disabled, the quality
 gates do not run automatically.

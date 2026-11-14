@@ -1,8 +1,10 @@
 # Shared evaluation config merged key-wise under every scenario config's
 # optional public `settings` mapping; this shared config.toml is required.
-# Copy it to evals/config.toml (ignored, mode 600) using
-# `jcode_harness_client init-config` or by hand. Never put real credentials
-# in this example or commit the private copy. A scenario override needs only
+# Copy it to evals/config.toml (ignored, mode 600) by hand or run from the
+# repository root:
+# bun tools/evaluator/src/cli.ts init-config --config customizations/workers/evals/config.toml
+# Never put real credentials in this example or commit the private copy.
+# A scenario override needs only
 # the keys that differ; a scenario without a `settings` mapping inherits
 # everything from here.
 [provider]
@@ -20,12 +22,13 @@ auth = "bearer"
 # auth_header = "x-api-key"
 
 [models]
-# Usual routing: Sol coordinates, judges, and simulates; Luna runs the swarm.
+# Usual routing: Sol coordinates and judges; Luna runs the swarm.
 # This example uses OpenRouter-style vendor-qualified model IDs.
 coordinator = "openai/gpt-6.1-sol"
 swarm = "openai/gpt-6-luna"
 judge = "openai/gpt-6.1-sol"
-simulator = "openai/gpt-6.1-sol"
+# Accepted for compatibility; continuation is deterministic, not model-driven.
+# simulator = "openai/gpt-6.1-sol"
 
 # Optional per-blueprint overrides; keys must match discovered worker names.
 [worker_models]
@@ -35,7 +38,7 @@ expert = "anthropic/claude-opus-5-5"
 
 [limits]
 # Usual budgets for scenarios without their own overrides.
-turn_timeout_seconds = 300
+turn_timeout_seconds = 600
 # Optional whole-execution budget in seconds; omit it to stay unbounded.
 # execution_timeout_seconds = 1800
 swarm_timeout_minutes = 10
@@ -48,7 +51,7 @@ acceptance_timeout_seconds = 300
 # [effort]
 # swarm = "xhigh"
 # judge = "medium"
-# simulator = "low"
+# simulator = "low" # Accepted for compatibility; no simulator model is called.
 
 # Optional per-worker effort overrides keyed by discovered worker ID.
 # A worker without an entry inherits the swarm effort; advanced and expert
@@ -58,12 +61,4 @@ routine = "xhigh"
 advanced = "medium"
 expert = "medium"
 
-[delegation_guard]
-# Worker blueprints the guard nudges toward delegation. Only advanced and
-# expert are supported; an empty list disables worker-role guarding while
-# the coordinator nudge stays active.
-worker_blueprints = ["advanced", "expert"]
-# Oversized tool-result byte threshold that triggers the delegation nudge.
-threshold = 8192
-# Optional worker output tail byte limit; 0 disables the tail.
-# tail_bytes = 1024
+# Configure native output guards in worker blueprint frontmatter.

@@ -1,0 +1,19 @@
+{
+  "name": "jcode-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "catalog": "bun catalog/src/cli.ts",
+    "evaluator": "bun evaluator/src/cli.ts",
+    "test": "bun catalog/src/cli.ts sdk-sync && bun test catalog/test evaluator/test scripts/setup_assets.test.ts",
+    "typecheck": "bun catalog/src/cli.ts sdk-sync && bun x tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.82",
+    "ajv": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

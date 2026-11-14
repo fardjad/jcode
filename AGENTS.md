@@ -24,6 +24,7 @@ check over many unit tests of glue.
 ## Rules about rules
 
 - Rules state principles or boundaries; mechanics live in code and `--help`.
+- Activate `/unslop` when writing or editing prose.
 - Procedures live in skills. One incident becomes a code check or is dropped.
 - When unsure, ask the user rather than adding a rule for the uncertainty.
 - Instruction edits name the defect and authoritative location and make the
@@ -34,7 +35,7 @@ check over many unit tests of glue.
 - Spell `jcode` in prose, workflows, and labels; preserve source capitalization.
 - Never access the real `~/.jcode/config.toml` or its parent without express
   direction. Run validation and tests with disposable `HOME` and XDG via
-  `tools/scripts/isolate_config.py`. New workflows never inherit `JCODE_HOME`,
+  `tools/scripts/isolate_config.ts`. New workflows never inherit `JCODE_HOME`,
   XDG, personal PATH configuration, or provider routing.
 - Patch intent lives only in its `.patched-jcode` source commit and derived
   patch. Never hand-edit `patches/*.patch`.
@@ -68,9 +69,8 @@ check over many unit tests of glue.
 feat: short imperative subject
 
 X-Jcode-Patch-Intent: short user-visible outcome
-X-Jcode-Patch-Kind: personal-feature
 X-Jcode-Patch-Depends-On: none
-X-Jcode-Patch-File: 1016-personal-feature-short-imperative-subject.patch
+X-Jcode-Patch-File: 0001-short-imperative-subject.patch
 
 Patch intent:
 State change in one wrapped paragraph.
@@ -85,7 +85,7 @@ Update guidance:
 State what future updates must preserve.
 
 Validation:
-scripts/cargo_exec.sh test -p package focused_test --lib
+cargo test -p package focused_test --lib
 ```
 
 Full workflow: /patch-workflow.
@@ -130,11 +130,11 @@ Full workflow: /patch-workflow.
 
 ## Tooling conventions
 
-- Developer workflows live in `tools/catalog/src/jcode_catalog/`; `just`
-  recipes are thin aliases. Discover commands with `just help` or
-  `uv run --project tools/catalog jcode-catalog --help`.
-- User-facing asset setup and plugins use vanilla Python 3.14+ without uv.
-- Tests sit beside their code as `<stem>_test.py` or `<stem>_test.sh`; retain
+- Developer workflows live in `tools/catalog/src/`; `just` recipes are thin
+  aliases. Discover commands with `just help` or
+  `bun tools/catalog/src/cli.ts --help`.
+- Asset setup uses Bun. Plugins use vanilla Python 3.14+.
+- Tests use `<stem>.test.ts`, `<stem>_test.py`, or `<stem>_test.sh`; retain
   component-specific conventions.
 - Keep each plugin in its own directory and document its upstream source.
 - Shipped plugin and skill directories need allowlist entries in their own
