@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, open, readFile, realpath, stat, unlink } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { withIsolatedEnv } from "./isolation";
+import { gitExecutable, withIsolatedEnv } from "./isolation";
 import { discoverPatches } from "./patches";
 import { atomicWrite, withFileLock } from "./primitives";
 import { ensurePinnedSdk, resolveBase } from "./sdk";
@@ -73,7 +73,7 @@ async function capture(command: string[], cwd: string, env: Record<string, strin
 }
 async function git(cwd: string, ...args: string[]): Promise<string> {
   // Respect an already isolated parent; otherwise ignore user git configuration.
-  return withIsolatedEnv((env) => capture(["git", ...args], cwd, env));
+  return withIsolatedEnv((env) => capture([gitExecutable(cwd, env), ...args], cwd, env));
 }
 async function currentInputs(root: string): Promise<Inputs> {
   const patches = (await discoverPatches(root)).slice().sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);

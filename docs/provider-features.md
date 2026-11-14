@@ -1,6 +1,6 @@
 # Provider features
 
-These settings require catalog patches `0006-provider-improvements.patch` and
+These settings require catalog patches `0006-provider-allowlist-and-openrouter-endpoint.patch` and
 `0009-named-openrouter-reasoning.patch`.
 
 Put provider settings in `~/.jcode/config.private.toml`; they override the
@@ -45,7 +45,7 @@ Set `[provider].allowed_providers` to restrict model selection, model cycling,
 fallback, and completion requests to listed families. An absent or empty list
 keeps normal unrestricted behavior for other families. The jcode hosted family
 is denied unless it is explicitly listed in `allowed_providers`, and it is
-never the default or automatically selected (patch `0004-privacy-improvements.patch`).
+never the default or automatically selected (patch `0004-disable-hosted-and-promotional-features.patch`).
 
 ```toml
 [provider]

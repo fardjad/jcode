@@ -1,6 +1,6 @@
-import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
-import { devNull, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, extname, join } from "node:path";
 
 const MAX_SOCKET_PATH_BYTES = 104;
 const SOCKET_NAMES = ["jcode.sock", "jcode-debug.sock"];
@@ -25,6 +25,15 @@ function privateDirectory(path: string): void {
   chmodSync(path, 0o700);
 }
 
+/** Git for Windows must start from its installation directory to find its DLLs. */
+export function gitExecutable(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (process.platform !== "win32") return "git";
+  if (!env.PATH) throw new Error("git not found on PATH");
+  const executable = Bun.which("git", { cwd, PATH: env.PATH });
+  if (!executable) throw new Error("git not found on PATH");
+  return realpathSync(executable);
+}
+
 /** Run a callback with disposable configuration, runtime, and temporary paths. */
 export async function withIsolatedEnv<T>(
   fn: (env: Record<string, string>) => Promise<T> | T,
@@ -40,6 +49,8 @@ export async function withIsolatedEnv<T>(
     const temp = join(root, "tmp");
     const runtime = join(root, "run");
     const tools = join(root, "bin");
+    const gitConfig = join(root, "gitconfig");
+    writeFileSync(gitConfig, "");
     for (const name of SOCKET_NAMES) {
       if (Buffer.byteLength(join(runtime, name), "utf8") >= MAX_SOCKET_PATH_BYTES) {
         throw new Error(`Disposable runtime socket path is too long: ${join(runtime, name)}`);
@@ -50,7 +61,11 @@ export async function withIsolatedEnv<T>(
     }
     for (const name of TOOL_NAMES) {
       const executable = name === "bun" ? process.execPath : Bun.which(name, { PATH: process.env.PATH });
-      if (executable) symlinkSync(realpathSync(executable), join(tools, name));
+      if (executable) {
+        // Windows command lookup searches executable extensions, not bare filenames.
+        const extension = process.platform === "win32" ? extname(executable) : "";
+        symlinkSync(realpathSync(executable), join(tools, `${name}${extension}`));
+      }
     }
 
     const inherited = process.env;
@@ -77,7 +92,7 @@ export async function withIsolatedEnv<T>(
       TEMP: temp,
       JCODE_WORKFLOW_CONFIG_ISOLATED: "1",
       GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: devNull,
+      GIT_CONFIG_GLOBAL: gitConfig,
       GIT_AUTHOR_NAME: "jcode validation",
       GIT_AUTHOR_EMAIL: "jcode-validation@example.invalid",
       GIT_COMMITTER_NAME: "jcode validation",

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { withIsolatedEnv } from "./isolation";
+import { gitExecutable, withIsolatedEnv } from "./isolation";
 import { atomicWrite, withFileLock } from "./primitives";
 import { resolveBase } from "./sdk";
 import { dependencyOrder, discoverPatches, checkCatalog, type Patch } from "./patches";
@@ -57,7 +57,7 @@ export function appendSkips(command: string, exclusions: string[]): string {
 }
 
 function git(worktree: string, args: string[]): string {
-  const result = Bun.spawnSync(["git", ...args], { cwd: worktree, stdout: "pipe", stderr: "pipe" });
+  const result = Bun.spawnSync([gitExecutable(worktree), ...args], { cwd: worktree, stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString().trim()}`);
   return result.stdout.toString().trim();
 }

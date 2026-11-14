@@ -5,8 +5,8 @@ Subject: [PATCH] feat: provider allowlist, OpenRouter endpoint config, and
  auth selection
 
 X-Jcode-Patch-Intent: Expose and enforce provider-family execution allowlist, generic OpenRouter endpoint config, OpenRouter reported cost accounting, and auth refresh preserving launch defaults
-X-Jcode-Patch-Depends-On: 0004-privacy-improvements.patch
-X-Jcode-Patch-File: 0006-provider-improvements.patch
+X-Jcode-Patch-Depends-On: 0004-disable-hosted-and-promotional-features.patch
+X-Jcode-Patch-File: 0006-provider-allowlist-and-openrouter-endpoint.patch
 
 Patch intent:
 Add a provider-family execution allowlist that gates model switching,

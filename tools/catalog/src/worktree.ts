@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { withIsolatedEnv } from "./isolation";
+import { gitExecutable, withIsolatedEnv } from "./isolation";
 import { parseMetadata } from "./metadata";
 import { atomicWrite } from "./primitives";
 import type { Patch } from "./patches";
@@ -13,10 +13,23 @@ export function git(cwd: string, args: string[], options: { env?: Record<string,
     while (stdio.length <= fd) stdio.push("ignore");
     stdio[fd] = fd;
   }
-  const result = Bun.spawnSync(["git", ...args], { cwd, env: options.env ?? process.env, stdio });
+  const result = (() => {
+    try {
+      return Bun.spawnSync([gitExecutable(cwd, options.env ?? process.env), ...args], { cwd, env: options.env ?? process.env, stdio });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const code = error instanceof Error && "code" in error && typeof error.code === "string" ? ` (${error.code})` : "";
+      throw new Error(`git ${args.join(" ")} failed to start${code}: ${detail}`, { cause: error });
+    }
+  })();
   if (result.exitCode !== 0) {
-    const detail = [result.stderr.toString().trim(), result.stdout.toString().trim()].filter(Boolean).join("\n");
-    throw new Error(`git ${args.join(" ")} failed${detail ? `\n${detail}` : ""}`);
+    const detail = [
+      `exitCode: ${result.exitCode}`,
+      ...(result.signalCode != null ? [`signalCode: ${result.signalCode}`] : []),
+      ...(result.stdout.length ? [`stdout:\n${result.stdout.toString().trimEnd()}`] : []),
+      ...(result.stderr.length ? [`stderr:\n${result.stderr.toString().trimEnd()}`] : []),
+    ].join("\n");
+    throw new Error(`git ${args.join(" ")} failed\n${detail}`);
   }
   const output = result.stdout.toString();
   return options.raw ? output : output.trim();

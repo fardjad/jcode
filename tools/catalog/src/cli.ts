@@ -2,7 +2,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withIsolatedEnv } from "./isolation";
+import { gitExecutable, withIsolatedEnv } from "./isolation";
 import { atomicWrite } from "./primitives";
 import { ensurePinnedSdk } from "./sdk";
 import { checkCatalog, checkIsolation, createPatched, snapshotPatches, listPatches } from "./patches";
@@ -29,7 +29,7 @@ async function run(args: string[], cwd = root, env = process.env): Promise<void>
 }
 
 function git(...args: string[]): string {
-  const child = Bun.spawnSync(["git", ...args], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawnSync([gitExecutable(root), ...args], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (child.exitCode !== 0) throw new Error(`git ${args[0]}: ${child.stderr.toString().trim()}`);
   return child.stdout.toString().trim();
 }
@@ -66,7 +66,7 @@ async function setVersion(args: string[]): Promise<void> {
   if (git("branch", "--show-current") !== "personalized") throw new Error("set-version must run on personalized");
   if (git("status", "--porcelain")) throw new Error("set-version requires clean personalized checkout");
   const ref = `refs/jcode/upstream-tags/${release}`;
-  await run(["git", "fetch", "--no-tags", "https://github.com/1jehuang/jcode.git", `+refs/tags/${release}:${ref}`]);
+  await run([gitExecutable(root), "fetch", "--no-tags", "https://github.com/1jehuang/jcode.git", `+refs/tags/${release}:${ref}`]);
   const commit = git("rev-parse", "--verify", `${ref}^{commit}`);
   if (expected && !commit.startsWith(expected)) throw new Error(`release commit ${commit} does not match reviewed hash ${expected}`);
   await atomicWrite(join(root, "VERSION.txt"), `${release}\n`, 0o644);
@@ -93,7 +93,7 @@ async function dispatch(args: string[], originalEnv: NodeJS.ProcessEnv): Promise
   if (group === "push") {
     expectNoArgs(args.slice(1));
     if (git("branch", "--show-current") !== "personalized") throw new Error("push must run on personalized");
-    await run(["git", "push", "origin", "refs/heads/personalized:refs/heads/personalized"]);
+    await run([gitExecutable(root), "push", "origin", "refs/heads/personalized:refs/heads/personalized"]);
     return;
   }
   if (group === "test") { expectNoArgs(args.slice(1)); await testCatalog(); return; }

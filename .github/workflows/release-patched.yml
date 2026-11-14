@@ -114,6 +114,12 @@ jobs:
         with:
           bun-version: "1.4.4"
 
+      - name: Preflight isolated Git worktree from Git Bash
+        if: runner.os == 'Windows'
+        timeout-minutes: 6
+        shell: bash
+        run: bun tools/scripts/isolate_config.ts -- bun test tools/catalog/test/isolation.test.ts --test-name-pattern "discovers and runs Git from the isolated tool directory"
+
       - name: Materialize patched source tree
         shell: bash
         run: just create-patched-copy

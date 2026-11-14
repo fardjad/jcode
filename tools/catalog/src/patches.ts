@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { parseMetadata, type PatchMetadata } from "./metadata";
-import { shortTempRoot, withIsolatedEnv } from "./isolation";
+import { gitExecutable, shortTempRoot, withIsolatedEnv } from "./isolation";
 import { atomicWrite } from "./primitives";
 import { resolveBase } from "./sdk";
 import { git, normalizedFormatPatch, prepareWorktree } from "./worktree";
@@ -100,7 +100,7 @@ async function temporaryWorktree<T>(root: string, base: string, action: (path: s
     return await action(path);
   } finally {
     if (created || existsSync(join(path, ".git"))) {
-      const removal = Bun.spawnSync(["git", "worktree", "remove", "--force", path], { cwd: root, stdout: "pipe", stderr: "pipe" });
+      const removal = Bun.spawnSync([gitExecutable(root), "worktree", "remove", "--force", path], { cwd: root, stdout: "pipe", stderr: "pipe" });
       if (removal.exitCode !== 0) throw new Error(`cannot remove temporary worktree ${path}: ${removal.stderr.toString()}`);
     }
     rmSync(temporary, { recursive: true, force: true });
@@ -141,7 +141,7 @@ export async function checkIsolation(root: string): Promise<void> {
       git(path, ["-c", "core.autocrlf=false", "-c", "core.eol=lf", "reset", "--hard", base]);
       try { await apply(path, closure(catalog, patch.name)); console.log(`ok ${patch.name}`); }
       catch (error) {
-        Bun.spawnSync(["git", "am", "--abort"], { cwd: path, stdout: "ignore", stderr: "ignore" });
+        Bun.spawnSync([gitExecutable(path), "am", "--abort"], { cwd: path, stdout: "ignore", stderr: "ignore" });
         failures.push(`${patch.name}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

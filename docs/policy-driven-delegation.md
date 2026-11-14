@@ -1,6 +1,6 @@
 # Policy-driven delegation
 
-The native dispatcher and output guard are available in a jcode binary built with patch `0008-blueprints-and-policy-driven-dispatcher.patch`. Applying or validating the source patch does not install it. Check the binary before using these settings. The currently running binary and configured workflow have not been validated for this feature.
+The native dispatcher and output guard are available in a jcode binary built with patch `0008-worker-blueprints-and-policy-driven-dispatch.patch`. Applying or validating the source patch does not install it. Check the binary before using these settings. The currently running binary and configured workflow have not been validated for this feature.
 
 ## Routing policy
 
@@ -143,7 +143,7 @@ are not available.
 
 The external delegation-guard checkout plugin is retired. The native dispatcher
 and output guard are built into a binary with patch
-`0008-blueprints-and-policy-driven-dispatcher.patch`, need no external plugin
+`0008-worker-blueprints-and-policy-driven-dispatch.patch`, need no external plugin
 or setup hook, and are configured through worker blueprint front matter and
 config overrides. Removing the checkout plugin does not change existing
 installed copies or their config.

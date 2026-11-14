@@ -5,7 +5,7 @@ Subject: [PATCH] fix: keep hosted services and telemetry inactive
 
 X-Jcode-Patch-Intent: Keep hosted services, telemetry, promotional content, sponsored discovery, and automatic onboarding present but never active
 X-Jcode-Patch-Depends-On: none
-X-Jcode-Patch-File: 0004-privacy-improvements.patch
+X-Jcode-Patch-File: 0004-disable-hosted-and-promotional-features.patch
 
 Patch intent:
 The personal build keeps upstream's hosted service code but never activates,

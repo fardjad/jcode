@@ -4,7 +4,7 @@ Date: Thu, 12 Nov 2026 17:59:05 +0100
 Subject: [PATCH] feat: support local private configuration overrides
 
 X-Jcode-Patch-Intent: separate local private settings from portable main config
-X-Jcode-Patch-Depends-On: 0004-privacy-improvements.patch
+X-Jcode-Patch-Depends-On: 0004-disable-hosted-and-promotional-features.patch
 X-Jcode-Patch-File: 0005-private-config.patch
 
 Patch intent:

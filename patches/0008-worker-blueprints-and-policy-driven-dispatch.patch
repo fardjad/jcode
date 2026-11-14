@@ -4,8 +4,8 @@ Date: Sat, 14 Nov 2026 08:56:36 +0100
 Subject: [PATCH] feat: worker blueprints and policy-driven task dispatch
 
 X-Jcode-Patch-Intent: Enable reusable worker blueprints, policy-driven dispatch, and read-only worker observation
-X-Jcode-Patch-Depends-On: 0004-privacy-improvements.patch, 0006-provider-improvements.patch
-X-Jcode-Patch-File: 0008-blueprints-and-policy-driven-dispatcher.patch
+X-Jcode-Patch-Depends-On: 0004-disable-hosted-and-promotional-features.patch, 0006-provider-allowlist-and-openrouter-endpoint.patch
+X-Jcode-Patch-File: 0008-worker-blueprints-and-policy-driven-dispatch.patch
 
 Patch intent:
 Add a worker blueprint system that lets a jcode user define reusable,

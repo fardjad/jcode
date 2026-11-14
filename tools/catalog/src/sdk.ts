@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { atomicWrite, withFileLock } from "./primitives";
+import { gitExecutable } from "./isolation";
 
 const UPSTREAM_URL = "https://github.com/1jehuang/jcode.git";
 const STABLE_RELEASE = /^v[0-9]+\.[0-9]+\.[0-9]+$/;
@@ -25,7 +26,7 @@ export function pinnedVersion(root: string): string {
 }
 
 function run(root: string, command: string, args: string[]): string {
-  const result = Bun.spawnSync([command, ...args], {
+  const result = Bun.spawnSync([command === "git" ? gitExecutable(root) : command, ...args], {
     cwd: root,
     stdin: "ignore",
     stdout: "pipe",
@@ -40,7 +41,7 @@ function run(root: string, command: string, args: string[]): string {
 
 function resolveRelease(root: string, version: string, fetchRelease: boolean): string {
   const ref = `refs/jcode/upstream-tags/${version}`;
-  const check = Bun.spawnSync(["git", "show-ref", "--verify", "--quiet", ref], {
+  const check = Bun.spawnSync([gitExecutable(root), "show-ref", "--verify", "--quiet", ref], {
     cwd: root,
     stdin: "ignore",
     stdout: "ignore",

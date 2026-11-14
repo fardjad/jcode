@@ -7,13 +7,13 @@ installing and configuring the shipped roles, see
 dispatcher, check limits, assistance model, and deployment status are described
 in [policy-driven delegation](policy-driven-delegation.md). The checkout copy
 of the external guard plugin is retired. The native guard needs no plugin or
-setup hook, but requires a binary built with patch `0008-blueprints-and-policy-driven-dispatcher.patch`. The running
+setup hook, but requires a binary built with patch `0008-worker-blueprints-and-policy-driven-dispatch.patch`. The running
 installation has not been updated or verified for this behavior.
 
 ## Blueprint files
 
 Patch
-`0008-blueprints-and-policy-driven-dispatcher.patch`
+`0008-worker-blueprints-and-policy-driven-dispatch.patch`
 loads direct `*.md` files from `~/.jcode/worker-blueprints/`. A missing
 directory is an empty registry. Set `agents.worker_blueprints_dir` to change
 the directory; `~` home expansion is supported.

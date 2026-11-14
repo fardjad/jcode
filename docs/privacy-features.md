@@ -1,7 +1,7 @@
 # Privacy and hosted-feature controls
 
 Patch
-`0004-privacy-improvements.patch`
+`0004-disable-hosted-and-promotional-features.patch`
 keeps hosted services and telemetry present in the code but inactive. It gates
 cloud-dependent and promotional surfaces so jcode runs without contacting
 hosted services unless a provider is explicitly allowed.

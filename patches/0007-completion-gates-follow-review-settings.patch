@@ -6,7 +6,7 @@ Subject: [PATCH] feat: completion quality gates respect review
 X-Jcode-Patch-Intent: Skip automatic post-completion todo quality
 continuations when auto-review and auto-judge are both disabled.
 X-Jcode-Patch-Depends-On: none
-X-Jcode-Patch-File: 0007-completion-quality-gates-respect-review.patch
+X-Jcode-Patch-File: 0007-completion-gates-follow-review-settings.patch
 
 Patch intent:
 Make automatic ownership, validation, and final-response todo continuations

@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { createConnection, createServer } from "node:net";
-import { constants, devNull } from "node:os";
+import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { shortTempRoot, withIsolatedEnv } from "../src/isolation";
+import { gitExecutable, shortTempRoot, withIsolatedEnv } from "../src/isolation";
+import { git } from "../src/worktree";
 
 const wrapper = fileURLToPath(new URL("../../scripts/isolate_config.ts", import.meta.url));
 
@@ -72,16 +73,80 @@ describe("disposable environment", () => {
     });
   });
 
+  test("discovers and runs Git from the isolated tool directory", async () => {
+    const fixture = mkdtempSync(join(shortTempRoot(), "jc-git-"));
+    try {
+      const repo = join(fixture, "repo");
+      const checkout = join(fixture, "checkout");
+      mkdirSync(repo);
+      const patch = join(fixture, "change.patch");
+      writeFileSync(patch, [
+        "From 0123456789012345678901234567890123456789 Mon Sep 17 00:00:00 2001",
+        "From: Test <test@example.invalid>",
+        "Date: Thu, 1 Jan 1970 00:00:00 +0000",
+        "Subject: [PATCH] Add file",
+        "",
+        "---",
+        "diff --git a/example.txt b/example.txt",
+        "new file mode 100644",
+        "--- /dev/null",
+        "+++ b/example.txt",
+        "@@ -0,0 +1 @@",
+        "+isolated",
+        "-- ",
+        "2.0.0",
+        "",
+      ].join("\n"));
+      await withIsolatedEnv((env) => {
+        const tools = join(dirname(env.HOME), "bin");
+        const executable = Bun.which("git", { PATH: env.PATH })!;
+        expect(dirname(executable)).toBe(tools);
+        expect(gitExecutable(repo, env)).toBe(process.platform === "win32" ? realpathSync(executable) : "git");
+        if (process.platform === "win32") expect(() => gitExecutable(repo, { ...env, PATH: "" })).toThrow("git not found on PATH");
+        // Match the CLI: replace the Bun process environment before Git runs.
+        const inherited = { ...process.env };
+        for (const key of Object.keys(process.env)) delete process.env[key];
+        Object.assign(process.env, env);
+        try {
+          const runGit = (...args: string[]) => git(repo, args);
+          runGit("init", "-q");
+          runGit("am", patch);
+          runGit("-c", "core.autocrlf=false", "-c", "core.eol=lf", "worktree", "add", "--detach", checkout, "HEAD");
+          expect(readFileSync(join(checkout, "example.txt"), "utf8")).toBe("isolated\n");
+
+          let diagnostic = "";
+          try {
+            git(repo, ["rev-parse", "--git-dir", "--verify", "not-a-ref"], { env: { ...env, TEST_SECRET: "do-not-log-me" } });
+          } catch (error) {
+            diagnostic = String(error);
+          }
+          expect(diagnostic).toContain("exitCode: 128");
+          expect(diagnostic).toContain("stdout:\n.git");
+          expect(diagnostic).toContain("stderr:\nfatal:");
+          expect(diagnostic).not.toContain("do-not-log-me");
+        } finally {
+          for (const key of Object.keys(process.env)) delete process.env[key];
+          Object.assign(process.env, inherited);
+        }
+      });
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }, 240_000);
+
   test("replaces all config, runtime and temp paths and scrubs provider routing", async () => {
     const fixture = mkdtempSync(join(shortTempRoot(), "jc-fixture-"));
     const oldHome = join(fixture, "home");
     const oldJcodeHome = join(fixture, "user-jcode");
+    const oldGitConfig = join(fixture, "user-gitconfig");
     mkdirSync(oldHome);
     mkdirSync(oldJcodeHome);
     writeFileSync(join(oldJcodeHome, "config.toml"), "secret-user-configuration");
+    writeFileSync(oldGitConfig, "[user]\n\tname = personal git config\n");
     const changes: Record<string, string | undefined> = {
       HOME: oldHome,
       JCODE_HOME: oldJcodeHome,
+      GIT_CONFIG_GLOBAL: oldGitConfig,
       XDG_CONFIG_HOME: join(fixture, "config"),
       XDG_CACHE_HOME: join(fixture, "cache"),
       XDG_DATA_HOME: join(fixture, "data"),
@@ -138,7 +203,10 @@ describe("disposable environment", () => {
           expect(env.RUSTUP_HOME).toBe(join(oldHome, ".rustup"));
           expect(env.JCODE_WORKFLOW_CONFIG_ISOLATED).toBe("1");
           expect(env.GIT_CONFIG_NOSYSTEM).toBe("1");
-          expect(env.GIT_CONFIG_GLOBAL).toBe(devNull);
+          expect(env.GIT_CONFIG_GLOBAL).not.toBe(oldGitConfig);
+          expect(existsSync(env.GIT_CONFIG_GLOBAL)).toBe(true);
+          expect(readFileSync(env.GIT_CONFIG_GLOBAL, "utf8")).toBe("");
+          expect(git(fixture, ["config", "--global", "--list"], { env })).toBe("");
           expect(env.GIT_AUTHOR_NAME).toBe("jcode validation");
           expect(env.GIT_AUTHOR_EMAIL).toBe("jcode-validation@example.invalid");
           expect(env.GIT_COMMITTER_NAME).toBe("jcode validation");

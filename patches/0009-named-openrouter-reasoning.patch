@@ -4,7 +4,7 @@ Date: Fri, 13 Nov 2026 04:17:09 +0100
 Subject: [PATCH] fix: use unified reasoning for named OpenRouter profiles
 
 X-Jcode-Patch-Intent: Allow reasoning effort on named OpenRouter profiles with OpenRouter wire format
-X-Jcode-Patch-Depends-On: 0006-provider-improvements.patch
+X-Jcode-Patch-Depends-On: 0006-provider-allowlist-and-openrouter-endpoint.patch
 X-Jcode-Patch-File: 0009-named-openrouter-reasoning.patch
 
 Patch intent:
