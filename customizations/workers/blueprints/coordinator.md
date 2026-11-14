@@ -43,6 +43,10 @@ two minutes, authorize a timeout within the task budget. Size `attempt_cap`
 above expected transient or checkpoint interruptions so the worker can rerun
 within the cap. Judge reports against acceptance, then choose the next step.
 
+Use `external_write_paths` only when the user explicitly authorizes each exact
+absolute file outside the workspace. Never grant directories or infer permission
+from a worker request. Keep other writable paths in `allowed_paths`.
+
 Own shared-resource allocation and avoid concurrent writers. When acceptance
 evidence matters, delegate final verification to a worker independent of the
 implementation. Judge coverage from the actual runner and observed tests;

@@ -24,13 +24,16 @@ assistance counters, and a hard cap on runtime check failures. Support
 bounded nested assistance, same-session handback, and exact-input native
 extraction. Freeze worker and extractor snapshots, enforce canonical SDK
 permissions, and support coordinator-authorized check timeouts and bounded
-text pagination. Show readable dispatch worker names in TUI swarm and tool
-messages and keep active dispatch chains alive across idle reaping.
+text pagination. Allow coordinator-authorized exact external file grants,
+bind canonical identities across replay, and exclude grants from assistance.
+Show readable dispatch worker names in TUI swarm and tool messages and keep
+active dispatch chains alive across idle reaping.
 
 Why it exists:
 Coordinates reusable, token-efficient worker roles with schema-validated
 contracts, bounded tool output, and policy-driven task dispatch without
-relying on prompts alone.
+relying on prompts alone. Exact-file grants allow explicitly authorized work
+outside the workspace without broadening workspace-relative path scopes.
 
 Upstream integration points:
 crates/jcode-base/src/worker_blueprint.rs, crates/jcode-config-types/src/delegation.rs,
@@ -43,7 +46,8 @@ ui_messages.rs, ui_prepare.rs, and ui_status.rs.
 Update guidance:
 Preserve blueprint front-matter validation, runtime policy registration across
 spawn/reload/resume, bounded worker output with authorized read-only extraction,
-task dispatch lifecycle and check caps, and TUI worker label rendering.
+task dispatch lifecycle and check caps, exact external file grant confinement
+and canonical replay checks, and TUI worker label rendering.
 
 Validation:
 cargo test -p jcode-base worker_blueprint --lib
@@ -108,11 +112,11 @@ cargo test -p jcode-app-core system_prompt_override_restores_and_does_not_leak_a
  crates/jcode-app-core/src/server/debug.rs     |    6 +
  .../src/server/debug_session_admin.rs         |    3 +
  .../jcode-app-core/src/server/debug_tests.rs  |    2 +
- .../src/server/dispatcher/mod.rs              |  453 +++
- .../src/server/dispatcher/runtime.rs          |  308 ++
- .../src/server/dispatcher/runtime_store.rs    |  666 ++++
- .../src/server/dispatcher/runtime_tests.rs    | 1664 ++++++++++
- .../src/server/dispatcher/tests.rs            |  381 +++
+ .../src/server/dispatcher/mod.rs              |  461 +++
+ .../src/server/dispatcher/runtime.rs          |  314 ++
+ .../src/server/dispatcher/runtime_store.rs    |  703 +++++
+ .../src/server/dispatcher/runtime_tests.rs    | 1817 +++++++++++
+ .../src/server/dispatcher/tests.rs            |  382 +++
  .../src/server/extraction_handler.rs          |  128 +
  .../src/server/extraction_handler_tests.rs    |  268 ++
  .../src/server/extraction_operation.rs        |  415 +++
@@ -169,7 +173,7 @@ cargo test -p jcode-app-core system_prompt_override_restores_and_does_not_leak_a
  crates/jcode-tui/src/tui/ui_status.rs         |    3 +
  crates/jcode-tui/src/tui/ui_tests/prepare.rs  |  106 +
  src/cli/terminal.rs                           |   20 +-
- 109 files changed, 20294 insertions(+), 272 deletions(-)
+ 109 files changed, 20499 insertions(+), 272 deletions(-)
  create mode 100644 crates/jcode-app-core/src/agent_tests/blueprint_schema.rs
  create mode 100644 crates/jcode-app-core/src/server/dispatcher/mod.rs
  create mode 100644 crates/jcode-app-core/src/server/dispatcher/runtime.rs
@@ -8253,10 +8257,10 @@ index 6ee5d53e0..658cd0c92 100644
      }
 diff --git a/crates/jcode-app-core/src/server/dispatcher/mod.rs b/crates/jcode-app-core/src/server/dispatcher/mod.rs
 new file mode 100644
-index 000000000..e1b403fa5
+index 000000000..3d80b1c59
 --- /dev/null
 +++ b/crates/jcode-app-core/src/server/dispatcher/mod.rs
-@@ -0,0 +1,453 @@
+@@ -0,0 +1,461 @@
 +//! Deterministic routing state. No session or tool execution is performed here.
 +#![allow(dead_code)]
 +
@@ -8341,10 +8345,13 @@ index 000000000..e1b403fa5
 +    pub worker: String,
 +    pub objective: String,
 +    pub write_paths: Vec<String>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub external_write_paths: Vec<String>,
 +    pub attempt_cap: u32,
 +}
 +
 +#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++#[serde(deny_unknown_fields)]
 +pub struct Blocker {
 +    pub id: String,
 +    pub class: BlockerClass,
@@ -8464,6 +8471,11 @@ index 000000000..e1b403fa5
 +            || assignment.attempt_cap == 0
 +            || !policy.workers.contains(&assignment.worker)
 +            || !paths_subset(&assignment.write_paths, &assignment.write_paths)
++            || assignment.external_write_paths.iter().any(|path| {
++                let path = Path::new(path);
++                !path.is_absolute() || path.file_name().is_none()
++                    || !path.components().skip(1).all(|c| matches!(c, Component::Normal(_)))
++            })
 +            || policy.retries > 2
 +            || policy.assistance_sessions > 3
 +            || policy.environment_retries.is_some_and(|n| n > 1)
@@ -8712,10 +8724,10 @@ index 000000000..e1b403fa5
 +}
 diff --git a/crates/jcode-app-core/src/server/dispatcher/runtime.rs b/crates/jcode-app-core/src/server/dispatcher/runtime.rs
 new file mode 100644
-index 000000000..6b0726860
+index 000000000..28a506c90
 --- /dev/null
 +++ b/crates/jcode-app-core/src/server/dispatcher/runtime.rs
-@@ -0,0 +1,308 @@
+@@ -0,0 +1,314 @@
 +//! Server adapter for dispatcher owners and bounded blocker consultations.
 +
 +use super::runtime_store::{DispatchOperation, Phase, RuntimeStore, TaskInput, WorkerSnapshot};
@@ -8832,8 +8844,11 @@ index 000000000..6b0726860
 +        self.store.bind_checks(&operation, operation.input.checks.clone())?;
 +        let mut receivers = HashMap::new();
 +        receivers.insert(operation.owner_session_id.clone(), self.store.bind_report(&operation)?);
-+        let mut prompt = worker_prompt(&operation.snapshot, &worker_input(&operation.input), &operation.input.checks, &operation.owner_session_id, operation.turn_serial, false)?;
++        let mut owner_input = operation.input.clone();
++        owner_input.external_write_paths = operation.canonical_external_write_paths.iter().map(|path| path.to_string_lossy().into_owned()).collect();
++        let mut prompt = worker_prompt(&operation.snapshot, &worker_input(&owner_input), &operation.input.checks, &operation.owner_session_id, operation.turn_serial, false)?;
 +        loop {
++            self.store.check_root(&operation, root.as_deref())?;
 +            let session = operation.active_session_id.clone();
 +            let agent = self.sessions.read().await.get(&session).cloned().context("dispatch actor unavailable; explicit coordinator decision required")?;
 +            let reports = receivers.get_mut(&session).context("dispatch report receiver unavailable")?;
@@ -8952,6 +8967,9 @@ index 000000000..6b0726860
 +
 +fn worker_input(input: &TaskInput) -> serde_json::Value {
 +    let mut value = serde_json::json!({"task_id":input.task_id,"blocker_id":input.blocker_id,"source_session_id":input.source_session_id,"objective":input.objective,"mode":input.mode,"inputs":input.inputs,"allowed_paths":input.allowed_paths,"non_goals":input.non_goals,"acceptance":input.acceptance,"time_budget_minutes":input.time_budget_minutes,"attempt_cap":input.attempt_cap});
++    if !input.external_write_paths.is_empty() {
++        value["external_write_paths"] = serde_json::json!(input.external_write_paths);
++    }
 +    if let Some(context) = &input.context {
 +        value["context"] = context.clone().into();
 +    }
@@ -8962,7 +8980,7 @@ index 000000000..6b0726860
 +    TaskInput {
 +        task_id: operation.input.task_id.clone(), worker: worker.into(), objective: blocker.question.clone(),
 +        mode: if blocker.write_paths.is_empty() { "read-only" } else { "edit" }.into(),
-+        inputs: blocker.inputs.clone(), allowed_paths: blocker.write_paths.clone(),
++        inputs: blocker.inputs.clone(), allowed_paths: blocker.write_paths.clone(), external_write_paths: vec![],
 +        non_goals: vec!["Do not take over or complete the parent task".into()],
 +        acceptance: blocker.minimum_resolution.clone(), checks: operation.input.checks.iter().filter(|check| operation.input.assistance_checks.contains(&check.id)).cloned().collect(), assistance_checks: operation.input.assistance_checks.clone(), time_budget_minutes: operation.input.time_budget_minutes,
 +        attempt_cap: operation.input.attempt_cap,
@@ -9026,10 +9044,10 @@ index 000000000..6b0726860
 +}
 diff --git a/crates/jcode-app-core/src/server/dispatcher/runtime_store.rs b/crates/jcode-app-core/src/server/dispatcher/runtime_store.rs
 new file mode 100644
-index 000000000..6e936d142
+index 000000000..97d7f9721
 --- /dev/null
 +++ b/crates/jcode-app-core/src/server/dispatcher/runtime_store.rs
-@@ -0,0 +1,666 @@
+@@ -0,0 +1,703 @@
 +//! Process-local dispatch operations with write-only snapshots for offline evaluation.
 +//! Runtime authority is never reconstructed from the snapshot directory after restart.
 +
@@ -9050,6 +9068,8 @@ index 000000000..6e936d142
 +    pub mode: String,
 +    pub inputs: Vec<String>,
 +    pub allowed_paths: Vec<String>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub external_write_paths: Vec<String>,
 +    pub non_goals: Vec<String>,
 +    pub acceptance: String,
 +    #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -9235,6 +9255,8 @@ index 000000000..6e936d142
 +    #[serde(default)]
 +    pub canonical_write_paths: Vec<PathBuf>,
 +    #[serde(default)]
++    pub canonical_external_write_paths: Vec<PathBuf>,
++    #[serde(default)]
 +    pub inflight_checks: HashMap<String, CheckInvocation>,
 +    #[serde(default)]
 +    pub completed_checks: Vec<CheckOutcome>,
@@ -9291,6 +9313,31 @@ index 000000000..6e936d142
 +        canonical_paths.push(canonical);
 +    }
 +    Ok((Some(root), canonical_paths))
++}
++
++fn canonical_external_write_paths(paths: &[String]) -> Result<Vec<PathBuf>> {
++    let mut result = Vec::new();
++    for raw in paths {
++        let path = Path::new(raw);
++        ensure!(path.is_absolute() && path.components().skip(1).all(|c| matches!(c, std::path::Component::Normal(_))) && path.file_name().is_some(), "external write grants require absolute file paths without traversal");
++        let canonical = match std::fs::symlink_metadata(path) {
++            Ok(_) => path.canonicalize().context("resolve external write file")?,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
++                let parent = path.parent().context("external write file has no parent")?.canonicalize().context("resolve external write parent")?;
++                ensure!(parent.is_dir(), "external write parent must be a directory");
++                parent.join(path.file_name().context("external write file has no name")?)
++            }
++            Err(error) => return Err(error.into()),
++        };
++        match std::fs::metadata(&canonical) {
++            Ok(metadata) => ensure!(metadata.is_file(), "external write grant must name a file, not a directory or special file"),
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
++            Err(error) => return Err(error.into()),
++        }
++        ensure!(canonical.to_str().is_some(), "external write file path must be UTF-8");
++        result.push(canonical);
++    }
++    Ok(result)
 +}
 +
 +/// The server-owned wrapper preserves the worker's original report in `report`.
@@ -9417,7 +9464,13 @@ index 000000000..6e936d142
 +    pub(super) fn prepare_with_root(&self, principal: &str, operation_id: &str, input: TaskInput, policy: Policy, snapshot: WorkerSnapshot, working_dir: Option<&Path>) -> Result<DispatchOperation> {
 +        ensure!(!principal.trim().is_empty() && !operation_id.trim().is_empty() && !input.task_id.trim().is_empty(), "missing dispatch identity");
 +        ensure!(input.mode != "read-only" || input.allowed_paths.is_empty(), "read-only dispatch requires allowed_paths=[]; list read inputs in inputs");
++        ensure!(input.mode != "read-only" || input.external_write_paths.is_empty(), "read-only dispatch requires external_write_paths=[]");
 +        let (working_dir, canonical_write_paths) = canonical_write_paths(working_dir, &input.allowed_paths)?;
++        let canonical_external_write_paths = canonical_external_write_paths(&input.external_write_paths)?;
++        if !canonical_external_write_paths.is_empty() {
++            let root = working_dir.as_ref().context("external write dispatch requires a trusted working directory")?;
++            ensure!(canonical_external_write_paths.iter().all(|path| !path.starts_with(root)), "external write grants must name files outside the working directory");
++        }
 +        let mut state = self.state();
 +        if let Some(task_id) = state.aliases.get(&(principal.to_owned(), operation_id.to_owned())) {
 +            ensure!(task_id == &input.task_id, "conflicting dispatch operation parameters");
@@ -9427,6 +9480,7 @@ index 000000000..6e936d142
 +            ensure!(existing.principal == principal && existing.input.task_id == input.task_id, "dispatch identity mismatch");
 +            ensure!(existing.input == input, "conflicting dispatch operation parameters");
 +            ensure!(existing.working_dir == working_dir && existing.canonical_write_paths == canonical_write_paths, "dispatch working directory or paths changed");
++            ensure!(existing.canonical_external_write_paths == canonical_external_write_paths, "dispatch external file grants changed");
 +            Self::insert_alias(&mut state, principal, operation_id, &input.task_id)?;
 +            return Ok(existing);
 +        }
@@ -9450,10 +9504,10 @@ index 000000000..6e936d142
 +        let owner_session_id = format!("dispatch-{}", uuid::Uuid::new_v4());
 +        let task = TaskRecord::new(Assignment {
 +            task_id: input.task_id.clone(), session: owner_session_id.clone(), worker: input.worker.clone(),
-+            objective: input.objective.clone(), write_paths: input.allowed_paths.clone(), attempt_cap: input.attempt_cap,
++            objective: input.objective.clone(), write_paths: input.allowed_paths.clone(), external_write_paths: canonical_external_write_paths.iter().map(|path| path.to_str().unwrap().to_owned()).collect(), attempt_cap: input.attempt_cap,
 +        }, policy).map_err(anyhow::Error::msg)?;
 +        let actors = vec![RuntimeActor { session_id: owner_session_id.clone(), snapshot: snapshot.clone(), purpose: None }];
-+        let operation = DispatchOperation { principal: principal.into(), operation_id: operation_id.into(), input, active_session_id: owner_session_id.clone(), owner_session_id, snapshot, task, phase: Phase::Prepared, actors, turn_serial: 0, working_dir, canonical_write_paths, inflight_checks: HashMap::new(), completed_checks: Vec::new() };
++        let operation = DispatchOperation { principal: principal.into(), operation_id: operation_id.into(), input, active_session_id: owner_session_id.clone(), owner_session_id, snapshot, task, phase: Phase::Prepared, actors, turn_serial: 0, working_dir, canonical_write_paths, canonical_external_write_paths, inflight_checks: HashMap::new(), completed_checks: Vec::new() };
 +        self.write_snapshot(&operation)?;
 +        Self::insert_alias(&mut state, principal, operation_id, &operation.input.task_id)?;
 +        state.operations.insert(key, operation.clone());
@@ -9463,6 +9517,7 @@ index 000000000..6e936d142
 +    pub(super) fn check_root(&self, operation: &DispatchOperation, root: Option<&Path>) -> Result<()> {
 +        let (working_dir, canonical_write_paths) = canonical_write_paths(root, &operation.input.allowed_paths)?;
 +        ensure!(working_dir == operation.working_dir && canonical_write_paths == operation.canonical_write_paths, "dispatch working directory or paths changed");
++        ensure!(canonical_external_write_paths(&operation.input.external_write_paths)? == operation.canonical_external_write_paths, "dispatch external file grants changed");
 +        Ok(())
 +    }
 +
@@ -9698,10 +9753,10 @@ index 000000000..6e936d142
 +}
 diff --git a/crates/jcode-app-core/src/server/dispatcher/runtime_tests.rs b/crates/jcode-app-core/src/server/dispatcher/runtime_tests.rs
 new file mode 100644
-index 000000000..6c9887cd4
+index 000000000..73d70bd9c
 --- /dev/null
 +++ b/crates/jcode-app-core/src/server/dispatcher/runtime_tests.rs
-@@ -0,0 +1,1664 @@
+@@ -0,0 +1,1817 @@
 +use super::*;
 +use crate::message::{Message, StreamEvent, ToolDefinition};
 +use crate::provider::EventStream;
@@ -10382,6 +10437,159 @@ index 000000000..6c9887cd4
 +fn ctx(call: &str) -> crate::tool::ToolContext {
 +    crate::tool::ToolContext { session_id:"parent".into(), message_id:"m".into(), tool_call_id:call.into(), working_dir:None,
 +        stdin_request_tx:None, graceful_shutdown_signal:None, execution_mode:crate::tool::ToolExecutionMode::AgentTurn }
++}
++
++#[test]
++fn dispatcher_runtime_external_file_grants_and_replay() {
++    let _lock = crate::storage::lock_test_env();
++    let home = tempfile::tempdir().unwrap();
++    let previous = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", home.path());
++    let project = home.path().join("project");
++    let outside = home.path().join("outside");
++    std::fs::create_dir_all(&project).unwrap();
++    std::fs::create_dir_all(&outside).unwrap();
++    let file = outside.join("file");
++    std::fs::write(&file, "data").unwrap();
++    let store = RuntimeStore::new(home.path().join("operations"));
++    let handler = fixture_handler(Arc::new(ScriptedOwner { calls: Arc::new(AtomicUsize::new(0)) }), store.clone());
++    let mut input: TaskInput = serde_json::from_value({ let mut value = args("advanced"); value.as_object_mut().unwrap().remove("intent"); value }).unwrap();
++    assert!(input.external_write_paths.is_empty());
++    assert!(serde_json::to_value(&input).unwrap().get("external_write_paths").is_none());
++    assert!(worker_input(&input).get("external_write_paths").is_none());
++    input.mode = "edit".into();
++    let (policy, snapshot) = (handler.resolve)(&input).unwrap();
++    let mut ungranted = input.clone();
++    ungranted.allowed_paths = vec![file.to_str().unwrap().into()];
++    assert!(store.prepare_with_root("parent", "absolute", ungranted, policy.clone(), snapshot.clone(), Some(&project)).is_err());
++    let mut traversal = input.clone();
++    traversal.allowed_paths = vec!["../outside/file".into()];
++    assert!(store.prepare_with_root("parent", "traversal", traversal, policy.clone(), snapshot.clone(), Some(&project)).is_err());
++    input.external_write_paths = vec![file.to_str().unwrap().into()];
++    let mut read_only = input.clone();
++    read_only.mode = "read-only".into();
++    assert!(store.prepare_with_root("parent", "read-only", read_only, policy.clone(), snapshot.clone(), Some(&project)).is_err());
++    let mut directory = input.clone();
++    directory.external_write_paths = vec![outside.to_str().unwrap().into()];
++    assert!(store.prepare_with_root("parent", "directory", directory, policy.clone(), snapshot.clone(), Some(&project)).is_err());
++    let mut bad = input.clone();
++    bad.external_write_paths = vec![outside.join("missing").join("file").to_str().unwrap().into()];
++    assert!(store.prepare_with_root("parent", "missing-parent", bad, policy.clone(), snapshot.clone(), Some(&project)).is_err());
++    let mut bad = input.clone();
++    bad.external_write_paths = vec!["../outside/file".into()];
++    assert!(store.prepare_with_root("parent", "relative-grant", bad, policy.clone(), snapshot.clone(), Some(&project)).is_err());
++    let operation = store.prepare_with_root("parent", "grant", input.clone(), policy.clone(), snapshot.clone(), Some(&project)).unwrap();
++    assert_eq!(operation.canonical_external_write_paths, vec![file.canonicalize().unwrap()]);
++    assert_eq!(worker_input(&input)["external_write_paths"], serde_json::json!([file.to_str().unwrap()]));
++    assert_eq!(serde_json::from_value::<TaskInput>(serde_json::to_value(&input).unwrap()).unwrap(), input);
++    assert!(store.replay_task_with_root("parent", "grant-replay", &input, Some(&project)).unwrap().is_some());
++    let mut changed = input.clone();
++    changed.external_write_paths.push(outside.join("new").to_str().unwrap().into());
++    assert!(store.replay_task_with_root("parent", "grant", &changed, Some(&project)).is_err());
++    let mut new_file = input.clone();
++    new_file.task_id = "new-file".into();
++    new_file.external_write_paths = vec![outside.join("new").to_str().unwrap().into()];
++    let new_op = store.prepare_with_root("parent", "new", new_file, policy.clone(), snapshot.clone(), Some(&project)).unwrap();
++    std::fs::write(outside.join("new"), "new").unwrap();
++    assert!(store.check_root(&new_op, Some(&project)).is_ok());
++    let mut directory_later = input.clone();
++    directory_later.task_id = "directory-later".into();
++    directory_later.external_write_paths = vec![outside.join("directory-later").to_str().unwrap().into()];
++    let directory_op = store.prepare_with_root("parent", "directory-later", directory_later, policy.clone(), snapshot.clone(), Some(&project)).unwrap();
++    std::fs::create_dir(outside.join("directory-later")).unwrap();
++    assert!(store.check_root(&directory_op, Some(&project)).is_err());
++    #[cfg(unix)] {
++        use std::os::unix::fs::symlink;
++        let other = outside.join("other");
++        std::fs::write(&other, "other").unwrap();
++        let alias = outside.join("alias");
++        symlink(&file, &alias).unwrap();
++        let mut alias_input = input.clone();
++        alias_input.task_id = "alias".into();
++        alias_input.external_write_paths = vec![alias.to_str().unwrap().into()];
++        let alias_op = store.prepare_with_root("parent", "alias", alias_input.clone(), policy.clone(), snapshot.clone(), Some(&project)).unwrap();
++        assert_eq!(alias_op.canonical_external_write_paths, vec![file.canonicalize().unwrap()]);
++        std::fs::remove_file(&alias).unwrap();
++        symlink(&other, &alias).unwrap();
++        assert!(store.check_root(&alias_op, Some(&project)).is_err());
++        assert!(store.replay_task_with_root("parent", "alias", &alias_input, Some(&project)).is_err());
++        std::fs::remove_file(outside.join("new")).unwrap();
++        symlink(&other, outside.join("new")).unwrap();
++        assert!(store.check_root(&new_op, Some(&project)).is_err());
++        let dangling = outside.join("dangling");
++        symlink(outside.join("absent"), &dangling).unwrap();
++        let mut bad = input.clone();
++        bad.external_write_paths = vec![dangling.to_str().unwrap().into()];
++        assert!(store.prepare_with_root("parent", "dangling", bad, policy.clone(), snapshot.clone(), Some(&project)).is_err());
++        let parent_alias = home.path().join("outside-alias");
++        symlink(&outside, &parent_alias).unwrap();
++        let mut parent_input = input.clone();
++        parent_input.task_id = "parent-alias".into();
++        parent_input.external_write_paths = vec![parent_alias.join("file").to_str().unwrap().into()];
++        let parent_op = store.prepare_with_root("parent", "parent-alias", parent_input.clone(), policy.clone(), snapshot.clone(), Some(&project)).unwrap();
++        assert_eq!(parent_op.canonical_external_write_paths, vec![file.canonicalize().unwrap()]);
++        std::fs::remove_file(&parent_alias).unwrap();
++        let second_dir = home.path().join("second-outside");
++        std::fs::create_dir(&second_dir).unwrap();
++        std::fs::write(second_dir.join("file"), "other").unwrap();
++        symlink(&second_dir, &parent_alias).unwrap();
++        assert!(store.replay_task_with_root("parent", "parent-alias", &parent_input, Some(&project)).is_err());
++    }
++    let assignment = serde_json::to_value(&operation.task).unwrap();
++    assert_eq!(assignment["assignment"]["external_write_paths"], serde_json::json!([file.to_str().unwrap()]));
++    let mut old_assignment = assignment["assignment"].clone();
++    old_assignment.as_object_mut().unwrap().remove("external_write_paths");
++    let old_assignment: super::super::Assignment = serde_json::from_value(old_assignment).unwrap();
++    assert!(old_assignment.external_write_paths.is_empty());
++    assert!(serde_json::to_value(old_assignment).unwrap().get("external_write_paths").is_none());
++    let blocker = super::super::Blocker { id: "b".into(), class: super::super::BlockerClass::Capability, question: "help".into(), inputs: vec!["input".into()], evidence: "evidence".into(), checks: vec![], no_check_reason: Some("none".into()), minimum_resolution: "resolve".into(), write_paths: vec![] };
++    let helper = assistance_input(&operation, "expert", &blocker);
++    assert!(helper.external_write_paths.is_empty());
++    assert!(worker_input(&helper).get("external_write_paths").is_none());
++    assert!(serde_json::from_value::<super::super::Blocker>({ let mut value = serde_json::to_value(&blocker).unwrap(); value["external_write_paths"] = serde_json::json!([file.to_str().unwrap()]); value }).is_err());
++    let mut escalation = blocker.clone();
++    escalation.write_paths = vec![file.to_str().unwrap().into()];
++    let mut task = operation.task.clone();
++    let decision = task.apply("escalate", super::super::Event::Report { session: operation.owner_session_id.clone(), report: super::super::Report::Blocked(escalation) }).unwrap();
++    assert_eq!(decision, Decision::ReturnCoordinator);
++    let schema = crate::tool::blueprint::DispatchTaskTool.parameters_schema();
++    assert!(schema["required"].as_array().unwrap().iter().all(|field| field != "external_write_paths"));
++    assert_eq!(schema["properties"]["external_write_paths"]["type"], "array");
++    let worker_schema = crate::worker_blueprint::BlueprintSchema::new(serde_json::json!({
++        "type":"object", "additionalProperties":false,
++        "required":["task_id","blocker_id","source_session_id","objective","mode","inputs","allowed_paths","non_goals","acceptance","time_budget_minutes","attempt_cap"],
++        "properties":{
++            "task_id":{"type":"string"},"blocker_id":{"type":["string","null"]},"source_session_id":{"type":["string","null"]},
++            "objective":{"type":"string"},"mode":{"type":"string"},"inputs":{"type":"array"},"allowed_paths":{"type":"array"},
++            "external_write_paths":{"type":"array","items":{"type":"string"}},"non_goals":{"type":"array"},"acceptance":{"type":"string"},
++            "time_budget_minutes":{"type":"integer"},"attempt_cap":{"type":"integer"},"context":{"type":"string"}
++        }
++    })).unwrap();
++    assert!(worker_schema.validate(&worker_input(&input)).is_ok());
++    assert!(worker_schema.validate(&worker_input(&helper)).is_ok());
++    if let Some(previous) = previous { crate::env::set_var("JCODE_HOME", previous); } else { crate::env::remove_var("JCODE_HOME"); }
++}
++
++#[tokio::test]
++async fn dispatcher_runtime_worker_cannot_mint_external_grant() {
++    let _lock = crate::storage::lock_test_env();
++    let home = tempfile::tempdir().unwrap();
++    let previous = std::env::var_os("JCODE_HOME");
++    crate::env::set_var("JCODE_HOME", home.path());
++    let project = home.path().join("project");
++    std::fs::create_dir_all(&project).unwrap();
++    let calls = Arc::new(AtomicUsize::new(0));
++    let handler = fixture_handler(Arc::new(ScriptedOwner { calls: calls.clone() }), RuntimeStore::new(home.path().join("operations")));
++    let mut child = crate::session::Session::create_with_id("worker-child".into(), Some("parent".into()), None);
++    child.worker_blueprint_policy = Some(fixture_snapshot().policy);
++    child.save_prepared().unwrap();
++    let mut input: TaskInput = serde_json::from_value({ let mut value = args("advanced"); value.as_object_mut().unwrap().remove("intent"); value }).unwrap();
++    input.mode = "edit".into();
++    input.external_write_paths = vec![home.path().join("outside-file").to_str().unwrap().into()];
++    let error = handler.dispatch_with_root("worker-child", "mint", input, Some(project), Arc::new(std::sync::atomic::AtomicBool::new(false))).await.unwrap_err();
++    assert!(error.to_string().contains("only the coordinator may dispatch tasks"), "{error:#}");
++    assert_eq!(calls.load(Ordering::SeqCst), 0);
++    if let Some(previous) = previous { crate::env::set_var("JCODE_HOME", previous); } else { crate::env::remove_var("JCODE_HOME"); }
 +}
 +
 +#[test]
@@ -11368,10 +11576,10 @@ index 000000000..6c9887cd4
 +}
 diff --git a/crates/jcode-app-core/src/server/dispatcher/tests.rs b/crates/jcode-app-core/src/server/dispatcher/tests.rs
 new file mode 100644
-index 000000000..0fef821a1
+index 000000000..050e2c8d1
 --- /dev/null
 +++ b/crates/jcode-app-core/src/server/dispatcher/tests.rs
-@@ -0,0 +1,381 @@
+@@ -0,0 +1,382 @@
 +use super::*;
 +use serde_json::json;
 +
@@ -11386,6 +11594,7 @@ index 000000000..0fef821a1
 +            worker: worker.into(),
 +            objective: "fix issue".into(),
 +            write_paths: vec!["src".into()],
++            external_write_paths: vec![],
 +            attempt_cap: 2,
 +        },
 +        policy(),
@@ -13807,7 +14016,7 @@ index 1964fb78c..d405fdcb9 100644
                      (i, tool_name, result)
 diff --git a/crates/jcode-app-core/src/tool/blueprint.rs b/crates/jcode-app-core/src/tool/blueprint.rs
 new file mode 100644
-index 000000000..5818f11c1
+index 000000000..3922dc577
 --- /dev/null
 +++ b/crates/jcode-app-core/src/tool/blueprint.rs
 @@ -0,0 +1,1256 @@
@@ -13968,7 +14177,7 @@ index 000000000..5818f11c1
 +    fn parameters_schema(&self) -> Value {
 +        json!({"type":"object","additionalProperties":false,"required":["intent","task_id","worker","objective","mode","inputs","allowed_paths","non_goals","acceptance","time_budget_minutes","attempt_cap"],"properties":{
 +            "intent":super::intent_schema_property(),"task_id":{"type":"string"},"worker":{"type":"string","description":"Exact case-sensitive worker ID from coordinator routing."},"objective":{"type":"string"},"mode":{"enum":["edit","read-only"]},
-+            "inputs":{"type":"array","items":{"type":"string"}},"allowed_paths":{"type":"array","items":{"type":"string"},"description":"Writable workspace-relative paths, not read inputs. Use [] for read-only tasks."},"non_goals":{"type":"array","items":{"type":"string"}},
++            "inputs":{"type":"array","items":{"type":"string"}},"allowed_paths":{"type":"array","items":{"type":"string"},"description":"Writable workspace-relative paths, not read inputs. Use [] for read-only tasks."},"external_write_paths":{"type":"array","items":{"type":"string"},"description":"Exact absolute files outside the workspace, only with explicit user authorization. No directories. Empty for read-only tasks."},"non_goals":{"type":"array","items":{"type":"string"}},
 +            "acceptance":{"type":"string"},"checks":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","command"],"properties":{"id":{"type":"string","minLength":1},"command":{"type":"string","minLength":1,"description":"Executable shell text, not a description. Use the prescribed test runner when declaring a test; put inspection-only criteria in acceptance."},"timeout_seconds":{"type":"integer","minimum":1,"description":"Optional check timeout in seconds, at most the task time budget. Defaults to 120 seconds."}}}},"assistance_checks":{"type":"array","items":{"type":"string"},"description":"IDs of declared checks explicitly authorized for bounded assistance."},"time_budget_minutes":{"type":"integer","minimum":1},"attempt_cap":{"type":"integer","minimum":1,"maximum":2,"description":"Maximum failed authorized checks per worker. The dispatcher stops at the cap, including expected failures; allow room for a retry within the limit."},"context":{"type":"string"}
 +        }})
 +    }

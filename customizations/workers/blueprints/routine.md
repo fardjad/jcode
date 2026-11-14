@@ -16,6 +16,7 @@ input-schema:
     mode: {enum: [read-only, edit, extract], description: "extract: read only the named inputs and report anything missing."}
     inputs: {type: array, items: {type: string}, description: Paths, symbols, commits, or error text to inspect.}
     allowed_paths: {type: array, items: {type: string}, description: Files the worker may change. Empty when read-only.}
+    external_write_paths: {type: array, items: {type: string}, description: Exact absolute files the worker may change, not directories or other files. Empty when read-only.}
     non_goals: {type: array, items: {type: string}}
     acceptance: {type: string, description: Exact command or clear predicate that decides success.}
     time_budget_minutes: {type: integer, minimum: 1}
