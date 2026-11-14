@@ -33,6 +33,34 @@ within its retry allowance. Other classes, missing class rules, and exhausted
 actions return control to the coordinator. A return does not implicitly request
 verification. The coordinator decides what to do next.
 
+## Worker observer panes
+
+In a binary built with this patch, opt in with:
+
+```toml
+[terminal]
+dispatch_worker_panes = true
+```
+
+The default is off. Supported Herdr and tmux clients open an unfocused,
+read-only TUI pane for each dispatch worker and each bounded `extract` worker.
+Each pane renders the worker's live assistant output, reasoning, tool intents,
+and inline file diffs rather than an interactive session. The pane closes
+automatically when its worker finishes, blocks, or stops; closing a pane early
+does not stop the worker. Output is bounded: long events are truncated and a
+slow viewer can skip events or disconnect. A retry reuses its worker pane;
+bounded assistance and output-guard `extract` workers each open their own pane.
+Finished and blocked workers are removed from resident server memory and live
+swarm state when the turn finishes while their persisted session transcripts and
+operation records remain on disk.
+
+Execution falls back to headless mode if a pane cannot be opened safely,
+including when a custom terminal spawn hook is configured. Other uses of that
+hook are unchanged. After a Herdr split returns a pane ID, a failed or
+interrupted launch attempts to close that pane. A split that hangs or returns
+no usable ID cannot be cleaned up this way. Real multiplexer behavior and
+installed binaries must be checked separately from source tests.
+
 ## Checks and retry limits
 
 The coordinator declares authorized checks by stable ID and executable shell

@@ -24,6 +24,9 @@ pre_tool_transform = ["python3 ~/.jcode/plugins/rtk/rtk-transform"]
 enabled = false
 imported = true
 
+[terminal]
+dispatch_worker_panes = true
+
 [tools]
 disabled = [
     "swarm",
